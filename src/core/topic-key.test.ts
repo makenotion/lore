@@ -52,7 +52,7 @@ describe("suggestTopicKey — example table (issue 0.9.0/07)", () => {
       expected: null,
     },
     {
-      title: "Investigate PR #25750 latency regression",
+      title: "Investigate PR #1234 latency regression",
       kind: "task",
       expected: null,
     },
@@ -84,7 +84,7 @@ describe("suggestTopicKey — acceptance criteria (issue 0.9.0/07)", () => {
 
   it("returns null with a task-specific reason for kind='task'", () => {
     const result = suggestTopicKey({
-      title: "Investigate PR #25750",
+      title: "Investigate PR #1234",
       kind: "task",
     })
     expect(result.key).toBeNull()

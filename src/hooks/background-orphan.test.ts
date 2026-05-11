@@ -192,10 +192,10 @@ describe("spawnBackgroundSave LockPathTooLongError mapping (#485)", () => {
     const child = fakeChild()
     spawnMock.mockReturnValueOnce(child)
     tryAcquireMock.mockImplementationOnce(() => {
-      throw new LockPathTooLongError("digest-Mail", "ENAMETOOLONG")
+      throw new LockPathTooLongError("digest-Widget", "ENAMETOOLONG")
     })
 
-    spawnBackgroundSave("/tmp", "prompt", "digest-Mail", { logLabel: "digest" })
+    spawnBackgroundSave("/tmp", "prompt", "digest-Widget", { logLabel: "digest" })
 
     const calls = stderrSpy.mock.calls
       .map(([msg]) => msg)
@@ -205,7 +205,7 @@ describe("spawnBackgroundSave LockPathTooLongError mapping (#485)", () => {
     expect(warning).toContain("[lore] digest:")
     // The lockKey echoes through so an operator can distinguish digest
     // from autosave warnings even without the prefix.
-    expect(warning).toContain("digest-Mail")
+    expect(warning).toContain("digest-Widget")
   })
 
   it("truncates a multi-kilobyte lockKey in the stderr warning", () => {

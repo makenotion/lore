@@ -1906,7 +1906,7 @@ describe("runStatus — no vault context", () => {
     ntnMocks.isNtnInstalled.mockReturnValue(false)
     await runStatus()
     expect(stdoutText()).toContain("ntn` does not appear to be installed")
-    expect(stdoutText()).toContain("docs/internal-rollout.md")
+    expect(stdoutText()).toContain("docs/team-rollout.md")
   })
 
   it("lists ntn workspaces when listNtnWorkspaces returns any", async () => {
@@ -2258,14 +2258,14 @@ describe("runLogin", () => {
     expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`...")
   })
 
-  it("infers `--env dev` from .lore.yaml `auth.baseUrl` when shell NOTION_ENV is unset (Mail-style dev project)", async () => {
-    // Round-5 review blocker: a Mail-style dev project ships
-    // `auth.baseUrl: https://api-dev.notion.com` in committed
-    // .lore.yaml. Without this fix, `lore auth --login` from that
-    // project (without shell NOTION_ENV) ran bare `ntn login` (prod)
-    // and silently mismatched the operator's vault. Now Lore reads
-    // the config baseUrl, infers `dev`, and prints a transparency
-    // line so the operator sees which env is being targeted.
+  it("infers `--env dev` from .lore.yaml `auth.baseUrl` when shell NOTION_ENV is unset (PnP-style dev project)", async () => {
+    // Round-5 review blocker: a PnP-style dev project's local
+    // `.lore.yaml` carries `auth.baseUrl: https://api-dev.notion.com`.
+    // Without this fix, `lore auth --login` from that project
+    // (without shell NOTION_ENV) ran bare `ntn login` (prod) and
+    // silently mismatched the operator's vault. Now Lore reads the
+    // config baseUrl, infers `dev`, and prints a transparency line
+    // so the operator sees which env is being targeted.
     const dir = mkdtempSync(join(SCRATCH, "vault-dev-"))
     scratchDirsToClean.push(dir)
     writeFileSync(
@@ -2338,12 +2338,12 @@ describe("runLogin", () => {
     expect(stdoutText()).not.toContain("Inferring")
   })
 
-  it("Mail-style end-to-end: config-derived dev env, no NOTION_API_TOKEN, post-login resolves ntn-auth-json with dev baseUrl, createClient receives api-dev.notion.com", async () => {
+  it("PnP-style end-to-end: config-derived dev env, no NOTION_API_TOKEN, post-login resolves ntn-auth-json with dev baseUrl, createClient receives api-dev.notion.com", async () => {
     // Round-6 coverage gap: the config-derived `--env dev` test above
     // sets `NOTION_API_TOKEN` so it short-circuits past the
     // ntn-auth-json branch — proving the spawn selector but NOT the
     // post-login preflight client construction. This pins the full
-    // Mail-style flow:
+    // PnP-style flow:
     //
     //   1. .lore.yaml carries `auth.baseUrl: https://api-dev.notion.com`.
     //   2. No NOTION_API_TOKEN, no shell NOTION_ENV.
@@ -2355,11 +2355,11 @@ describe("runLogin", () => {
     //      constructing the preflight client — the load-bearing piece
     //      the reviewer flagged.
     //   6. verifyVaultAccess returns ok against the constructed client.
-    const dir = mkdtempSync(join(SCRATCH, "vault-mail-style-"))
+    const dir = mkdtempSync(join(SCRATCH, "vault-pnp-style-"))
     scratchDirsToClean.push(dir)
     writeFileSync(
       join(dir, ".lore.yaml"),
-      `vault:\n  pageId: page-mail\nauth:\n  baseUrl: https://api-dev.notion.com\n`,
+      `vault:\n  pageId: page-dev\nauth:\n  baseUrl: https://api-dev.notion.com\n`,
       "utf-8",
     )
     process.chdir(dir)
@@ -2377,7 +2377,7 @@ describe("runLogin", () => {
     ntnMocks.runNtnLogin.mockResolvedValue({ kind: "success" })
     verifyVaultAccessMock.mockResolvedValue({
       kind: "ok",
-      pageTitle: "Mail Vault",
+      pageTitle: "Test Vault",
     })
 
     await runLogin({ yes: true })
@@ -2403,7 +2403,7 @@ describe("runLogin", () => {
     // path resolved.
     expect(verifyVaultAccessMock).toHaveBeenCalledTimes(1)
     expect(stdoutText()).toContain(
-      "✓ Authenticated; vault page reachable: Mail Vault",
+      "✓ Authenticated; vault page reachable: Test Vault",
     )
     expect(stdoutText()).toContain("Workspace: ws-dev")
   })
@@ -2643,7 +2643,7 @@ describe("runWhoami / renderWhoamiIdentity", () => {
               type: "user",
               user: { id: "user-id", name: "Alice", object: "user" },
             },
-            workspace_name: "Mail",
+            workspace_name: "Widget",
           },
         }),
       },
@@ -2660,7 +2660,7 @@ describe("runWhoami / renderWhoamiIdentity", () => {
               type: "user",
               user: { id: "user-id-only", object: "user" },
             },
-            workspace_name: "Mail",
+            workspace_name: "Widget",
           },
         }),
       },
@@ -2727,12 +2727,12 @@ describe("runWhoami / renderWhoamiIdentity", () => {
         bot: {
           owner: {
             type: "user",
-            user: { id: "id-x", name: "Hesham", object: "user" },
+            user: { id: "id-x", name: "Test", object: "user" },
           },
         },
       })
     await runWhoami()
-    expect(stdoutText()).toBe("Hesham\n")
+    expect(stdoutText()).toBe("Test\n")
   })
 
   it("runWhoami without .lore.yaml AND no global auth: exits 1 with the Not authenticated message", async () => {
@@ -2780,13 +2780,13 @@ describe("runWhoami / renderWhoamiIdentity", () => {
         bot: {
           owner: {
             type: "user",
-            user: { id: "id-1", name: "Hesham", object: "user" },
+            user: { id: "id-1", name: "Test", object: "user" },
           },
         },
       })
     await runWhoami()
     // Single trailing newline; the only stdout line is the identity.
-    expect(stdoutText()).toBe("Hesham\n")
+    expect(stdoutText()).toBe("Test\n")
   })
 
   it("runWhoami prints just the id when only an id is present (script-friendly)", async () => {

@@ -216,13 +216,13 @@ describe("TaskService.create", () => {
     await service.create({
       subject: "Ship release",
       state: "blocked",
-      blockedBy: "PR #25750 review",
+      blockedBy: "PR #1234 review",
     })
 
     const args = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(args.properties["Task State"]).toEqual({ select: { name: "blocked" } })
     expect(args.properties["Blocked By"]).toEqual({
-      rich_text: [{ text: { content: "PR #25750 review" } }],
+      rich_text: [{ text: { content: "PR #1234 review" } }],
     })
   })
 
@@ -910,7 +910,7 @@ describe("isCleared — empty-string-means-absence rule", () => {
   })
 
   it("treats non-empty content as not-cleared", () => {
-    expect(isCleared("PR #25750")).toBe(false)
+    expect(isCleared("PR #1234")).toBe(false)
     expect(isCleared("2026-05-01")).toBe(false)
     expect(isCleared("a")).toBe(false)
   })
@@ -1283,11 +1283,11 @@ describe("TaskService.countActive", () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
-    await service.countActive({ projectId: "proj-mail", today: "2026-04-28" })
+    await service.countActive({ projectId: "proj-widget", today: "2026-04-28" })
 
     const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
     const filter = JSON.stringify(args.filter)
-    expect(filter).toContain("proj-mail")
+    expect(filter).toContain("proj-widget")
     // Active states drive the filter — done/cancelled rows are excluded
     // server-side so the count never sees closed work.
     expect(filter).toContain('"open"')
@@ -1443,9 +1443,9 @@ describe("TaskService.countClosedSince", () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
-    await service.countClosedSince("2026-03-30", { projectId: "proj-mail" })
+    await service.countClosedSince("2026-03-30", { projectId: "proj-widget" })
     const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    expect(JSON.stringify(args.filter)).toContain("proj-mail")
+    expect(JSON.stringify(args.filter)).toContain("proj-widget")
   })
 })
 
@@ -1620,16 +1620,16 @@ describe("taskStats orchestrator", () => {
     }
 
     await taskStats(service as never, {
-      projectId: "proj-mail",
+      projectId: "proj-widget",
       today: "2026-04-28",
     })
 
     expect(service.countActive).toHaveBeenCalledWith({
-      projectId: "proj-mail",
+      projectId: "proj-widget",
       today: "2026-04-28",
     })
     expect(service.countClosedSince).toHaveBeenCalledWith("2026-03-30", {
-      projectId: "proj-mail",
+      projectId: "proj-widget",
     })
   })
 

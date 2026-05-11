@@ -42,7 +42,7 @@
  * `create_pages` consumes (via
  * `convertNotionRestToSqliteProperties` from
  * `./sqlite-properties.ts`). The conversion is grounded in the
- * empirical wire format observed live against the production Mail
+ * empirical wire format observed live against an internal
  * vault Facts DB at PR #538 review time — title/rich_text/select
  * → flat strings, dates → 3-key `date:<col>:start/:end/:is_datetime`
  * expansion, relations → JSON-stringified array of user-facing

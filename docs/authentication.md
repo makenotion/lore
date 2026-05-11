@@ -19,9 +19,9 @@ in the chain supplies the bearer token.
 Lore still inspects `.lore.yaml` for `auth.token` before returning the
 canonical env token. If that field is present, Lore emits the
 `auth.token in .lore.yaml is soft-deprecated` warning even though
-`NOTION_API_TOKEN` wins authentication. This is intentional because
-`.lore.yaml` is usually committed repo config; the warning is tied to removing
-the unsafe field, not to which source supplied the runtime token.
+`NOTION_API_TOKEN` wins authentication. The warning is tied to removing the
+unsafe field, not to which source supplied the runtime token — a local
+`.lore.yaml` is still backed up, synced, and easy to paste from.
 
 ## ntn-Resolved Auth
 
@@ -87,47 +87,50 @@ map to different threat models:
   config, including migration-window setups where `NOTION_API_TOKEN`, ntn
   auth, or `LORE_NOTION_TOKEN` supplies the runtime token. The warning
   fires on every invocation and is **not silenceable** via
-  `LORE_SUPPRESS_DEPRECATIONS=1`. `.lore.yaml` is committable repo state;
-  a token pasted there propagates to every clone and lands in git
-  history, which is a different class of misconfiguration than an
-  ephemeral env var. Treating the two with the same noise budget would
-  hide the committed-secret signal across CI runs and across engineers
-  in the same worktree (issue #484). Removing the field is the only way
-  to clear the warning.
+  `LORE_SUPPRESS_DEPRECATIONS=1`. `.lore.yaml` is local-only, but a token
+  written there still rides every backup, sync, and editor tab; that is a
+  different class of misconfiguration than an ephemeral env var. Treating
+  the two with the same noise budget would hide the signal across CI runs
+  and across engineers in the same worktree (issue #484). Removing the
+  field is the only way to clear the warning.
 
-Because `.lore.yaml` is committable, config load also rejects `auth.token`
-values that look like Notion bearer tokens (`ntn_...` or `secret_...`); move
-those tokens to `NOTION_API_TOKEN` or ntn auth. `lore auth --migrate` walks
-operators through moving to ntn-issued auth.
+Config load also rejects `auth.token` values that look like Notion bearer
+tokens (`ntn_...` or `secret_...`); move those tokens to `NOTION_API_TOKEN` or
+ntn auth. `lore auth --migrate` walks operators through moving to ntn-issued
+auth.
 
 Hard removal is planned for a future major release, contingent on telemetry
 showing no active deployments still rely on the legacy paths.
 
-`.lore.yaml` is committable only when it contains shared, non-secret config:
-team-owned `vault.pageId` values, project mappings, detection rules, and hook
-preferences. Do not commit `auth.token`, personal scratch vault IDs, or
-personally identifying local values. Lore warns whenever `auth.token` is
-present in `.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or
-`LORE_NOTION_TOKEN` wins the priority chain, and refuses bearer-shaped
-`auth.token` values before any Notion call is made.
+`.lore.yaml` is local-only — keep it out of version control. Copy
+`.lore.example.yaml` to `.lore.yaml` per clone, fill in your `vault.pageId`
+(paste the shared team value from your onboarding docs, or let `lore init`
+write it), and rely on `lore auth --login` (ntn) or `NOTION_API_TOKEN` for
+credentials. Distribute shared team values (`vault.pageId`,
+`auth.workspaceId`) through onboarding docs rather than by committing config.
+Never put `auth.token`, personal scratch vault page IDs, or personally
+identifying values in the file. Lore warns whenever `auth.token` is present in
+`.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or `LORE_NOTION_TOKEN`
+wins the priority chain, and refuses bearer-shaped `auth.token` values before
+any Notion call is made.
 
 `vault.pageId` values are not bearer secrets. They identify a Notion page, but
-Notion still enforces access through the resolved token's permissions. A
-deliberately shared team vault ID in git history does not, by itself, require
-history rewrite, token rotation, or integration-sharing rotation. Personal
-scratch page IDs and accidentally committed private page IDs are still outside
-the committed-config policy because they can reveal private workspace context;
-scrub them from the working copy and decide with the page owner whether to
-replace the page or rewrite history.
+Notion still enforces access through the resolved token's permissions. Even
+so, keeping page IDs out of git is the right default so external clones of a
+public repo don't auto-target an unrelated vault. Personal scratch page IDs
+and accidental maintainer-local page IDs that land in history need owner
+review; decide with the page owner whether to replace the page or rewrite
+history.
 
-The Lore repo also installs a Git pre-commit guard during `npm install`. The
-guard reads the staged `.lore.yaml` from the Git index and blocks commits that
-add `auth.token` or replace the approved shared team `vault.pageId`. Fresh
-checkouts with only Git's sample hooks use `core.hooksPath=.githooks`;
-checkouts that already have active default `.git/hooks` or a custom hook path
-get a small wrapper installed there when no active `pre-commit` hook exists. If
-an active `pre-commit` hook already exists, chain `.githooks/pre-commit` from
-that hook.
+The Lore repo also installs a Git pre-commit guard during `npm install` to
+enforce the gitignore. The guard reads the staged `.lore.yaml` from the Git
+index and rejects any committed content with a pointer at
+`.lore.example.yaml`. It returns silently when `.lore.yaml` is not tracked
+(the steady state). Fresh checkouts with only Git's sample hooks use
+`core.hooksPath=.githooks`; checkouts that already have active default
+`.git/hooks` or a custom hook path get a small wrapper installed there when no
+active `pre-commit` hook exists. If an active `pre-commit` hook already
+exists, chain `.githooks/pre-commit` from that hook.
 
 ## Rate Limits
 
@@ -174,11 +177,5 @@ snapshot; the next unattributed write resolves under the new snapshot.
 | Direct `ntn login` used keychain mode              | Re-run `lore auth --login`, or set `NOTION_KEYRING=0` before direct ntn login.                                                                             |
 | Hook-spawned background save cannot read the vault | Check `spawnBackgroundSave` in `src/hooks/background.ts`; the child gets minimal env and discovers `.lore.yaml` by walking upward from the hook event cwd. |
 
-See [`docs/team-setup.md`](team-setup.md) for the topics most teams hit
-during onboarding (Entities cutover, the direct-ntn-login gotcha,
-shared-vault hook configuration). The deeper team-rollout playbook —
-per-engineer onboarding flow, the `NOTION_API_TOKEN` fallback path,
-fail-fast env mismatches — lives in
-[`docs/internal-rollout.md`](internal-rollout.md). The rename to a
-public-friendly filename is tracked in
-[#571](https://github.com/makenotion/lore/issues/571).
+See [`docs/team-rollout.md`](team-rollout.md) for the operator-facing
+rollout runbook.

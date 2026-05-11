@@ -130,7 +130,7 @@ describe("resolveMigrationProjectScope", () => {
     }))
 
     await expect(
-      resolveMigrationProjectScope(services, { project: "Mail" })
+      resolveMigrationProjectScope(services, { project: "Widget" })
     ).resolves.toEqual({})
     expect(services.projects.resolveByName).not.toHaveBeenCalled()
   })
@@ -175,7 +175,7 @@ describe("resolveMigrationProjectScope", () => {
     await expect(
       resolveMigrationProjectScope(services, {
         buildEntities: true,
-        project: "Mail",
+        project: "Widget",
       })
     ).rejects.toMatchObject({
       code: "transient_project_resolution",
@@ -376,12 +376,12 @@ describe("backfillFactSources", () => {
 
     await backfillFactSources(services as never, {
       apply: false,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
     log.mockRestore()
 
     expect(services.facts.queryOrphans).toHaveBeenCalledWith({
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
   })
 
@@ -554,13 +554,13 @@ describe("runFactEncodingFix", () => {
 
     await runFactEncodingFix(services as never, {
       apply: false,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
     log.mockRestore()
 
     expect(services.facts.fixEncoding).toHaveBeenCalledWith({
       dryRun: true,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
   })
 
@@ -689,13 +689,13 @@ describe("runMemoryEncodingFix", () => {
 
     await runMemoryEncodingFix(services as never, {
       apply: false,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
     log.mockRestore()
 
     expect(services.memories.fixEncoding).toHaveBeenCalledWith({
       dryRun: true,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
   })
 
@@ -997,13 +997,13 @@ describe("runAgentNormalization", () => {
 
     await runAgentNormalization(services as never, {
       apply: false,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
     log.mockRestore()
 
     expect(services.memories.normalizeAgents).toHaveBeenCalledWith({
       dryRun: true,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
   })
 
@@ -1385,13 +1385,13 @@ describe("runBuildEntitiesMigration", () => {
 
     await runBuildEntitiesMigration(services, {
       apply: false,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
 
     expect(
       (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
         .queryBySubject
-    ).toHaveBeenCalledWith("", expect.objectContaining({ projectId: "project-mail" }))
+    ).toHaveBeenCalledWith("", expect.objectContaining({ projectId: "project-widget" }))
   })
 
   it("apply mode fails fast when the build-entities lock is held", async () => {
@@ -1528,17 +1528,17 @@ describe("runOrphanRateReport — issue #542 pre/post-pass label contract", () =
     const services = buildServices([makeFact("f1", { subject: "Foo" })])
     await runOrphanRateReport(services, {
       apply: false,
-      projectId: "project-mail",
-      projectName: "Mail",
+      projectId: "project-widget",
+      projectName: "Widget",
     })
-    expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project "Mail", via js-enumeration\)/)
+    expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project "Widget", via js-enumeration\)/)
   })
 
   it("falls back to 'project-scoped' when projectId is set but projectName is not", async () => {
     const services = buildServices([makeFact("f1", { subject: "Foo" })])
     await runOrphanRateReport(services, {
       apply: false,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
     expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project-scoped, via js-enumeration\)/)
   })
@@ -1868,7 +1868,7 @@ describe("runSynopsisBackfill", () => {
     await runSynopsisBackfill(services as never, {
       apply: false,
       backend: "claude",
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
     log.mockRestore()
 
@@ -1877,7 +1877,7 @@ describe("runSynopsisBackfill", () => {
       dryRun: undefined,
       backend: "claude",
       batchSize: undefined,
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
   })
 
@@ -2096,16 +2096,16 @@ describe("runBuildConfidenceScores", () => {
   it("threads projectName through and resolves it via findByName", async () => {
     const services = makeServices({
       memories: [],
-      findByName: async (name) => (name === "Mail" ? { id: "project-mail", name } : null),
+      findByName: async (name) => (name === "Widget" ? { id: "project-widget", name } : null),
     })
     await runBuildConfidenceScores(services as never, {
       apply: false,
       dryRun: false,
-      projectName: "Mail",
+      projectName: "Widget",
     })
-    expect(services.projects.findByName).toHaveBeenCalledWith("Mail")
+    expect(services.projects.findByName).toHaveBeenCalledWith("Widget")
     expect(services.memories.listAllForBackfill).toHaveBeenCalledWith({
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
   })
 

@@ -659,18 +659,18 @@ describe("TopicService.getOrCreate — normalized-equivalent collapse (issue #10
     return client
   }
 
-  it("collapses Eval & Testing onto the existing Evals & Testing canonical (Mail vault repro)", async () => {
+  it("collapses Eval & Testing onto the existing Evals & Testing canonical (internal vault repro)", async () => {
     // Reproduces the exact pair from issue #109's audit. The agent saved
     // memories under both names same-day; pre-fix, getOrCreate created
     // two sibling rows. Post-fix, the second save normalizes to the
     // first and extends its Project relation rather than fanning out.
     const canonical = topicPage("t-canonical", {
       name: "Evals & Testing",
-      projectIds: ["proj-mail"],
+      projectIds: ["proj-widget"],
     })
     const canonicalAfter = topicPage("t-canonical", {
       name: "Evals & Testing",
-      projectIds: ["proj-mail"],
+      projectIds: ["proj-widget"],
     })
     const client = probeClient({
       findByNameEmpty: true,
@@ -679,7 +679,7 @@ describe("TopicService.getOrCreate — normalized-equivalent collapse (issue #10
     })
     const service = new TopicService(client, DB)
 
-    const topic = await service.getOrCreate("Eval & Testing", ["proj-mail"])
+    const topic = await service.getOrCreate("Eval & Testing", ["proj-widget"])
 
     expect(client.pages.create).not.toHaveBeenCalled()
     expect(topic.id).toBe("t-canonical")

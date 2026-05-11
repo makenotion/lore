@@ -25,10 +25,10 @@ object is shaped for agents to inspect directly:
       "kind": "autosave",
       "label": "autosave",
       "occurredAt": "2026-04-24T12:00:00.000Z",
-      "scope": { "projectName": "Mail", "sessionId": "session-123" },
+      "scope": { "projectName": "Widget", "sessionId": "session-123" },
       "code": "binary-missing",
       "message": "background command not found",
-      "logPath": "/tmp/lore-hook-state/digest-Mail.log",
+      "logPath": "/tmp/lore-hook-state/digest-Widget.log",
       "next": "Check hooks.backgroundAgent.command or LORE_BACKGROUND_COMMAND, then trigger the hook again."
     }
   ],

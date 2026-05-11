@@ -680,7 +680,7 @@ pattern (#10).
   `NOTION_KEYRING=0` posture (forced inside Lore's ntn spawns, not a
   shell-rc prerequisite), and the version-compatibility policy.
   (Issue 0.10.0/04.)
-- **New internal-team rollout runbook at `docs/internal-rollout.md`.**
+- **New team rollout runbook at `docs/team-rollout.md`.**
   Documents per-engineer onboarding, the auto-install path
   (`curl -fsSL https://ntn.dev | bash`), the version policy,
   `lore auth --migrate` walkthrough, dogfood criteria, and the asks-
@@ -905,7 +905,7 @@ move atomically per the release-coordinator pattern (#13).
   `TopicService.getOrCreate` only checked for _exact-name_ matches,
   so an agent that drifted casing, pluralization, `&` vs `and`, or
   punctuation across saves accumulated sibling topic rows — the
-  issue #109 Mail-vault audit found four such siblings produced in
+  issue #109 internal-vault audit found four such siblings produced in
   a single session. The slow path (no exact match) now normalizes
   the input (lowercase, NFC, HTML-decode, plural-strip, `&`↔`and`,
   and punctuation-strip), scans every topic in the resolved projects,

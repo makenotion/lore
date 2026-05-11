@@ -396,7 +396,7 @@ describe("displayValue / displayId", () => {
 
 describe("collapseOverlappingMemories", () => {
   it("collapses near-duplicate titles onto the first-seen memory", () => {
-    // The Mail-vault example from P2-01: three wake-up debugging sessions
+    // The internal-vault example from P2-01: three wake-up debugging sessions
     // that share a title prefix collapse into one representative. Tag
     // overlap drives collapse here — the sessions share `hooks, wakeup,
     // debugging`, which is a 3-of-3 overlap against each other's tag set.
@@ -1164,11 +1164,11 @@ describe("defaultMemoryMetaBuilder — author segment (DEFERRED-ATTRIBUTION)", (
       title: "OAuth handshake notes",
       source: "manual",
       tags: ["auth"],
-      author: "Hesham Salman",
+      author: "Test User",
       updatedAt: "2026-04-20T00:00:00.000Z",
     })
     expect(defaultMemoryMetaBuilder(memory)).toBe(
-      "manual | auth | by Hesham Salman | 2026-04-20",
+      "manual | auth | by Test User | 2026-04-20",
     )
   })
 
@@ -1178,18 +1178,18 @@ describe("defaultMemoryMetaBuilder — author segment (DEFERRED-ATTRIBUTION)", (
       title: "Topic",
       source: "manual",
       tags: ["auth"],
-      author: "Hesham Salman",
+      author: "Test User",
       revisionCount: 4,
       updatedAt: "2026-04-20T00:00:00.000Z",
     })
     const meta = defaultMemoryMetaBuilder(memory)
-    expect(meta).toBe("manual | auth | by Hesham Salman | rev 4 | 2026-04-20")
+    expect(meta).toBe("manual | auth | by Test User | rev 4 | 2026-04-20")
     // The position is load-bearing — moving `by ...` before tags would
     // collide with sources like "agent_diary" that read as identity
     // markers; moving it after `rev N` would break the "who is this
     // about" → "how recent" reading flow.
-    expect(meta.indexOf("by Hesham Salman")).toBeLessThan(meta.indexOf("rev 4"))
-    expect(meta.indexOf("auth")).toBeLessThan(meta.indexOf("by Hesham Salman"))
+    expect(meta.indexOf("by Test User")).toBeLessThan(meta.indexOf("rev 4"))
+    expect(meta.indexOf("auth")).toBeLessThan(meta.indexOf("by Test User"))
   })
 
   it("omits the segment entirely on empty author (pre-DEFERRED-ATTRIBUTION rows render byte-identically)", () => {
@@ -1211,11 +1211,11 @@ describe("defaultMemoryMetaBuilder — author segment (DEFERRED-ATTRIBUTION)", (
       title: "Topic",
       source: "manual",
       tags: [],
-      author: "Hesham Salman",
+      author: "Test User",
       updatedAt: "2026-04-20T00:00:00.000Z",
     })
     expect(defaultMemoryMetaBuilder(memory)).toBe(
-      "manual | by Hesham Salman | 2026-04-20",
+      "manual | by Test User | 2026-04-20",
     )
   })
 

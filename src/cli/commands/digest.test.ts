@@ -72,7 +72,7 @@ describe("resolveSpawnCwd", () => {
   })
 
   it("strips a leading slash on the project path before resolving", () => {
-    // `.lore.yaml` historically allowed `/services/mail` as a project path.
+    // `.lore.yaml` historically allowed `/services/widget` as a project path.
     // The leading slash must be stripped so `resolve(configRoot, ...)` doesn't
     // jump up to the filesystem root.
     const warn = (): void => {}
@@ -135,9 +135,9 @@ describe("digestCommand", () => {
 
   it("exits 1 with the spawn-failure diagnostic when spawnBackgroundSave returns a non-benign-race failure", async () => {
     vi.mocked(initServices).mockResolvedValue({
-      config: { projects: [{ name: "Mail", path: "." }], hooks: {} },
+      config: { projects: [{ name: "Widget", path: "." }], hooks: {} },
       configRoot: "/tmp/digest-test",
-      context: { project: { id: "p-mail", name: "Mail", path: "." } },
+      context: { project: { id: "p-widget", name: "Widget", path: "." } },
       projects: { findByName: vi.fn() },
     } as never)
     vi.mocked(gatherDigestData).mockResolvedValue({
@@ -185,9 +185,9 @@ describe("digestCommand", () => {
     // line on top of the actionable lock-path diagnostic) cannot
     // regress silently.
     vi.mocked(initServices).mockResolvedValue({
-      config: { projects: [{ name: "Mail", path: "." }], hooks: {} },
+      config: { projects: [{ name: "Widget", path: "." }], hooks: {} },
       configRoot: "/tmp/digest-test",
-      context: { project: { id: "p-mail", name: "Mail", path: "." } },
+      context: { project: { id: "p-widget", name: "Widget", path: "." } },
       projects: { findByName: vi.fn() },
     } as never)
     vi.mocked(gatherDigestData).mockResolvedValue({
@@ -198,7 +198,7 @@ describe("digestCommand", () => {
     vi.mocked(spawnBackgroundSave).mockReturnValue({
       kind: "lock-path-too-long",
       code: "ENAMETOOLONG",
-      lockKey: "digest-Mail",
+      lockKey: "digest-Widget",
     })
 
     await digestCommand.parseAsync([], { from: "user" })
@@ -229,9 +229,9 @@ describe("digestCommand", () => {
     // Without this guard a peer producing the digest would surface as
     // a false-positive failure to the operator.
     vi.mocked(initServices).mockResolvedValue({
-      config: { projects: [{ name: "Mail", path: "." }], hooks: {} },
+      config: { projects: [{ name: "Widget", path: "." }], hooks: {} },
       configRoot: "/tmp/digest-test",
-      context: { project: { id: "p-mail", name: "Mail", path: "." } },
+      context: { project: { id: "p-widget", name: "Widget", path: "." } },
       projects: { findByName: vi.fn() },
     } as never)
     vi.mocked(gatherDigestData).mockResolvedValue({
@@ -245,7 +245,7 @@ describe("digestCommand", () => {
 
     expect(exitTrap.exitCodes).toEqual([])
     expect(logSpy.mock.calls.flat().join("\n")).toContain(
-      'Digest already in flight for "Mail"'
+      'Digest already in flight for "Widget"'
     )
     expect(vi.mocked(touchDigestMarker)).not.toHaveBeenCalled()
   })

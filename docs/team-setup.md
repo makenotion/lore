@@ -13,9 +13,8 @@ This doc collects the topics most teams hit during onboarding:
 
 For the full team-rollout playbook (per-engineer onboarding flow, the
 `NOTION_API_TOKEN` fallback path, fail-fast env mismatches), see
-[`internal-rollout.md`](internal-rollout.md). The two files cover overlapping
-ground deliberately while the rename to a public-friendly filename is tracked
-in [#571](https://github.com/makenotion/lore/issues/571).
+[`team-rollout.md`](team-rollout.md). The two files cover overlapping
+ground deliberately.
 
 ## Entities Database Cutover
 

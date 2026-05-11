@@ -167,11 +167,11 @@ describe("formatBackgroundFailureStatus", () => {
       failures: [
         makeBackgroundFailure({
           kind: "digest-scheduler",
-          projectName: "Mail Backend",
+          projectName: "Widget Backend",
           sessionId: "sess-123",
           code: "init-failed",
           message: "init failed: unauthorized",
-          logPath: "/tmp/lore-hook-state/digest-Mail_Backend.log",
+          logPath: "/tmp/lore-hook-state/digest-Widget_Backend.log",
         }),
       ],
     }
@@ -181,10 +181,10 @@ describe("formatBackgroundFailureStatus", () => {
     expect(text).toContain("Background hooks:")
     expect(text).toContain("detached child exits are not tracked")
     expect(text).toContain("digest scheduler")
-    expect(text).toContain("project Mail Backend")
+    expect(text).toContain("project Widget Backend")
     expect(text).toContain("session sess-123")
     expect(text).toContain("init-failed: init failed: unauthorized")
-    expect(text).toContain("/tmp/lore-hook-state/digest-Mail_Backend.log")
+    expect(text).toContain("/tmp/lore-hook-state/digest-Widget_Backend.log")
     expect(text).toContain("lore auth --status")
   })
 
@@ -269,7 +269,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
-      rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
+      rows: [{ name: "Widget", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe("Digests:")
   })
@@ -278,7 +278,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: { source: "env", detail: "LORE_AUTO_DIGEST=false" },
       truncated: false,
-      rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
+      rows: [{ name: "Widget", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe(
       "Digests (autoDigest=false via LORE_AUTO_DIGEST=false):"
@@ -289,7 +289,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: { source: "config", detail: "hooks.autoDigest: false" },
       truncated: false,
-      rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
+      rows: [{ name: "Widget", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe(
       "Digests (autoDigest=false via hooks.autoDigest: false):"
@@ -300,7 +300,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
-      rows: [{ name: "Mail Web", lastDigest: null, markerAgeDays: null }],
+      rows: [{ name: "Widget Web", lastDigest: null, markerAgeDays: null }],
     }
     const [, row] = formatDigestStatus(report)
     expect(row).toContain("no digest yet")
@@ -314,7 +314,7 @@ describe("formatDigestStatus", () => {
       truncated: false,
       rows: [
         {
-          name: "Mail Backend",
+          name: "Widget Backend",
           lastDigest: { date: "2026-04-12", daysAgo: 13 },
           markerAgeDays: 5,
         },
@@ -361,7 +361,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: true,
-      rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
+      rows: [{ name: "Widget", lastDigest: null, markerAgeDays: null }],
     }
     const lines = formatDigestStatus(report)
     expect(lines[lines.length - 1]).toMatch(/older may be truncated/)
@@ -372,7 +372,7 @@ describe("formatDigestStatus", () => {
       disabledReason: null,
       truncated: false,
       rows: [
-        { name: "Mail Backend", lastDigest: null, markerAgeDays: null },
+        { name: "Widget Backend", lastDigest: null, markerAgeDays: null },
         { name: "Web", lastDigest: null, markerAgeDays: null },
       ],
     }
@@ -387,8 +387,8 @@ describe("loadDigestStatus", () => {
   const baseConfig: LoreConfig = {
     vault: { pageId: "v" },
     projects: [
-      { name: "Mail Backend", path: "services/mail" },
-      { name: "Mail Web", path: "apps/web" },
+      { name: "Widget Backend", path: "services/widget" },
+      { name: "Widget Web", path: "apps/web" },
     ],
   }
 
@@ -402,8 +402,8 @@ describe("loadDigestStatus", () => {
   })
 
   it("groups a vault-wide digest list by Notion project ID", async () => {
-    const projectA = makeProject("Mail Backend", { id: "p-a" })
-    const projectB = makeProject("Mail Web", { id: "p-b" })
+    const projectA = makeProject("Widget Backend", { id: "p-a" })
+    const projectB = makeProject("Widget Web", { id: "p-b" })
     const services = makeServices({
       config: baseConfig,
       projects: [projectA, projectB],
@@ -423,8 +423,8 @@ describe("loadDigestStatus", () => {
       markerAge: vi.fn(async () => 5),
     })
 
-    const a = report.rows.find((r) => r.name === "Mail Backend")
-    const b = report.rows.find((r) => r.name === "Mail Web")
+    const a = report.rows.find((r) => r.name === "Widget Backend")
+    const b = report.rows.find((r) => r.name === "Widget Web")
     expect(a?.lastDigest?.date).toBe("2026-04-12")
     expect(b?.lastDigest?.date).toBe("2026-04-19")
   })
@@ -450,7 +450,7 @@ describe("loadDigestStatus", () => {
   it("converts Infinity marker age into null so the renderer shows 'marker missing'", async () => {
     const services = makeServices({
       config: baseConfig,
-      projects: [makeProject("Mail Backend", { id: "p-a" })],
+      projects: [makeProject("Widget Backend", { id: "p-a" })],
     })
 
     const report = await loadDigestStatus(services, "/repo", {
@@ -463,7 +463,7 @@ describe("loadDigestStatus", () => {
   it("flags `hooks.autoDigest: false` as a config kill-switch", async () => {
     const services = makeServices({
       config: { ...baseConfig, hooks: { autoDigest: false } },
-      projects: [makeProject("Mail Backend", { id: "p-a" })],
+      projects: [makeProject("Widget Backend", { id: "p-a" })],
     })
     const report = await loadDigestStatus(services, "/repo")
     expect(report.disabledReason).toEqual({
@@ -476,7 +476,7 @@ describe("loadDigestStatus", () => {
     const services = makeServices({
       // Even when config says enabled, env still wins.
       config: { ...baseConfig, hooks: { autoDigest: true } },
-      projects: [makeProject("Mail Backend", { id: "p-a" })],
+      projects: [makeProject("Widget Backend", { id: "p-a" })],
     })
     const report = await loadDigestStatus(services, "/repo", {
       autoDigestEnvOverride: "false",
@@ -491,8 +491,8 @@ describe("loadDigestStatus", () => {
     // Regression guard for a subtle bug where the loader could read
     // `projectIds[0]` instead of consulting the per-project map: a digest
     // linked to both Backend and Web should show as the latest for both.
-    const projectA = makeProject("Mail Backend", { id: "p-a" })
-    const projectB = makeProject("Mail Web", { id: "p-b" })
+    const projectA = makeProject("Widget Backend", { id: "p-a" })
+    const projectB = makeProject("Widget Web", { id: "p-b" })
     const services = makeServices({
       config: baseConfig,
       projects: [projectA, projectB],
@@ -508,8 +508,8 @@ describe("loadDigestStatus", () => {
       markerAge: vi.fn(async () => 1),
     })
 
-    const a = report.rows.find((r) => r.name === "Mail Backend")
-    const b = report.rows.find((r) => r.name === "Mail Web")
+    const a = report.rows.find((r) => r.name === "Widget Backend")
+    const b = report.rows.find((r) => r.name === "Widget Web")
     expect(a?.lastDigest?.date).toBe("2026-04-22")
     expect(b?.lastDigest?.date).toBe("2026-04-22")
   })
@@ -520,7 +520,7 @@ describe("loadDigestStatus", () => {
     // enabled — this test pins that contract on the status side.
     const services = makeServices({
       config: baseConfig,
-      projects: [makeProject("Mail Backend", { id: "p-a" })],
+      projects: [makeProject("Widget Backend", { id: "p-a" })],
     })
     for (const value of ["0", "no", "", "true", undefined]) {
       const report = await loadDigestStatus(services, "/repo", {
@@ -539,7 +539,7 @@ describe("loadDigestStatus", () => {
     )
     const services = makeServices({
       config: baseConfig,
-      projects: [makeProject("Mail Backend", { id: "p-a" })],
+      projects: [makeProject("Widget Backend", { id: "p-a" })],
       digestMemories: fifty,
     })
 
@@ -552,7 +552,7 @@ describe("loadDigestStatus", () => {
   it("does not flag `truncated` when the digest list query returns under the cap", async () => {
     const services = makeServices({
       config: baseConfig,
-      projects: [makeProject("Mail Backend", { id: "p-a" })],
+      projects: [makeProject("Widget Backend", { id: "p-a" })],
       digestMemories: [makeMemory({ projectIds: ["p-a"] })],
     })
 

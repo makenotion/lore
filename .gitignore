@@ -6,9 +6,10 @@ dist/
 .env
 .env.local
 
-# .lore.yaml is intentionally not ignored so repos can share safe vault
-# metadata. Team vault page IDs are locators, not credentials; keep bearer
-# tokens and personal vault IDs out of committed config.
+# .lore.yaml is ignored to keep personal vault page IDs and tokens out of
+# version control. Copy .lore.example.yaml to .lore.yaml locally and fill
+# in your own pageId; the pre-commit guard rejects any staged .lore.yaml.
+.lore.yaml
 
 # OS
 .DS_Store

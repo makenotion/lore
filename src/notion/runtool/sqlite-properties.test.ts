@@ -4,8 +4,8 @@
  * PR #538's live verification step (issue #533).
  *
  * The reference values in this file came from a `query_data_sources`
- * read against an existing `mentions` fact in the production Mail
- * vault Facts DB (`collection://5abdc6b6-ceb9-4333-81f2-fc4e5f6b76f7`)
+ * read against an existing `mentions` fact in an internal
+ * vault Facts DB (`collection://eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee`)
  * at PR review time. The data-source schema declared on that DS is
  * the authoritative shape every fact lands as on disk; mirroring it
  * on writes — title/rich_text as bare strings, dates expanded into
@@ -28,9 +28,9 @@ import {
 describe("convertNotionRestToSqliteProperties — primitive types", () => {
   it("title → flat string", () => {
     const out = convertNotionRestToSqliteProperties({
-      Subject: { title: [{ text: { content: "WKWebView mentions iOS" } }] },
+      Subject: { title: [{ text: { content: "BaseView mentions iOS" } }] },
     })
-    expect(out).toEqual({ Subject: "WKWebView mentions iOS" })
+    expect(out).toEqual({ Subject: "BaseView mentions iOS" })
   })
 
   it("rich_text → flat string (concatenates multi-segment runs)", () => {
@@ -129,7 +129,7 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
   it("single-id relation under default base → www.notion.so URL", () => {
     const out = convertNotionRestToSqliteProperties({
       Project: {
-        relation: [{ id: "343b35e6e67f8166aa41c607969fe52a" }],
+        relation: [{ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
       },
     })
     // Default base is the production host. Tests that don't pass
@@ -138,7 +138,7 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
     // host-mismatched URLs are rejected by the server (PR #538
     // live verification).
     expect(out).toEqual({
-      Project: '["https://www.notion.so/343b35e6e67f8166aa41c607969fe52a"]',
+      Project: '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
     })
   })
 
@@ -149,17 +149,17 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
     // the same workspace with `400 validation_error: Invalid page
     // URL`. This test pins the host-coupling — a regression that
     // hardcoded the production host would silently break dev
-    // workspaces (the entire Notion-internal Mail vault is on dev).
+    // workspaces (the entire internal vault is on dev).
     const out = convertNotionRestToSqliteProperties(
       {
         Project: {
-          relation: [{ id: "343b35e6e67f8166aa41c607969fe52a" }],
+          relation: [{ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
         },
       },
       "https://dev.notion.so/"
     )
     expect(out).toEqual({
-      Project: '["https://dev.notion.so/343b35e6e67f8166aa41c607969fe52a"]',
+      Project: '["https://dev.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
     })
   })
 
@@ -171,26 +171,26 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
     const out = convertNotionRestToSqliteProperties({
       Project: {
         relation: [
-          { id: "343b35e6e67f8166aa41c607969fe52a" },
-          { id: "352b35e6e67f81b3b97cf30ed6806af5" },
+          { id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+          { id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         ],
       },
     })
     expect(out).toEqual({
       Project:
-        '["https://www.notion.so/343b35e6e67f8166aa41c607969fe52a","https://www.notion.so/352b35e6e67f81b3b97cf30ed6806af5"]',
+        '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","https://www.notion.so/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]',
     })
   })
 
   it("dashed UUIDs are normalized to undashed lowercase before URL construction", () => {
     const out = convertNotionRestToSqliteProperties({
       SubjectEntity: {
-        relation: [{ id: "343B35E6-E67F-8166-AA41-C607969FE52A" }],
+        relation: [{ id: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" }],
       },
     })
     expect(out).toEqual({
       SubjectEntity:
-        '["https://www.notion.so/343b35e6e67f8166aa41c607969fe52a"]',
+        '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
     })
   })
 
@@ -205,18 +205,18 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
 describe("convertNotionRestToSqliteProperties — full mentions-fact payload", () => {
   it("matches the empirical wire shape of an existing mentions fact", () => {
     // Reference data: a real `mentions` fact pulled from the
-    // production Mail vault during PR #538 live verification:
-    //   id: 352b35e6-e67f-8102-b782-e989fe418e64
-    //   subject: "EmailWebView: cidSchemeHandler.update(with:) ..."
-    //   object: "WKWebView"
+    // an internal vault during PR #538 live verification:
+    //   id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+    //   subject: "WebView: customSchemeHandler.update(with:) ..."
+    //   object: "BaseView"
     //   predicate: "mentions"
     //   confidence: "speculative"
     //   confidenceScore: 0.3
     //   validFrom: "2026-04-30"
-    //   sourceMemoryId: "352b35e6e67f81b3b97cf30ed6806af5"
-    //   projectIds: ["343b35e6e67f8166aa41c607969fe52a"]
-    //   subjectEntity: "355b35e6e67f812b9cd0d136db0d07a5"
-    //   objectEntity: "355b35e6e67f81e7a9e1d9b7bb4c8b93"
+    //   sourceMemoryId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    //   projectIds: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+    //   subjectEntity: "cccccccccccccccccccccccccccccccc"
+    //   objectEntity: "dddddddddddddddddddddddddddddddd"
     //
     // The Notion REST shape `buildFactProps` produces for that
     // input is exactly what we feed the converter here.
@@ -226,19 +226,19 @@ describe("convertNotionRestToSqliteProperties — full mentions-fact payload", (
           {
             text: {
               content:
-                "EmailWebView: cidSchemeHandler.update(with:) must be unconditional in updateUIView",
+                "WebView: customSchemeHandler.update(with:) must be unconditional in updateUIView",
             },
           },
         ],
       },
       Predicate: { select: { name: "mentions" } },
-      Object: { rich_text: [{ text: { content: "WKWebView" } }] },
+      Object: { rich_text: [{ text: { content: "BaseView" } }] },
       Project: {
-        relation: [{ id: "343b35e6e67f8166aa41c607969fe52a" }],
+        relation: [{ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
       },
       "Valid From": { date: { start: "2026-04-30" } },
       Source: {
-        relation: [{ id: "352b35e6e67f81b3b97cf30ed6806af5" }],
+        relation: [{ id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
       },
       Confidence: { select: { name: "speculative" } },
       DedupKey: { rich_text: [{ text: { content: "abc123dedup" } }] },
@@ -247,16 +247,16 @@ describe("convertNotionRestToSqliteProperties — full mentions-fact payload", (
           {
             text: {
               content:
-                "emailwebview: cidschemehandler.update(with:) must be unconditional in updateuiview",
+                "webview: customschemehandler.update(with:) must be unconditional in updateuiview",
             },
           },
         ],
       },
       SubjectEntity: {
-        relation: [{ id: "355b35e6e67f812b9cd0d136db0d07a5" }],
+        relation: [{ id: "cccccccccccccccccccccccccccccccc" }],
       },
       ObjectEntity: {
-        relation: [{ id: "355b35e6e67f81e7a9e1d9b7bb4c8b93" }],
+        relation: [{ id: "dddddddddddddddddddddddddddddddd" }],
       },
     }
 
@@ -264,22 +264,22 @@ describe("convertNotionRestToSqliteProperties — full mentions-fact payload", (
 
     expect(out).toEqual({
       Subject:
-        "EmailWebView: cidSchemeHandler.update(with:) must be unconditional in updateUIView",
+        "WebView: customSchemeHandler.update(with:) must be unconditional in updateUIView",
       Predicate: "mentions",
-      Object: "WKWebView",
-      Project: '["https://www.notion.so/343b35e6e67f8166aa41c607969fe52a"]',
+      Object: "BaseView",
+      Project: '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
       "date:Valid From:start": "2026-04-30",
       "date:Valid From:end": null,
       "date:Valid From:is_datetime": 0,
-      Source: '["https://www.notion.so/352b35e6e67f81b3b97cf30ed6806af5"]',
+      Source: '["https://www.notion.so/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]',
       Confidence: "speculative",
       DedupKey: "abc123dedup",
       SubjectKey:
-        "emailwebview: cidschemehandler.update(with:) must be unconditional in updateuiview",
+        "webview: customschemehandler.update(with:) must be unconditional in updateuiview",
       SubjectEntity:
-        '["https://www.notion.so/355b35e6e67f812b9cd0d136db0d07a5"]',
+        '["https://www.notion.so/cccccccccccccccccccccccccccccccc"]',
       ObjectEntity:
-        '["https://www.notion.so/355b35e6e67f81e7a9e1d9b7bb4c8b93"]',
+        '["https://www.notion.so/dddddddddddddddddddddddddddddddd"]',
     })
   })
 })

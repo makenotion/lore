@@ -163,11 +163,11 @@ describe("loadProposedInboxStatus", () => {
     } as unknown as Parameters<typeof loadProposedInboxStatus>[0]
 
     const report = await loadProposedInboxStatus(services, {
-      projectId: "project-mail",
+      projectId: "project-widget",
     })
 
     expect(countProposed).toHaveBeenCalledTimes(1)
-    expect(countProposed).toHaveBeenCalledWith({ projectId: "project-mail" })
+    expect(countProposed).toHaveBeenCalledWith({ projectId: "project-widget" })
     expect(report).toEqual({
       total: 7,
       bySource: { conversation: 5, manual: 2 },

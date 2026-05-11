@@ -216,13 +216,13 @@ describe("findConflictCandidates", () => {
     const m1 = makeMemory({
       id: "m1",
       title: "Investigated regression",
-      keywords: "PR-25750 latency profiling",
+      keywords: "PR-1234 latency profiling",
       tags: [],
     })
     const m2 = makeMemory({
       id: "m2",
       title: "Reverted broken commit",
-      keywords: "PR-25750 latency profiling",
+      keywords: "PR-1234 latency profiling",
       tags: [],
     })
     const result = findConflictCandidates([m1, m2])

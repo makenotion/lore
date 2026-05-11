@@ -165,18 +165,12 @@ migration's post-flow verify.
   source tree). When external rollout becomes a real goal, that
   epic is the path; this directory's `oauth.ts` is a misnomer
   until then.
-- The operator-facing onboarding flow lives in two coordinated docs:
-  [`docs/team-setup.md`](../../docs/team-setup.md) is the public-named
-  entry point covering the Entities cutover, the direct-ntn-outside-Lore
-  gotcha + recovery, and shared-vault hook configuration.
-  [`docs/internal-rollout.md`](../../docs/internal-rollout.md) is the
-  deeper playbook: per-engineer `lore install` walkthrough, per-team
-  rollout, migration script for legacy operators, fail-fast env
-  mismatches. The rename of `internal-rollout.md` to a public-friendly
-  filename is tracked in
-  [#571](https://github.com/makenotion/lore/issues/571). This file is
-  for contributors working on the auth layer; the two docs above are
-  for operators rolling Lore out to teams.
+- The operator-facing onboarding flow (per-engineer `lore install`,
+  per-team rollout, the direct-ntn-outside-Lore gotcha + recovery,
+  migration script for legacy operators) lives in the
+  [team-rollout runbook](../../docs/team-rollout.md).
+  This file is for contributors working on the auth layer; the
+  runbook is for operators rolling Lore out to teams.
 
 ## Domain choice
 

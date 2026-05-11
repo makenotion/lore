@@ -923,11 +923,11 @@ const ENTITY_CANDIDATE_LIMIT = 5
  * the input pays the scan cost of 100 matches; the cap is the bound
  * on that scan work, not on Set growth. (A pre-add `sizeBefore` /
  * `sizeAfter` accounting would let a pathological-but-realistic input
- * — same `PR #25750` repeated 50 times in keywords — keep the loop
+ * — same `PR #1234` repeated 50 times in keywords — keep the loop
  * running indefinitely under one pattern, blocking later patterns.)
  *
  * Without this cap, a memory whose body shovels dozens of capitalized-
- * phrase tokens into the title (rare, but has happened on the Mail
+ * phrase tokens into the title (rare, but has happened on an internal
  * vault for incident memories that paste log lines into the title)
  * would saturate the high-precision slots with one pattern's matches
  * before the others get a turn. Five-per-pattern leaves headroom for
@@ -971,18 +971,18 @@ const CAPITALIZED_SINGLE_PATTERN = /\b[A-Z][a-zA-Z0-9]*\b/g
  * phrase tokenizers last (multi-word before single-word so multi-word
  * candidates get the higher-priority slots when budget is tight). The
  * Set-of-strings dedup that `extractEntityCandidates` runs collapses
- * pattern overlap (e.g. `PR #25750` and the `#25750` substring both
+ * pattern overlap (e.g. `PR #1234` and the `#1234` substring both
  * appear).
  *
  * `[A-Z]{2,}-\d+` minimum-two-uppercase-letters narrows Jira-style to
- * the realistic shape (`SENTRY-1234`, `IOS-25`, `PR-25750`). A bare
+ * the realistic shape (`SENTRY-1234`, `IOS-25`, `PR-1234`). A bare
  * `[A-Z]+-\d+` would happily eat `A-1` or `T-3` from the body, which
  * never carries a real task subject.
  *
  * The two capitalized-phrase patterns produce high noise — both go
  * through `isMeaningfulCapitalizedMatch` post-filtering below to drop
  * verb leads ("Merged", "Fixed", "Found"...) and generic single
- * capitalized words ("Mail", "Bug", "API").
+ * capitalized words ("Widget", "Bug", "API").
  */
 const ENTITY_CANDIDATE_PATTERNS: RegExp[] = [
   /\bPR\s*#\d+\b/g,
@@ -1003,7 +1003,7 @@ const ENTITY_CANDIDATE_PATTERNS: RegExp[] = [
  * the list down, agents will start ignoring the cross-ref footer
  * because it surfaces unrelated tasks under common save verbs.
  *
- * Curated from a pass over realistic save titles on the Mail vault.
+ * Curated from a pass over realistic save titles on an internal vault.
  * Add to this set when a new noisy verb / connector shows up; do not
  * remove without a matching empirical justification.
  */
@@ -1132,12 +1132,12 @@ function isMeaningfulCapitalizedMatch(s: string): boolean {
  * the probe rather than firing a tag-only query that would over-broaden.
  *
  * The match set is order-preserving by pattern priority: a memory that
- * mentions `PR #25750`, `SENTRY-1234`, and "AuthService" yields
- * `["PR #25750", "#25750", "SENTRY-1234", "AuthService"]` in that order.
- * `Set` dedup collapses pattern overlap (the `#25750` substring matches
+ * mentions `PR #1234`, `SENTRY-1234`, and "AuthService" yields
+ * `["PR #1234", "#1234", "SENTRY-1234", "AuthService"]` in that order.
+ * `Set` dedup collapses pattern overlap (the `#1234` substring matches
  * both the PR pattern and the standalone `#N` pattern; both are kept
- * because their literal strings differ — `Entity contains "PR #25750"`
- * narrows differently than `Entity contains "#25750"`).
+ * because their literal strings differ — `Entity contains "PR #1234"`
+ * narrows differently than `Entity contains "#1234"`).
  *
  * Capped at `ENTITY_CANDIDATE_LIMIT` total. A memory whose title alone
  * spawns 20+ capitalized-phrase candidates lands the first 5 in
@@ -1261,8 +1261,8 @@ export interface FindRelatedActiveTasksOpts {
  * Probe for active tasks tracking the same entity as a just-saved
  * memory. Fired in parallel with `lore-memory action='save'` so the
  * response can surface closure CTAs at the resolution moment — a memory
- * titled "Merged PR #25750" cross-references any active task whose
- * `Entity` column contains "PR #25750".
+ * titled "Merged PR #1234" cross-references any active task whose
+ * `Entity` column contains "PR #1234".
  *
  * Advisory only: returns `[]` on failure, never throws, must not block
  * the save. No just-saved-row exclusion is needed: tasks and ordinary

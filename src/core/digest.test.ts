@@ -138,15 +138,15 @@ describe("gatherDigestData", () => {
   it("labels the output with the supplied project label", async () => {
     const services = stubServices({})
     const result = await gatherDigestData(services, {
-      projectLabel: "Mail",
+      projectLabel: "Widget",
       period: "week",
     })
-    expect(result.raw).toContain("# Digest Data — Mail")
+    expect(result.raw).toContain("# Digest Data — Widget")
   })
 
   it("reports recentMemoryCount so schedulers can short-circuit on quiet windows", async () => {
     const services = stubServices({ memories: [] })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.recentMemoryCount).toBe(0)
     expect(result.raw).toContain("No memories found")
   })
@@ -155,18 +155,18 @@ describe("gatherDigestData", () => {
     const services = stubServices({
       digestMemory: makeMemory({
         source: "digest",
-        title: "Digest — 2026-04-10 — Mail",
+        title: "Digest — 2026-04-10 — Widget",
         createdAt: "2026-04-10T00:00:00.000Z",
       }),
     })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.lastDigestDate).toBe("2026-04-10")
     expect(result.raw).toContain("Previous Digest")
   })
 
   it("returns null lastDigestDate when no digest exists", async () => {
     const services = stubServices({ digestMemory: null })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.lastDigestDate).toBeNull()
     expect(result.raw).not.toContain("Previous Digest")
   })
@@ -177,7 +177,7 @@ describe("gatherDigestData", () => {
     // for the exact same lookup — we must stay consistent or the two code
     // paths disagree on which digest is the "freshest".
     const services = stubServices({})
-    await gatherDigestData(services, { projectLabel: "Mail" })
+    await gatherDigestData(services, { projectLabel: "Widget" })
     const digestCall = services.calls.find((c) => c.source === "digest")
     expect(digestCall?.sortBy).toBe("created_time")
   })
@@ -195,7 +195,7 @@ describe("gatherDigestData", () => {
       ],
     })
     const result = await gatherDigestData(services, {
-      projectLabel: "Mail",
+      projectLabel: "Widget",
       period: "day",
       now: () => fixed,
     })
@@ -212,7 +212,7 @@ describe("gatherDigestData", () => {
         makeMemory({ title: "conv-2", source: "conversation" }),
       ],
     })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.raw).toContain("### conversation (2)")
     expect(result.raw).toContain("### agent_diary (1)")
     expect(result.raw).toContain("conv-1")
@@ -231,7 +231,7 @@ describe("gatherDigestData", () => {
         }),
       ],
     })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.raw).toContain("## Open Work (1)")
     expect(result.raw).toContain("OVERDUE")
   })
@@ -239,7 +239,7 @@ describe("gatherDigestData", () => {
   it("applies a day window when period is 'day'", async () => {
     const services = stubServices({})
     const before = Date.now() - 86_400_000 - 1_000
-    await gatherDigestData(services, { projectLabel: "Mail", period: "day" })
+    await gatherDigestData(services, { projectLabel: "Widget", period: "day" })
     const call = services.calls.find((c) => c.source !== "digest")
     expect(call).toBeDefined()
     expect(new Date(call!.since!).getTime()).toBeGreaterThan(before)
@@ -248,7 +248,7 @@ describe("gatherDigestData", () => {
   it("respects an explicit since/until window", async () => {
     const services = stubServices({})
     await gatherDigestData(services, {
-      projectLabel: "Mail",
+      projectLabel: "Widget",
       since: "2026-04-01T00:00:00.000Z",
       until: "2026-04-15T00:00:00.000Z",
     })
@@ -275,7 +275,7 @@ describe("gatherDigestData", () => {
       tasks: overflowTasks,
       tasksNextCursor: "more-rows-exist",
     })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.raw).toContain(
       "## Open Work (25 shown; many more open beyond the cap)",
     )
@@ -295,7 +295,7 @@ describe("gatherDigestData", () => {
       }),
     )
     const services = stubServices({ tasks, tasksNextCursor: undefined })
-    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.raw).toContain("## Open Work (25 shown of 26)")
     expect(result.raw).toContain("and 1 more.")
   })

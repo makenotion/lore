@@ -8,11 +8,11 @@ import type { LoreConfig, Project } from "../types.js"
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: "proj-1",
-    name: "Mail",
+    name: "Widget",
     type: "project",
-    path: "apps/mail",
+    path: "apps/widget",
     status: "active",
-    description: "Notion-backed mail client.",
+    description: "Widget application.",
     ...overrides,
   }
 }
@@ -21,7 +21,7 @@ function makeConfig(overrides: Partial<LoreConfig> = {}): LoreConfig {
   return {
     vault: { pageId: "vault-1" },
     projects: [
-      { name: "Mail", path: "apps/mail" },
+      { name: "Widget", path: "apps/widget" },
       { name: "Web", path: "apps/web" },
       { name: "Desktop", path: "apps/desktop" },
     ],
@@ -39,9 +39,9 @@ describe("composeProjectContext", () => {
     const ctx = composeProjectContext(makeProject(), makeConfig(), false)
     expect(ctx).toEqual({
       projectId: "proj-1",
-      name: "Mail",
-      path: "apps/mail",
-      description: "Notion-backed mail client.",
+      name: "Widget",
+      path: "apps/widget",
+      description: "Widget application.",
       isCatchAllFallback: false,
       siblings: ["Web", "Desktop"],
     })
@@ -57,7 +57,7 @@ describe("composeProjectContext", () => {
       makeConfig(),
       false,
     )
-    expect(ctx?.siblings).toEqual(["Mail", "Desktop"])
+    expect(ctx?.siblings).toEqual(["Widget", "Desktop"])
   })
 
   it("normalizes empty description to null", () => {
@@ -85,11 +85,11 @@ describe("composeProjectContext", () => {
 
   it("normalizes empty path to null and trims surrounding whitespace", () => {
     const ctx = composeProjectContext(
-      makeProject({ path: "  apps/mail  " }),
+      makeProject({ path: "  apps/widget  " }),
       makeConfig(),
       false,
     )
-    expect(ctx?.path).toBe("apps/mail")
+    expect(ctx?.path).toBe("apps/widget")
     const empty = composeProjectContext(
       makeProject({ path: "" }),
       makeConfig(),
@@ -102,12 +102,12 @@ describe("composeProjectContext", () => {
     const config = makeConfig({
       projects: [
         { name: "Monorepo", path: "." },
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
     })
     const ctx = composeProjectContext(makeProject(), config, false)
-    // Catch-all "Monorepo" filtered by `subProjectNames`; self "Mail"
+    // Catch-all "Monorepo" filtered by `subProjectNames`; self "Widget"
     // filtered by the new self-exclusion in `composeProjectContext`.
     expect(ctx?.siblings).toEqual(["Web"])
   })
@@ -125,10 +125,10 @@ describe("composeProjectContext", () => {
   })
 
   it("returns empty siblings when the resolved project is the only sub-project", () => {
-    // Single-project vault: subProjectNames = ["Mail"], filter self → [].
+    // Single-project vault: subProjectNames = ["Widget"], filter self → [].
     // Renderer's "omit Siblings: line when empty" rule should fire.
     const config = makeConfig({
-      projects: [{ name: "Mail", path: "apps/mail" }],
+      projects: [{ name: "Widget", path: "apps/widget" }],
     })
     const ctx = composeProjectContext(makeProject(), config, false)
     expect(ctx?.siblings).toEqual([])
@@ -191,8 +191,8 @@ describe("renderProjectContextLines", () => {
   it("renders a header + description + siblings line", () => {
     const ctx = composeProjectContext(makeProject(), makeConfig(), false)
     expect(renderProjectContextLines(ctx)).toEqual([
-      "Project: Mail (apps/mail)",
-      "  Notion-backed mail client.",
+      "Project: Widget (apps/widget)",
+      "  Widget application.",
       "  Siblings: Web, Desktop.",
     ])
   })
@@ -204,18 +204,18 @@ describe("renderProjectContextLines", () => {
       false,
     )
     expect(renderProjectContextLines(ctx)).toEqual([
-      "Project: Mail (apps/mail)",
+      "Project: Widget (apps/widget)",
       "  Siblings: Web, Desktop.",
     ])
   })
 
   it("omits the siblings line when the resolved project has no peers", () => {
     // Single-project vault: siblings is empty after self-exclusion.
-    const config = makeConfig({ projects: [{ name: "Mail", path: "apps/mail" }] })
+    const config = makeConfig({ projects: [{ name: "Widget", path: "apps/widget" }] })
     const ctx = composeProjectContext(makeProject(), config, false)
     expect(renderProjectContextLines(ctx)).toEqual([
-      "Project: Mail (apps/mail)",
-      "  Notion-backed mail client.",
+      "Project: Widget (apps/widget)",
+      "  Widget application.",
     ])
   })
 
@@ -225,7 +225,7 @@ describe("renderProjectContextLines", () => {
       makeConfig({ projects: [] }),
       false,
     )
-    expect(renderProjectContextLines(ctx)?.[0]).toBe("Project: Mail")
+    expect(renderProjectContextLines(ctx)?.[0]).toBe("Project: Widget")
   })
 
   it("prepends a catch-all warning that mirrors the save-side voice", () => {
@@ -242,7 +242,7 @@ describe("renderProjectContextLines", () => {
     const lines = renderProjectContextLines(ctx)
     expect(lines[0]).toBe(
       `> Scoped to catch-all "Monorepo" (monorepo-wide). ` +
-        `Sub-projects available: Mail, Web, Desktop. ` +
+        `Sub-projects available: Widget, Web, Desktop. ` +
         `Pass projectName to scope to a specific sub-project.`,
     )
     expect(lines[1]).toBe("Project: Monorepo (.)")

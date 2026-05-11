@@ -364,7 +364,7 @@ function formatTaskListRow(task: TaskSummary, today: string): string {
  * the reuse short-circuit at `runTaskCreate`); on a reuse hit, a
  * caller-passed `--topic` had no observable effect on the existing
  * row's topic relation. Without this, `lore tasks create "T"
- * --project Mail --topic Reviews` could reuse an existing task,
+ * --project Widget --topic Reviews` could reuse an existing task,
  * silently skip the topic create, and produce no audit signal — the
  * operator would believe the topic landed when it didn't, with no
  * `lore tasks update --topic` flag to apply it after the fact.

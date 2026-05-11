@@ -148,7 +148,7 @@ const NOTION_MAX_PAGE_SIZE = 100
  * would inflate the filter shape without improving recall, the worst
  * of both worlds.
  *
- * 10 covers every alias set we have observed in the Mail vault by
+ * 10 covers every alias set we have observed in an internal vault by
  * an order of magnitude (the widest alias entries hover at 2–3),
  * leaves headroom for legacy spellings + the canonical name + the
  * raw user input, and is small enough that an alias drift to "every
@@ -197,7 +197,7 @@ export interface EntityQueryVariants {
  *
  * Behavior:
  * - The raw user input is always preserved as the first variant so
- *   un-migrated tasks that store a free-form spelling (the Mail
+ *   un-migrated tasks that store a free-form spelling (an internal
  *   vault has many) still match. The canonical name follows when
  *   distinct.
  * - Aliases are appended in their stored order so a `--build-entities`

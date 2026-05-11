@@ -347,7 +347,7 @@ describe("createWorkspaceLevelPage", () => {
     const client = { pages: { create } } as unknown as Parameters<
       typeof createWorkspaceLevelPage
     >[0]
-    const result = await createWorkspaceLevelPage(client, "Lore Vault — Mail")
+    const result = await createWorkspaceLevelPage(client, "Lore Vault — widget")
     expect(result).toEqual({ id: "page-1" })
     // Pin the runtime payload — Notion's REST docs explicitly support
     // `{ type: "workspace", workspace: true }` and the SDK type-cast in
@@ -359,7 +359,7 @@ describe("createWorkspaceLevelPage", () => {
       parent: { type: "workspace", workspace: true },
       properties: {
         title: {
-          title: [{ type: "text", text: { content: "Lore Vault — Mail" } }],
+          title: [{ type: "text", text: { content: "Lore Vault — widget" } }],
         },
       },
     })
@@ -368,7 +368,7 @@ describe("createWorkspaceLevelPage", () => {
 
 describe("defaultVaultTitle", () => {
   it("derives the page title from the cwd basename so multi-vault workspaces stay distinguishable", () => {
-    expect(defaultVaultTitle("/Users/me/Developer/Mail")).toBe("Lore Vault — Mail")
+    expect(defaultVaultTitle("/Users/me/Developer/widget")).toBe("Lore Vault — widget")
     expect(defaultVaultTitle("/Users/me/Developer/my-cool-repo")).toBe(
       "Lore Vault — my-cool-repo"
     )
@@ -655,7 +655,7 @@ describe("runNoArgInit", () => {
     vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
     mockVaultInitSuccess()
 
-    await runNoArgInit({ name: "Mail Team Vault" })
+    await runNoArgInit({ name: "Test Team Vault" })
 
     // The explicit --name wins over the basename-derived default.
     expect(create).toHaveBeenCalledWith(
@@ -664,7 +664,7 @@ describe("runNoArgInit", () => {
           title: expect.objectContaining({
             title: [
               expect.objectContaining({
-                text: expect.objectContaining({ content: "Mail Team Vault" }),
+                text: expect.objectContaining({ content: "Test Team Vault" }),
               }),
             ],
           }),
@@ -1417,7 +1417,7 @@ describe("runNoArgInit", () => {
     setupTestCwd()
     vi.mocked(resolveAuth).mockRejectedValue(new Error("No Notion auth configured."))
     vi.mocked(isNtnInstalled).mockReturnValue(true)
-    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-mail"])
+    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-widget"])
     const exitTrap = trapProcessExit()
 
     await expect(runNoArgInit({ yes: true })).rejects.toBeInstanceOf(ProcessExitSentinel)
@@ -1430,7 +1430,7 @@ describe("runNoArgInit", () => {
     const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
     expect(stderr).toContain("Multiple workspaces in ntn auth.json")
     expect(stderr).toContain("ws-personal")
-    expect(stderr).toContain("ws-team-mail")
+    expect(stderr).toContain("ws-team-widget")
     expect(stderr).toContain("NOTION_WORKSPACE_ID=<id> lore init")
     // The hint deliberately does NOT recommend the auth.workspaceId
     // route — that path is bootstrap-impossible during init (no
@@ -1452,7 +1452,7 @@ describe("runNoArgInit", () => {
     setupTestCwd()
     vi.mocked(resolveAuth).mockRejectedValue(new Error("No Notion auth configured."))
     vi.mocked(isNtnInstalled).mockReturnValue(true)
-    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-mail"])
+    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-widget"])
     const exitTrap = trapProcessExit()
 
     await expect(runNoArgInit({ yes: true, ntnEnv: "dev" })).rejects.toBeInstanceOf(
@@ -1475,14 +1475,14 @@ describe("runNoArgInit", () => {
     setupTestCwd()
     vi.mocked(resolveAuth).mockRejectedValue(new Error("No Notion auth configured."))
     vi.mocked(isNtnInstalled).mockReturnValue(true)
-    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-mail"])
+    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-widget"])
     const exitTrap = trapProcessExit()
 
     await expect(
       runNoArgInit({
         yes: true,
         ntnEnv: "stg",
-        name: "Mail Vault — STG",
+        name: "Test Vault — STG",
       })
     ).rejects.toBeInstanceOf(ProcessExitSentinel)
 
@@ -1491,7 +1491,7 @@ describe("runNoArgInit", () => {
     // `--name`'s value gets JSON.stringify'd so a value with spaces
     // / special characters survives the shell quote round-trip.
     expect(stderr).toContain(
-      'NOTION_WORKSPACE_ID=<id> lore init --ntn-env stg --name "Mail Vault — STG"'
+      'NOTION_WORKSPACE_ID=<id> lore init --ntn-env stg --name "Test Vault — STG"'
     )
   })
 
@@ -1503,7 +1503,7 @@ describe("runNoArgInit", () => {
     setupTestCwd()
     vi.mocked(resolveAuth).mockRejectedValue(new Error("No Notion auth configured."))
     vi.mocked(isNtnInstalled).mockReturnValue(true)
-    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-mail"])
+    vi.mocked(listNtnWorkspaces).mockResolvedValue(["ws-personal", "ws-team-widget"])
     const exitTrap = trapProcessExit()
 
     await expect(runNoArgInit({ yes: true })).rejects.toBeInstanceOf(ProcessExitSentinel)
@@ -1787,7 +1787,7 @@ describe("runExplicitPageInit", () => {
       token: "tok-ntn",
       baseUrl: undefined,
       source: "ntn-auth-json",
-      workspaceId: "ws-team-mail",
+      workspaceId: "ws-team-widget",
     })
     vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
     mockVaultInitSuccess()
@@ -1800,7 +1800,7 @@ describe("runExplicitPageInit", () => {
     const parsed = yamlParse(yaml) as Record<string, unknown>
     expect(parsed).toMatchObject({
       vault: { pageId: "explicit-mw" },
-      auth: { workspaceId: "ws-team-mail" },
+      auth: { workspaceId: "ws-team-widget" },
     })
   })
 

@@ -25,8 +25,7 @@
 | [`docs/conflict-detection.md`](docs/conflict-detection.md) | `lore conflicts scan` workflow and compare-verdict contract |
 | [`docs/topology.md`](docs/topology.md) | `lore status` topology section, health states, recovery workflow |
 | [`docs/hooks.md`](docs/hooks.md) | Installed hook behavior and auth forwarding |
-| [`docs/team-setup.md`](docs/team-setup.md) | Public onboarding entry point: Entities cutover, direct-ntn-login gotcha, shared-vault hook config |
-| [`docs/internal-rollout.md`](docs/internal-rollout.md) | Full team-rollout playbook: per-engineer onboarding flow, `NOTION_API_TOKEN` fallback, fail-fast env mismatches (rename tracked in #571) |
+| [`docs/team-rollout.md`](docs/team-rollout.md) | Operator-facing ntn-first rollout runbook |
 | [`docs/ci.md`](docs/ci.md) | Per-step CI contract: token/network/fixture needs and fork-safety rules |
 | [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md) | CLI and MCP user-facing reference |
 
@@ -133,15 +132,19 @@ Auth resolves in this priority order:
 3. `LORE_NOTION_TOKEN` soft-deprecated fallback
 4. `auth.token` in `.lore.yaml` soft-deprecated fallback
 
-Committed `.lore.yaml` files must contain only shared, non-secret config. Do
-not commit `auth.token`, personal scratch vault IDs, or any
-contributor-specific local values; Lore warns whenever `auth.token` is present
-in `.lore.yaml`, even if a higher-priority auth source wins.
+`.lore.yaml` is local-only — keep it out of version control. Copy
+`.lore.example.yaml` to `.lore.yaml` per clone, and distribute shared team
+values (`vault.pageId`, `auth.workspaceId`) through onboarding docs rather
+than by committing config. The Lore repo gitignores `.lore.yaml` and its
+pre-commit guard (`tools/check-lore-config.mjs`) rejects any staged content.
+Lore also warns whenever `auth.token` is present in `.lore.yaml`, even if a
+higher-priority auth source wins, and rejects bearer-shaped values at config
+load time.
 
-Notion page IDs are access locators, not bearer secrets. A deliberately shared
-team vault ID in git history does not itself require history rewrite or
-integration-sharing rotation, but accidentally committed private or personal
-scratch page IDs still need explicit owner review.
+Notion page IDs are access locators, not bearer secrets. Keeping them out of
+git is still the right default so external clones don't auto-target an
+unrelated vault. Accidental maintainer-local or personal scratch page IDs that
+land in history need explicit owner review.
 
 ntn-issued tokens inherit the engineer's personal Notion permissions and have
 per-token rate limits. Lore-managed ntn spawns force `NOTION_KEYRING=0`; direct

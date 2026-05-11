@@ -240,7 +240,7 @@ export async function fireDigestIfStale(
   // sessions firing Stop at once shouldn't fan out into five concurrent
   // `claude -p` digests. Project names route through `safeFilenameSegment`
   // (the same helper `lockPath` / `logPath` use) so two projects whose
-  // names sanitize identically — e.g. `Mail/Backend` vs. `Mail-Backend`
+  // names sanitize identically — e.g. `Widget/Backend` vs. `Widget-Backend`
   // — share one digest lock by design, and the policy can never drift
   // from the rest of the hook-state filename surface.
   const lockKey = `digest-${safeFilenameSegment(project.name)}`

@@ -24,7 +24,7 @@ vi.mock("../../services.js", () => ({
 function makeTask(overrides: Partial<TaskSummary> = {}): TaskSummary {
   return {
     id: "t1",
-    title: "Track PR-25750",
+    title: "Track PR-1234",
     projectIds: [],
     topicId: null,
     source: "manual",
@@ -50,7 +50,7 @@ function makeTask(overrides: Partial<TaskSummary> = {}): TaskSummary {
     updatedAt: "2026-04-20T00:00:00.000Z",
     taskState: "open",
     blockedBy: "",
-    entity: "PR-25750",
+    entity: "PR-1234",
     topicKey: "",
     revisionCount: 1,
     comparedWith: [],
@@ -158,14 +158,14 @@ function makeServices(opts: {
 describe("parseReconcileCliOptions", () => {
   it("accepts well-formed --min-score and --limit", () => {
     const result = parseReconcileCliOptions({
-      project: "Mail",
+      project: "Widget",
       minScore: "0.7",
       limit: "10",
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value).toEqual<ReconcileCliOptions>({
-        projectName: "Mail",
+        projectName: "Widget",
         minScore: 0.7,
         limit: 10,
       })
@@ -320,17 +320,17 @@ describe("runReconcile", () => {
   it("scopes to the named project when findByName resolves", async () => {
     const findByName = vi
       .fn()
-      .mockResolvedValue({ id: "p-mail", name: "Mail", path: "mail" })
+      .mockResolvedValue({ id: "p-widget", name: "Widget", path: "apps/widget" })
     const services = makeServices({
       findByName,
       contextProject: { id: "ctx-other", name: "Other", path: "other" },
     })
-    await runReconcile(services, { projectName: "Mail", minScore: 0.5, limit: 25 })
+    await runReconcile(services, { projectName: "Widget", minScore: 0.5, limit: 25 })
 
     const tasksList = services.tasks.list as ReturnType<typeof vi.fn>
     // Named project wins over the auto-detected context.
     expect(tasksList).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "p-mail" })
+      expect.objectContaining({ projectId: "p-widget" })
     )
   })
 
@@ -344,13 +344,13 @@ describe("runReconcile", () => {
     // match here implies byte-identity by construction.
     const task = makeTask({
       id: "t-abc",
-      title: "Track PR-25750 review",
+      title: "Track PR-1234 review",
       taskState: "in-progress",
     })
     const memory = makeMemory({
       id: "m-good",
-      title: "Merged PR-25750",
-      content: "Merged PR-25750 — outlook label.applied classifier shipped.",
+      title: "Merged PR-1234",
+      content: "Merged PR-1234 — outlook label.applied classifier shipped.",
       createdAt: new Date().toISOString(),
     })
     const services = makeServices({
@@ -366,7 +366,7 @@ describe("runReconcile", () => {
     })
 
     expect(output).toContain("## 1 candidate closure (out of 1 active task scanned)")
-    expect(output).toContain('### 1. Task t-abc — "Track PR-25750 review" [in-progress')
+    expect(output).toContain('### 1. Task t-abc — "Track PR-1234 review" [in-progress')
     expect(output).toContain("Best match: memory m-good")
     expect(output).toContain("Cue: ")
     expect(output).toContain("Close: lore-task({ action: 'close', taskId: 't-abc' })")
@@ -532,10 +532,10 @@ describe("tasksCommand reconcile action", () => {
 
 describe("parseCreateCliOptions", () => {
   it("returns the parsed shape on a well-formed payload", () => {
-    const result = parseCreateCliOptions("Track PR-25750", {
-      project: "Mail",
+    const result = parseCreateCliOptions("Track PR-1234", {
+      project: "Widget",
       description: "Body text",
-      entity: "PR-25750",
+      entity: "PR-1234",
       state: "open",
       dueDate: "2026-05-10",
       tags: " frontend, ios ,, ",
@@ -544,10 +544,10 @@ describe("parseCreateCliOptions", () => {
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
-      expect(result.value.subject).toBe("Track PR-25750")
-      expect(result.value.projectName).toBe("Mail")
+      expect(result.value.subject).toBe("Track PR-1234")
+      expect(result.value.projectName).toBe("Widget")
       expect(result.value.description).toBe("Body text")
-      expect(result.value.entity).toBe("PR-25750")
+      expect(result.value.entity).toBe("PR-1234")
       expect(result.value.state).toBe("open")
       expect(result.value.dueDate).toBe("2026-05-10")
       expect(result.value.tags).toEqual(["frontend", "ios"])
@@ -619,12 +619,12 @@ describe("parseCreateCliOptions", () => {
     // and the message must point operators at --keywords for free-form
     // labels rather than letting the write reach Notion as a generic 400.
     const result = parseCreateCliOptions("subject", {
-      tags: "frontend, pr-25750, not-a-real-tag",
+      tags: "frontend, pr-1234, not-a-real-tag",
     })
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("--tags")
-      expect(result.message).toContain('"pr-25750"')
+      expect(result.message).toContain('"pr-1234"')
       expect(result.message).toContain('"not-a-real-tag"')
       expect(result.message).toContain("closed tag vocabulary")
       expect(result.message).toContain("--keywords")
@@ -672,13 +672,13 @@ describe("runTaskCreate", () => {
   it("scopes create to the named project and renders the confirmation", async () => {
     const findByName = vi
       .fn()
-      .mockResolvedValue({ id: "p-mail", name: "Mail", path: "mail" })
+      .mockResolvedValue({ id: "p-widget", name: "Widget", path: "apps/widget" })
     const created = makeTask({
       id: "t-abc",
-      title: "Track PR-25750",
+      title: "Track PR-1234",
       taskState: "open",
       reviewBy: "2026-05-10",
-      entity: "PR-25750",
+      entity: "PR-1234",
     }) as unknown as Task
     const tasksCreate = vi.fn().mockResolvedValue(created)
     const services = makeServices({
@@ -688,13 +688,13 @@ describe("runTaskCreate", () => {
     })
 
     const result = await runTaskCreate(services, {
-      subject: "Track PR-25750",
+      subject: "Track PR-1234",
       description: "Body",
-      entity: "PR-25750",
+      entity: "PR-1234",
       state: "open",
       blockedBy: undefined,
       dueDate: "2026-05-10",
-      projectName: "Mail",
+      projectName: "Widget",
       topicName: undefined,
       tags: ["frontend"],
       keywords: "kw",
@@ -703,23 +703,23 @@ describe("runTaskCreate", () => {
 
     expect(tasksCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        subject: "Track PR-25750",
+        subject: "Track PR-1234",
         description: "Body",
-        entity: "PR-25750",
+        entity: "PR-1234",
         state: "open",
         dueDate: "2026-05-10",
-        projectIds: ["p-mail"],
+        projectIds: ["p-widget"],
         tags: ["frontend"],
         keywords: "kw",
         synopsis: "syn",
       })
     )
-    expect(result.text).toContain('Created task: "Track PR-25750" (t-abc)')
+    expect(result.text).toContain('Created task: "Track PR-1234" (t-abc)')
     expect(result.text).toContain("State: open")
-    expect(result.text).toContain("Project: Mail")
+    expect(result.text).toContain("Project: Widget")
     // Topic line is suppressed when --topic was not supplied (no signal).
     expect(result.text).not.toContain("Topic:")
-    expect(result.text).toContain("Entity: PR-25750")
+    expect(result.text).toContain("Entity: PR-1234")
     expect(result.text).toContain("Due: 2026-05-10")
     expect(result.data.reused).toBe(false)
     expect(result.data.id).toBe("t-abc")
@@ -730,7 +730,7 @@ describe("runTaskCreate", () => {
       makeTask({ id: "t-1", title: "subject" }) as unknown as Task
     )
     const services = makeServices({
-      contextProject: { id: "ctx-mail", name: "Mail", path: "mail" },
+      contextProject: { id: "ctx-widget", name: "Widget", path: "apps/widget" },
       tasksCreate,
     })
 
@@ -749,7 +749,7 @@ describe("runTaskCreate", () => {
     })
 
     expect(tasksCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ projectIds: ["ctx-mail"] })
+      expect.objectContaining({ projectIds: ["ctx-widget"] })
     )
   })
 
@@ -761,7 +761,7 @@ describe("runTaskCreate", () => {
       .fn()
       .mockResolvedValue({ id: "topic-ship", name: "ship-it" })
     const services = makeServices({
-      contextProject: { id: "ctx-mail", name: "Mail", path: "mail" },
+      contextProject: { id: "ctx-widget", name: "Widget", path: "apps/widget" },
       tasksCreate,
       topicsGetOrCreate,
     })
@@ -780,7 +780,7 @@ describe("runTaskCreate", () => {
       synopsis: undefined,
     })
 
-    expect(topicsGetOrCreate).toHaveBeenCalledWith("ship-it", ["ctx-mail"])
+    expect(topicsGetOrCreate).toHaveBeenCalledWith("ship-it", ["ctx-widget"])
     expect(tasksCreate).toHaveBeenCalledWith(
       expect.objectContaining({ topicId: "topic-ship" })
     )
@@ -825,14 +825,14 @@ describe("runTaskCreate", () => {
     // reviewers flagged on the prior commit.
     const findByName = vi
       .fn()
-      .mockResolvedValue({ id: "p-mail", name: "Mail", path: "mail" })
+      .mockResolvedValue({ id: "p-widget", name: "Widget", path: "apps/widget" })
     const existing = makeTask({
       id: "t-existing",
-      title: "Track PR-25750",
+      title: "Track PR-1234",
       taskState: "in-progress",
       reviewBy: "2026-05-10",
-      entity: "PR-25750",
-      projectIds: ["p-mail"],
+      entity: "PR-1234",
+      projectIds: ["p-widget"],
     })
     const tasksCreate = vi.fn()
     const tasksList = vi.fn().mockResolvedValue({ items: [existing] })
@@ -856,13 +856,13 @@ describe("runTaskCreate", () => {
     } as unknown as LoreServices
 
     const result = await runTaskCreate(services, {
-      subject: "Track PR-25750",
+      subject: "Track PR-1234",
       description: "ignored payload",
-      entity: "PR-25750",
+      entity: "PR-1234",
       state: "blocked",
       blockedBy: "ignored too",
       dueDate: "2026-05-15",
-      projectName: "Mail",
+      projectName: "Widget",
       topicName: undefined,
       tags: ["frontend"],
       keywords: "ignored",
@@ -872,7 +872,7 @@ describe("runTaskCreate", () => {
     expect(tasksCreate).not.toHaveBeenCalled()
     expect(result.data.reused).toBe(true)
     expect(result.data.id).toBe("t-existing")
-    expect(result.text).toContain('Reused existing task: "Track PR-25750" (t-existing)')
+    expect(result.text).toContain('Reused existing task: "Track PR-1234" (t-existing)')
     expect(result.text).toContain(
       "Subject and entity match an existing active task; nothing was created."
     )
@@ -910,13 +910,13 @@ describe("runTaskCreate", () => {
     // creating a fresh task explicitly under the new topic).
     const findByName = vi
       .fn()
-      .mockResolvedValue({ id: "p-mail", name: "Mail", path: "mail" })
+      .mockResolvedValue({ id: "p-widget", name: "Widget", path: "apps/widget" })
     const existing = makeTask({
       id: "t-existing",
-      title: "Track PR-25750",
+      title: "Track PR-1234",
       taskState: "open",
-      entity: "PR-25750",
-      projectIds: ["p-mail"],
+      entity: "PR-1234",
+      projectIds: ["p-widget"],
     })
     const tasksCreate = vi.fn()
     const tasksList = vi.fn().mockResolvedValue({ items: [existing] })
@@ -939,13 +939,13 @@ describe("runTaskCreate", () => {
     } as unknown as LoreServices
 
     const result = await runTaskCreate(services, {
-      subject: "Track PR-25750",
+      subject: "Track PR-1234",
       description: undefined,
-      entity: "PR-25750",
+      entity: "PR-1234",
       state: undefined,
       blockedBy: undefined,
       dueDate: undefined,
-      projectName: "Mail",
+      projectName: "Widget",
       topicName: "Reviews",
       tags: undefined,
       keywords: undefined,
@@ -976,9 +976,9 @@ describe("runTaskCreate", () => {
       title: "subject",
       taskState: "open",
       entity: "subject",
-      // Existing row scoped to `[p-mail]`; the create resolves to
+      // Existing row scoped to `[p-widget]`; the create resolves to
       // `[p-other]`. Set-equality fails → no reuse.
-      projectIds: ["p-mail"],
+      projectIds: ["p-widget"],
     })
     const tasksCreate = vi.fn().mockResolvedValue(
       makeTask({ id: "t-fresh", title: "subject" }) as unknown as Task
@@ -1238,8 +1238,8 @@ describe("runTaskClose", () => {
 describe("parseListCliOptions", () => {
   it("returns the parsed shape on a well-formed payload", () => {
     const result = parseListCliOptions({
-      project: "Mail",
-      entity: "PR-25750",
+      project: "Widget",
+      entity: "PR-1234",
       state: "open",
       dueBefore: "2026-06-01",
       limit: "50",
@@ -1247,8 +1247,8 @@ describe("parseListCliOptions", () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value).toEqual({
-        projectName: "Mail",
-        entity: "PR-25750",
+        projectName: "Widget",
+        entity: "PR-1234",
         state: "open",
         dueBefore: "2026-06-01",
         limit: 50,
@@ -1374,7 +1374,7 @@ describe("runTaskList", () => {
   it("forwards --project, --entity, and --due-before to TaskService.list", async () => {
     const findByName = vi
       .fn()
-      .mockResolvedValue({ id: "p-mail", name: "Mail", path: "mail" })
+      .mockResolvedValue({ id: "p-widget", name: "Widget", path: "apps/widget" })
     const tasksList = vi.fn().mockResolvedValue({ items: [] })
     const services = {
       ...makeServices({ findByName, contextProject: null }),
@@ -1382,8 +1382,8 @@ describe("runTaskList", () => {
     } as unknown as LoreServices
 
     await runTaskList(services, {
-      projectName: "Mail",
-      entity: "PR-25750",
+      projectName: "Widget",
+      entity: "PR-1234",
       state: undefined,
       dueBefore: "2026-06-01",
       limit: 25,
@@ -1391,8 +1391,8 @@ describe("runTaskList", () => {
 
     expect(tasksList).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: "p-mail",
-        entities: ["PR-25750"],
+        projectId: "p-widget",
+        entities: ["PR-1234"],
         dueBefore: "2026-06-01",
         limit: 25,
       })
@@ -1907,7 +1907,7 @@ describe("tasksCommand create/update/close/list actions", () => {
     // 400 mid-flight. Pinning the error prefix is the shell-grep
     // contract programmatic consumers rely on.
     await tasksCommand.parseAsync(
-      ["create", "subject", "--tags", "pr-25750"],
+      ["create", "subject", "--tags", "pr-1234"],
       { from: "user" }
     )
 
@@ -1922,7 +1922,7 @@ describe("tasksCommand create/update/close/list actions", () => {
 
   it("update exits 1 once before initServices on out-of-vocab --tags", async () => {
     await tasksCommand.parseAsync(
-      ["update", "task-id", "--tags", "pr-25750"],
+      ["update", "task-id", "--tags", "pr-1234"],
       { from: "user" }
     )
 

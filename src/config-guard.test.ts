@@ -70,51 +70,87 @@ function gitConfig(repo: string, key: string) {
   }
 }
 
+describe("repo invariants", () => {
+  it("does not track a `.lore.yaml` at the repo root", () => {
+    // Codifies the gitignored steady state introduced with #557. The
+    // pre-commit guard enforces this on new commits, but a tracked
+    // file already in HEAD wouldn't trip the guard — this test pins
+    // the HEAD-side invariant so a future `git add -f .lore.yaml`
+    // landing through a different path (rebase, cherry-pick, manual
+    // sequencer) fails CI.
+    //
+    // Non-git environments (vendored tarball install, npm pack) get a
+    // clearer skip-with-diagnostic rather than a cryptic `fatal: not a
+    // git repository` failure.
+    const repoRoot = fileURLToPath(new URL("..", import.meta.url))
+    let tracked: string
+    try {
+      tracked = execFileSync(
+        "git",
+        ["ls-files", "--", ".lore.yaml"],
+        { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+      ).trim()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        `cannot verify repo invariant — git invocation failed (likely running outside the repo's git working tree): ${message}`,
+        { cause: error }
+      )
+    }
+    expect(tracked).toBe("")
+  })
+})
+
 describe("committed Lore config guard", () => {
-  it("allows the shared repository vault config", async () => {
+  it("rejects any non-empty committed .lore.yaml content", async () => {
     const { validateLoreConfig } = await loadGuardModule()
     const errors = validateLoreConfig(`
 vault:
-  pageId: "343b35e6e67f81a0afa9c9801b35199f"
+  pageId: "<your-vault-page-id>"
 projects: []
 `)
 
-    expect(errors).toEqual([])
+    expect(errors.join("\n")).toContain("must not be committed")
   })
 
   it("rejects committed auth.token values", async () => {
     const { validateLoreConfig } = await loadGuardModule()
     const errors = validateLoreConfig(`
 vault:
-  pageId: "343b35e6e67f81a0afa9c9801b35199f"
+  pageId: "<your-vault-page-id>"
 auth:
   token: "secret"
 `)
 
-    expect(errors.join("\n")).toContain("auth.token")
+    expect(errors.join("\n")).toContain("must not be committed")
   })
 
-  it("rejects committed personal vault page ids", async () => {
-    const { validateLoreConfig } = await loadGuardModule()
-    const errors = validateLoreConfig(`
-vault:
-  pageId: "personal-vault-page-id"
-`)
+  it("rejects an empty staged .lore.yaml", async () => {
+    // Reviewer-flagged regression: pre-tightening, the guard returned
+    // success on whitespace-only staged content, so `git add -f
+    // .lore.yaml` with an empty file would slip past the pre-commit
+    // hook. The new policy keys off the git index entry, not the
+    // content, so any staged .lore.yaml is rejected.
+    const { validateStagedLoreConfig } = await loadGuardModule()
+    const repo = scratchDir("lore-config-guard-empty-")
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" })
 
-    expect(errors.join("\n")).toContain("personal vault page IDs")
+    writeConfig(repo, "")
+    execFileSync("git", ["add", "-f", ".lore.yaml"], { cwd: repo })
+
+    const errors = validateStagedLoreConfig(repo)
+    expect(errors.join("\n")).toContain("must not be committed")
   })
 
-  it("rejects committed starter page id placeholders", async () => {
-    const { validateLoreConfig } = await loadGuardModule()
-    const errors = validateLoreConfig(`
-vault:
-  pageId: "<your-vault-page-id>"
-`)
+  it("passes silently when .lore.yaml is not tracked", async () => {
+    const { validateStagedLoreConfig } = await loadGuardModule()
+    const repo = scratchDir("lore-config-guard-untracked-")
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" })
 
-    expect(errors.join("\n")).toContain("approved shared team vault page ID")
+    expect(validateStagedLoreConfig(repo)).toEqual([])
   })
 
-  it("checks the staged .lore.yaml content instead of unstaged edits", async () => {
+  it("rejects staged .lore.yaml content even when unstaged edits would also fail", async () => {
     const { validateStagedLoreConfig } = await loadGuardModule()
     const repo = scratchDir("lore-config-guard-staged-")
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" })
@@ -123,10 +159,10 @@ vault:
       repo,
       `
 vault:
-  pageId: "343b35e6e67f81a0afa9c9801b35199f"
+  pageId: "<your-vault-page-id>"
 `
     )
-    execFileSync("git", ["add", ".lore.yaml"], { cwd: repo })
+    execFileSync("git", ["add", "-f", ".lore.yaml"], { cwd: repo })
 
     writeConfig(
       repo,
@@ -138,13 +174,12 @@ auth:
 `
     )
 
-    const stagedSafe = validateStagedLoreConfig(repo)
-    expect(stagedSafe).toEqual([])
+    const stagedFirst = validateStagedLoreConfig(repo)
+    expect(stagedFirst.join("\n")).toContain("must not be committed")
 
-    execFileSync("git", ["add", ".lore.yaml"], { cwd: repo })
-    const stagedUnsafe = validateStagedLoreConfig(repo)
-    expect(stagedUnsafe.join("\n")).toContain("auth.token")
-    expect(stagedUnsafe.join("\n")).toContain("vault.pageId")
+    execFileSync("git", ["add", "-f", ".lore.yaml"], { cwd: repo })
+    const stagedSecond = validateStagedLoreConfig(repo)
+    expect(stagedSecond.join("\n")).toContain("must not be committed")
   }, 30_000)
 })
 

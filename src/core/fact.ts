@@ -2428,7 +2428,7 @@ export class FactService {
   /**
    * Set the `Source` relation on an existing fact to point at a supporting
    * memory. Used by the `lore migrate --backfill-fact-sources` path to
-   * retroactively link orphan facts found in the Mail vault audit.
+   * retroactively link orphan facts found in an internal vault audit.
    *
    * Overwrites any existing Source relation — facts in the current model have
    * a single source memory, so re-running the backfill replaces rather than

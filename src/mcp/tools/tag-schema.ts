@@ -37,7 +37,7 @@ const tagArraySchema = z
         `Tag${invalid.length === 1 ? "" : "s"} ${quoted} not in the closed vocabulary. ` +
         `Accepted tags: ${VOCAB_CSV}. ` +
         `For PR numbers, ticket IDs, file paths, class/function names, or any other ` +
-        `free-form label, use \`keywords\` instead (e.g. keywords: "pr-25701 ThreadStore.swift").`,
+        `free-form label, use \`keywords\` instead (e.g. keywords: "pr-1234 ThreadStore.swift").`,
     })
   })
 

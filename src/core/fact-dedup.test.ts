@@ -108,7 +108,7 @@ describe("runFactDedupBackfill — backfill phase", () => {
     expect(result.backfilled).toBe(1)
     expect(result.skipped).toBe(0)
     // Single atomic update covers both columns — bundling matters because
-    // every fact in a Mail-scale vault would otherwise pay 2× the writes.
+    // every fact in an internal-scale vault would otherwise pay 2× the writes.
     expect(client.pages.update).toHaveBeenCalledTimes(1)
     expect(client.pages.update).toHaveBeenCalledWith({
       page_id: "f1",

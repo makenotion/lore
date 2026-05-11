@@ -5,8 +5,8 @@
  * even when an operator runs the CLI explicitly mid-week.
  *
  * Keyed on a short hash of the config root *plus* the project name so two
- * vaults that both have a `Mail` project in the same user's `$TMPDIR` don't
- * collide — a cross-vault collision would silently debounce the second
+ * vaults that both have a project with the same name in the same user's
+ * `$TMPDIR` don't collide — a cross-vault collision would silently debounce the second
  * vault's digest forever. Key derivation and segment sanitization live in
  * `marker-key.ts` so this module, `drift-marker.ts`, and the lock/log/
  * count paths in `lock.ts` / `helpers.ts` stay in lockstep on the

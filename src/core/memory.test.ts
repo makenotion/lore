@@ -140,7 +140,7 @@ describe("pageToMemory — fully populated decision page", () => {
         type: "rich_text",
         rich_text: [{ plain_text: "Must migrate extractors" }],
       },
-      Author: { type: "rich_text", rich_text: [{ plain_text: "hsalman" }] },
+      Author: { type: "rich_text", rich_text: [{ plain_text: "testuser" }] },
       Agent: { type: "rich_text", rich_text: [{ plain_text: "claude" }] },
       Tags: {
         type: "multi_select",
@@ -148,7 +148,7 @@ describe("pageToMemory — fully populated decision page", () => {
       },
       Keywords: {
         type: "rich_text",
-        rich_text: [{ plain_text: "pr-25701 MailboxViewStore.swift" }],
+        rich_text: [{ plain_text: "pr-1234 WidgetListStore.swift" }],
       },
       Synopsis: {
         type: "rich_text",
@@ -174,10 +174,10 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.affectsIds).toEqual(["affected-1", "affected-2"])
     expect(memory.alternatives).toBe("Alt A; Alt B")
     expect(memory.consequences).toBe("Must migrate extractors")
-    expect(memory.author).toBe("hsalman")
+    expect(memory.author).toBe("testuser")
     expect(memory.agent).toBe("claude")
     expect(memory.tags).toEqual(["architecture", "core"])
-    expect(memory.keywords).toBe("pr-25701 MailboxViewStore.swift")
+    expect(memory.keywords).toBe("pr-1234 WidgetListStore.swift")
     expect(memory.synopsis).toBe("Adopt DecisionService for the rationale chain.")
     expect(memory.session).toBe("sess-42")
     expect(memory.content).toBe("Rationale prose.")
@@ -1154,7 +1154,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     // we're pinning is that `findByTopicKey` REQUESTED the
     // `does_not_contain` filter; the server-side Notion enforcement
     // is what the integration relies on. (Real-vault behavior was
-    // verified by Iron-Ham; see the cleanupOrphanExclusionFilter
+    // verified by the author; see the cleanupOrphanExclusionFilter
     // docstring in memory.ts for the verification record.)
     let capturedFilter: unknown
     const querySpy = vi.fn(async (args: { filter?: unknown }) => {
@@ -1584,7 +1584,7 @@ describe("Keywords property round-trip", () => {
   // segment. The live Notion response fills that in with `plain_text`; we
   // reconstruct the same shape here so `pageToMemory` can consume it.
   it("round-trips a Keywords string through buildMemoryProps + pageToMemory", () => {
-    const keywords = "pr-25701 MailboxViewStore.swift SENTRY-MAIL-123"
+    const keywords = "pr-1234 WidgetListStore.swift SENTRY-APP-123"
     const built = buildMemoryProps({ title: "x", keywords }) as Record<
       string,
       { rich_text: Array<{ text: { content: string } }> }
@@ -2611,7 +2611,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       keywords: "jwt,auth",
       source: "manual",
       confidence: "certain",
-      author: "Hesham Salman",
+      author: "Test User",
     })
     const { client, retrieveMarkdownSpy, updateMarkdownSpy, updateSpy } =
       makeUpsertClient({
@@ -2630,7 +2630,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       keywords: "jwt,auth",
       source: "manual",
       confidence: "certain",
-      author: "Hesham Salman",
+      author: "Test User",
     })
 
     expect(result.upserted).toBe(true)
@@ -2683,7 +2683,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       keywords: "jwt,refresh",
       source: "manual",
       confidence: "likely",
-      author: "Hesham Salman",
+      author: "Test User",
     })
     const existingBody = [
       "Initial body about JWT.",
@@ -2699,7 +2699,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         keywords: "jwt,refresh",
         source: "manual",
         confidence: "likely",
-        author: "Hesham Salman",
+        author: "Test User",
       })} -->`,
       "",
       "**Title at this revision:** JWT auth model with refresh rotation",
@@ -2722,7 +2722,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       keywords: "jwt,refresh",
       source: "manual",
       confidence: "likely",
-      author: "Hesham Salman",
+      author: "Test User",
     })
 
     expect(result.revisionCount).toBe(2)
@@ -3365,16 +3365,16 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       title: "JWT auth model with refresh rotation",
       content: "...",
       kind: "decision",
-      author: "Hesham Salman",
+      author: "Test User",
     })
 
     const updateArgs = updateSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
     }
     expect(updateArgs.properties["Author"]).toEqual({
-      rich_text: [{ text: { content: "Hesham Salman" } }],
+      rich_text: [{ text: { content: "Test User" } }],
     })
-    expect(result.memory.author).toBe("Hesham Salman")
+    expect(result.memory.author).toBe("Test User")
   })
 
   it("append-revision: input.author === undefined preserves the existing Author (service-layer no-clobber)", async () => {
@@ -3456,14 +3456,14 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       title: "JWT auth model",
       content: "We chose JWT.",
       kind: "decision",
-      author: "Hesham Salman",
+      author: "Test User",
     })
 
     const createArgs = createSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
     }
     expect(createArgs.properties["Author"]).toEqual({
-      rich_text: [{ text: { content: "Hesham Salman" } }],
+      rich_text: [{ text: { content: "Test User" } }],
     })
   })
 
@@ -12412,10 +12412,10 @@ describe("MemoryService.countProposed", () => {
     const client = { dataSources: { query } } as unknown as Client
     const service = new MemoryService(client, db)
 
-    await service.countProposed({ projectId: "project-mail" })
+    await service.countProposed({ projectId: "project-widget" })
     expect(query).toHaveBeenCalledTimes(1)
     const args = query.mock.calls[0]![0] as { filter: unknown }
-    expect(JSON.stringify(args.filter)).toContain("project-mail")
+    expect(JSON.stringify(args.filter)).toContain("project-widget")
   })
 
   it("omits the project clause for vault-wide counts", async () => {
@@ -12789,7 +12789,7 @@ describe("MemoryService.queryStaleConfidence", () => {
   })
 
   it("degrades to [] on `validation_error` from a pre-migration vault missing the Confidence Score column", async () => {
-    // Production smoke test against the Mail vault (vault hadn't run
+    // Production smoke test against an internal vault (vault hadn't run
     // `lore migrate` against the 0.8.0 schema yet) caught this:
     // Notion responds with `code: 'validation_error'`, message
     // "Could not find sort property with name or id: Confidence Score"

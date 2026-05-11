@@ -197,7 +197,7 @@ describe("lore-task-create", () => {
 describe("lore-task-create duplicate-task probe (#10)", () => {
   it("appends a duplicates footer when the probe surfaces other active tasks on the same entity", async () => {
     const created: Task = {
-      ...makeTask("t-new", { entity: "PR-25750" }),
+      ...makeTask("t-new", { entity: "PR-1234" }),
       content: "",
     } as Task
     const svc = services()
@@ -213,13 +213,13 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing-1", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           taskState: "in-progress",
         }),
         makeTask("t-existing-2", {
-          title: "PR-25750 follow-up",
-          entity: "PR-25750",
+          title: "PR-1234 follow-up",
+          entity: "PR-1234",
           taskState: "open",
         }),
       ],
@@ -230,14 +230,14 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "New PR-25750 task",
-      entity: "PR-25750",
+      subject: "New PR-1234 task",
+      entity: "PR-1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain('Other active tasks tracking "PR-25750" (2)')
-    expect(text).toContain('"Track PR-25750 review" [in-progress]')
-    expect(text).toContain('"PR-25750 follow-up" [open]')
+    expect(text).toContain('Other active tasks tracking "PR-1234" (2)')
+    expect(text).toContain('"Track PR-1234 review" [in-progress]')
+    expect(text).toContain('"PR-1234 follow-up" [open]')
     expect(text).toContain("lore-task({ action: 'close', taskId: 't-existing-1' })")
     // Advisory footer carries exactly the two pre-existing rows; no
     // self-references to the just-created row leak into the close
@@ -246,7 +246,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     expect(duplicateListLines).toHaveLength(2)
     for (const line of duplicateListLines) {
       expect(line).not.toContain("t-new")
-      expect(line).not.toContain('"New PR-25750 task"')
+      expect(line).not.toContain('"New PR-1234 task"')
     }
   })
 
@@ -283,7 +283,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     // returns silently and the spy capture would be empty even when
     // the wire is correct.
     const created: Task = {
-      ...makeTask("t1", { entity: "PR-25750" }),
+      ...makeTask("t1", { entity: "PR-1234" }),
       content: "",
     } as Task
     const svc = services()
@@ -299,8 +299,8 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
       const handler = mockServer.getHandler("lore-task")
       const result = await handler({
         action: "create",
-        subject: "Track PR-25750",
-        entity: "PR-25750",
+        subject: "Track PR-1234",
+        entity: "PR-1234",
       } as never)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -336,7 +336,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     // appended below the footer leaves this assertion green; a push
     // above the footer (CTA-first ordering, wrong per spec) trips it.
     const created: Task = {
-      ...makeTask("t-new", { entity: "PR-25750" }),
+      ...makeTask("t-new", { entity: "PR-1234" }),
       content: "",
     } as Task
     const svc = services()
@@ -344,8 +344,8 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750",
-          entity: "PR-25750",
+          title: "Track PR-1234",
+          entity: "PR-1234",
           taskState: "open",
         }),
       ],
@@ -356,8 +356,8 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "New PR-25750 task",
-      entity: "PR-25750",
+      subject: "New PR-1234 task",
+      entity: "PR-1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     const lines = text.split("\n")
@@ -365,7 +365,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     // Structural pin #1: the duplicates header must come AFTER every
     // pre-existing structural line (Created, State, Project, Topic).
     const headerIdx = lines.findIndex((l) =>
-      l.startsWith('Other active tasks tracking "PR-25750"')
+      l.startsWith('Other active tasks tracking "PR-1234"')
     )
     expect(headerIdx).toBeGreaterThan(-1)
     expect(lines.slice(0, headerIdx).join("\n")).toContain("Created task")
@@ -411,7 +411,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     })
     const svc = services()
     svc.tasks.create = vi.fn().mockResolvedValue({
-      ...makeTask("t1", { entity: "PR-25750" }),
+      ...makeTask("t1", { entity: "PR-1234" }),
       content: "",
     } as Task)
     svc.tasks.list = vi.fn().mockReturnValue(listPromise)
@@ -421,8 +421,8 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     const handler = mockServer.getHandler("lore-task")
     const handlerPromise = handler({
       action: "create",
-      subject: "Track PR-25750",
-      entity: "PR-25750",
+      subject: "Track PR-1234",
+      entity: "PR-1234",
     } as never)
 
     // Yield the microtask queue. Probe is in flight; create must NOT
@@ -478,8 +478,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           taskState: "in-progress",
           projectIds: [],
         }),
@@ -492,15 +492,15 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     // Assertive reuse — no create call landed.
     expect(svc.tasks.create).not.toHaveBeenCalled()
     // Vocabulary distinguishes reused from created.
-    expect(text).toContain('Reused existing task: "Track PR-25750 review" (t-existing)')
+    expect(text).toContain('Reused existing task: "Track PR-1234 review" (t-existing)')
     expect(text).not.toContain("Created task")
     // Reuse-path response carries an explicit "nothing was created"
     // disclosure plus update / close incantations targeting the
@@ -549,15 +549,15 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     // Same entity, DIFFERENT subject — the probe surfaces the existing
     // row in the close-CTA footer (advisory) but does NOT reuse.
     const created: Task = {
-      ...makeTask("t-new", { entity: "PR-25750" }),
+      ...makeTask("t-new", { entity: "PR-1234" }),
       content: "",
     } as Task
     const svc = services()
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Different work tracking PR-25750",
-          entity: "PR-25750",
+          title: "Different work tracking PR-1234",
+          entity: "PR-1234",
           taskState: "open",
         }),
       ],
@@ -569,8 +569,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -579,8 +579,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     expect(text).not.toContain("Reused")
     // Advisory footer still renders — the existing row is a peer, not
     // a structural duplicate.
-    expect(text).toContain('Other active tasks tracking "PR-25750" (1)')
-    expect(text).toContain('"Different work tracking PR-25750" [open]')
+    expect(text).toContain('Other active tasks tracking "PR-1234" (1)')
+    expect(text).toContain('"Different work tracking PR-1234" [open]')
     expect(text).toContain("lore-task({ action: 'close', taskId: 't-existing' })")
   })
 
@@ -602,8 +602,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           projectIds: ["proj-a"],
         }),
       ],
@@ -615,8 +615,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
       projectName: "Ambient",
       topicName: "Reviews",
     } as never)
@@ -636,8 +636,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     // reuse path fires. Mismatched project sets would reject reuse and
     // the test would assert against the wrong code path.
     const existingTask = makeTask("t-existing", {
-      title: "Track PR-25750 review",
-      entity: "PR-25750",
+      title: "Track PR-1234 review",
+      entity: "PR-1234",
       projectIds: [],
     })
     const svc = services()
@@ -649,8 +649,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
       agent: "test-agent",
       session: "session-xyz",
     } as never)
@@ -667,15 +667,15 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     // env switch keeps the probe in advisory-only mode. Create still
     // lands; the existing row appears in the advisory footer.
     const created: Task = {
-      ...makeTask("t-new", { entity: "PR-25750", title: "Track PR-25750 review" }),
+      ...makeTask("t-new", { entity: "PR-1234", title: "Track PR-1234 review" }),
       content: "",
     } as Task
     const svc = services()
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
         }),
       ],
     })
@@ -688,15 +688,15 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
       const handler = mockServer.getHandler("lore-task")
       const result = await handler({
         action: "create",
-        subject: "Track PR-25750 review",
-        entity: "PR-25750",
+        subject: "Track PR-1234 review",
+        entity: "PR-1234",
       } as never)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
 
       expect(svc.tasks.create).toHaveBeenCalledTimes(1)
       expect(text).toContain("Created task")
       expect(text).not.toContain("Reused")
-      expect(text).toContain('Other active tasks tracking "PR-25750"')
+      expect(text).toContain('Other active tasks tracking "PR-1234"')
     } finally {
       vi.unstubAllEnvs()
     }
@@ -708,7 +708,7 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     // proceeds. Verifies the probe's failure-domain isolation survives
     // the sequential posture #265 introduces.
     const created: Task = {
-      ...makeTask("t-new", { entity: "PR-25750" }),
+      ...makeTask("t-new", { entity: "PR-1234" }),
       content: "",
     } as Task
     const svc = services()
@@ -720,8 +720,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -741,8 +741,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     // pre-#265 behavior end-to-end.
     const created: Task = {
       ...makeTask("t-new", {
-        entity: "PR-25750",
-        title: "Track PR-25750 review",
+        entity: "PR-1234",
+        title: "Track PR-1234 review",
       }),
       content: "",
     } as Task
@@ -759,8 +759,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
       const handler = mockServer.getHandler("lore-task")
       const result = await handler({
         action: "create",
-        subject: "Track PR-25750 review",
-        entity: "PR-25750",
+        subject: "Track PR-1234 review",
+        entity: "PR-1234",
       } as never)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -839,8 +839,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           projectIds: [],
         }),
       ],
@@ -852,13 +852,13 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "Track  PR-25750   review",
-      entity: "PR-25750",
+      subject: "Track  PR-1234   review",
+      entity: "PR-1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(svc.tasks.create).not.toHaveBeenCalled()
-    expect(text).toContain('Reused existing task: "Track PR-25750 review" (t-existing)')
+    expect(text).toContain('Reused existing task: "Track PR-1234 review" (t-existing)')
   })
 
   it("reuses encoded-input callers against decoded stored rows (PF1-06 silent-miss closer)", async () => {
@@ -965,8 +965,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           taskState: "open",
           projectIds: [],
         }),
@@ -979,8 +979,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
       description: "Updated rationale",
       state: "in-progress",
       dueDate: "2026-06-01",
@@ -1011,8 +1011,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           projectIds: [],
         }),
       ],
@@ -1024,8 +1024,8 @@ describe("lore-task-create assertive reuse (issue #265)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "create",
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
       // session / agent are session metadata, not task fields —
       // not surfaced in the audit line by design.
       agent: "test-agent",
@@ -1657,7 +1657,7 @@ describe("lore-tasks", () => {
 
   it("buckets tasks into Overdue and Active sections", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -1681,7 +1681,7 @@ describe("lore-tasks", () => {
 
   it("threads startCursor through the bounded walk and marks capped task-list pages as truncated", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [makeTask("t-capped", { reviewBy: "2099-01-01", entity: "PR-1" })],
@@ -1710,7 +1710,7 @@ describe("lore-tasks", () => {
 
   it("paginates multiple saturated windows before reporting bucket totals", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     const firstOverduePage = Array.from({ length: 100 }, (_, i) =>
       makeTask(`t-overdue-${i + 1}`, {
@@ -1775,7 +1775,7 @@ describe("lore-tasks", () => {
 
   it("treats an exhausted MCP walk as exact even when an intermediate service page is capped", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi
       .fn()
@@ -1822,7 +1822,7 @@ describe("lore-tasks", () => {
 
   it("keeps small-limit triage calls bounded and marks saturated counts lower-bound", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: Array.from({ length: 20 }, (_, i) =>
@@ -1858,7 +1858,7 @@ describe("lore-tasks", () => {
 
   it("caps broad closed-state walks and marks counts as lower bounds", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn(async () => {
       const call = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls.length
@@ -1909,7 +1909,7 @@ describe("lore-tasks", () => {
 
   it("does not mark the tenth page as saturated when the cursor exhausts exactly at the cap boundary", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn(async () => {
       const call = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls.length
@@ -1947,7 +1947,7 @@ describe("lore-tasks", () => {
 
   it("does not emit a nextCursor when per-section hiding leaves fetched rows unrendered", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -1973,7 +1973,7 @@ describe("lore-tasks", () => {
 
   it("surfaces pagination failures without rendering partial first-page rows", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi
       .fn()
@@ -2003,7 +2003,7 @@ describe("lore-tasks", () => {
 
   it("renders cancelled task listings under a Cancelled section", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2032,7 +2032,7 @@ describe("lore-tasks", () => {
 
   it("renders 'No tasks found' when the listing is empty", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
@@ -2047,7 +2047,7 @@ describe("lore-tasks", () => {
 
   it("marks empty saturated task-list walks as lower-bound instead of exact zero", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [],
@@ -2085,7 +2085,7 @@ describe("lore-tasks", () => {
     // This test pins that boundary so a future refactor doesn't
     // silently start re-resolving the user's input behind their back.
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
@@ -2102,7 +2102,7 @@ describe("lore-tasks", () => {
 
   it("omits the entities filter entirely when no entity input is provided", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
@@ -2228,7 +2228,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
 describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
   it("renders the synopsis as an indented line between the title row and the ID line by default", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2258,7 +2258,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
 
   it("omits the synopsis line on rows with empty synopsis (byte-identical pre-DEFERRED-01 path)", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2297,7 +2297,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
     // so a hypothetical migration / hand-edit landing `"   "` synopsis
     // doesn't emit a row of pure whitespace between the title and ID.
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2327,7 +2327,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
 
   it("suppresses the synopsis line when includeSynopsis: false", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2360,7 +2360,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
     const word = "abcde "
     const longSynopsis = word.repeat(100)
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2405,7 +2405,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
 
   it("renders the trust line as an indented italic between the title row and the synopsis line", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2438,7 +2438,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
 
   it("renders `_very low confidence_` when the stored score is below 0.2", async () => {
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2470,7 +2470,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     // future contributor swapping the formatter sees regressions on the
     // listing surface, not just at the `formatTrustLabel` helper.
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2505,7 +2505,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     // every wall-clock day this suite runs, keeping the `due
     // 2099-01-01` line deterministic.
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2542,7 +2542,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     // Positive row-existence assertion pins that the row itself still
     // renders — the gate suppresses the indicator, not the row.
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2574,7 +2574,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     // content. Suppressing the synopsis must not suppress the trust
     // line.
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
@@ -2628,7 +2628,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     })
 
     const svc = services({
-      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+      context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
     svc.tasks.list = vi.fn().mockResolvedValue({ items: [overdueTask, activeTask] })
 
@@ -2679,7 +2679,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     })
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
-        makeTask("t1", { entity: "PR-25750", taskState: "in-progress" }),
+        makeTask("t1", { entity: "PR-1234", taskState: "in-progress" }),
         makeTask("t2", { entity: "PR-25751", taskState: "open" }),
       ],
     })
@@ -2698,7 +2698,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     const recentDate = new Date().toISOString()
     const memory = {
       id: "m-good",
-      title: "Merged PR-25750",
+      title: "Merged PR-1234",
       projectIds: [],
       topicId: null,
       source: "manual",
@@ -2720,7 +2720,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
       keywords: "",
       synopsis: "",
       session: "",
-      content: "We merged PR-25750 today — outlook label.applied classifier shipped.",
+      content: "We merged PR-1234 today — outlook label.applied classifier shipped.",
       createdAt: recentDate,
       updatedAt: recentDate,
       taskState: null,
@@ -2736,8 +2736,8 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-abc", {
-          title: "Track PR-25750 review",
-          entity: "PR-25750",
+          title: "Track PR-1234 review",
+          entity: "PR-1234",
           taskState: "in-progress",
         }),
       ],
@@ -2750,7 +2750,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain("## 1 candidate closure (out of 1 active task scanned)")
-    expect(text).toContain('### 1. Task t-abc — "Track PR-25750 review" [in-progress')
+    expect(text).toContain('### 1. Task t-abc — "Track PR-1234 review" [in-progress')
     expect(text).toContain("Best match: memory m-good")
     expect(text).toContain("Cue: ")
     expect(text).toContain("Close: lore-task({ action: 'close', taskId: 't-abc' })")
@@ -2818,10 +2818,10 @@ describe("lore-task action='create' — Author attribution (DEFERRED-ATTRIBUTION
   }
 
   it("stamps services.identity.resolveAuthor on tasks.create when args.author is omitted", async () => {
-    const { handler, svc } = setUpHarness("Hesham Salman")
+    const { handler, svc } = setUpHarness("Test User")
     await handler({ action: "create", subject: "Rotate keys" } as never)
     expect(svc.tasks.create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Hesham Salman" })
+      expect.objectContaining({ author: "Test User" })
     )
   })
 

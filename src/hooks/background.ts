@@ -271,7 +271,7 @@ export function isBenignRace(result: SpawnResult): boolean {
  *   Callers should roll back any optimistic state so the next trigger retries.
  *
  * `lockKey` (passed as `sessionId` for the autosave path; a synthetic key
- * like `"digest-Mail"` for the digest path) routes lock + log filenames so
+ * like `"digest-Widget"` for the digest path) routes lock + log filenames so
  * each spawn family has its own per-key debounce while sharing the global
  * `MAX_CONCURRENT_SAVES` cap. Pass `undefined` to skip locking entirely —
  * only sensible for one-shot CLI invocations.

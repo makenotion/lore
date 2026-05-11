@@ -238,7 +238,7 @@ describe("foldOrphanRateGroups", () => {
   })
 
   it("computes the documented PF3-01 spec example", () => {
-    // Pre-PF3-01 baseline on the Mail vault: 560 facts → ~445
+    // Pre-PF3-01 baseline on an internal vault: 560 facts → ~445
     // distinct subjects → ~89 had a peer. Spec metric: 1 - (89 /
     // 445) ≈ 0.7999. Build a synthetic distribution with the same
     // shape: 89 keys with two facts each (= 178 facts) + 356 keys

@@ -61,15 +61,15 @@ function makeAskServices(overrides: Record<string, unknown> = {}) {
     context: {
       project: {
         id: "proj-1",
-        name: "Mail",
-        path: "apps/mail",
-        description: "Notion-backed mail client.",
+        name: "Widget",
+        path: "apps/widget",
+        description: "Widget application.",
       },
       isCatchAllFallback: false,
     },
     config: {
       vault: { pageId: "v1" },
-      projects: [{ name: "Mail", path: "apps/mail" }],
+      projects: [{ name: "Widget", path: "apps/widget" }],
     },
     ...overrides,
   }
@@ -85,7 +85,7 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
 
     const result = await ask({ entity: "AuthService" })
     const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect(text).toContain("Project: Mail (apps/mail)")
+    expect(text).toContain("Project: Widget (apps/widget)")
   })
 
   it("renders the framing block when includeContext: true is explicit", async () => {
@@ -97,7 +97,7 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
 
     const result = await ask({ entity: "AuthService", includeContext: true })
     const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect(text).toContain("Project: Mail (apps/mail)")
+    expect(text).toContain("Project: Widget (apps/widget)")
   })
 
   it("suppresses the framing block when includeContext: false", async () => {
@@ -109,7 +109,7 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
 
     const result = await ask({ entity: "AuthService", includeContext: false })
     const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect(text).not.toContain("Project: Mail")
+    expect(text).not.toContain("Project: Widget")
     expect(text).not.toContain("Siblings:")
   })
 
@@ -168,7 +168,7 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
       const result = await handler(args)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
       expect(text, `action=${action} must not render framing block`).not.toContain(
-        "Project: Mail",
+        "Project: Widget",
       )
       expect(text, `action=${action} must not render Siblings line`).not.toContain(
         "Siblings:",

@@ -41,17 +41,17 @@ describe("resolveAuthorIdentity — users.me shape walking", () => {
   it("walks bot.owner.user.name on the canonical ntn-issued shape", async () => {
     expect(
       await resolveWithMe({
-        bot: { owner: { user: { name: "Hesham Salman", id: "abc" } } },
+        bot: { owner: { user: { name: "Test User", id: "abc" } } },
       })
-    ).toBe("Hesham Salman")
+    ).toBe("Test User")
   })
 
   it("trims surrounding whitespace so an over-eager Notion display name doesn't render padded", async () => {
     expect(
       await resolveWithMe({
-        bot: { owner: { user: { name: "  Hesham Salman  " } } },
+        bot: { owner: { user: { name: "  Test User  " } } },
       })
-    ).toBe("Hesham Salman")
+    ).toBe("Test User")
   })
 
   it("returns null when the response carries only a workspace label", async () => {
@@ -83,10 +83,10 @@ describe("resolveAuthorIdentity — users.me shape walking", () => {
 
 describe("resolveAuthorIdentity", () => {
   it("prefers LORE_USER_NAME env override and skips the users.me call", async () => {
-    process.env["LORE_USER_NAME"] = "hsalman"
+    process.env["LORE_USER_NAME"] = "testuser"
     const client = makeClient({ bot: { owner: { user: { name: "Other" } } } })
     const result = await resolveAuthorIdentity(client)
-    expect(result.author).toBe("hsalman")
+    expect(result.author).toBe("testuser")
     // Critical: env override means no API call is made — the
     // synchronous escape hatch must not pay a Notion round-trip.
     expect(
@@ -95,19 +95,19 @@ describe("resolveAuthorIdentity", () => {
   })
 
   it("trims whitespace on the LORE_USER_NAME path", async () => {
-    process.env["LORE_USER_NAME"] = "  hsalman  "
+    process.env["LORE_USER_NAME"] = "  testuser  "
     const client = makeClient({})
     const result = await resolveAuthorIdentity(client)
-    expect(result.author).toBe("hsalman")
+    expect(result.author).toBe("testuser")
   })
 
   it("treats whitespace-only LORE_USER_NAME as unset and falls through to users.me", async () => {
     process.env["LORE_USER_NAME"] = "   "
     const client = makeClient({
-      bot: { owner: { user: { name: "Hesham Salman" } } },
+      bot: { owner: { user: { name: "Test User" } } },
     })
     const result = await resolveAuthorIdentity(client)
-    expect(result.author).toBe("Hesham Salman")
+    expect(result.author).toBe("Test User")
     expect(
       (client.users as unknown as { me: ReturnType<typeof vi.fn> }).me
     ).toHaveBeenCalledOnce()
@@ -115,10 +115,10 @@ describe("resolveAuthorIdentity", () => {
 
   it("falls back to users.me when no env override is set", async () => {
     const client = makeClient({
-      bot: { owner: { user: { name: "Hesham Salman", id: "abc" } } },
+      bot: { owner: { user: { name: "Test User", id: "abc" } } },
     })
     const result = await resolveAuthorIdentity(client)
-    expect(result.author).toBe("Hesham Salman")
+    expect(result.author).toBe("Test User")
   })
 
   it("returns null author when users.me carries only a workspace label", async () => {
@@ -138,26 +138,26 @@ describe("resolveAuthorIdentity", () => {
 
   it("resolver memoizes users.me by auth snapshot", async () => {
     const client = makeClient({
-      bot: { owner: { user: { name: "Hesham Salman" } } },
+      bot: { owner: { user: { name: "Test User" } } },
     })
     const resolver = createAuthorIdentityResolver(client, () => ({ token: "token-a" }))
     const first = await resolver.resolveAuthor()
     const second = await resolver.resolveAuthor()
-    expect(first).toBe("Hesham Salman")
-    expect(second).toBe("Hesham Salman")
+    expect(first).toBe("Test User")
+    expect(second).toBe("Test User")
     expect(
       (client.users as unknown as { me: ReturnType<typeof vi.fn> }).me
     ).toHaveBeenCalledOnce()
   })
 
   it("does not cache LORE_USER_NAME so the synchronous override always wins", async () => {
-    process.env["LORE_USER_NAME"] = "hsalman"
+    process.env["LORE_USER_NAME"] = "testuser"
     const client = makeClient({})
     const resolver = createAuthorIdentityResolver(client, () => ({ token: "token-a" }))
     const first = await resolver.resolveAuthor()
     process.env["LORE_USER_NAME"] = "different"
     const second = await resolver.resolveAuthor()
-    expect(first).toBe("hsalman")
+    expect(first).toBe("testuser")
     expect(second).toBe("different")
     expect(
       (client.users as unknown as { me: ReturnType<typeof vi.fn> }).me

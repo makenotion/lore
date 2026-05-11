@@ -182,16 +182,16 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("renders the project framing block at the top of wake-up output", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
-        description: "Notion-backed mail client.",
+        description: "Widget application.",
       },
       isCatchAllFallback: false,
       configProjects: [
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
     })
@@ -200,9 +200,9 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     expect(stdout).toHaveBeenCalledTimes(1)
     const written = String(stdout.mock.calls[0][0])
-    expect(written).toContain("Project: Mail (apps/mail)")
-    expect(written).toContain("  Notion-backed mail client.")
-    // Siblings names *peers* — Mail is excluded as the resolved project.
+    expect(written).toContain("Project: Widget (apps/widget)")
+    expect(written).toContain("  Widget application.")
+    // Siblings names *peers* — the resolved project is excluded.
     expect(written).toContain("  Siblings: Web.")
   })
 
@@ -219,7 +219,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       isCatchAllFallback: true,
       configProjects: [
         { name: "Monorepo", path: "." },
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
     })
@@ -231,7 +231,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     // Lead-in mirrors the save-side wording byte-for-byte (shared via
     // `formatCatchAllScopeSummary` in `src/core/context.ts`).
     expect(written).toContain(
-      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Mail, Web. Pass projectName to scope to a specific sub-project.',
+      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Widget, Web. Pass projectName to scope to a specific sub-project.',
     )
   })
 
@@ -252,7 +252,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       },
       isCatchAllFallback: false,
       configProjects: [
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
     })
@@ -262,27 +262,27 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     const written = String(stdout.mock.calls[0][0])
     expect(written).toContain("Project: Web (apps/web)")
     expect(written).toContain("  Marketing site.")
-    expect(written).not.toContain("Mail (apps/mail)")
+    expect(written).not.toContain("Widget (apps/widget)")
   })
 
   it("omits the description line when Project.description is empty", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     await wakeup()
 
     const written = String(stdout.mock.calls[0][0])
-    expect(written).toContain("Project: Mail (apps/mail)")
+    expect(written).toContain("Project: Widget (apps/widget)")
     // No description filler line beneath the header.
     expect(written).not.toMatch(/^ {2}Notion/m)
   })
@@ -311,15 +311,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
       tasks: [makeTask({ id: "task-1" }), makeTask({ id: "task-2" })],
       coverage: buildEmptyWakeUpCoverage({
         mode: "ranked",
@@ -372,15 +372,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     try {
@@ -410,15 +410,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     const event = JSON.stringify({
       hook_event_name: "UserPromptSubmit",
@@ -454,15 +454,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       .mockImplementation(() => true)
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     loadWakeUpDataMock.mockRejectedValueOnce(new Error("notion down"))
 
@@ -496,15 +496,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       .mockImplementation(() => true)
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     loadWakeUpDataMock.mockRejectedValueOnce(
       new Error(
@@ -539,15 +539,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       .mockImplementation(() => true)
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     loadWakeUpDataMock.mockResolvedValueOnce({
       digest: null,
@@ -591,15 +591,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     try {
@@ -658,15 +658,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
       tasks,
     })
 
@@ -691,15 +691,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("uses Codex UserPromptSubmit prompt as the ranked wake-up query", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     await wakeup({
@@ -725,15 +725,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("debounces repeated Codex UserPromptSubmit wake-up for the same session", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     const event = JSON.stringify({
       hook_event_name: "UserPromptSubmit",
@@ -753,15 +753,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("allows a Codex UserPromptSubmit without a session id without writing a wake-up marker", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     await wakeup({
@@ -783,15 +783,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("debounces later slash-command Codex prompts after ranked wake-up has run", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     await wakeup({
@@ -820,15 +820,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("debounces slash-command first Codex prompts before later ranked prompts", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
 
     await wakeup({
@@ -860,15 +860,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("records the wake-up attempt before load failures so later prompts skip", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     loadWakeUpDataMock.mockRejectedValueOnce(new Error("notion down"))
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
@@ -897,15 +897,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("skips a same-process Codex prompt after the marker write hits EEXIST", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     const event = JSON.stringify({
       hook_event_name: "UserPromptSubmit",
@@ -927,15 +927,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   it("honors hooks.wakeUp false before writing a debounce marker", async () => {
     setupMocks({
       project: {
-        id: "proj-mail",
-        name: "Mail",
+        id: "proj-widget",
+        name: "Widget",
         type: "project",
-        path: "apps/mail",
+        path: "apps/widget",
         status: "active",
         description: "",
       },
       isCatchAllFallback: false,
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
       wakeUp: false,
     })
 

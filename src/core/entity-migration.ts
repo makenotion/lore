@@ -423,7 +423,7 @@ export async function buildEntities(
  *
  * The PF3-01 spec's flagship acceptance criterion is "post-migration,
  * the orphan-rate metric (`subjects appearing in exactly 1 fact`)
- * drops from 79.6% to <50% on the Mail vault." The methodology lives
+ * drops from 79.6% to <50% on an internal vault." The methodology lives
  * in `src/core/AGENTS.md` ("Measuring whether `--build-entities`
  * collapsed the orphan graph"); this report is the wired computation
  * site.

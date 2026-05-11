@@ -31,7 +31,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       debugLogAutoFactFailure(
         "save",
         "mem-1",
-        "PR #25750",
+        "PR #1234",
         new Error("notion 429"),
       )
       expect(write).not.toHaveBeenCalled()
@@ -48,7 +48,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       debugLogAutoFactFailure(
         "save",
         "mem-1",
-        "PR #25750",
+        "PR #1234",
         new Error("notion 429"),
       )
       expect(write).toHaveBeenCalledTimes(1)
@@ -58,7 +58,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       // key set across both save creates and update creates /
       // invalidates (issue #491).
       expect(line).toBe(
-        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #25750 error=notion 429\n",
+        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #1234 error=notion 429\n",
       )
     } finally {
       vi.unstubAllEnvs()
@@ -78,7 +78,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       debugLogAutoFactFailure(
         "update",
         "mem-1",
-        "PR #25750",
+        "PR #1234",
         new Error("notion 503"),
         "invalidate",
       )
@@ -86,7 +86,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       expect(line).toContain("source=update")
       expect(line).toContain("kind=invalidate")
       expect(line).toContain("memoryId=mem-1")
-      expect(line).toContain("entity=PR #25750")
+      expect(line).toContain("entity=PR #1234")
       expect(line).toContain("error=notion 503")
     } finally {
       vi.unstubAllEnvs()
@@ -317,7 +317,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       debugLogAutoFactFailure(
         "save",
         "mem-1",
-        "PR #25750",
+        "PR #1234",
         new Error(`unable to read ${id}`),
       )
       const line = String(stderr.mock.calls[0]![0])
@@ -435,10 +435,10 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
     })
 
     it("debugLogAutoFactFailure with a clean message preserves memoryId and entity", () => {
-      debugLogAutoFactFailure("save", "mem-1", "PR #25750", new Error("notion 429"))
+      debugLogAutoFactFailure("save", "mem-1", "PR #1234", new Error("notion 429"))
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #25750 error=notion 429\n",
+        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #1234 error=notion 429\n",
       )
     })
 

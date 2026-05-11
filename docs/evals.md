@@ -74,7 +74,7 @@ production vault still hammers per-token rate limits and surfaces
 misleading "drift" against fixture-shaped expectations — the env-var
 gate forces an explicit decision.
 
-The boundary is a regex `\b` word boundary, so `Mail-staging`, `Eval-Project`,
+The boundary is a regex `\b` word boundary, so `Widget-staging`, `Eval-Project`,
 and `dev-vault` all pass, but **camel-case names without a separator**
 (`EvalProject`, `TestVault`) reject — the regex sees those as embedded
 substrings rather than standalone markers. If your sandbox uses a

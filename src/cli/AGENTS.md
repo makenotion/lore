@@ -281,12 +281,8 @@ The other subcommands:
 `NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml`
 when an operator's `auth.json` carries multiple workspaces. See
 the root `AGENTS.md` **Authentication** section for the full
-priority chain, [`docs/team-setup.md`](../../docs/team-setup.md) for
-the public-named onboarding entry point (Entities cutover,
-direct-ntn-outside-Lore gotcha, shared-vault hook config), and
-[`docs/internal-rollout.md`](../../docs/internal-rollout.md) for the
-deeper team-rollout playbook (rename tracked in
-[#571](https://github.com/makenotion/lore/issues/571)).
+priority chain, and the [team-rollout runbook](../../docs/team-rollout.md)
+for the operator-facing onboarding flow.
 
 ## The migrate Command
 
@@ -310,7 +306,7 @@ design).
 ### Agent identity normalization (`--normalize-agents`)
 
 PF3-02. Scans every non-archived memory's `Agent` field and collapses
-the seven Claude variants observed in the production Mail vault audit
+the seven Claude variants observed in the internal vault audit
 (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`,
 `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`,
 `claude-code-opus-4-7`) plus the bare-version cousin
@@ -479,7 +475,7 @@ Mechanics:
   path. The CLI re-touches the same marker after spawning, so a manual run
   debounces the next Stop hook's auto-path correctly.
 
-Operators invoke `lore digest --project Mail` (or any configured
+Operators invoke `lore digest --project Widget` (or any configured
 sub-project). It's the explicit path; the Stop hook fires it implicitly
 once per project per 7 days when the cwd resolves to a single sub-project,
 via a detached `auto-digest` helper child (so the parent Stop hook never

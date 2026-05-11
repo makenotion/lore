@@ -185,19 +185,19 @@ describe("tryAcquireSessionLock — LockPathTooLongError defense (#485)", () => 
 
     let thrown: unknown = null
     try {
-      tryAcquireSessionLock("digest-Mail", process.pid)
+      tryAcquireSessionLock("digest-Widget", process.pid)
     } catch (err) {
       thrown = err
     }
 
     expect(thrown).toBeInstanceOf(LockPathTooLongError)
     if (thrown instanceof LockPathTooLongError) {
-      expect(thrown.lockKey).toBe("digest-Mail")
+      expect(thrown.lockKey).toBe("digest-Widget")
       // The `message` on the error includes the code and lockKey so
       // generic catch-and-log sites still surface useful context, even
       // if they don't pattern-match on the class.
       expect(thrown.message).toContain("ENAMETOOLONG")
-      expect(thrown.message).toContain("digest-Mail")
+      expect(thrown.message).toContain("digest-Widget")
     }
   })
 

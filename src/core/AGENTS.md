@@ -1374,12 +1374,12 @@ archived loser relation after the merge releases the lock.
 
 The PF3-01 spec's flagship acceptance criterion is "post-migration,
 the orphan-rate metric (`subjects appearing in exactly 1 fact`) drops
-from 79.6% to <50% on the Mail vault." The migration ships with
+from 79.6% to <50% on an internal vault." The migration ships with
 case-folding-only canonical clustering — `computeSubjectKey` collapses
 case/whitespace/trailing-punct variants but does NOT recognize that
 `MemoryService.create` is a richer-handle variant of `MemoryService`
-or that `PR #25705 (SENTRY-MAIL-IOS-2E3)` is metadata-tagged onto the
-same `PR #25705` entity. The next contributor evaluating whether to
+or that `PR #1234 (SENTRY-APP-2E3)` is metadata-tagged onto the
+same `PR #1234` entity. The next contributor evaluating whether to
 ship a richer canonical clusterer needs to be able to compute this
 metric without re-deriving the methodology.
 
@@ -1388,7 +1388,7 @@ metric without re-deriving the methodology.
 1. Snapshot every live fact:
    `dataSources.query` against the Facts DS, filter `Valid Until is_empty`,
    paginate to exhaustion. Project-scoped or vault-wide depending on
-   what the spec criterion measures (Mail vault is project-scoped).
+   what the spec criterion measures (internal vault is project-scoped).
 2. Group by canonical entity. The post-migration row's
    `SubjectEntity` relation IS the canonical key — empty relations
    mean the row hasn't been re-pointed (either pre-migration or a
@@ -1397,7 +1397,7 @@ metric without re-deriving the methodology.
    un-migrated rows still cluster by their case-folded form.
 3. Compute `1 - groups_with_count >= 2 / total_groups`. The
    numerator is groups with at least one peer; the denominator is
-   total distinct entities/keys. Pre-PF3-01 baseline on the Mail vault
+   total distinct entities/keys. Pre-PF3-01 baseline on an internal vault
    was 79.6% (560 facts → ~445 distinct subjects → ~89 had a peer).
 
 The metric is wired through
@@ -1567,7 +1567,7 @@ and silently suppresses duplicate detection.
 Memory `Agent` is a free-form `rich_text` column populated by
 `deriveAgentName` in `src/hooks/helpers.ts`. Default detection produced
 seven different spellings of the same Claude Code instance in the
-production Mail vault (`Claude Code`, `claude-code`, `Claude Opus 4.7
+internal vault (`Claude Code`, `claude-code`, `Claude Opus 4.7
 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`,
 `claude-opus-4-7`, `claude-code-opus-4-7` — see PF3-02), fragmenting
 per-agent grouping, retention queries, and dashboards across multiple
@@ -2248,7 +2248,7 @@ by an `Entity contains` server-side OR probe; helpers include:
 Candidate cap is `ENTITY_CANDIDATE_LIMIT = 5` (Notion's OR-branch
 ceiling); per-pattern cap is `PER_PATTERN_MATCH_CAP = 5` and counts
 **iteration attempts**, not unique additions — a pathological input
-where the same `PR #25750` repeats 50 times in keywords would
+where the same `PR #1234` repeats 50 times in keywords would
 otherwise scan all 50 before yielding to later patterns.
 
 **Failure-domain isolation**. The whole helper body (sync tokenizer +
@@ -2340,7 +2340,7 @@ manual invalidation produce structurally identical row state.
 The pre-query runs unconditionally inside the
 `extractionInputsTouched` gate (no `mentionedEntities.length > 0`
 short-circuit) — without this, an update that strips every entity
-from the surface (e.g. retitling `Investigated PR #25750 latency
+from the surface (e.g. retitling `Investigated PR #1234 latency
 regression` to `Generic refactor notes`) would silently leave the
 existing `mentions` facts orphaned, the exact dynamic issue #491
 exists to close.

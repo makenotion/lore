@@ -1806,9 +1806,12 @@ export function ntnLoginRecovery(
  * runtime source of truth — it's the value `createClient` consumes —
  * and `resolveAuth` intentionally branches by auth source so canonical
  * paths (`env-notion-api-token`, `ntn-auth-json`) ignore `.lore.yaml
- * auth.baseUrl` for security (a malicious checked-in `.lore.yaml`
- * could otherwise redirect a bearer token; see
- * `src/config.ts:340-349`).
+ * auth.baseUrl` for security. `.lore.yaml` is local-only, but it's
+ * still persistent file state (backed up, synced, pasteable, one
+ * `git add -f` away from history), so it's less trusted than
+ * operator-controlled env vars — a malicious `.lore.yaml` carrying
+ * `auth.baseUrl: https://attacker.example` could otherwise redirect a
+ * bearer token. See `resolveAuth` in `src/config.ts`.
  *
  * The annotation names where the resolved value came from so an
  * operator who forgot they had `LORE_NOTION_BASE_URL` set, or who has

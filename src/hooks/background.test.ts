@@ -231,12 +231,12 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
   })
 
   it("forwards LORE_USER_NAME (DEFERRED-ATTRIBUTION) when set so the spawned MCP child skips the users.me round-trip", () => {
-    process.env["LORE_USER_NAME"] = "Hesham Salman"
+    process.env["LORE_USER_NAME"] = "Test User"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
     expect(result.kind).toBe("spawned")
 
-    expect(lastSpawnEnv()["LORE_USER_NAME"]).toBe("Hesham Salman")
+    expect(lastSpawnEnv()["LORE_USER_NAME"]).toBe("Test User")
   })
 
   it("does NOT inject any forwarded key when none are set in the parent env (no empty-string injection)", () => {
@@ -280,7 +280,7 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     process.env["NOTION_ENV"] = "dev"
     process.env["NOTION_BASE_URL"] = "https://api-dev.notion.com"
     process.env["NOTION_API_BASE_URL"] = "https://api-dev.notion.com"
-    process.env["LORE_USER_NAME"] = "Hesham Salman"
+    process.env["LORE_USER_NAME"] = "Test User"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
     expect(result.kind).toBe("spawned")
@@ -376,7 +376,7 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
     process.env["NOTION_ENV"] = "dev"
     process.env["NOTION_BASE_URL"] = "https://api-dev.notion.com"
     process.env["NOTION_API_BASE_URL"] = "https://api-dev.notion.com"
-    process.env["LORE_USER_NAME"] = "Hesham Salman"
+    process.env["LORE_USER_NAME"] = "Test User"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
       authSource: "ntn-auth-json",
@@ -389,7 +389,7 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
     expect(env["NOTION_ENV"]).toBe("dev")
     expect(env["NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
     expect(env["NOTION_API_BASE_URL"]).toBe("https://api-dev.notion.com")
-    expect(env["LORE_USER_NAME"]).toBe("Hesham Salman")
+    expect(env["LORE_USER_NAME"]).toBe("Test User")
   })
 
   it("under authSource=env-notion-api-token, forwards NOTION_API_TOKEN as today", () => {

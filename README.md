@@ -109,30 +109,78 @@ and pass its id to `lore init`:
 lore init <page-id>
 ```
 
-Every engineer's `.lore.yaml` then points at the same page id, so memories,
-facts, and decisions land in a vault the whole team can read. If no auth
-resolves at this point, `lore init` offers to install `ntn` and run
-`ntn login` for you before continuing — the same fallback the no-arg flow
-below uses.
+This is the recommended path for shared use: the page lives at a
+deliberate location (a team workspace, a project sub-page) with
+deliberate sharing, and every engineer's local `.lore.yaml` points at the
+same id.
 
-**For a personal vault**, run `lore init` with no argument. Lore creates a
-workspace-level page on your behalf using the active auth source, runs a
-preflight check, initializes the databases, and writes `.lore.yaml`. If no
-auth resolves, it offers to install `ntn` and run `ntn login` first:
+`.lore.yaml` is local-only — keep it out of version control. Copy
+`.lore.example.yaml` to `.lore.yaml` in each clone and paste the shared
+`vault.pageId` from your team's onboarding docs (or let `lore init`
+write the file for you). Distribute shared values via onboarding docs,
+not by committing config.
+
+Notion page IDs are access locators, not bearer credentials: knowing a page ID
+does not grant access unless the caller's Notion token can already read that
+page. Even so, keep `vault.pageId` out of version control so external clones of
+a public repo don't auto-target a maintainer's vault. If a personal or
+accidental page ID lands in git history, scrub the working tree and decide with
+the page owner whether to replace the page or rewrite history.
+
+**For personal vaults / fresh-onboarding scratch use**, the no-arg
+flow creates a workspace-level page on your behalf using the active auth
+source. If no auth resolves, it auto-installs ntn, runs `ntn login`, and then
+writes `.lore.yaml`:
 
 ```bash
-lore init                          # default title: "Lore Vault — <basename(cwd)>"
-lore init --name "Lore Vault Mail" # explicit title
-lore init --ntn-env dev            # bootstrap against the dev Notion environment
+lore init                            # default title: "Lore Vault — <basename(cwd)>"
+lore init --name "Lore Vault Widget" # explicit title
+lore init --ntn-env dev              # bootstrap against the dev Notion environment
 ```
 
-`.lore.yaml` is meant to be committed only when it contains shared,
-non-secret config. A team-owned `vault.pageId` is fine to commit; never
-commit `auth.token`, personal vault page ids, or any other personal value.
-Notion page ids are access locators, not bearer credentials — knowing one
-doesn't grant access unless your token already can read the page.
+If your existing ntn auth points at a different environment than `--ntn-env`,
+Lore exits 1 with recovery copy (typically
+`ntn logout && NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`) rather than
+silently creating a vault in the wrong environment. Either init path creates the
+five databases inside the page (Projects, Topics, Memories, Entities, Facts)
+and writes a `.lore.yaml` config file.
 
-### 4. Wire Lore Into Your AI Assistant
+For direct non-ntn integration tokens, set the canonical Notion SDK env var and
+share the page with that integration before `lore init <page-id>`. This path is
+only for non-ntn integrations; ntn users do not separately share with the
+`Notion Workers CLI` bot.
+
+```bash
+export NOTION_API_TOKEN=<your-integration-token>
+```
+
+See [`docs/team-rollout.md`](docs/team-rollout.md) for the per-engineer
+onboarding flow and team-lead runbook.
+
+### 3. Refresh Auth for an Existing Vault
+
+Once your local `.lore.yaml` points at a configured vault, use the Lore auth
+wrapper to refresh ntn auth and preflight access:
+
+```bash
+lore auth --login
+```
+
+`LORE_NOTION_TOKEN` and inline `auth.token` remain soft-deprecated migration
+fallbacks. Removal is plausibly 0.11.0 or 1.0.0, contingent on telemetry
+showing no internal team still relies on them; see
+[`src/auth/AGENTS.md`](src/auth/AGENTS.md) for migration timing. Lore warns
+whenever it sees `auth.token` in `.lore.yaml`, even when a higher-priority auth
+source wins, and rejects Notion bearer-shaped values such as `ntn_...` or
+`secret_...` at config load time — a local file is still backed up, synced,
+and easy to paste from.
+
+Existing vaults from before PF3-01 need one bootstrap step before the
+entity backfill: run `lore vault ensure-entities`, then run
+`lore migrate --build-entities --yes` in a quiet window to canonicalize
+the fact graph.
+
+### 4. Configure Your AI Assistant
 
 ```bash
 lore install
@@ -170,8 +218,8 @@ paste the emitted MCP server snippet into the host's config file. See
 
 ### 5. Refresh Auth On An Existing Vault
 
-Once a repo already has `.lore.yaml` checked in, refresh ntn auth and
-preflight access to the configured vault with:
+Once your local `.lore.yaml` points at a configured vault, refresh ntn auth
+and preflight access with:
 
 ```bash
 lore auth --login
@@ -330,19 +378,19 @@ behavior, and compatibility notes.
 Lore is configured via `.lore.yaml`. The file is located by searching upward
 from the current working directory.
 
-Committed `.lore.yaml` files must contain only shared, non-secret config.
-Allowed values include a team-owned `vault.pageId`, project mappings, detection
-rules, and hook preferences. Do not commit `auth.token`, personal scratch
-vault page IDs, or anything personally identifying; use environment variables
-or ntn auth for credentials.
+`.lore.yaml` is local-only — keep it out of version control. Copy
+`.lore.example.yaml` to `.lore.yaml` and fill in your values, or run
+`lore init` to generate one. Distribute shared team values (`vault.pageId`,
+`auth.workspaceId`) through your onboarding docs rather than committing config;
+never put `auth.token`, personal scratch vault page IDs, or personally
+identifying values in the file.
 
 Threat-model posture for `vault.pageId`: a Notion page ID is not a credential,
-and exposing one does not bypass Notion permissions. Team-owned vault IDs may be
-committed when the page is deliberately shared with the repo's operators. A page
-ID that is personal, provisional, or accidentally copied from a personal
-scratch vault should be removed from the working tree; history rewrite or page
-replacement is only needed when the owner considers the page location itself
-sensitive.
+and exposing one does not bypass Notion permissions. Even so, keep page IDs out
+of git so external clones of a public repo don't auto-target an unrelated
+vault. A page ID that lands in history by accident should be removed from the
+working tree; history rewrite or page replacement is only needed when the owner
+considers the page location itself sensitive.
 
 ```yaml
 # Required: Notion page ID containing the vault databases

@@ -124,7 +124,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--normalize-agents",
-    "Collapse free-form `Agent` strings on every memory onto their canonical form. The seven Claude variants observed in the PF3-02 Mail-vault audit (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`, `claude-code-opus-4-7`) plus the bare-version cousin (`Claude Opus 4.7`) all rewrite to `Claude Code`; explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through unchanged. Plan-only by default — re-run with `--yes` to apply. Idempotent."
+    "Collapse free-form `Agent` strings on every memory onto their canonical form. The seven Claude variants observed in the PF3-02 internal-vault audit (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`, `claude-code-opus-4-7`) plus the bare-version cousin (`Claude Opus 4.7`) all rewrite to `Claude Code`; explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through unchanged. Plan-only by default — re-run with `--yes` to apply. Idempotent."
   )
   .option(
     "--backfill-synopses",
@@ -945,8 +945,8 @@ export interface FactMatchCandidate {
  * require a search hit whose title contains the fact's subject or object.
  * Operator reviews the printed report and re-runs with `--apply` to commit.
  *
- * This is best-effort triage for the orphan backlog surfaced in the Mail
- * vault audit — not a substitute for the write-side `sourceMemoryId`
+ * This is best-effort triage for the orphan backlog surfaced in the
+ * internal vault audit — not a substitute for the write-side `sourceMemoryId`
  * discipline now enforced on `lore-fact action='create'`.
  */
 export async function backfillFactSources(
@@ -1072,7 +1072,7 @@ export async function proposeSourceMemory(
 /**
  * A query must be long enough to be discriminating, or multi-word so a
  * substring hit is unlikely to be incidental. Three-letter common tokens
- * ("API", "DB", "Mail") would otherwise false-positive against half the
+ * ("API", "DB", "Widget") would otherwise false-positive against half the
  * workspace.
  */
 function matchableQuery(query: string): boolean {

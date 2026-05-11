@@ -191,10 +191,10 @@ function failureContext(tmpDir: string): {
 } {
   return {
     configRoot: tmpDir,
-    cwd: join(tmpDir, "apps/mail/service"),
+    cwd: join(tmpDir, "apps/widget/service"),
     config: {
       vault: { pageId: "vault-fixture-id" },
-      projects: [{ name: "Mail Backend", path: "apps/mail" }],
+      projects: [{ name: "Widget Backend", path: "apps/widget" }],
     },
   }
 }
@@ -398,7 +398,7 @@ describe("handleStop", () => {
     // `LORE_USER_NAME` keeps that path synchronous and avoids a
     // `users.me` round-trip. Pin both the conditional forward (set →
     // forwarded) AND the absence of unrelated env leakage.
-    process.env["LORE_USER_NAME"] = "Hesham Salman"
+    process.env["LORE_USER_NAME"] = "Test User"
     try {
       writeTranscript(transcriptPath, 3)
       await handleStop(
@@ -416,7 +416,7 @@ describe("handleStop", () => {
         string[],
         { env: Record<string, string> },
       ]
-      expect(options.env["LORE_USER_NAME"]).toBe("Hesham Salman")
+      expect(options.env["LORE_USER_NAME"]).toBe("Test User")
     } finally {
       delete process.env["LORE_USER_NAME"]
     }
@@ -593,7 +593,7 @@ describe("handleStop", () => {
     const [marker] = await listBackgroundFailures(context.configRoot)
     expect(marker).toMatchObject({
       kind: "autosave",
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-missing-binary",
       code: "binary-missing",
     })
@@ -605,7 +605,7 @@ describe("handleStop", () => {
     const context = failureContext(tmpDir)
     recordBackgroundFailure(context.configRoot, {
       kind: "autosave",
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-prior-failure",
       code: "binary-missing",
       message: "background command missing",
@@ -633,7 +633,7 @@ describe("handleStop", () => {
     spawnMock.mockImplementation(() => {
       recordBackgroundFailure(context.configRoot, {
         kind: "autosave",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-concurrent-failure",
         code: "spawn-error",
         message: "concurrent stop failed",
@@ -658,7 +658,7 @@ describe("handleStop", () => {
     })
     expect(marker).toMatchObject({
       kind: "autosave",
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-concurrent-failure",
       code: "spawn-error",
     })
@@ -979,7 +979,7 @@ describe("handleAutoDigest", () => {
   const FIXTURE_YAML = `vault:
   pageId: vault-fixture-id
 projects:
-  - name: Mail
+  - name: Widget
     path: .
 hooks:
   autoDigest: true
@@ -1361,14 +1361,14 @@ describe("deriveAuthorName (DEFERRED-ATTRIBUTION)", () => {
 
   it("returns the explicit env override when LORE_USER_NAME is set", () => {
     delete process.env["LORE_USER_NAME"]
-    process.env["LORE_USER_NAME"] = "Hesham Salman"
-    expect(deriveAuthorName({})).toBe("Hesham Salman")
+    process.env["LORE_USER_NAME"] = "Test User"
+    expect(deriveAuthorName({})).toBe("Test User")
   })
 
   it("trims surrounding whitespace on the override", () => {
     delete process.env["LORE_USER_NAME"]
-    process.env["LORE_USER_NAME"] = "  Hesham Salman  "
-    expect(deriveAuthorName({})).toBe("Hesham Salman")
+    process.env["LORE_USER_NAME"] = "  Test User  "
+    expect(deriveAuthorName({})).toBe("Test User")
   })
 
   it("returns undefined when LORE_USER_NAME is unset", () => {

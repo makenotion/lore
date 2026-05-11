@@ -150,7 +150,7 @@ function formatMissingVaultDatabasesMessage(
   return (
     `${prefix} Found existing Lore databases: ${present.join(", ")}. ` +
     "This is a partial vault schema; do not run 'lore init' on this page because it would create duplicate databases. " +
-    "Follow docs/internal-rollout.md#entities-database-cutover to add or repair the missing databases, then rerun."
+    "Follow docs/team-rollout.md#entities-database-cutover to add or repair the missing databases, then rerun."
   )
 }
 

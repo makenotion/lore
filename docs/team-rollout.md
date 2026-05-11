@@ -1,16 +1,8 @@
-# Adopting Lore on a Team
+# Lore — ntn-First Auth Team Rollout Runbook
 
-> Audience: A team lead rolling Lore out to a shared Notion vault so every
-> engineer's AI assistants read and write the same memory.
->
-> Last updated: 2026-05-11.
-
-This guide walks through the operator-facing pieces of standing up Lore for a
-team: prerequisites each engineer needs, the one-time per-engineer
-onboarding flow, common failures, and the fallback knobs available if ntn auth
-doesn't fit your environment. For the end-user quickstart, start with the
-[README](../README.md); for the auth contract in full, see
-[`authentication.md`](authentication.md).
+> Audience: Team leads rolling Lore out to their teams.
+> Status: Living. Owners: _TBD — fill in before kickoff_.
+> Last updated: 2026-05-01.
 
 ## Prerequisites
 
@@ -149,12 +141,13 @@ For each team adopting Lore:
 
 - [ ] Confirm the team's vault page exists in a workspace that
       the team's engineers belong to. Record the page id.
-- [ ] Confirm the team's `.lore.yaml` is checked into the team
-      repo with the right `vault.pageId`. If the team is in a
-      multi-workspace setup, also set `auth.workspaceId` (in the
-      team's `.lore.yaml` under `auth: workspaceId: <id>`) to
-      disambiguate.
-- [ ] Send the team this guide + the line-items each engineer
+- [ ] Document the team's `vault.pageId` in your onboarding
+      README (and `auth.workspaceId` if the team is in a
+      multi-workspace setup). `.lore.yaml` is local-only; each
+      engineer copies `.lore.example.yaml` to `.lore.yaml` and
+      pastes the shared values during onboarding. Do not commit
+      `.lore.yaml`.
+- [ ] Send the team this runbook + the line-items each engineer
       needs to do.
 
 **No "share with integration" step** when using ntn-issued tokens.
@@ -218,7 +211,7 @@ lore auth --migrate
 # instruction. Run the unset, source the rc, done.
 ```
 
-### Dev-environment onboarding
+### Dev-environment onboarding (PnP-style)
 
 > Skip this section unless your team runs Lore against a non-prod
 > Notion environment (Notion's `api-dev.notion.com`, a staging
@@ -233,7 +226,7 @@ post-login auth resolution surfaces the dev base URL automatically:
 
 ```bash
 # Fresh dev onboarding (no prior ntn auth):
-cd <your repo>
+cd ~/Developer/widget
 lore init --ntn-env dev
 # Flow:
 #   1. tryResolveAuth fails (no auth yet) → ntn install/login
@@ -250,7 +243,7 @@ ntn logout
 NOTION_KEYRING=0 NOTION_ENV=dev ntn login
 # Or: lore init --ntn-env dev (will spawn the login with
 # NOTION_KEYRING=0 forced if no auth resolves)
-cd <your dev repo>
+cd ~/Developer/widget-dev
 lore init --ntn-env dev
 ```
 
@@ -385,7 +378,7 @@ Engineers who use ntn for other purposes (workers, page
 management, etc.) and want bidirectional consistency should adopt
 path 2 as a one-time setup.
 
-## Falling back to a shared integration token
+## Rollback during the rollout window
 
 If ntn-first surfaces real issues for your team — `auth.json` shape
 mismatches break Lore's reader, frequent mid-session token expiry, or
@@ -480,9 +473,55 @@ ask:
 
 ## Shared-vault hook configuration
 
-> Origin: [issue #281](https://github.com/makenotion/lore/issues/281)
-> (closed; live behavior documented in
-> [`memory-workflows.md`](memory-workflows.md)).
+The release coordinator (#10) checks these off before promoting
+0.10.0 from "internal dogfood" to "ready for general internal
+adoption":
+
+- [ ] At least 2 internal teams have rolled out and have been on
+      ntn-first auth for at least 1 week.
+- [ ] No `[lore] partial-failure` lines tied to authentication in
+      the rollout teams' stderr logs over the rollout window.
+- [ ] At least 1 engineer has confirmed the multi-workspace flow
+      (`NOTION_WORKSPACE_ID` env or `auth.workspaceId` config) works
+      as documented.
+- [ ] At least 1 engineer has run `lore auth --migrate` from a
+      legacy `LORE_NOTION_TOKEN` setup successfully.
+- [ ] At least 1 engineer has hit a mid-session token expiry and
+      the documented `lore auth --login` + bounded in-process retry has
+      worked. If the refreshed auth is unchanged or still rejected, the
+      fallback restart recovery also works.
+- [ ] No regressions in the existing test surface.
+- [ ] No regressions in the existing `lore status` output.
+
+## Telemetry
+
+For the rollout window, optionally instrument:
+
+- [ ] One stderr line per `resolveAuth` resolution, recording
+      which source produced the token (`source: env-notion-api-token`
+      / `ntn-auth-json` / `env-lore-notion-token` /
+      `config-auth-token`). Gated by `LORE_DEBUG=1`. Helps the
+      release coordinator see how many engineers are actually on ntn
+      vs. fallbacks.
+
+This is optional and can ship as part of #01 / #06 if the team
+wants per-mode visibility during the rollout. Not a blocker.
+
+## Hard removal of `LORE_NOTION_TOKEN`
+
+Plausibly 0.11.0 or 1.0.0. Decision criteria:
+
+- All internal teams have completed migration to ntn-issued
+  tokens (target: 100%).
+- No CI scripts in any internal repo still reference
+  `LORE_NOTION_TOKEN` for anything other than service-account
+  workflows (which stay on integration-token auth deliberately —
+  CI is not an operator workflow).
+- No production hot path still uses it.
+
+Until those are met, the env-var path stays soft-deprecated.
+
+## Shared-vault hook configuration (issue #281)
 
 For shared-vault deployments where many engineers share a single Lore
 workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml`.

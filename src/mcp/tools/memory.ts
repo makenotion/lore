@@ -1175,7 +1175,7 @@ async function handleUpdate(
     // The query runs unconditionally inside the gate (no
     // `mentionedEntities.length > 0` short-circuit), because an
     // update that drops every entity from the extraction surface
-    // (e.g. retitling `Investigated PR #25750 latency regression`
+    // (e.g. retitling `Investigated PR #1234 latency regression`
     // to `Generic refactor notes`) must still invalidate the now-
     // stale facts, and we cannot know whether existing facts are
     // present without querying.

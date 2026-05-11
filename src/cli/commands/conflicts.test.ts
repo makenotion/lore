@@ -207,7 +207,7 @@ describe("parseScanCliOptions", () => {
 
   it("forwards boolean flags verbatim", () => {
     const result = parseScanCliOptions({
-      project: "Mail",
+      project: "Widget",
       limit: "5",
       includeBodies: true,
       json: true,
@@ -216,7 +216,7 @@ describe("parseScanCliOptions", () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value).toEqual<ScanCliOptions>({
-        projectName: "Mail",
+        projectName: "Widget",
         limit: 5,
         rawLimit: undefined,
         includeBodies: true,
@@ -230,10 +230,10 @@ describe("parseScanCliOptions", () => {
 describe("resolveScanProjects", () => {
   it("returns the single project when --project resolves", async () => {
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
     })
-    const refs = await resolveScanProjects(services, "Mail")
-    expect(refs).toEqual([{ id: "p-mail", label: "Mail" }])
+    const refs = await resolveScanProjects(services, "Widget")
+    expect(refs).toEqual([{ id: "p-widget", label: "Widget" }])
   })
 
   it("throws with a 'lore status' hint when --project is unknown", async () => {
@@ -299,13 +299,13 @@ describe("resolveScanProjects", () => {
 describe("runScan — pipeline shape", () => {
   it("returns 0 pairs when the vault has no candidate pairs", async () => {
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [memShape({ id: "m1", title: "Sole memory" })],
+        "p-widget": [memShape({ id: "m1", title: "Sole memory" })],
       },
     })
     const report = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -318,7 +318,7 @@ describe("runScan — pipeline shape", () => {
     const m1 = memShape({
       id: "m1",
       title: "JWT auth model",
-      projectIds: ["p-mail"],
+      projectIds: ["p-widget"],
       kind: "decision",
       synopsis: "Decided JWT.",
       keywords: "auth jwt",
@@ -328,7 +328,7 @@ describe("runScan — pipeline shape", () => {
     const m2 = memShape({
       id: "m2",
       title: "JWT auth model",
-      projectIds: ["p-mail"],
+      projectIds: ["p-widget"],
       kind: "decision",
       synopsis: "Switched away.",
       keywords: "auth session",
@@ -336,12 +336,12 @@ describe("runScan — pipeline shape", () => {
       confidenceScore: 0.84,
     })
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [m1, m2] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [m1, m2] },
     })
 
     const report = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -354,7 +354,7 @@ describe("runScan — pipeline shape", () => {
     expect(pair.memoryB.id).toBe("m2")
     expect(pair.memoryA.kind).toBe("decision")
     expect(pair.memoryB.kind).toBe("decision")
-    expect(pair.memoryA.project).toBe("Mail")
+    expect(pair.memoryA.project).toBe("Widget")
     expect(pair.memoryA.synopsis).toBe("Decided JWT.")
     expect(pair.memoryA.keywords).toEqual(["auth", "jwt"])
     // No --include-bodies → no body field on the wire shape.
@@ -377,16 +377,16 @@ describe("runScan — pipeline shape", () => {
       comparedWith: ["m1"],
     })
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [
-          { ...m1, projectIds: ["p-mail"] },
-          { ...m2, projectIds: ["p-mail"] },
+        "p-widget": [
+          { ...m1, projectIds: ["p-widget"] },
+          { ...m2, projectIds: ["p-widget"] },
         ],
       },
     })
     const report = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -473,13 +473,13 @@ describe("runScan — pipeline shape", () => {
     spy.mockReturnValue(candidates)
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [memShape({ id: "any", title: "any" })],
+        "p-widget": [memShape({ id: "any", title: "any" })],
       },
     })
     const report = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -502,11 +502,11 @@ describe("runScan — pipeline shape", () => {
     spy.mockReturnValue([])
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [] },
     })
     await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 5,
       includeBodies: false,
       json: false,
@@ -523,11 +523,11 @@ describe("runScan — pipeline shape", () => {
     spy.mockReturnValue([])
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [] },
     })
     await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 5,
       rawLimit: 750,
       includeBodies: false,
@@ -543,11 +543,11 @@ describe("runScan — pipeline shape", () => {
     spy.mockReturnValue([])
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [] },
     })
     await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -565,13 +565,13 @@ describe("runScan — pipeline shape", () => {
     const messages: string[] = []
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [] },
     })
     const report = await runScan(
       services,
       {
-        projectName: "Mail",
+        projectName: "Widget",
         limit: 50,
         rawLimit: 1000,
         includeBodies: false,
@@ -601,11 +601,11 @@ describe("runScan — pipeline shape", () => {
       content: "Body of m2",
     })
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [m1, m2] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [m1, m2] },
     })
     const report = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: true,
       json: false,
@@ -622,11 +622,11 @@ describe("runScan — pipeline shape", () => {
 
   it("scanId is a fresh UUID on each run", async () => {
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [] },
     })
     const opts: ScanCliOptions = {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -643,8 +643,8 @@ describe("runScan — pipeline shape", () => {
 
   it("emits progress lines via the injected log sink (not stderr/stdout directly)", async () => {
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
-      memoriesByProjectId: { "p-mail": [] },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
+      memoriesByProjectId: { "p-widget": [] },
     })
     const messages: string[] = []
     // Replace the listForScan spy with one that fires progress events.
@@ -676,7 +676,7 @@ describe("runScan — pipeline shape", () => {
     await runScan(
       services,
       {
-        projectName: "Mail",
+        projectName: "Widget",
         limit: 50,
         includeBodies: false,
         json: false,
@@ -685,7 +685,7 @@ describe("runScan — pipeline shape", () => {
       (msg) => messages.push(msg),
     )
     expect(messages).toHaveLength(1)
-    expect(messages[0]).toContain("Mail")
+    expect(messages[0]).toContain("Widget")
     expect(messages[0]).toContain("page 1")
     expect(messages[0]).toContain("42 memories")
   })
@@ -699,8 +699,8 @@ describe("runScan — pipeline shape", () => {
     // comparedWith filtering across cycles) is independent of the
     // generator's internals — pin it directly.
     const allPairs = Array.from({ length: 150 }, (_, i) => ({
-      memoryA: memShape({ id: `a${i}`, title: `t${i}`, projectIds: ["p-mail"] }),
-      memoryB: memShape({ id: `b${i}`, title: `t${i}`, projectIds: ["p-mail"] }),
+      memoryA: memShape({ id: `a${i}`, title: `t${i}`, projectIds: ["p-widget"] }),
+      memoryB: memShape({ id: `b${i}`, title: `t${i}`, projectIds: ["p-widget"] }),
       similarity: 1 - i / 1000,
       signals: ["title trigram: 1.00"],
     }))
@@ -723,16 +723,16 @@ describe("runScan — pipeline shape", () => {
     })
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [memShape({ id: "any", title: "any" })],
+        "p-widget": [memShape({ id: "any", title: "any" })],
       },
     })
 
     const surfacedCounts: number[] = []
     for (let cycle = 0; cycle < 4; cycle++) {
       const report = await runScan(services, {
-        projectName: "Mail",
+        projectName: "Widget",
         limit: 50,
         includeBodies: false,
         json: false,
@@ -766,14 +766,14 @@ describe("runScan — pipeline shape", () => {
     })
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [memShape({ id: "any", title: "any" })],
+        "p-widget": [memShape({ id: "any", title: "any" })],
       },
     })
 
     const r1 = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 1000,
       includeBodies: false,
       json: false,
@@ -783,7 +783,7 @@ describe("runScan — pipeline shape", () => {
     expect(r1.stats.rawCandidateLimitReached).toBe(true)
 
     const r2 = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 1000,
       rawLimit: 600,
       includeBodies: false,
@@ -793,7 +793,7 @@ describe("runScan — pipeline shape", () => {
     expect(r2.pairs).toHaveLength(600)
 
     const r3 = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 1000,
       includeBodies: false,
       json: false,
@@ -829,14 +829,14 @@ describe("runScan — pipeline shape", () => {
     })
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [memShape({ id: "any", title: "any" })],
+        "p-widget": [memShape({ id: "any", title: "any" })],
       },
     })
 
     const firstWindow = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -847,7 +847,7 @@ describe("runScan — pipeline shape", () => {
     expect(firstWindow.stats.alreadyJudgedCandidates).toBe(SCAN_RAW_CANDIDATE_CAP)
 
     const followUp = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       rawLimit: SCAN_RAW_CANDIDATE_CAP + 25,
       includeBodies: false,
@@ -882,14 +882,14 @@ describe("runScan — pipeline shape", () => {
     })
 
     const services = makeServices({
-      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
       memoriesByProjectId: {
-        "p-mail": [memShape({ id: "any", title: "any" })],
+        "p-widget": [memShape({ id: "any", title: "any" })],
       },
     })
 
     const report = await runScan(services, {
-      projectName: "Mail",
+      projectName: "Widget",
       limit: 50,
       includeBodies: false,
       json: false,
@@ -939,7 +939,7 @@ describe("renderScanJson", () => {
           stats: scanStats({
             rawCandidateLimit: 750,
             rawCandidateLimitReached: true,
-            rawCandidateLimitReachedProjects: ["Mail"],
+            rawCandidateLimitReachedProjects: ["Widget"],
             alreadyJudgedCandidates: 750,
           }),
         }),
@@ -947,7 +947,7 @@ describe("renderScanJson", () => {
     )
     expect(out.stats.rawCandidateLimit).toBe(750)
     expect(out.stats.rawCandidateLimitReached).toBe(true)
-    expect(out.stats.rawCandidateLimitReachedProjects).toEqual(["Mail"])
+    expect(out.stats.rawCandidateLimitReachedProjects).toEqual(["Widget"])
   })
 
   it("documents direction rules (unordered labels, affectedMemoryId for asymmetric, supersedes-decision)", () => {
@@ -974,7 +974,7 @@ describe("renderScanJson", () => {
               memoryA: {
                 id: "m1",
                 title: "A",
-                project: "Mail",
+                project: "Widget",
                 kind: "decision",
                 confidence: "certain",
                 confidenceScore: 0.9,
@@ -984,7 +984,7 @@ describe("renderScanJson", () => {
               memoryB: {
                 id: "m2",
                 title: "B",
-                project: "Mail",
+                project: "Widget",
                 kind: "note",
                 confidence: "certain",
                 confidenceScore: null,
@@ -1036,7 +1036,7 @@ describe("renderScanMarkdown", () => {
       stats: scanStats({
         rawCandidateLimit: SCAN_RAW_CANDIDATE_CAP,
         rawCandidateLimitReached: true,
-        rawCandidateLimitReachedProjects: ["Mail"],
+        rawCandidateLimitReachedProjects: ["Widget"],
         rawCandidates: SCAN_RAW_CANDIDATE_CAP,
         dedupedCandidates: SCAN_RAW_CANDIDATE_CAP,
         alreadyJudgedCandidates: SCAN_RAW_CANDIDATE_CAP,
@@ -1045,7 +1045,7 @@ describe("renderScanMarkdown", () => {
       pairs: [],
     })
     expect(md).toContain("hit the raw-candidate limit")
-    expect(md).toContain("Mail")
+    expect(md).toContain("Widget")
     expect(md).toContain("--raw-limit <higher n>")
     expect(md).toContain("--exhaustive")
   })
@@ -1061,7 +1061,7 @@ describe("renderScanMarkdown", () => {
           memoryA: {
             id: "m1",
             title: "JWT auth model",
-            project: "Mail",
+            project: "Widget",
             kind: "decision",
             confidence: "likely",
             confidenceScore: 0.65,
@@ -1071,7 +1071,7 @@ describe("renderScanMarkdown", () => {
           memoryB: {
             id: "m2",
             title: "Switched auth to session cookies",
-            project: "Mail",
+            project: "Widget",
             kind: "decision",
             confidence: "certain",
             confidenceScore: 0.84,
@@ -1116,7 +1116,7 @@ describe("renderScanMarkdown", () => {
           memoryA: {
             id: "m1",
             title: "Title A",
-            project: "Mail",
+            project: "Widget",
             kind: "note",
             confidence: "certain",
             confidenceScore: null,
@@ -1127,7 +1127,7 @@ describe("renderScanMarkdown", () => {
           memoryB: {
             id: "m2",
             title: "Title B",
-            project: "Mail",
+            project: "Widget",
             kind: "note",
             confidence: "certain",
             confidenceScore: null,
@@ -1169,7 +1169,7 @@ describe("renderScanMarkdown", () => {
           memoryA: {
             id: "m1",
             title: "Title A",
-            project: "Mail",
+            project: "Widget",
             kind: "note",
             confidence: "certain",
             confidenceScore: null,
@@ -1180,7 +1180,7 @@ describe("renderScanMarkdown", () => {
           memoryB: {
             id: "m2",
             title: "Title B",
-            project: "Mail",
+            project: "Widget",
             kind: "note",
             confidence: "certain",
             confidenceScore: null,

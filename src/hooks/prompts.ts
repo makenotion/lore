@@ -70,8 +70,8 @@ export function buildProjectSelectionGuidance(
  * `agentName` and `authorName` deliberately do NOT pass through the
  * sanitizer: `agentName` is already constrained by
  * `canonicalizeAgentName`'s explicit allowlist, and `authorName` is a
- * human display string where collapsing `Hesham Salman` to
- * `Hesham_Salman` would break the prompt's "Author: <name>" contract
+ * human display string where collapsing `Test User` to
+ * `Test_User` would break the prompt's "Author: <name>" contract
  * without buying a meaningful threat reduction (both come from
  * operator env vars under a distinct trust model).
  */
@@ -105,7 +105,7 @@ function buildIdentityBlock(
  * the correct response to a trivial session is the no-op escape hatch.
  *
  * Lever: prior prompt asked for "structured context" with field-completeness
- * nudges, which produced 227/665 Mail memories as `agent_diary` entries with
+ * nudges, which produced 227/665 internal-vault memories as `agent_diary` entries with
  * titles like "Session greeting" — session narration polluted recall. The
  * filter below names the four categories worth saving and forbids paraphrase.
  */
@@ -139,7 +139,7 @@ function buildSourceLinkGuidance(): string {
  * four save tools that remain in the prompt and their required/recommended
  * fields. `kind` is required on every `lore-memory` action='save' call —
  * diary-style memories with `kind: null` were the dominant pollution source
- * in the Mail vault. sourceMemoryId guidance lives in
+ * in an internal vault. sourceMemoryId guidance lives in
  * `buildSourceLinkGuidance` so contract wording can change without
  * touching this string.
  *
@@ -309,7 +309,7 @@ If nothing worth saving, respond with "No Lore context to save." and stop. Other
  * output is what `lore-context action='wake-up'`'s fast path surfaces at session start, so it
  * must be signal-dense, not a chronological log.
  *
- * Mail-vault evidence: 0 digest memories exist because
+ * internal-vault evidence: 0 digest memories exist because
  * `lore-context action='digest'` is manual.
  * When we wire up scheduled synthesis, the prompt must refuse the obvious
  * failure mode — session-by-session narration — just as `buildExtractionFilter`

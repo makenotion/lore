@@ -784,7 +784,7 @@ describe("loadWakeUpData", () => {
   })
 
   it("does not return more than memoryLimit even when no digest is present (0-digest fast path)", async () => {
-    // The Mail-vault fast path: zero digest memories exist, but we still
+    // The internal-vault fast path: zero digest memories exist, but we still
     // request `memoryLimit + 1` so a leading-digest filter has headroom.
     // Without a digest, the extra row must be trimmed — otherwise every
     // wake-up would leak one row past the requested cap.

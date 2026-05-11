@@ -32,20 +32,20 @@ The scan is bounded by two distinct caps:
 
 ```bash
 # Surface a batch the agent can reason about:
-lore conflicts scan --project Mail --limit 50
+lore conflicts scan --project Widget --limit 50
 
 # Agent judges each pair via lore-memory action='compare'.
 
 # Re-run; already-judged pairs drop out, next batch surfaces:
-lore conflicts scan --project Mail --limit 50
+lore conflicts scan --project Widget --limit 50
 
 # If the no-results report says "Raw limit reached: yes" and suggests
 # a higher raw window, continue bounded scanning without going fully
 # exhaustive:
-lore conflicts scan --project Mail --raw-limit 1000 --limit 50
+lore conflicts scan --project Widget --raw-limit 1000 --limit 50
 
 # Repeat until the scan returns zero, then optionally:
-lore conflicts scan --project Mail --exhaustive --limit 50
+lore conflicts scan --project Widget --exhaustive --limit 50
 # Lifts the raw-candidate per-project cap to confirm full
 # coverage on extremely overlapping projects.
 ```

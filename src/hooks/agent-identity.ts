@@ -43,7 +43,7 @@
  *
  * **Future Anthropic model families.** This regex is deliberately scoped
  * to `code` and `opus`-versioned variants — the only spellings observed in
- * the production Mail vault (PF3-02 audit, April 2026). When Anthropic
+ * the internal vault (PF3-02 audit, April 2026). When Anthropic
  * ships a model family Claude Code can route to (Sonnet, Haiku, or any
  * three-component version like `Claude Opus 4.7.1`), autosave will start
  * producing `claude-sonnet-4-5` / `Claude Haiku 4 (1M context)` style
@@ -71,7 +71,7 @@ const CLAUDE_VARIANTS =
 
 /**
  * Canonical Claude Code agent string. Exported so callers (e.g. test fixtures
- * that filter Mail-vault memories by agent) can reference one source of truth
+ * that filter internal-vault memories by agent) can reference one source of truth
  * rather than re-spelling the literal.
  */
 export const CANONICAL_CLAUDE_CODE = "Claude Code"
@@ -87,7 +87,7 @@ export const CANONICAL_CLAUDE_CODE = "Claude Code"
  * function with non-Claude rules — those belong on the integrator's
  * `LORE_AGENT_NAME` setup, not here.
  *
- * - The seven Mail-vault Claude variants from the PF3-02 audit, plus the
+ * - The seven internal-vault Claude variants from the PF3-02 audit, plus the
  *   bare-version eighth (`Claude Opus 4.7` without a parenthetical),
  *   collapse to `"Claude Code"`.
  * - Empty / whitespace-only input → returned trimmed (callers treat the

@@ -20,7 +20,7 @@
 > **Original status banner (preserved):**
 > PR #538 (issue #533) landed the shared
 > `runTool<T>(client, tool, params)` dispatcher plus the
-> `create_pages` slice (live-verified against the production Mail
+> `create_pages` slice (live-verified against an internal
 > vault); PR #537 (issue #534) extends the surface with `update_page`
 > / `update_content` for anchored markdown edits in `MemoryService`
 > and `memory-encoding.ts`; PR #539 (issue #535) extends with
@@ -46,10 +46,10 @@
 > of the `query_data_sources` SQL gateway column representations —
 > see "Production-vault SQL gateway findings (2026-05-05)" below.
 >
-> **PR #538 live-verification (May 5 2026, prod Mail vault).**
-> Two test fact rows were created via RunTool's `create_pages`
-> endpoint against the production Mail vault Facts DB
-> (`collection://5abdc6b6-...`) using the wrapper's exact wire
+> **PR #538 live-verification (May 5 2026).** Two test fact rows
+> were created via RunTool's `create_pages` endpoint against an
+> internal vault's Facts DB
+> (`collection://<facts-db-id>`) using the wrapper's exact wire
 > format, then read back via `query_data_sources` to confirm the
 > shape, then invalidated (`Valid Until = today`) per lore's "facts
 > are never deleted" rule. Verified outcomes:
@@ -73,37 +73,38 @@
 >
 > Verification rows (now invalidated, will not surface in default
 > queries):
-> - `358b35e6-e67f-817c-b6d8-cab40486a780` — primitive-only fact
-> - `358b35e6-e67f-8146-9f4c-cbf3da3ab086` — fact with `Project` relation
+> - `<verification-fact-id-1>` — primitive-only fact
+> - `<verification-fact-id-2>` — fact with `Project` relation
 
 ## Why This Module Is Quarantined
 
-Quan Nguyen on the Notion Public API team named two practical paths around
-the gaps Lore filed in the public-API feedback package delivered to the
-Notion API team on 2026-05-05:
+A Notion Public API reviewer named two practical paths around the gaps
+Lore filed in the public-API feedback package delivered to the Notion API
+team on 2026-05-05:
 
 1. Use the Notion MCP server directly. Works for agents but is not
    programmatic.
-2. Call the underlying `RunTool` API. Schema lives in
-   `makenotion/notion-next:src/server-publicApi/apis/ai_tools/params/RunToolParams.ts`.
+2. Call the underlying `RunTool` API. Schema lives in an internal
+   upstream Notion server source at
+   `src/server-publicApi/apis/ai_tools/params/RunToolParams.ts`.
 
 Both halves matter:
 
-> Except for file upload, the MCP is miles ahead of the api. — Quan
+- The MCP is the more polished surface for everything except file upload —
+  it justifies the experiment.
+- `RunTool` is built as a public API but is not publicly documented and
+  may make breaking changes — it constrains rollout.
 
-> RunTool is built as a public api, it is not publicly documented. We will
-> make breaking changes in the future. — Quan
-
-The first half justifies the experiment; the second constrains rollout. The
-schema is therefore **vendored as a pinned subset** — never imported from
-`notion-next` at build or runtime, never extended past the two read-path
-wins below without an explicit issue, and gated behind opt-in feature flags.
+The schema is therefore **vendored as a pinned subset** — never imported
+from the upstream source at build or runtime, never extended past the two
+read-path wins below without an explicit issue, and gated behind opt-in
+feature flags.
 
 ## Pinned Schema Source
 
 | Item | Value |
 | ---- | ----- |
-| Repo | `makenotion/notion-next` |
+| Source | internal upstream Notion server snapshot |
 | Branch (snapshot reviewed) | `main` |
 | Commit | `69cd144ac1e429229680b6fb24ec29bcea3e37ac` |
 | Snapshot date | 2026-05-05 |
@@ -144,7 +145,7 @@ dedicated PR that:
 `POST /v1/tools/run`
 
 Source:
-[`endpoints/RunTool.ts:142`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)
+`endpoints/RunTool.ts:142`
 — `export const Path = "/v1/tools/run" as const`. The endpoint is registered
 with `isEndpointDocumented: false`; this is the load-bearing reason Lore
 treats it as opt-in and pinned-schema. The endpoint is gated behind the
@@ -213,7 +214,7 @@ Concretely:
 - `create_pages` (shipped in PR #538) returns a
   `CreatePagesResource.Value` directly — `{ pages: Array<{ id }> }`
   per the pinned schema and verified live against the production
-  Mail vault.
+  internal vault.
 - `search` (shipped in issue #541) returns a `SearchResource.Value`
   — itself a discriminated union of
   `InternalSearchResource.Value | UserSearchResource.Value`,
@@ -268,14 +269,14 @@ paths**, not one:
 
 1. **Workflow-bot fast path** — for every supported tool, an early
    `if (bodyParams.type === "<tool>" && bot.isWorkflowBot())` branch
-   ([`endpoints/RunTool.ts:274-358`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts))
+   (`endpoints/RunTool.ts:274-358`)
    dispatches directly to the per-tool helper (`search`,
    `queryDataSources`, etc.) using the bot itself as the actor.
    Workflow bots **never reach** `resolveRunToolUserActor`.
 
 2. **Non-workflow path** — falls through to
    `resolveRunToolUserActor`
-   ([`endpoints/RunTool.ts:96-129`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts))
+   (`endpoints/RunTool.ts:96-129`)
    which:
    - **Personal bots** (`bot.getType() === "personal"`): returns
      `RequestLocalContext.metadata.effectiveActor` provided
@@ -304,21 +305,21 @@ Three gates run in sequence; understanding the order matters when
 classifying a 403:
 
 1. `isMcpClientAllowed` — workspace MCP-client allowlist
-   ([`endpoints/RunTool.ts:399-425`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)).
+   (`endpoints/RunTool.ts:399-425`).
 2. `publicApiRunToolRateLimit` — per-actor, per-tool rate-limit
-   ([`endpoints/RunTool.ts:201-209`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)).
+   (`endpoints/RunTool.ts:201-209`).
    Runs **before** the workflow-bot capability check, so a workflow bot
    calling a disallowed tool still consumes rate-limit budget on the
    eventual rejection.
 3. Workflow-bot capability allowlist (`getAllowedDirectMcpToolNames`)
-   ([`endpoints/RunTool.ts:251-272`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)),
+   (`endpoints/RunTool.ts:251-272`),
    then per-tool dispatch.
 
 ### Workflow-bot capability gating
 
 For workflow bots, `getAllowedDirectMcpToolNames` and
 `getDirectToolAccessFlags` produce an allowlist
-([`endpoints/RunTool.ts:251-272`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)):
+(`endpoints/RunTool.ts:251-272`):
 
 - `search` — `ALWAYS_SHOW`.
 - `query_data_sources` — gated on `hasAdvancedTools` (Enterprise + AI
@@ -330,7 +331,7 @@ For workflow bots, `getAllowedDirectMcpToolNames` and
   the visibility layer; per-tool quotas apply downstream.
 
 Source: `RunToolParams.ALL_TOOLS` capability predicates
-([`params/RunToolParams.ts:258-298`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/params/RunToolParams.ts)).
+(`params/RunToolParams.ts:258-298`).
 
 A workflow bot calling a tool not in its allowed direct list returns:
 
@@ -343,7 +344,7 @@ ApiRestrictedResourceError(
 ### MCP client allowlist
 
 `isMcpClientAllowed` runs against the workspace MCP-client allowlist
-([`endpoints/RunTool.ts:399-425`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)).
+(`endpoints/RunTool.ts:399-425`).
 A workspace admin may have explicitly disallowed unknown MCP clients; in
 that case every RunTool call from Lore returns:
 
@@ -399,7 +400,7 @@ These cannot be answered from source alone:
 3. **Does the workspace block unknown MCP clients?** The
    `isMcpClientAllowed` check runs unconditionally. Notion's internal
    workspace policy may already allowlist `lore/...` user agents; the
-   public-template Mail vault may not. Phase 1 should record both
+   public-template vault may not. Phase 1 should record both
    outcomes.
 
 ## Rate-Limit Accounting
@@ -411,7 +412,7 @@ RunTool calls go through **two rate-limit checks**:
 1. **Per-tool, per-actor RunTool quota.** `publicApiRunToolRateLimit({
    environment, actorId, toolName })` runs at the top of
    `executeWithoutRequestMetadata`
-   ([`endpoints/RunTool.ts:201-209`](https://github.com/makenotion/notion-next/blob/69cd144ac1e429229680b6fb24ec29bcea3e37ac/src/server-publicApi/apis/ai_tools/endpoints/RunTool.ts)).
+   (`endpoints/RunTool.ts:201-209`).
    Failures surface as the standard public-API rate-limit response
    (HTTP 429 with `Retry-After`). The bucket is keyed on `(actorId,
    toolName)` — `search` and `query_data_sources` quotas are
@@ -695,7 +696,7 @@ to request the next page. Three takeaways for Phase 1+:
    README before Phase 3 wiring begins.
 2. **Phase 3 must define behavior on `has_more === true`.** Lore's
    orphan-rate use case is bounded by `SubjectEntity` cardinality
-   (small in practice on the Mail vault — pre-PF3-01 baseline ~445
+   (small in practice on an internal vault — pre-PF3-01 baseline ~445
    distinct subjects) so a single call almost certainly suffices.
    The wrapper still has to either (a) error explicitly on
    `has_more === true` so callers cannot silently consume a partial
@@ -734,7 +735,7 @@ Phase 0 contract.
 | `query_data_sources` SQL input/output, aggregate result representation, capability gating | Confirmed; `hasAdvancedTools` gate documented |
 | Source commit/blob SHA for the pinned schema | Confirmed table above |
 
-A reviewer without `notion-next` repo access can read this file alone and
+A reviewer without upstream-source access can read this file alone and
 understand the RunTool contract well enough to design the Phase 1 client
 and audit the Phase 2/3 wrappers.
 
@@ -885,7 +886,7 @@ parallel rate-limit gate, no `RunToolError` class.
 
 ### Production-vault SQL gateway findings (2026-05-05)
 
-Verified directly against `~/Developer/Notion/Mail` via
+Verified directly against an internal dogfood workspace via
 `mcp__notion__notion-query-data-sources` (read-only):
 
 - **Relation columns store JSON arrays of full URLs containing the
@@ -1042,7 +1043,7 @@ narrow-then-rematch posture as `fetchEntityByNormalizedName` (#535).
 **No `LIMIT` clamp** other than the gateway's implicit cap. The
 metric is structurally bounded by `(SubjectEntity, Subject)`
 distinct-pair cardinality (~445 distinct subjects on the pre-PF3-01
-Mail vault baseline; 263 canonical groups across 916 facts on the
+internal vault baseline; 263 canonical groups across 916 facts on the
 dogfood vault as of 2026-05-06). If the gateway clamps via
 `has_more: true`, the helper throws `SqlPartialResultError` and the
 caller falls through to JS enumeration rather than consume a
@@ -1316,11 +1317,10 @@ deliverables:
 The original #532 "Default-On Criteria" gated a default flip on
 four conditions (4-week harness, 3 dogfood operators × 1 week,
 Public API stability promise, fallback counter zero). The human
-lead (Hesham Salman, hsalman@makenotion.com) explicitly waived
-those gates on issue #543 (comment dated 2026-05-06: "Fuck it
-we ball, default it to ON") and authorized flipping the parent
-kill-switch and inheriting sub-flags to default-on without waiting
-on the harness clock or dogfood window.
+lead explicitly waived those gates on issue #543 (comment dated
+2026-05-06) and authorized flipping the parent kill-switch and
+inheriting sub-flags to default-on without waiting on the harness
+clock or dogfood window.
 
 Specifically flipped to default-ON:
 
@@ -1362,7 +1362,7 @@ fixture corpus encodes (populated/empty SubjectEntity, case-variant
 Subject collapse, saturation fallback, 403 RestrictedResource
 fallback, etc.). It does NOT catch:
 
-- Upstream schema-pin drift (`makenotion/notion-next` changes the
+- Upstream schema-pin drift (the upstream source changes the
   request envelope, response shape, or capability gating outside
   the corners the fixture models).
 - Workspace capability-tier drift (a workspace gaining or losing
@@ -1395,7 +1395,7 @@ issue. Operators running manual / dev-vault metric runs feed
 evidence into the Manual runs subsection below — that is the
 live-coverage substitute for the divergence classes CI fixtures
 cannot model. A schema-pin refresh PR (when the upstream
-`notion-next` commit changes) is the canonical surface for re-
+source commit changes) is the canonical surface for re-
 running the harness against an updated fixture model.
 
 ### Harness coverage status (2026-05-06)
@@ -1411,9 +1411,9 @@ running the harness against an updated fixture model.
 
 | Date | Operator | Vault | Path exercised | Outcome |
 | ---- | -------- | ----- | -------------- | ------- |
-| 2026-05-05 | Hesham Salman | Production Mail | `create_pages` (#533) | 2 test rows created + invalidated; auth chain, wire format, round-trip verified (see "PR #538 live-verification" banner above). |
-| 2026-05-05 | Hesham Salman | Production Mail | `query_data_sources` filter (#535) | SQL gateway findings recorded — relation columns store JSON-array-of-undashed-URLs; `Tags` exact-token predicate verified; archived/`last_edited_time` columns absent (see "Production-vault SQL gateway findings"). |
-| 2026-05-06 | Hesham Salman | Dogfood vault | `query_data_sources` aggregate (#542) | 269 distinct `(SubjectEntity, Subject)` groups across 924 facts saturated the gateway → `SqlPartialResultError` → JS fallback (see "Runtime verification (2026-05-06, dogfood vault)"). |
+| 2026-05-05 | maintainer | internal vault | `create_pages` (#533) | 2 test rows created + invalidated; auth chain, wire format, round-trip verified (see "PR #538 live-verification" banner above). |
+| 2026-05-05 | maintainer | internal vault | `query_data_sources` filter (#535) | SQL gateway findings recorded — relation columns store JSON-array-of-undashed-URLs; `Tags` exact-token predicate verified; archived/`last_edited_time` columns absent (see "Production-vault SQL gateway findings"). |
+| 2026-05-06 | maintainer | dogfood vault | `query_data_sources` aggregate (#542) | 269 distinct `(SubjectEntity, Subject)` groups across 924 facts saturated the gateway → `SqlPartialResultError` → JS fallback (see "Runtime verification (2026-05-06, dogfood vault)"). |
 
 Operators running the orphan-rate report or RunTool-flagged
 search against live vaults append rows here when the run
@@ -1503,7 +1503,7 @@ Three Lore tasks MUST be opened against the Lore vault
 **immediately on merge** so the dated commitments above don't
 quietly disappear into a paragraph nobody re-reads. Each is a
 distinct work item with a distinct trigger; the merger
-(Hesham Salman) opens them as part of the merge ritual.
+(a maintainer) opens them as part of the merge ritual.
 
 1. `lore-task` titled "Reaffirm #543 default-on rollout — 2-week
    review (2026-05-20)" — confirms no harness divergence

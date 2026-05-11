@@ -165,8 +165,8 @@ This applies to `--fix-fact-encoding`, `--fix-memory-encoding`,
 Recommended flow:
 
 1. List candidates: `lore status projects -a`
-2. Preview: `lore migrate --fix-memory-encoding --project "Mail" --dry-run`
-3. Apply: `lore migrate --fix-memory-encoding --project "Mail" --yes`
+2. Preview: `lore migrate --fix-memory-encoding --project "Widget" --dry-run`
+3. Apply: `lore migrate --fix-memory-encoding --project "Widget" --yes`
 
 If a project name is missing, archived, or inaccessible, Lore aborts before the
 plan or write phase. Transient Notion lookup failures such as 429s and 5xxs are

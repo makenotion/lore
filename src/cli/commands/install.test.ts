@@ -1042,7 +1042,7 @@ describe("runCursorInstall (integration)", () => {
   })
 
   it("rewrites a PnP entry that still carries LORE_CONFIG_ROOT to the portable shape", async () => {
-    // Followup #11 (makenotion/mail#25947): an operator who installed
+    // Followup #11: an operator who installed
     // before #08's PnP omission rule landed has a `.cursor/mcp.json`
     // whose `lore` entry uses the canonical PnP launch shape (`yarn
     // run -T lore mcp`) but still carries `LORE_CONFIG_ROOT` set to
@@ -1130,16 +1130,16 @@ describe("runCursorInstall (integration)", () => {
 
   it("anchors cwd to projectDir (NOT configRoot) when .lore.yaml lives above the PnP workspace", async () => {
     // PR #182 second-round review feedback: `--project
-    // <repo>/services/mail` plus a `.lore.yaml` that resolves to a
+    // <repo>/services/widget` plus a `.lore.yaml` that resolves to a
     // parent ABOVE the PnP workspace splits the two roots:
     //
     //   tmpdir/umbrella/                       <- configRoot
     //                                              (.lore.yaml lives here,
     //                                              found by findConfigFile's
-    //                                              upward walk from mail)
+    //                                              upward walk from widget)
     //   tmpdir/umbrella/repo/                  <- PnP workspace
     //                                              (.pnp.cjs lives here)
-    //   tmpdir/umbrella/repo/services/mail/    <- projectDir
+    //   tmpdir/umbrella/repo/services/widget/    <- projectDir
     //                                              (--project arg)
     //
     // The earlier shape of this fix derived `cwd` from `configRoot`,
@@ -1159,8 +1159,8 @@ describe("runCursorInstall (integration)", () => {
     // child can resolve config.
     const umbrella = mkdtempSync(join(SCRATCH, "umbrella-"))
     const repo = join(umbrella, "repo")
-    const mail = join(repo, "services", "mail")
-    mkdirSync(mail, { recursive: true })
+    const widget = join(repo, "services", "widget")
+    mkdirSync(widget, { recursive: true })
     writeFileSync(join(repo, ".pnp.cjs"), "")
 
     const pkgRoot = mkdtempSync(join(SCRATCH, "split-pkg-"))
@@ -1168,7 +1168,7 @@ describe("runCursorInstall (integration)", () => {
     const targetPath = join(fakeHome, ".cursor", "mcp.json")
 
     const ctx: InstallContext = {
-      ...makeContext(mail, pkgRoot),
+      ...makeContext(widget, pkgRoot),
       // configRoot deliberately diverges from projectDir — this is
       // the topology where `.lore.yaml` resolves to a parent above
       // the PnP workspace.
@@ -1184,7 +1184,7 @@ describe("runCursorInstall (integration)", () => {
     }
     // The fix: cwd anchors to projectDir (inside PnP workspace)
     // so `yarn run -T` can walk upward to `.pnp.cjs` at `repo`.
-    expect(loreEntry.cwd).toBe(mail)
+    expect(loreEntry.cwd).toBe(widget)
     // The fix: LORE_CONFIG_ROOT continues to point at the
     // `.lore.yaml` directory (above the PnP workspace), separate
     // from `cwd`.
@@ -1200,7 +1200,7 @@ describe("runCursorInstall (integration)", () => {
     // `<project>/.cursor/mcp.json` stays portable across
     // engineers. A regression that lifted the global-scope anchor
     // into the project path would silently re-introduce
-    // per-engineer leaks Mail PR #25947 spent effort to remove.
+    // per-engineer leaks the PnP install fix spent effort to remove.
     const projectDir = mkdtempSync(join(SCRATCH, "pnp-project-"))
     const pkgRoot = mkdtempSync(join(SCRATCH, "pnp-project-pkg-"))
     const targetPath = join(projectDir, ".cursor", "mcp.json")
@@ -1630,9 +1630,9 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
 
   it("agentNameOverride is overridden by an explicit `.lore.yaml` command", async () => {
     // Tier 2 (yaml command) still beats tier 3 (agent derivation). A
-    // project that committed `command: claude` in `.lore.yaml` should
-    // see claude even on a Codex install — committed config wins over
-    // the host-default derivation.
+    // project whose local `.lore.yaml` carries `command: claude` should
+    // see claude even on a Codex install — local config wins over the
+    // host-default derivation.
     const projectDir = mkdtempSync(join(SCRATCH, "yaml-beats-codex-"))
     writeFileSync(
       join(projectDir, ".lore.yaml"),
@@ -2710,7 +2710,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       NOTION_ENV: "dev",
       NOTION_BASE_URL: "https://api-dev.notion.com",
       NOTION_API_BASE_URL: "https://api-dev.notion.com",
-      LORE_USER_NAME: "Hesham Salman",
+      LORE_USER_NAME: "Test User",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env).toEqual({
@@ -2740,7 +2740,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // The operator-controlled escape hatch parallel to LORE_AGENT_NAME.
     // Without forwarding, an MCP child resolves identity via `users.me`
     // and the operator's explicit override never reaches the column.
-    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "hsalman" }
+    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "testuser" }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env["LORE_USER_NAME"]).toBe("${LORE_USER_NAME}")
     expect(build.forwarded).toContain("LORE_USER_NAME")
@@ -2751,7 +2751,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // first-class operator override under DEFERRED-ATTRIBUTION; an
     // engineer who sets it shouldn't see a migration recommendation
     // pointing them at ntn.
-    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "hsalman" }
+    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "testuser" }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.forwarded).not.toContain("LORE_NOTION_TOKEN")
   })
@@ -2761,7 +2761,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // is only useful if the three install paths actually emit it. Pin
     // each host's output shape so a future RUNTIME_FORWARDED_KEYS edit
     // that drops LORE_USER_NAME from the chain breaks the test.
-    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "hsalman" }
+    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "testuser" }
 
     const claudeEntry = buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, env)
     expect(claudeEntry.env).toMatchObject({
@@ -2863,7 +2863,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       NOTION_API_TOKEN: "ntn-tok",
       NOTION_WORKSPACE_ID: "ws_abc",
       NOTION_ENV: "dev",
-      LORE_USER_NAME: "hsalman",
+      LORE_USER_NAME: "testuser",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env, { authSource: "ntn-auth-json" })
     expect(build.env).toEqual({
@@ -3275,7 +3275,7 @@ describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", 
     // `configRoot` (the split-roots topology where `.lore.yaml`
     // lives above the PnP workspace), the entry's `cwd` derives
     // from `launchCwd` and `LORE_CONFIG_ROOT` from `configRoot`.
-    const TEST_PROJECT_DIR = "/test/pnp-workspace/services/mail"
+    const TEST_PROJECT_DIR = "/test/pnp-workspace/services/widget"
     const TEST_CONFIG_ABOVE_WORKSPACE = "/test/umbrella"
     const entry = buildCursorMcpEntry(
       "yarn",
@@ -3295,7 +3295,7 @@ describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", 
     // path) must continue to produce the committed-portability
     // shape. A regression that lifted cwd / LORE_CONFIG_ROOT into
     // the project-scoped path would re-introduce the per-engineer
-    // path leak Mail PR #25947 fixed.
+    // path leak the PnP install fix fixed.
     const explicit = buildCursorMcpEntry("yarn", TEST_CONFIG_ROOT, ENV_NONE, {
       useGlobalScope: false,
     })
@@ -3323,7 +3323,7 @@ describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", 
 })
 
 describe("PnP MCP entries carry no per-engineer absolute paths", () => {
-  // Followup #11 (makenotion/mail#25947): the headline portability
+  // Followup #11: the headline portability
   // promise of the PnP shape is that `.mcp.json` /
   // `.cursor/mcp.json` / `.codex/config.toml` can be committed to a
   // shared monorepo without leaking any single engineer's checkout
@@ -3331,7 +3331,7 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
   // (covered above), but the invariant must hold for the entire
   // serialized entry — `command`, `args`, `cwd`, every value in
   // `env`, and the entire Codex bash-prefix string. A regression
-  // anywhere in those surfaces would force Mail-style consumers
+  // anywhere in those surfaces would force PnP consumers
   // back onto hand-maintained committed config.
   //
   // The probe substrings:
@@ -3474,14 +3474,14 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
 })
 
 describe("detectYarnPnp — cwd-drift coverage", () => {
-  // Followup #11 (makenotion/mail#25947): the install path runs from
+  // Followup #11: the install path runs from
   // wherever the operator invokes `lore install`, and Claude hooks
   // can fire after the assistant changes cwd mid-session. Detection
   // must walk upward from the supplied directory to find the
   // `.pnp.cjs` (or `.pnp.loader.mjs`) marker at the workspace root,
   // not just check the immediate directory. Without these tests, a
   // future refactor that drops the upward walk would still pass the
-  // existing entry-builder tests and silently break Mail-style
+  // existing entry-builder tests and silently break PnP-style
   // monorepo consumers whose hooks fire from `services/<name>`
   // subdirectories.
   //
@@ -3511,16 +3511,16 @@ describe("detectYarnPnp — cwd-drift coverage", () => {
     expect(await detectYarnPnp(apps)).toBe(true)
   })
 
-  it("detects PnP from `services/mail` (Mail's specific layout)", async () => {
-    // Mirrors the layout from `makenotion/mail#25947`. Hook-time
+  it("detects PnP from `services/widget` (the downstream PnP layout)", async () => {
+    // Mirrors the layout from a downstream PnP monorepo. Hook-time
     // cwd lands here when the assistant changes directory during a
     // session, and the install path has to recognize the project as
     // PnP regardless of which subdirectory it was invoked from.
-    const repo = mkdtempSync(join(SCRATCH, "services-mail-"))
+    const repo = mkdtempSync(join(SCRATCH, "services-widget-"))
     writeFileSync(join(repo, ".pnp.cjs"), "")
-    const mail = join(repo, "services", "mail")
-    mkdirSync(mail, { recursive: true })
-    expect(await detectYarnPnp(mail)).toBe(true)
+    const widget = join(repo, "services", "widget")
+    mkdirSync(widget, { recursive: true })
+    expect(await detectYarnPnp(widget)).toBe(true)
   })
 
   it("returns false for an outside-repo cwd with no marker on the upward path", async () => {
@@ -3546,13 +3546,13 @@ describe("detectYarnPnp — cwd-drift coverage", () => {
 })
 
 describe("prepareInstallContext — threads --project through to runner-bound yarnPnp", () => {
-  // Followup #11 (makenotion/mail#25947): Mail invokes
+  // Followup #11: a downstream consumer invokes
   // `yarn run -T lore install -y` from arbitrary cwds, frequently a
   // workspace package's directory rather than the repo root. The seam
   // that has to hold end-to-end:
   //
-  //   --project <repo>/services/mail
-  //     → projectDir = <abs path>/services/mail
+  //   --project <repo>/services/widget
+  //     → projectDir = <abs path>/services/widget
   //     → detectYarnPnp(projectDir) walks upward
   //     → context.yarnPnp = true (because .pnp.cjs sits at <repo>)
   //     → every per-client runner sees shape: "yarn"
@@ -3570,17 +3570,17 @@ describe("prepareInstallContext — threads --project through to runner-bound ya
   })
 
   it("auto-detects yarnPnp when --project lands in a nested workspace package and the marker sits at the repo root", async () => {
-    // Mail's specific layout: hooks fire / install runs from
-    // `services/mail`. The function must locate the marker by
+    // the downstream PnP layout: hooks fire / install runs from
+    // `services/widget`. The function must locate the marker by
     // walking upward, not by checking only the supplied directory.
-    const repo = mkdtempSync(join(SCRATCH, "mail-monorepo-"))
+    const repo = mkdtempSync(join(SCRATCH, "pnp-monorepo-"))
     writeFileSync(join(repo, ".pnp.cjs"), "")
-    const mail = join(repo, "services", "mail")
-    mkdirSync(mail, { recursive: true })
+    const workspace = join(repo, "services", "widget")
+    mkdirSync(workspace, { recursive: true })
 
-    const ctx = await prepareInstallContext({ project: mail, yes: true })
+    const ctx = await prepareInstallContext({ project: workspace, yes: true })
 
-    expect(ctx.projectDir).toBe(mail)
+    expect(ctx.projectDir).toBe(workspace)
     expect(ctx.yarnPnp).toBe(true)
     expect(ctx.legacyPaths).toBe(false)
   })

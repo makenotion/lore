@@ -13,15 +13,15 @@ describe("tagsSchema", () => {
   })
 
   it("rejects PR-number tags with an error naming the bad values", () => {
-    const result = tagsSchema.safeParse(["pr-25701"])
+    const result = tagsSchema.safeParse(["pr-1234"])
     expect(result.success).toBe(false)
     if (result.success) return
     const message = result.error.issues[0].message
-    expect(message).toContain(`"pr-25701"`)
+    expect(message).toContain(`"pr-1234"`)
   })
 
   it("rejects out-of-vocab tags with guidance pointing at `keywords`", () => {
-    const result = tagsSchema.safeParse(["MailboxViewStore.swift"])
+    const result = tagsSchema.safeParse(["WidgetListStore.swift"])
     expect(result.success).toBe(false)
     if (result.success) return
     const message = result.error.issues[0].message
@@ -43,16 +43,16 @@ describe("tagsSchema", () => {
   it("aggregates multiple invalid tags into a single issue", () => {
     const result = tagsSchema.safeParse([
       "ios",
-      "pr-25701",
-      "SENTRY-MAIL-IOS-2DY",
+      "pr-1234",
+      "SENTRY-APP-2DY",
       "performance",
     ])
     expect(result.success).toBe(false)
     if (result.success) return
     expect(result.error.issues.length).toBe(1)
     const message = result.error.issues[0].message
-    expect(message).toContain("pr-25701")
-    expect(message).toContain("SENTRY-MAIL-IOS-2DY")
+    expect(message).toContain("pr-1234")
+    expect(message).toContain("SENTRY-APP-2DY")
   })
 
   it("rejects non-string array elements before the vocab check runs", () => {
@@ -66,7 +66,7 @@ describe("tagsSchema", () => {
 
 describe("keywordsSchema", () => {
   it("accepts free-form space-separated tokens", () => {
-    const result = keywordsSchema.safeParse("pr-25701 MailboxViewStore.swift SENTRY-123")
+    const result = keywordsSchema.safeParse("pr-1234 WidgetListStore.swift SENTRY-123")
     expect(result.success).toBe(true)
   })
 

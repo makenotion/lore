@@ -87,7 +87,7 @@ describe("deriveRelationUrlBase (PR #538 live-verification host-coupling)", () =
   // captures one of the live-verified cases so a future
   // contributor cannot hardcode a default that silently breaks
   // either environment.
-  it("api-dev.notion.com → dev.notion.so (verified live against Mail vault)", () => {
+  it("api-dev.notion.com → dev.notion.so (verified live against internal vault)", () => {
     expect(deriveRelationUrlBase("https://api-dev.notion.com")).toBe(
       "https://dev.notion.so/"
     )

@@ -66,7 +66,7 @@ describe("findNormalizableAgents", () => {
     expect(rows).toEqual([])
   })
 
-  it("collects every observed Mail-vault Claude variant", async () => {
+  it("collects every observed internal-vault Claude variant", async () => {
     // Eight variants pulled from PF3-02's spec — pin them as a fixture so
     // any future change to the canonicalizer that misses one of these is
     // surfaced as a test failure here, not as silent fragmentation in

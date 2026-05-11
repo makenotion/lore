@@ -22,7 +22,7 @@ import type { MemoryService } from "./memory.js"
 
 /**
  * Safety cap on the active-task set scanned per reconcile call. The
- * Mail vault's 271 active tasks fit comfortably; vaults with more than
+ * internal vault's 271 active tasks fit comfortably; vaults with more than
  * 500 active tasks are exactly the population this surface serves and
  * the operator runs reconcile per-project to fit under the cap.
  */
@@ -33,7 +33,7 @@ export const MAX_RECONCILE_TASKS = 500
  * this many candidate memories. Five is the sweet spot: large enough
  * to absorb noisy index-tier hits (the post-filter drops task / decision
  * rows), small enough to keep the body-fetch budget at `tasks * 5`
- * `pages.retrieveMarkdown` calls — `271 * 5 = 1355` for the Mail vault.
+ * `pages.retrieveMarkdown` calls — `271 * 5 = 1355` for an internal vault.
  */
 export const RECONCILE_PER_TASK_LIMIT = 5
 
@@ -338,7 +338,7 @@ async function scoreTaskCandidates(
     const candidate = scoreCandidate(task, memory, todayMs)
     // Cue-gate (step 3 in the spec): drop pairs with no resolution-
     // shaped cue BEFORE the threshold filter. A pure entity mention
-    // ("blocking on PR #25750 because X") is not a resolution
+    // ("blocking on PR #1234 because X") is not a resolution
     // candidate regardless of recency.
     if (candidate.cueMatch === 0) continue
     scored.push(candidate)

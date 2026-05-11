@@ -66,9 +66,9 @@ describe("mergeHookDefaults", () => {
   })
 
   it("carries the catch-all name and sub-project list through unchanged", () => {
-    const config = mergeHookDefaults({ wakeUp: false }, "Mail", ["Mail Backend", "Mail Web"])
-    expect(config.catchAllName).toBe("Mail")
-    expect(config.subProjects).toEqual(["Mail Backend", "Mail Web"])
+    const config = mergeHookDefaults({ wakeUp: false }, "Widget", ["Widget Backend", "Widget Web"])
+    expect(config.catchAllName).toBe("Widget")
+    expect(config.subProjects).toEqual(["Widget Backend", "Widget Web"])
     expect(config.wakeUp).toBe(false)
   })
 

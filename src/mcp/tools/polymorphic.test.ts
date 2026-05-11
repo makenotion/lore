@@ -305,8 +305,8 @@ describe("lore-project polymorphic dispatcher", () => {
     const projectsList = vi.fn(async () => [
       {
         id: "p1",
-        name: "Mail",
-        path: "mail",
+        name: "Widget",
+        path: "apps/widget",
         type: "codebase",
         status: "active",
         description: "",
@@ -316,7 +316,7 @@ describe("lore-project polymorphic dispatcher", () => {
     registerProjectTools(mock.server, makeServices({ projectsList }) as never)
     const result = await mock.get("lore-project")({ action: "list" } as never)
     expect(projectsList).toHaveBeenCalled()
-    expect(extractText(result)).toContain("Mail")
+    expect(extractText(result)).toContain("Widget")
   })
 
   it("passes status='any' through to the project list handler", async () => {
@@ -342,20 +342,20 @@ describe("lore-project polymorphic dispatcher", () => {
   it("dispatches action='get' to the get handler", async () => {
     const projectsFindByName = vi.fn(async () => ({
       id: "p1",
-      name: "Mail",
-      path: "mail",
+      name: "Widget",
+      path: "apps/widget",
       type: "codebase",
       status: "active",
-      description: "Mail backend",
+      description: "Widget backend",
     }))
     const mock = createMockServer()
     registerProjectTools(mock.server, makeServices({ projectsFindByName }) as never)
     const result = await mock.get("lore-project")({
       action: "get",
-      name: "Mail",
+      name: "Widget",
     } as never)
-    expect(projectsFindByName).toHaveBeenCalledWith("Mail")
-    expect(extractText(result)).toContain("# Mail")
+    expect(projectsFindByName).toHaveBeenCalledWith("Widget")
+    expect(extractText(result)).toContain("# Widget")
   })
 
   it("surfaces archived-specific diagnostics for action='get'", async () => {
@@ -683,7 +683,7 @@ describe("lore-memory polymorphic dispatcher", () => {
     registerMemoryTools(mock.server, makeServices() as never)
     const result = await mock.get("lore-memory")({
       action: "suggest-topic-key",
-      title: "Investigate PR #25750",
+      title: "Investigate PR #1234",
       kind: "task",
     } as never)
     const text = extractText(result)
@@ -1488,8 +1488,8 @@ describe("lore-task polymorphic dispatcher", () => {
     const tasksList = vi.fn(async () => ({ items: [] }))
     const projectsFindByName = vi.fn(async () => ({
       id: "p1",
-      name: "Mail",
-      path: "mail",
+      name: "Widget",
+      path: "apps/widget",
       type: "codebase",
       status: "active",
       description: "",
@@ -1501,11 +1501,11 @@ describe("lore-task polymorphic dispatcher", () => {
     )
     const result = await mock.get("lore-task")({
       action: "reconcile",
-      projectName: "Mail",
+      projectName: "Widget",
       minScore: 0.7,
       limit: 50,
     } as never)
-    expect(projectsFindByName).toHaveBeenCalledWith("Mail")
+    expect(projectsFindByName).toHaveBeenCalledWith("Widget")
     expect(extractText(result)).toContain("0 candidate closures")
   })
 

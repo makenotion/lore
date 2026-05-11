@@ -30,8 +30,8 @@ each as its own `note` memory. Two `.lore.yaml` flags govern this behavior:
   Proposed memories line and the wake-up Proposed Memories section. Has no
   effect when `learningExtraction` is `false`.
 
-See [`team-setup.md`](team-setup.md#shared-vault-hook-configuration)
-for shared-vault guidance on which knob to set.
+See [`team-rollout.md`](team-rollout.md) for shared-vault rollout
+guidance on which knob to set.
 
 ## Wake-Up
 

@@ -13,7 +13,7 @@ function makeServices() {
       findByName: vi.fn(),
     },
     context: {
-      project: { id: "p-mail", name: "Mail", path: "." },
+      project: { id: "p-widget", name: "Widget", path: "." },
     },
     memories: {
       search: vi.fn().mockResolvedValue([
@@ -33,14 +33,14 @@ function makeServices() {
 describe("parseSearchCliOptions", () => {
   it("accepts a strict limit and forwards optional filters", () => {
     const result = parseSearchCliOptions({
-      project: "Mail",
+      project: "Widget",
       tags: "cli, validation",
       limit: "10",
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value).toEqual<SearchCliOptions>({
-        projectName: "Mail",
+        projectName: "Widget",
         tags: ["cli", "validation"],
         limit: 10,
       })
@@ -78,7 +78,7 @@ describe("searchCommand", () => {
     expect(services.memories.search).toHaveBeenCalledWith(
       expect.objectContaining({
         query: "needle",
-        projectId: "p-mail",
+        projectId: "p-widget",
         limit: 10,
       })
     )

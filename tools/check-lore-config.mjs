@@ -2,13 +2,13 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
-import { parse as parseYaml } from "yaml"
 
 const CONFIG_PATH = ".lore.yaml"
-const ALLOWED_REPO_PAGE_IDS = new Set(["343b35e6e67f81a0afa9c9801b35199f"])
-const ALLOWED_REPO_PAGE_ID_LIST = [...ALLOWED_REPO_PAGE_IDS]
-  .map((pageId) => JSON.stringify(pageId))
-  .join(", ")
+
+const COMMITTED_CONFIG_ERROR =
+  `${CONFIG_PATH} must not be committed. ` +
+  `Copy .lore.example.yaml to ${CONFIG_PATH} locally and keep your pageId ` +
+  `and tokens out of version control.`
 
 function usage() {
   return [
@@ -18,56 +18,51 @@ function usage() {
   ].join("\n")
 }
 
-function hasOwn(object, key) {
-  return Object.prototype.hasOwnProperty.call(object, key)
-}
-
 export function validateLoreConfig(raw, label = CONFIG_PATH) {
-  const errors = []
-  let parsed
-
-  try {
-    parsed = parseYaml(raw)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return [`${label} could not be parsed as YAML: ${message}`]
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return [`${label} must contain a YAML mapping.`]
-  }
-
-  const auth = parsed.auth
-  if (auth && typeof auth === "object" && !Array.isArray(auth) && hasOwn(auth, "token")) {
-    errors.push(
-      `${label} must not contain auth.token. Use NOTION_API_TOKEN or run lore auth --login instead.`
-    )
-  }
-
-  const vault = parsed.vault
-  const pageId =
-    vault && typeof vault === "object" && !Array.isArray(vault) ? vault.pageId : undefined
-
-  if (!ALLOWED_REPO_PAGE_IDS.has(pageId)) {
-    errors.push(
-      `${label} must keep vault.pageId set to an approved shared team vault page ID ` +
-        `(${ALLOWED_REPO_PAGE_ID_LIST}); do not commit personal vault page IDs.`
-    )
-  }
-
-  return errors
+  if (typeof raw !== "string") return []
+  return [`${label}: ${COMMITTED_CONFIG_ERROR}`]
 }
 
 export function readStagedConfig(cwd = process.cwd()) {
-  return execFileSync("git", ["show", `:${CONFIG_PATH}`], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  })
+  try {
+    return execFileSync("git", ["show", `:${CONFIG_PATH}`], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+  } catch {
+    return null
+  }
+}
+
+export function isLoreConfigStaged(cwd = process.cwd()) {
+  try {
+    execFileSync("git", ["ls-files", "--cached", "--error-unmatch", CONFIG_PATH], {
+      cwd,
+      stdio: ["ignore", "ignore", "ignore"],
+    })
+    return true
+  } catch (error) {
+    // git ls-files --error-unmatch exits 1 when the file is not in
+    // the index — the expected "not tracked" signal. Any other exit
+    // (git missing, cwd not a repo, ICE) is an environment error
+    // that should fail the guard loudly rather than silently pass.
+    const status =
+      error && typeof error === "object" && "status" in error
+        ? error.status
+        : undefined
+    if (status === 1) return false
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `cannot verify ${CONFIG_PATH} stage state — git invocation failed: ${message}`,
+      { cause: error }
+    )
+  }
 }
 
 export function validateStagedLoreConfig(cwd = process.cwd()) {
-  return validateLoreConfig(readStagedConfig(cwd), `staged ${CONFIG_PATH}`)
+  if (!isLoreConfigStaged(cwd)) return []
+  return [`staged ${CONFIG_PATH}: ${COMMITTED_CONFIG_ERROR}`]
 }
 
 function fail(errors) {
@@ -84,14 +79,15 @@ export function main(args = process.argv.slice(2)) {
     label = args[1]
     raw = readFileSync(label, "utf8")
   } else if (args.length === 1 && args[0] === "--staged") {
+    let errors
     try {
-      const errors = validateStagedLoreConfig()
-      if (errors.length > 0) fail(errors)
-      return
+      errors = validateStagedLoreConfig()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      fail([`could not read staged ${CONFIG_PATH}: ${message}`])
+      fail([message])
     }
+    if (errors && errors.length > 0) fail(errors)
+    return
   } else {
     process.stderr.write(`${usage()}\n`)
     process.exit(2)

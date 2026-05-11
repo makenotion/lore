@@ -225,8 +225,9 @@ export async function loadConfigAllowingInvalidHooks(
  * config root, and silenceable via `LORE_SUPPRESS_DEPRECATIONS=1`. Config
  * `auth.token` warns on field presence (even when masked by a higher-
  * priority source), every invocation, and is NOT silenceable —
- * `.lore.yaml` is committable repo state, so the warning tracks the
- * static repo condition rather than session state.
+ * `.lore.yaml` is local-only but still persistent (backed up, synced,
+ * pasted, and one `git add -f` away from history), so the warning
+ * tracks the static file condition rather than session state.
  */
 export type AuthSource =
   | "env-notion-api-token"
@@ -275,8 +276,9 @@ export interface ResolvedAuth {
  *
  * Note: per #484, `emitConfigAuthTokenWarning` is intentionally
  * NOT silenceable via `LORE_SUPPRESS_DEPRECATIONS=1` because
- * `.lore.yaml` is committable repo state and the warning is a
- * second-line defense against committed tokens. `quiet` is a
+ * `.lore.yaml` is local-only but a token written there still rides
+ * every backup, sync, and `git add -f`, so the warning is a
+ * second-line defense against tokens slipping into git. `quiet` is a
  * narrower mechanism — it suppresses ONE specific synthetic
  * call site that has already paid the emission via the
  * foreground, NOT a blanket operator-facing silencer. Adding
@@ -305,11 +307,13 @@ export interface ResolveAuthOptions {
  *    warning on first call per session.
  * 4. **`config.auth.token` in `.lore.yaml`** — soft-deprecated. Emits
  *    a warning as soon as the field is present, even when a higher-priority
- *    source masks it, because `.lore.yaml` is a committable repo config.
- *    Unlike the env-var path, this warning fires on every invocation
- *    and is NOT silenceable by `LORE_SUPPRESS_DEPRECATIONS=1` —
- *    `auth.token` is static repo state, not session state, so the
- *    cross-CI-run silencing the env-var debounce produced was hiding a
+ *    source masks it, because `.lore.yaml` is local-only but still
+ *    persistent (backed up, synced, pasted, one `git add -f` away
+ *    from history). Unlike the env-var path, this warning fires on
+ *    every invocation and is NOT silenceable by
+ *    `LORE_SUPPRESS_DEPRECATIONS=1` — `auth.token` is static file
+ *    state, not session state, so the cross-CI-run silencing the
+ *    env-var debounce produced was hiding a
  *    committed-secret class of mistake (#484).
  *
  * Throws when no source produces a token. The error message recommends
@@ -343,16 +347,19 @@ export async function resolveAuth(
   // `auth.baseUrl` from `.lore.yaml` is **only** honored on the
   // soft-deprecated paths (`env-lore-notion-token`, `config-auth-token`),
   // never on the canonical 0.10.0 paths (`env-notion-api-token`,
-  // `ntn-auth-json`). Reason: a checked-in `.lore.yaml` is repo-controlled,
-  // not operator-controlled. A malicious `.lore.yaml` carrying
-  // `auth.baseUrl: https://attacker.example` would otherwise redirect
-  // an engineer's ntn-issued bearer token to an arbitrary host on the
-  // first Notion call. For canonical sources, the only base-URL override
-  // is `LORE_NOTION_BASE_URL` env (operator-controlled, set in shell rc),
-  // which `loadNtnToken` honors directly when populating `fromNtn.baseUrl`.
-  // Legacy paths preserve the existing `auth.baseUrl` semantics for
-  // backward compat — operators on those paths are already trusting
-  // `.lore.yaml` for their token.
+  // `ntn-auth-json`). Reason: `.lore.yaml` is persistent file state
+  // beside the repo. Even though the file is local-only, it can still
+  // be copied, synced, pasted, or force-added into history, which is
+  // less trusted than operator-controlled env vars set in shell rc.
+  // A `.lore.yaml` carrying `auth.baseUrl: https://attacker.example`
+  // would otherwise redirect an engineer's ntn-issued bearer token to
+  // an arbitrary host on the first Notion call. For canonical sources,
+  // the only base-URL override is `LORE_NOTION_BASE_URL` env
+  // (operator-controlled, set in shell rc), which `loadNtnToken` honors
+  // directly when populating `fromNtn.baseUrl`. Legacy paths preserve
+  // the existing `auth.baseUrl` semantics for backward compat —
+  // operators on those paths are already trusting `.lore.yaml` for
+  // their token.
   const legacyBaseUrlOverride = config?.auth?.baseUrl
 
   // 1. NOTION_API_TOKEN env (canonical). Operator-controlled
@@ -528,7 +535,8 @@ const DEPRECATION_DEBOUNCE_MS = 24 * 60 * 60 * 1000
  * in a session sees the warning once, and a CI run that has migrated to
  * a different auth source can opt out cleanly. Compare with
  * `emitConfigAuthTokenWarning`, which deliberately does neither because
- * `auth.token` in `.lore.yaml` is committable repo state, not session
+ * `auth.token` in `.lore.yaml` is persistent file state (local but
+ * still backed up, synced, and easy to force into git), not session
  * state, and behaves differently under the same threat model (#484).
  */
 async function emitLoreNotionTokenDeprecationWarningOnce(configRoot: string): Promise<void> {
@@ -582,11 +590,11 @@ let configAuthTokenWarningEmittedThisProcess = false
  * deliberate; see #484 for the original report. `LORE_NOTION_TOKEN` is
  * ephemeral session state that dies with the shell; debouncing + a
  * silence env is appropriate noise management for that case.
- * `.lore.yaml` is committable repo state — a token pasted there enters
- * git history and propagates to every clone, which is a different class
- * of misconfiguration. Treating both with the same noise budget hides
- * the committed-secret signal across CI runs and across engineers in
- * the same worktree:
+ * `.lore.yaml` is local-only, but a token pasted there still rides
+ * every backup, sync, and is one `git add -f` away from history. That
+ * is a different class of misconfiguration than an ephemeral env var.
+ * Treating both with the same noise budget hides the persistent-secret
+ * signal across CI runs and across engineers in the same worktree:
  *
  * - The 24-hour marker would suppress the warning between sequential CI
  *   runs (each engineer running `lore` once in a workday only ever sees

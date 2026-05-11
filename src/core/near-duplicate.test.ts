@@ -1069,7 +1069,7 @@ describe("findDuplicateActiveTasks", () => {
     try {
       const result = await findDuplicateActiveTasks(
         { list: listSpy },
-        { entity: "PR-25750", projectId: "proj-a" }
+        { entity: "PR-1234", projectId: "proj-a" }
       )
       expect(result).toEqual([])
       expect(listSpy).not.toHaveBeenCalled()
@@ -1084,7 +1084,7 @@ describe("findDuplicateActiveTasks", () => {
     try {
       await findDuplicateActiveTasks(
         { list: listSpy },
-        { entity: "PR-25750", projectId: "proj-a" }
+        { entity: "PR-1234", projectId: "proj-a" }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -1125,12 +1125,12 @@ describe("findDuplicateActiveTasks", () => {
     // it.
     const lister = makeTaskLister([])
     await findDuplicateActiveTasks(lister, {
-      entity: "PR-25750",
+      entity: "PR-1234",
       projectId: "proj-a",
     })
     expect(lister.listSpy).toHaveBeenCalledWith({
       projectId: "proj-a",
-      entities: ["PR-25750"],
+      entities: ["PR-1234"],
       states: ["open", "in-progress", "blocked"],
       limit: 10,
       sortBy: "updatedAtDesc",
@@ -1144,13 +1144,13 @@ describe("findDuplicateActiveTasks", () => {
     // test pins that contract — every TaskSummary the lister returns
     // surfaces in the result, in the order the lister returned them.
     const items = [
-      makeTaskSummary({ id: "task-1", title: "Track PR-25750 review" }),
-      makeTaskSummary({ id: "task-2", title: "PR-25750 follow-up" }),
-      makeTaskSummary({ id: "task-3", title: "PR-25750 redux" }),
+      makeTaskSummary({ id: "task-1", title: "Track PR-1234 review" }),
+      makeTaskSummary({ id: "task-2", title: "PR-1234 follow-up" }),
+      makeTaskSummary({ id: "task-3", title: "PR-1234 redux" }),
     ]
     const lister = makeTaskLister(items)
     const result = await findDuplicateActiveTasks(lister, {
-      entity: "PR-25750",
+      entity: "PR-1234",
       projectId: "proj-a",
     })
     expect(result.map((t) => t.id)).toEqual(["task-1", "task-2", "task-3"])
@@ -1160,7 +1160,7 @@ describe("findDuplicateActiveTasks", () => {
     const listSpy = vi.fn().mockRejectedValue(new Error("notion 503"))
     const result = await findDuplicateActiveTasks(
       { list: listSpy },
-      { entity: "PR-25750", projectId: "proj-a" }
+      { entity: "PR-1234", projectId: "proj-a" }
     )
     expect(result).toEqual([])
   })
@@ -1172,7 +1172,7 @@ describe("findDuplicateActiveTasks", () => {
 
     const result = await findDuplicateActiveTasks(
       { list: listSpy },
-      { entity: "PR-25750", projectId: "proj-a", onError }
+      { entity: "PR-1234", projectId: "proj-a", onError }
     )
 
     expect(result).toEqual([])
@@ -1187,10 +1187,10 @@ describe("findDuplicateActiveTasks", () => {
     // practice (the wire-in always passes `resolved.ids[0]`), but the
     // helper must not refuse it — projectless tasks exist.
     const lister = makeTaskLister([
-      makeTaskSummary({ id: "task-1", title: "Track PR-25750" }),
+      makeTaskSummary({ id: "task-1", title: "Track PR-1234" }),
     ])
     const result = await findDuplicateActiveTasks(lister, {
-      entity: "PR-25750",
+      entity: "PR-1234",
     })
     expect(result.map((t) => t.id)).toEqual(["task-1"])
     expect(lister.listSpy).toHaveBeenCalledWith(
@@ -1236,16 +1236,16 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review",
-        entity: "PR-25750",
+        title: "Track PR-1234 review",
+        entity: "PR-1234",
       }),
     ]
     vi.stubEnv("LORE_DISABLE_TASK_REUSE", "1")
     try {
       expect(
         findExactReuseTarget(candidates, {
-          subject: "Track PR-25750 review",
-          entity: "PR-25750",
+          subject: "Track PR-1234 review",
+          entity: "PR-1234",
           projectIds: ["proj-a"],
         })
       ).toBeNull()
@@ -1258,15 +1258,15 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review",
-        entity: "PR-25750",
+        title: "Track PR-1234 review",
+        entity: "PR-1234",
       }),
     ]
     vi.stubEnv("LORE_DISABLE_TASK_REUSE", "0")
     try {
       const target = findExactReuseTarget(candidates, {
-        subject: "Track PR-25750 review",
-        entity: "PR-25750",
+        subject: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a"],
       })
       expect(target?.id).toBe("task-1")
@@ -1277,12 +1277,12 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
 
   it("returns null on whitespace-only subject (degenerate input must not silently reuse)", () => {
     const candidates = [
-      makeTaskSummary({ id: "task-1", title: "   ", entity: "PR-25750" }),
+      makeTaskSummary({ id: "task-1", title: "   ", entity: "PR-1234" }),
     ]
     expect(
       findExactReuseTarget(candidates, {
         subject: "   ",
-        entity: "PR-25750",
+        entity: "PR-1234",
         projectIds: ["proj-a"],
       })
     ).toBeNull()
@@ -1305,14 +1305,14 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review",
-        entity: "PR-25750",
+        title: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a"],
       }),
     ]
     const target = findExactReuseTarget(candidates, {
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
       projectIds: ["proj-a"],
     })
     expect(target?.id).toBe("task-1")
@@ -1326,13 +1326,13 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR ＃25750  Review",
-        entity: "pr-25750",
+        title: "Track PR ＃1234  Review",
+        entity: "pr-1234",
       }),
     ]
     const target = findExactReuseTarget(candidates, {
-      subject: "track pr #25750 review",
-      entity: "PR-25750",
+      subject: "track pr #1234 review",
+      entity: "PR-1234",
       projectIds: ["proj-a"],
     })
     expect(target?.id).toBe("task-1")
@@ -1400,7 +1400,7 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
   it("collapses multiple-space subject differences before equality", () => {
     // Pre-#265 the autosave learning extractor surfaced the same
     // follow-up across two sessions with slightly-different
-    // whitespace ("Track  PR-25750  review" vs "Track PR-25750
+    // whitespace ("Track  PR-1234  review" vs "Track PR-1234
     // review"). The whitespace-collapse step in `normalizeReuseKey`
     // makes those structurally identical — reuse must fire. A
     // future contributor narrowing the normalizer (e.g. dropping
@@ -1408,13 +1408,13 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review",
-        entity: "PR-25750",
+        title: "Track PR-1234 review",
+        entity: "PR-1234",
       }),
     ]
     const target = findExactReuseTarget(candidates, {
-      subject: "Track  PR-25750   review",
-      entity: "PR-25750",
+      subject: "Track  PR-1234   review",
+      entity: "PR-1234",
       projectIds: ["proj-a"],
     })
     expect(target?.id).toBe("task-1")
@@ -1449,14 +1449,14 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review and follow up",
-        entity: "PR-25750",
+        title: "Track PR-1234 review and follow up",
+        entity: "PR-1234",
       }),
     ]
     expect(
       findExactReuseTarget(candidates, {
-        subject: "Track PR-25750 review",
-        entity: "PR-25750",
+        subject: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a"],
       })
     ).toBeNull()
@@ -1469,15 +1469,15 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review",
-        entity: "PR-25750",
+        title: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a"],
       }),
     ]
     expect(
       findExactReuseTarget(candidates, {
-        subject: "Track PR-25750 review",
-        entity: "PR-25750",
+        subject: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a", "proj-b"],
       })
     ).toBeNull()
@@ -1487,14 +1487,14 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
     const candidates = [
       makeTaskSummary({
         id: "task-1",
-        title: "Track PR-25750 review",
-        entity: "PR-25750",
+        title: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a", "proj-b"],
       }),
     ]
     const target = findExactReuseTarget(candidates, {
-      subject: "Track PR-25750 review",
-      entity: "PR-25750",
+      subject: "Track PR-1234 review",
+      entity: "PR-1234",
       projectIds: ["proj-b", "proj-a"],
     })
     expect(target?.id).toBe("task-1")
@@ -1520,8 +1520,8 @@ describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
   it("returns null on empty candidate list (advisory probe upstream returned [])", () => {
     expect(
       findExactReuseTarget([], {
-        subject: "Track PR-25750 review",
-        entity: "PR-25750",
+        subject: "Track PR-1234 review",
+        entity: "PR-1234",
         projectIds: ["proj-a"],
       })
     ).toBeNull()
@@ -1576,24 +1576,24 @@ describe("extractEntityCandidates", () => {
   })
 
   it("extracts `PR #N` and the embedded `#N` substring as separate candidates", () => {
-    // The Set dedup collapses identical strings, but `PR #25750` and
-    // `#25750` are different literals — both useful as `Entity contains`
+    // The Set dedup collapses identical strings, but `PR #1234` and
+    // `#1234` are different literals — both useful as `Entity contains`
     // probes. The PR pattern fires before the standalone-#N pattern,
-    // so `PR #25750` lands first in the result order.
+    // so `PR #1234` lands first in the result order.
     const result = extractEntityCandidates(
-      "Merged PR #25750: outlook label.applied classifier",
+      "Merged PR #1234: outlook label.applied classifier",
       "",
       ""
     )
-    expect(result).toContain("PR #25750")
-    expect(result).toContain("#25750")
+    expect(result).toContain("PR #1234")
+    expect(result).toContain("#1234")
     // PR pattern wins the priority race.
-    expect(result.indexOf("PR #25750")).toBeLessThan(result.indexOf("#25750"))
+    expect(result.indexOf("PR #1234")).toBeLessThan(result.indexOf("#1234"))
   })
 
   it("extracts `PR-N` (hyphenated form)", () => {
-    const result = extractEntityCandidates("Track PR-25750 review", "", "")
-    expect(result).toContain("PR-25750")
+    const result = extractEntityCandidates("Track PR-1234 review", "", "")
+    expect(result).toContain("PR-1234")
   })
 
   it("extracts standalone `#N` issue references", () => {
@@ -1643,10 +1643,10 @@ describe("extractEntityCandidates", () => {
   it("combines title + keywords + synopsis as one searchable surface", () => {
     const result = extractEntityCandidates(
       "Shipped feature",
-      "PR #25750 OAUTH-12",
+      "PR #1234 OAUTH-12",
       "Closes #88 for AuthService."
     )
-    expect(result).toContain("PR #25750")
+    expect(result).toContain("PR #1234")
     expect(result).toContain("OAUTH-12")
     expect(result).toContain("#88")
   })
@@ -1668,32 +1668,32 @@ describe("extractEntityCandidates", () => {
     // PR candidate FIRST. Cap-induced truncation drops the noisier
     // capitalized phrase if budget is tight.
     const result = extractEntityCandidates(
-      "Merged PR #25750 for AuthService refactor",
+      "Merged PR #1234 for AuthService refactor",
       "",
       ""
     )
-    const prIdx = result.indexOf("PR #25750")
+    const prIdx = result.indexOf("PR #1234")
     expect(prIdx).toBe(0)
   })
 
   it("dedupes identical literal matches across the combined input", () => {
-    // Same `PR #25750` in title and keywords — only one candidate emitted.
-    const result = extractEntityCandidates("Merged PR #25750", "PR #25750", "")
-    const prCount = result.filter((c) => c === "PR #25750").length
+    // Same `PR #1234` in title and keywords — only one candidate emitted.
+    const result = extractEntityCandidates("Merged PR #1234", "PR #1234", "")
+    const prCount = result.filter((c) => c === "PR #1234").length
     expect(prCount).toBe(1)
   })
 
-  it("matches `PR#25750` (no space between PR and #) — \\s* lets zero whitespace through", () => {
+  it("matches `PR#1234` (no space between PR and #) — \\s* lets zero whitespace through", () => {
     // Pinned per reviewer nit. The PR pattern is `\bPR\s*#\d+\b` so
-    // both `PR #25750` and `PR#25750` match. `Entity contains "PR#25750"`
-    // and `Entity contains "PR #25750"` are different server-side
+    // both `PR #1234` and `PR#1234` match. `Entity contains "PR#1234"`
+    // and `Entity contains "PR #1234"` are different server-side
     // probes — pin both shapes so a tightening of the regex (e.g.
     // requiring exactly one space) is caught loudly.
-    const noSpace = extractEntityCandidates("Merged PR#25750 outage", "", "")
-    expect(noSpace).toContain("PR#25750")
+    const noSpace = extractEntityCandidates("Merged PR#1234 outage", "", "")
+    expect(noSpace).toContain("PR#1234")
 
-    const withSpace = extractEntityCandidates("Merged PR #25750 outage", "", "")
-    expect(withSpace).toContain("PR #25750")
+    const withSpace = extractEntityCandidates("Merged PR #1234 outage", "", "")
+    expect(withSpace).toContain("PR #1234")
   })
 
   it("strips trailing punctuation from URL matches (concern #2)", () => {
@@ -1873,7 +1873,7 @@ describe("extractEntityCandidates", () => {
     // work, not the Set growth. So a pattern that hits 5 already-
     // present literals stops, even though the Set didn't grow. This
     // protects against a pathological-but-realistic input where the
-    // same `PR #25750` repeats 50 times in keywords — without this
+    // same `PR #1234` repeats 50 times in keywords — without this
     // accounting, the loop would scan all 50 before yielding to
     // later patterns. Empirically: cap is 5 attempts; same literal
     // repeated 6 times still bails after 5.
@@ -1895,7 +1895,7 @@ describe("findRelatedActiveTasks", () => {
     try {
       const result = await findRelatedActiveTasks(
         { tasks: { list: listSpy } },
-        { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
+        { memoryTitle: "Merged PR #1234", projectId: "proj-a" }
       )
       expect(result).toEqual([])
       expect(listSpy).not.toHaveBeenCalled()
@@ -1910,7 +1910,7 @@ describe("findRelatedActiveTasks", () => {
     try {
       await findRelatedActiveTasks(
         { tasks: { list: listSpy } },
-        { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
+        { memoryTitle: "Merged PR #1234", projectId: "proj-a" }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -1928,7 +1928,7 @@ describe("findRelatedActiveTasks", () => {
     try {
       await findRelatedActiveTasks(
         { tasks: { list: listSpy } },
-        { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
+        { memoryTitle: "Merged PR #1234", projectId: "proj-a" }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -1959,13 +1959,13 @@ describe("findRelatedActiveTasks", () => {
     await findRelatedActiveTasks(
       { tasks: lister },
       {
-        memoryTitle: "Merged PR #25750",
+        memoryTitle: "Merged PR #1234",
         projectId: "proj-a",
       }
     )
     expect(lister.listSpy).toHaveBeenCalledWith({
       projectId: "proj-a",
-      entities: expect.arrayContaining(["PR #25750"]),
+      entities: expect.arrayContaining(["PR #1234"]),
       states: ["open", "in-progress", "blocked"],
       limit: 5,
     })
@@ -1977,13 +1977,13 @@ describe("findRelatedActiveTasks", () => {
       { tasks: lister },
       {
         memoryTitle: "Shipped feature",
-        memoryKeywords: "PR #25750",
+        memoryKeywords: "PR #1234",
         memorySynopsis: "Closes SENTRY-1234.",
         projectId: "proj-a",
       }
     )
     const call = lister.listSpy.mock.calls[0][0] as { entities: string[] }
-    expect(call.entities).toContain("PR #25750")
+    expect(call.entities).toContain("PR #1234")
     expect(call.entities).toContain("SENTRY-1234")
   })
 
@@ -1992,12 +1992,12 @@ describe("findRelatedActiveTasks", () => {
     // but un-supplied synopsis values are: the field is optional on
     // `lore-memory action='save'`. Probe falls back to title + keywords.
     const lister = makeTaskLister([
-      makeTaskSummary({ id: "task-1", title: "Track PR #25750" }),
+      makeTaskSummary({ id: "task-1", title: "Track PR #1234" }),
     ])
     const result = await findRelatedActiveTasks(
       { tasks: lister },
       {
-        memoryTitle: "Merged PR #25750: classifier",
+        memoryTitle: "Merged PR #1234: classifier",
         memoryKeywords: undefined,
         memorySynopsis: undefined,
         projectId: "proj-a",
@@ -2012,11 +2012,11 @@ describe("findRelatedActiveTasks", () => {
     // A vault-wide save (no resolved project) still benefits from the
     // cross-reference — projectless tasks exist.
     const lister = makeTaskLister([
-      makeTaskSummary({ id: "task-1", title: "Track PR #25750" }),
+      makeTaskSummary({ id: "task-1", title: "Track PR #1234" }),
     ])
     const result = await findRelatedActiveTasks(
       { tasks: lister },
-      { memoryTitle: "Merged PR #25750" }
+      { memoryTitle: "Merged PR #1234" }
     )
     expect(result.map((t) => t.id)).toEqual(["task-1"])
     expect(lister.listSpy).toHaveBeenCalledWith(
@@ -2028,7 +2028,7 @@ describe("findRelatedActiveTasks", () => {
     const listSpy = vi.fn().mockRejectedValue(new Error("notion 503"))
     const result = await findRelatedActiveTasks(
       { tasks: { list: listSpy } },
-      { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
+      { memoryTitle: "Merged PR #1234", projectId: "proj-a" }
     )
     expect(result).toEqual([])
   })
@@ -2040,7 +2040,7 @@ describe("findRelatedActiveTasks", () => {
     const result = await findRelatedActiveTasks(
       { tasks: { list: listSpy } },
       {
-        memoryTitle: "Merged PR #25750",
+        memoryTitle: "Merged PR #1234",
         projectId: "proj-a",
         onError,
       }
@@ -2069,7 +2069,7 @@ describe("findRelatedActiveTasks", () => {
     const result = await findRelatedActiveTasks(
       { tasks: { list: listSpy as never } },
       {
-        memoryTitle: "Merged PR #25750",
+        memoryTitle: "Merged PR #1234",
         projectId: "proj-a",
         onError,
       }

@@ -24,7 +24,12 @@ Useful commands:
 | `npm run lint`         | Run ESLint over `src/`              |
 | `npm test`             | Run the Vitest suite                |
 | `npm run dev`          | Rebuild in watch mode               |
-| `npm run guard:config` | Validate the committed `.lore.yaml` |
+
+`.lore.yaml` is local-only — it's gitignored, the pre-commit hook
+(`tools/check-lore-config.mjs --staged`) rejects any staged index entry,
+and `src/config-guard.test.ts > repo invariants > does not track a
+`.lore.yaml` at the repo root` pins the absence on every CI run. Copy
+`.lore.example.yaml` to `.lore.yaml` per clone; don't commit it.
 
 Do not bump package versions in contribution PRs unless a maintainer explicitly
 asks for a release change.

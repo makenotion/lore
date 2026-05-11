@@ -27,7 +27,6 @@
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
-    "guard:config": "node tools/check-lore-config.mjs --file .lore.yaml",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

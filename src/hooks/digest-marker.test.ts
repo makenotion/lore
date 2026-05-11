@@ -50,8 +50,8 @@ describe("digest-marker", () => {
   })
 
   it("keys the marker on a configRoot hash so two vaults with the same project name do not collide", () => {
-    const a = digestMarkerPath("/vault-a", "Mail")
-    const b = digestMarkerPath("/vault-b", "Mail")
+    const a = digestMarkerPath("/vault-a", "Widget")
+    const b = digestMarkerPath("/vault-b", "Widget")
     expect(a).not.toBe(b)
   })
 

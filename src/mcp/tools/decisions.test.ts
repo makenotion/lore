@@ -155,7 +155,7 @@ describe("registerDecisionTools", () => {
   it("rejects mixed projectNames atomically before creating a decision", async () => {
     const mockServer = createMockServer()
     const findByName = vi.fn(async (name: string) =>
-      name === "Mail" ? { id: "proj-mail", name: "Mail" } : null
+      name === "Widget" ? { id: "proj-widget", name: "Widget" } : null
     )
     const services = {
       decisions: {
@@ -188,13 +188,13 @@ describe("registerDecisionTools", () => {
     const result = await create({
       decision: "New decision",
       rationale: "Because reasons",
-      projectNames: ["Mail", "Missing"],
+      projectNames: ["Widget", "Missing"],
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect(text).toContain('Project "Missing" could not be resolved')
-    expect(findByName).toHaveBeenCalledWith("Mail")
+    expect(findByName).toHaveBeenCalledWith("Widget")
     expect(findByName).toHaveBeenCalledWith("Missing")
     expect(services.topics.getOrCreate).not.toHaveBeenCalled()
     expect(services.decisions.create).not.toHaveBeenCalled()
@@ -2211,10 +2211,10 @@ describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBU
   }
 
   it("stamps services.identity.resolveAuthor on decisions.create when args.author is omitted", async () => {
-    const { handler, create } = setUpCreateHarness("Hesham Salman")
+    const { handler, create } = setUpCreateHarness("Test User")
     await handler({ decision: "Use bcrypt", rationale: "Fast enough" } as never)
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Hesham Salman" })
+      expect.objectContaining({ author: "Test User" })
     )
   })
 

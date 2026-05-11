@@ -39,19 +39,19 @@ import type { LoreConfig, Project } from "../types.js"
 const CONFIG: LoreConfig = {
   vault: { pageId: "v" },
   projects: [
-    { name: "Mail", path: "." },
-    { name: "Mail Backend", path: "services/mail" },
+    { name: "Widget", path: "." },
+    { name: "Widget Backend", path: "services/widget" },
   ],
 }
 
 const CONFIG_ROOT = "/repo"
-const SUB_PROJECT_CWD = "/repo/services/mail/graphql"
+const SUB_PROJECT_CWD = "/repo/services/widget/graphql"
 
 function makeProject(name: string): Project {
   return {
     id: `proj-${name}`,
     name,
-    path: "services/mail",
+    path: "services/widget",
     type: "project",
     status: "active",
     description: "",
@@ -84,9 +84,9 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
   }
 } {
   const calls = {
-    init: vi.fn(async () => makeServices(makeProject("Mail Backend"))),
+    init: vi.fn(async () => makeServices(makeProject("Widget Backend"))),
     gather: vi.fn(async () => ({
-      raw: "# Digest Data — Mail Backend\n",
+      raw: "# Digest Data — Widget Backend\n",
       lastDigestDate: null,
       recentMemoryCount: 5,
     })),
@@ -148,7 +148,7 @@ describe("fireDigestIfStale", () => {
 
   it("returns 'no-project' when cwd resolves only to a catch-all", async () => {
     const { deps, calls } = baseDeps()
-    // cwd at the repo root matches only the "Mail" catch-all entry.
+    // cwd at the repo root matches only the "Widget" catch-all entry.
     const outcome = await fireDigestIfStale(CONFIG_ROOT, state(), deps)
     expect(outcome).toBe("no-project")
     expect(calls.init).not.toHaveBeenCalled()
@@ -169,20 +169,20 @@ describe("fireDigestIfStale", () => {
     const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     expect(outcome).toBe("fired")
     expect(calls.touch).toHaveBeenCalledTimes(1)
-    expect(calls.touch).toHaveBeenCalledWith(CONFIG_ROOT, "Mail Backend")
+    expect(calls.touch).toHaveBeenCalledWith(CONFIG_ROOT, "Widget Backend")
     expect(calls.spawn).toHaveBeenCalledTimes(1)
     expect(calls.clear).not.toHaveBeenCalled()
     // Prompt should be passed with the today date + no-prior-digest wording.
     const [spawnCwd, prompt] = calls.spawn.mock.calls[0]!
     expect(spawnCwd).toBe(SUB_PROJECT_CWD)
-    expect(prompt).toContain("Digest — 2026-04-24 — Mail Backend")
+    expect(prompt).toContain("Digest — 2026-04-24 — Widget Backend")
     expect(prompt).toContain("first one")
     const recovered = { before: new Date("2026-04-24T12:00:00.000Z") }
     expect(calls.clearFailure).toHaveBeenCalledWith(
       CONFIG_ROOT,
       "digest-scheduler",
       {
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
       },
       recovered
     )
@@ -190,7 +190,7 @@ describe("fireDigestIfStale", () => {
       CONFIG_ROOT,
       "digest-synthesizer",
       {
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
       },
       recovered
     )
@@ -210,12 +210,12 @@ describe("fireDigestIfStale", () => {
     expect(outcome).toBe("spawn-failed")
     expect(calls.touch).toHaveBeenCalledTimes(1)
     expect(calls.clear).toHaveBeenCalledTimes(1)
-    expect(calls.clear).toHaveBeenCalledWith(CONFIG_ROOT, "Mail Backend")
+    expect(calls.clear).toHaveBeenCalledWith(CONFIG_ROOT, "Widget Backend")
     expect(calls.recordFailure).toHaveBeenCalledWith(
       CONFIG_ROOT,
       expect.objectContaining({
         kind: "digest-synthesizer",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         code: "binary-missing",
       })
     )
@@ -233,7 +233,7 @@ describe("fireDigestIfStale", () => {
     expect(outcome).toBe("spawn-failed")
     expect(calls.clear).toHaveBeenCalledTimes(1)
     expect(calls.recordFailure.mock.calls[0]![1].logPath).toContain(
-      "digest-Mail_Backend"
+      "digest-Widget_Backend"
     )
   })
 
@@ -285,7 +285,7 @@ describe("fireDigestIfStale", () => {
   it("touches the marker but does NOT spawn when the window has zero activity", async () => {
     const { deps, calls } = baseDeps({
       gatherDigest: vi.fn(async () => ({
-        raw: "# Digest Data — Mail Backend\n",
+        raw: "# Digest Data — Widget Backend\n",
         lastDigestDate: null,
         recentMemoryCount: 0,
       })),
@@ -299,7 +299,7 @@ describe("fireDigestIfStale", () => {
       CONFIG_ROOT,
       "digest-scheduler",
       {
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
       },
       { before: new Date("2026-04-24T12:00:00.000Z") }
     )
@@ -313,7 +313,7 @@ describe("fireDigestIfStale", () => {
             CONFIG_ROOT,
             {
               kind: "digest-scheduler",
-              projectName: "Mail Backend",
+              projectName: "Widget Backend",
               code: "gather-failed",
               message: "concurrent gather failed",
             },
@@ -333,7 +333,7 @@ describe("fireDigestIfStale", () => {
       })
       expect(marker).toMatchObject({
         kind: "digest-scheduler",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         code: "gather-failed",
       })
     })
@@ -347,7 +347,7 @@ describe("fireDigestIfStale", () => {
             CONFIG_ROOT,
             {
               kind: "digest-synthesizer",
-              projectName: "Mail Backend",
+              projectName: "Widget Backend",
               code: "spawn-error",
               message: "concurrent spawn failed",
             },
@@ -368,7 +368,7 @@ describe("fireDigestIfStale", () => {
       })
       expect(marker).toMatchObject({
         kind: "digest-synthesizer",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         code: "spawn-error",
       })
     })
@@ -388,7 +388,7 @@ describe("fireDigestIfStale", () => {
       CONFIG_ROOT,
       expect.objectContaining({
         kind: "digest-scheduler",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         code: "init-failed",
       })
     )
@@ -420,7 +420,7 @@ describe("fireDigestIfStale", () => {
       CONFIG_ROOT,
       expect.objectContaining({
         kind: "digest-scheduler",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         code: "gather-failed",
       })
     )
@@ -444,7 +444,7 @@ describe("fireDigestIfStale", () => {
     const { deps, calls } = baseDeps()
     await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     const lockKey = calls.spawn.mock.calls[0]![2]
-    expect(lockKey).toBe("digest-Mail_Backend")
+    expect(lockKey).toBe("digest-Widget_Backend")
   })
 })
 
@@ -558,7 +558,7 @@ describe("scheduleAutoDigestSpawn", () => {
 
     scheduleAutoDigestSpawn("/proj", {
       configRoot: CONFIG_ROOT,
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-digest",
       recordFailure,
       clearFailure,
@@ -568,7 +568,7 @@ describe("scheduleAutoDigestSpawn", () => {
       CONFIG_ROOT,
       expect.objectContaining({
         kind: "auto-digest-helper-spawn",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-digest",
         code: "spawn-error",
       })
@@ -585,7 +585,7 @@ describe("scheduleAutoDigestSpawn", () => {
 
     scheduleAutoDigestSpawn("/proj", {
       configRoot: CONFIG_ROOT,
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-digest",
       recordFailure,
       clearFailure,
@@ -596,7 +596,7 @@ describe("scheduleAutoDigestSpawn", () => {
       CONFIG_ROOT,
       "auto-digest-helper-spawn",
       {
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
       },
       { before: expect.any(Date) }
     )
@@ -610,7 +610,7 @@ describe("scheduleAutoDigestSpawn", () => {
           CONFIG_ROOT,
           {
             kind: "auto-digest-helper-spawn",
-            projectName: "Mail Backend",
+            projectName: "Widget Backend",
             sessionId: "sess-concurrent-helper",
             code: "spawn-error",
             message: "concurrent helper fork failed",
@@ -622,7 +622,7 @@ describe("scheduleAutoDigestSpawn", () => {
 
       scheduleAutoDigestSpawn("/proj", {
         configRoot: CONFIG_ROOT,
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-digest",
         clearFailure: clearBackgroundFailure,
       })
@@ -631,7 +631,7 @@ describe("scheduleAutoDigestSpawn", () => {
       const [marker] = await listBackgroundFailures(CONFIG_ROOT)
       expect(marker).toMatchObject({
         kind: "auto-digest-helper-spawn",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-concurrent-helper",
         code: "spawn-error",
       })

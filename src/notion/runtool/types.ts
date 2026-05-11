@@ -7,7 +7,7 @@
  *
  * | Item   | Value                                                          |
  * | ------ | -------------------------------------------------------------- |
- * | Repo   | `makenotion/notion-next`                                       |
+ * | Source | internal upstream Notion server snapshot                       |
  * | Commit | `69cd144ac1e429229680b6fb24ec29bcea3e37ac` (snapshot 2026-05-05) |
  * | File   | `src/server-publicApi/apis/ai_tools/params/RunToolParams.ts`   |
  *
@@ -67,7 +67,7 @@ export interface RunToolCreatePagesParent {
  * the `create_pages` endpoint actually consumes via
  * `convertNotionRestToSqliteProperties`. The conversion is grounded
  * in the empirical wire format observed live against the production
- * Mail vault Facts DB at PR #538 review time. The
+ * internal vault Facts DB at PR #538 review time. The
  * `Record<string, unknown>` typing reflects the input REST shape; the
  * wrapper handles the SQLite expansion before dispatch.
  *

@@ -70,13 +70,15 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 ## Configuration
 
 - Config lives in `.lore.yaml` with upward directory search from cwd.
-- `.lore.yaml` may be committed only with shared, non-secret values. Never
-  commit `auth.token`, personal scratch vault page IDs, or any
-  contributor-specific local values.
-- Notion page IDs are locators, not bearer credentials. A deliberate team vault
-  page ID in git history is not a token leak by itself; private or accidentally
-  committed personal page IDs still need owner review for page replacement or
-  history rewrite.
+- `.lore.yaml` is local-only — keep it out of version control. Copy
+  `.lore.example.yaml` to `.lore.yaml` per clone, and distribute shared team
+  values (`vault.pageId`, `auth.workspaceId`) via onboarding docs rather than
+  by committing config. Never put `auth.token`, personal scratch vault page
+  IDs, or maintainer-specific values in the file.
+- Notion page IDs are locators, not bearer credentials. Keeping them out of
+  git is still the right default so external clones don't auto-target an
+  unrelated vault. Accidental maintainer-local page IDs that land in history
+  need owner review for page replacement or history rewrite.
 - Token resolution is handled by `resolveAuth` in `src/config.ts`; see
   [`docs/authentication.md`](authentication.md).
 - Config is validated with Zod at load time, including refusal of

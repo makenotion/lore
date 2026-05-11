@@ -999,7 +999,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       memories: { create, list },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       context: {
-        project: { id: "proj-catchall", name: "Mail" },
+        project: { id: "proj-catchall", name: "Widget" },
         isCatchAllFallback: true,
       },
       config: { projects: [] },
@@ -1072,7 +1072,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create, list },
       context: {
-        project: { id: "proj-catchall", name: "Mail" },
+        project: { id: "proj-catchall", name: "Widget" },
         isCatchAllFallback: true,
       },
       config: { projects: [] },
@@ -2829,14 +2829,14 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
   it("surfaces a Related active tasks footer when entities match active tasks", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-new", {
-      title: "Merged PR #25750: outlook label.applied classifier",
+      title: "Merged PR #1234: outlook label.applied classifier",
       projectIds: ["proj-a"],
     })
     const tasksList = vi.fn().mockResolvedValue({
       items: [
         makeTaskSummary({
           id: "task-1",
-          title: "Track PR #25750 review",
+          title: "Track PR #1234 review",
           taskState: "in-progress",
         }),
       ],
@@ -2865,7 +2865,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
-      title: "Merged PR #25750: outlook label.applied classifier",
+      title: "Merged PR #1234: outlook label.applied classifier",
       content: "body",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -2875,15 +2875,15 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     expect(text).toContain("Related active tasks (1)")
     expect(text).toContain("close any that this memory resolves")
     // Per-task line carries title, state, and copy-paste closure CTA.
-    expect(text).toContain('"Track PR #25750 review" [in-progress]')
+    expect(text).toContain('"Track PR #1234 review" [in-progress]')
     expect(text).toContain("lore-task({ action: 'close', taskId: 'task-1' })")
     // Probe was scoped to project + ACTIVE_TASK_STATES, with extracted
-    // entities including PR #25750.
+    // entities including PR #1234.
     expect(tasksList).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: "proj-a",
         states: ["open", "in-progress", "blocked"],
-        entities: expect.arrayContaining(["PR #25750"]),
+        entities: expect.arrayContaining(["PR #1234"]),
         limit: 5,
       })
     )
@@ -2897,7 +2897,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const created = makeMemory("mem-new", {
       title: "Shipped",
       projectIds: ["proj-a"],
-      keywords: "PR #25750",
+      keywords: "PR #1234",
       synopsis: "Closes SENTRY-1234.",
     })
     const tasksList = vi.fn().mockResolvedValue({ items: [] })
@@ -2927,19 +2927,19 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     await remember({
       title: "Shipped",
       content: "body",
-      keywords: "PR #25750",
+      keywords: "PR #1234",
       synopsis: "Closes SENTRY-1234.",
     } as never)
 
     const call = tasksList.mock.calls[0][0] as { entities: string[] }
-    expect(call.entities).toContain("PR #25750")
+    expect(call.entities).toContain("PR #1234")
     expect(call.entities).toContain("SENTRY-1234")
   })
 
   it("omits the cross-reference footer when the probe returns no tasks", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-new", {
-      title: "Merged PR #25750",
+      title: "Merged PR #1234",
       projectIds: ["proj-a"],
     })
     const tasksList = vi.fn().mockResolvedValue({ items: [] })
@@ -2967,7 +2967,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
-      title: "Merged PR #25750",
+      title: "Merged PR #1234",
       content: "body",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -2979,7 +2979,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
   it("save still succeeds when the cross-reference probe fails (advisory)", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-new", {
-      title: "Merged PR #25750",
+      title: "Merged PR #1234",
       projectIds: ["proj-a"],
     })
     const tasksList = vi.fn().mockRejectedValue(new Error("notion 503"))
@@ -3007,7 +3007,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
-      title: "Merged PR #25750",
+      title: "Merged PR #1234",
       content: "body",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -3020,7 +3020,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
   it("LORE_DISABLE_TASK_CROSSREF=1 skips the probe without making a Notion call", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-new", {
-      title: "Merged PR #25750",
+      title: "Merged PR #1234",
       projectIds: ["proj-a"],
     })
     const tasksList = vi.fn()
@@ -3050,7 +3050,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     vi.stubEnv("LORE_DISABLE_TASK_CROSSREF", "1")
     try {
       const result = await remember({
-        title: "Merged PR #25750",
+        title: "Merged PR #1234",
         content: "body",
       } as never)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -3090,7 +3090,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       // Mock `facts.createWithDedup` so the post-create auto-emit
       // branch (issue 0.8.0/#07) doesn't synchronously throw on the
       // unresolved property access. Without it, the title `"Merged PR
-      // #25750"` extracts an entity, the auto-emit branch hits
+      // #1234"` extracts an entity, the auto-emit branch hits
       // `services.facts.createWithDedup`, the synchronous `TypeError`
       // routes through `handleSave`'s outer try/catch, and the test
       // would pass only because its parallelism assertions run on the
@@ -3111,7 +3111,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const pending = remember({
-      title: "Merged PR #25750",
+      title: "Merged PR #1234",
       content: "body",
     } as never)
 
@@ -3124,7 +3124,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
 
     resolveCreate(
       makeMemory("mem-new", {
-        title: "Merged PR #25750",
+        title: "Merged PR #1234",
         projectIds: ["proj-a"],
       })
     )
@@ -3147,7 +3147,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
   it("emits one `mentions` fact per extracted entity with subject=title, predicate=mentions, source=memory id", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-emit-1", {
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       projectIds: ["proj-a"],
       keywords: "performance",
     })
@@ -3176,19 +3176,19 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       content: "body",
       keywords: "performance",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    // At least one `mentions` fact landed for `PR #25750` with the
+    // At least one `mentions` fact landed for `PR #1234` with the
     // memory title as subject and the memory id as the source.
     expect(createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({
-        subject: "Investigated PR #25750 latency regression",
+        subject: "Investigated PR #1234 latency regression",
         predicate: "mentions",
-        object: "PR #25750",
+        object: "PR #1234",
         sourceMemoryId: "mem-emit-1",
         projectIds: ["proj-a"],
         confidence: "speculative",
@@ -3285,7 +3285,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // probes — auto-mentions are advisory.
     const mockServer = createMockServer()
     const created = makeMemory("mem-partial", {
-      title: "Reviewed PR #25750 against SENTRY-1234",
+      title: "Reviewed PR #1234 against SENTRY-1234",
       projectIds: ["proj-a"],
     })
     const createWithDedup = vi
@@ -3313,7 +3313,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
-      title: "Reviewed PR #25750 against SENTRY-1234",
+      title: "Reviewed PR #1234 against SENTRY-1234",
       content: "body",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -3339,7 +3339,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // distrusting the auto-mentions tokenizer's noise floor.
     const mockServer = createMockServer()
     const created = makeMemory("mem-disabled", {
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
       projectIds: ["proj-a"],
     })
     const createWithDedup = vi.fn()
@@ -3365,7 +3365,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     vi.stubEnv("LORE_DISABLE_AUTO_MENTIONS", "1")
     try {
       const result = await remember({
-        title: "Investigated PR #25750",
+        title: "Investigated PR #1234",
         content: "body",
       } as never)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -3387,7 +3387,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     const created = makeMemory("mem-threads", {
       title: "Reviewed",
       projectIds: ["proj-a"],
-      keywords: "PR #25750",
+      keywords: "PR #1234",
       synopsis: "Closes SENTRY-1234.",
     })
     const createWithDedup = vi.fn().mockResolvedValue({
@@ -3417,14 +3417,14 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     await remember({
       title: "Reviewed",
       content: "body",
-      keywords: "PR #25750",
+      keywords: "PR #1234",
       synopsis: "Closes SENTRY-1234.",
     } as never)
 
     const objects = createWithDedup.mock.calls.map(
       (c) => (c[0] as { object: string }).object
     )
-    expect(objects).toContain("PR #25750")
+    expect(objects).toContain("PR #1234")
     expect(objects).toContain("SENTRY-1234")
   })
 
@@ -3435,7 +3435,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // handler — undefined when no projects, populated otherwise.
     const mockServer = createMockServer()
     const created = makeMemory("mem-vaultwide", {
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       projectIds: [],
     })
     const createWithDedup = vi.fn().mockResolvedValue({
@@ -3463,7 +3463,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     await remember({
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       content: "body",
     } as never)
 
@@ -3484,11 +3484,11 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // `createWithDedup`."
     const mockServer = createMockServer()
     const created = makeMemory("mem-dedup", {
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
       projectIds: ["proj-a"],
     })
     // Default resolution covers every per-entity call (the title
-    // produces both `PR #25750` and `#25750` via overlapping
+    // produces both `PR #1234` and `#1234` via overlapping
     // patterns — two calls per save). The first save's calls return
     // `deduped: false` (fresh rows); the remaining calls return
     // `deduped: true` to mimic the live shape — the surrounding
@@ -3518,7 +3518,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     registerMemoryTools(mockServer.server, services as never)
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
-    const args = { title: "Investigated PR #25750", content: "body" }
+    const args = { title: "Investigated PR #1234", content: "body" }
     const result1 = await remember(args as never)
     const result2 = await remember(args as never)
 
@@ -3542,7 +3542,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // Every call uses the `mentions` predicate.
     for (const call of calls) {
       expect(call.predicate).toBe("mentions")
-      expect(call.subject).toBe("Investigated PR #25750")
+      expect(call.subject).toBe("Investigated PR #1234")
     }
     // The convergence guarantee: the second save's `(predicate,
     // object)` set is a subset of the first save's. Asserting subset
@@ -3581,7 +3581,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // the disable surface.
     const mockServer = createMockServer()
     const created = makeMemory("mem-single-axis-1", {
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       projectIds: ["proj-a"],
     })
     const createWithDedup = vi
@@ -3609,7 +3609,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     vi.stubEnv("LORE_DISABLE_NEAR_DUPLICATE_PROBE", "1")
     try {
       await remember({
-        title: "Reviewed PR #25750",
+        title: "Reviewed PR #1234",
         content: "body",
       } as never)
       // Auto-emit still fired despite the near-dup kill switch.
@@ -3629,7 +3629,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     // pins.
     const mockServer = createMockServer()
     const created = makeMemory("mem-single-axis-2", {
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       projectIds: ["proj-a"],
     })
     const createWithDedup = vi
@@ -3657,7 +3657,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     vi.stubEnv("LORE_DISABLE_TASK_CROSSREF", "1")
     try {
       await remember({
-        title: "Reviewed PR #25750",
+        title: "Reviewed PR #1234",
         content: "body",
       } as never)
       expect(createWithDedup).toHaveBeenCalled()
@@ -3691,7 +3691,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
   it("emits a `mentions` fact for an entity newly surfaced in the post-update title", async () => {
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-1", {
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -3718,7 +3718,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     const result = await lore({
       memoryId: "mem-update-1",
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -3738,9 +3738,9 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(probeOpts.projectId).toBeUndefined()
     expect(createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({
-        subject: "Investigated PR #25750 latency regression",
+        subject: "Investigated PR #1234 latency regression",
         predicate: "mentions",
-        object: "PR #25750",
+        object: "PR #1234",
         sourceMemoryId: "mem-update-1",
         projectIds: ["proj-a"],
         confidence: "speculative",
@@ -3772,7 +3772,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // catches that drift at the call boundary.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-predicate-pin", {
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -3800,7 +3800,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     await lore({
       memoryId: "mem-predicate-pin",
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
     } as never)
 
     // Exact-array assertion (not `expect.arrayContaining`) — a future
@@ -3818,21 +3818,21 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
   it("does NOT re-emit a fact for an entity already covered by an existing mentions fact", async () => {
     // The covered-set check is the load-bearing dedup primitive: if
-    // `queryBySourceMemory` returns a fact with `object: "PR #25750"`,
-    // a post-update set that includes "PR #25750" must not re-emit.
+    // `queryBySourceMemory` returns a fact with `object: "PR #1234"`,
+    // a post-update set that includes "PR #1234" must not re-emit.
     // Pinning this guards against a refactor that swaps the per-Object
     // Set for an `id`-based check (which would never match across
     // saves) or that drops the pre-query entirely (which would
     // re-introduce the dedup-key probe round-trip per call).
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-cover", {
-      title: "Investigated PR #25750 again",
+      title: "Investigated PR #1234 again",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
     const queryBySourceMemory = vi.fn().mockResolvedValue([
-      { id: "fact-existing", object: "PR #25750" },
-      { id: "fact-existing-2", object: "#25750" },
+      { id: "fact-existing", object: "PR #1234" },
+      { id: "fact-existing-2", object: "#1234" },
     ])
     const createWithDedup = vi.fn().mockResolvedValue({
       fact: { id: "fact-x" },
@@ -3856,7 +3856,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     const result = await lore({
       memoryId: "mem-update-cover",
-      title: "Investigated PR #25750 again",
+      title: "Investigated PR #1234 again",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -3877,20 +3877,20 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // test rather than silently re-introducing the orphan dynamic.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-stale", {
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
     // Existing facts include one for an entity NOT in the post-update
-    // text. The current-text entities (`PR #25750` + `#25750`,
+    // text. The current-text entities (`PR #1234` + `#1234`,
     // surfaced by overlapping patterns in the extractor) are all
     // covered so no fresh emission fires; the test isolates the
     // stale-fact-handling assertion from any "fresh entity slipped
     // through" noise.
     const queryBySourceMemory = vi.fn().mockResolvedValue([
       { id: "fact-stale", object: "SENTRY-9999" },
-      { id: "fact-current-pr", object: "PR #25750" },
-      { id: "fact-current-hash", object: "#25750" },
+      { id: "fact-current-pr", object: "PR #1234" },
+      { id: "fact-current-hash", object: "#1234" },
     ])
     const createWithDedup = vi.fn()
     const invalidate = vi.fn().mockResolvedValue(undefined)
@@ -3911,12 +3911,12 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     const result = await lore({
       memoryId: "mem-update-stale",
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    // Stale `SENTRY-9999` fact is invalidated by id; `PR #25750` /
-    // `#25750` stay live (still surfaced by the post-update text).
+    // Stale `SENTRY-9999` fact is invalidated by id; `PR #1234` /
+    // `#1234` stay live (still surfaced by the post-update text).
     expect(invalidate).toHaveBeenCalledTimes(1)
     expect(invalidate).toHaveBeenCalledWith("fact-stale")
     // No fresh creates — every current-text entity is already
@@ -3929,7 +3929,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
   it("invalidates every existing fact when the update strips all entities from the extraction surface", async () => {
     // The motivating regression test: an update that retitles a
     // memory away from any entity-shaped tokens (e.g. `Investigated
-    // PR #25750 latency regression` → `Generic refactor notes`)
+    // PR #1234 latency regression` → `Generic refactor notes`)
     // must invalidate every existing `mentions` fact rather than
     // silently leaving them as orphans. Pre-#491 the surrounding
     // branch short-circuited on `mentionedEntities.length > 0` and
@@ -3942,7 +3942,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     })
     const update = vi.fn().mockResolvedValue(updated)
     const queryBySourceMemory = vi.fn().mockResolvedValue([
-      { id: "fact-old-1", object: "PR #25750" },
+      { id: "fact-old-1", object: "PR #1234" },
       { id: "fact-old-2", object: "SENTRY-1234" },
     ])
     const createWithDedup = vi.fn()
@@ -3979,7 +3979,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // The canonical issue #491 scenario as a rename across two
     // entity tokens reliably surfaced by the PR pattern: a memory
     // retitled from one PR-bound investigation to another. Existing
-    // fact for `PR #25750` becomes stale; new fact for `PR #25800`
+    // fact for `PR #1234` becomes stale; new fact for `PR #25800`
     // is emitted. Pin both halves so a future contributor
     // "optimizing the diff" can't drop one side without breaking
     // the symmetric contract this test guards.
@@ -3989,12 +3989,12 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
-    // Existing facts surface the OLD entity set (`PR #25750` and
-    // its `#25750` issue-hash sibling). Both are stale under the
+    // Existing facts surface the OLD entity set (`PR #1234` and
+    // its `#1234` issue-hash sibling). Both are stale under the
     // post-update title; both get invalidated.
     const queryBySourceMemory = vi.fn().mockResolvedValue([
-      { id: "fact-old-pr", object: "PR #25750" },
-      { id: "fact-old-hash", object: "#25750" },
+      { id: "fact-old-pr", object: "PR #1234" },
+      { id: "fact-old-hash", object: "#1234" },
     ])
     const createWithDedup = vi.fn().mockResolvedValue({
       fact: { id: "fact-new" },
@@ -4054,7 +4054,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     })
     const update = vi.fn().mockResolvedValue(updated)
     const queryBySourceMemory = vi.fn().mockResolvedValue([
-      { id: "fact-stale-1", object: "PR #25750" },
+      { id: "fact-stale-1", object: "PR #1234" },
       { id: "fact-stale-2", object: "PR #25800" },
     ])
     const createWithDedup = vi.fn().mockResolvedValue({
@@ -4108,13 +4108,13 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // entity is filtered out; the new entity emits.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-mixed", {
-      title: "Reviewed PR #25750 against SENTRY-1234",
+      title: "Reviewed PR #1234 against SENTRY-1234",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
     const queryBySourceMemory = vi
       .fn()
-      .mockResolvedValue([{ id: "fact-existing", object: "PR #25750" }])
+      .mockResolvedValue([{ id: "fact-existing", object: "PR #1234" }])
     const createWithDedup = vi.fn().mockResolvedValue({
       fact: { id: "fact-x" },
       deduped: false,
@@ -4137,14 +4137,14 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     await lore({
       memoryId: "mem-update-mixed",
-      title: "Reviewed PR #25750 against SENTRY-1234",
+      title: "Reviewed PR #1234 against SENTRY-1234",
     } as never)
 
     const objects = createWithDedup.mock.calls.map(
       (c) => (c[0] as { object: string }).object
     )
-    // PR #25750 was already covered → not in the calls.
-    expect(objects).not.toContain("PR #25750")
+    // PR #1234 was already covered → not in the calls.
+    expect(objects).not.toContain("PR #1234")
     // SENTRY-1234 is freshly surfaced → in the calls.
     expect(objects).toContain("SENTRY-1234")
   })
@@ -4157,7 +4157,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     const updated = makeMemory("mem-update-fields", {
       title: "Reviewed",
       projectIds: ["proj-a"],
-      keywords: "PR #25750",
+      keywords: "PR #1234",
       synopsis: "Closes SENTRY-1234.",
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -4184,14 +4184,14 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     await lore({
       memoryId: "mem-update-fields",
-      keywords: "PR #25750",
+      keywords: "PR #1234",
       synopsis: "Closes SENTRY-1234.",
     } as never)
 
     const objects = createWithDedup.mock.calls.map(
       (c) => (c[0] as { object: string }).object
     )
-    expect(objects).toContain("PR #25750")
+    expect(objects).toContain("PR #1234")
     expect(objects).toContain("SENTRY-1234")
   })
 
@@ -4202,7 +4202,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // one toggle.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-disabled", {
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -4227,7 +4227,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     try {
       const result = await lore({
         memoryId: "mem-update-disabled",
-        title: "Investigated PR #25750",
+        title: "Investigated PR #1234",
       } as never)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -4246,16 +4246,16 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // create rejects, the other lands, the update response is not
     // an error, and the partial-failure footer surfaces the split.
     //
-    // Title is "Investigated PR #25750" — `Investigated` is in the
+    // Title is "Investigated PR #1234" — `Investigated` is in the
     // extractor stoplist so the multi-word phrase pattern can't
-    // match, leaving exactly two candidates: `PR #25750` (PR
-    // pattern) and `#25750` (issue-hash pattern). One reject + one
+    // match, leaving exactly two candidates: `PR #1234` (PR
+    // pattern) and `#1234` (issue-hash pattern). One reject + one
     // resolve gives a deterministic `1/2 new attempted` ratio so
     // the footer assertion can pin the exact count rather than a
     // permissive regex shape.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-partial", {
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -4281,7 +4281,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     const result = await lore({
       memoryId: "mem-update-partial",
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -4348,7 +4348,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // the obvious refactor that swaps the try/catch for a bare await.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-probefail", {
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -4375,7 +4375,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     const result = await lore({
       memoryId: "mem-update-probefail",
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -4389,7 +4389,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // Issue #491 widened the gate: the pre-query MUST run whenever
     // an extraction-relevant arg is touched, because we can't know
     // whether existing facts are stale without seeing them. A
-    // low-token retitle (`Investigated PR #25750 latency` → `ok`)
+    // low-token retitle (`Investigated PR #1234 latency` → `ok`)
     // strips every entity from the surface and must invalidate any
     // existing `mentions` facts; the only way to know is to query.
     // When the existing set is also empty (this fixture), the diff
@@ -4444,7 +4444,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // the rest of the handler uses.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-vaultwide", {
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
       projectIds: [],
     })
     const update = vi.fn().mockResolvedValue(updated)
@@ -4471,7 +4471,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     await lore({
       memoryId: "mem-update-vaultwide",
-      title: "Reviewed PR #25750",
+      title: "Reviewed PR #1234",
     } as never)
 
     const firstCall = createWithDedup.mock.calls[0][0] as {
@@ -4490,11 +4490,11 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // confidence-only update on a memory whose RESOLVED title would
     // produce extractable entities does not fire the pre-query.
     // Without the gate, every confidence-only update on a memory
-    // titled `"Investigated PR #25750"` would round-trip to Notion
+    // titled `"Investigated PR #1234"` would round-trip to Notion
     // for the `queryBySourceMemory` probe.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-confidence-only", {
-      title: "Investigated PR #25750",
+      title: "Investigated PR #1234",
       projectIds: ["proj-a"],
       confidence: "certain",
     })
@@ -9408,10 +9408,10 @@ describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION
   }
 
   it("stamps services.identity.resolveAuthor on memories.create when args.author is omitted", async () => {
-    const { handler, create } = setUpSaveHarness("Hesham Salman")
+    const { handler, create } = setUpSaveHarness("Test User")
     await handler({ title: "Saved", content: "body" } as never)
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Hesham Salman" })
+      expect.objectContaining({ author: "Test User" })
     )
   })
 
@@ -9581,7 +9581,7 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
   it("Test A — scoped save: auto-emitted mentions facts inherit the memory's scope", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-scoped", {
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       projectIds: ["proj-a"],
       keywords: "performance",
       // Round-4: the saved memory carries a session scope. Auto-
@@ -9619,7 +9619,7 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
     await remember({
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       content: "body",
       keywords: "performance",
       scope: { kind: "session", key: "sess-A" },
@@ -9640,7 +9640,7 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
     // Existing memory has session=sess-OLD scope; existing mentions
     // facts carry the same scope.
     const updated = makeMemory("mem-rescope", {
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       projectIds: ["proj-a"],
       scope: {
         kind: "session",
@@ -9652,9 +9652,9 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
     })
     const existingMentionsFact = {
       id: "fact-old-scope",
-      subject: "Investigated PR #25750 latency regression",
+      subject: "Investigated PR #1234 latency regression",
       predicate: "mentions" as const,
-      object: "PR #25750",
+      object: "PR #1234",
       projectIds: ["proj-a"],
       validFrom: null,
       validUntil: null,
@@ -9705,7 +9705,7 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
       memoryId: "mem-rescope",
       // Trigger the auto-mentions diff branch by including a
       // title (extraction-relevant arg).
-      title: "Investigated PR #25750 latency regression",
+      title: "Investigated PR #1234 latency regression",
       scope: { kind: "session", key: "sess-NEW" },
     } as never)
 
@@ -9714,7 +9714,7 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
     // A new fact gets emitted under sess-NEW.
     expect(createWithDedup).toHaveBeenCalled()
     const reEmit = createWithDedup.mock.calls.find(
-      (c) => c[0].object === "PR #25750"
+      (c) => c[0].object === "PR #1234"
     )
     expect(reEmit).toBeDefined()
     expect(reEmit?.[0]?.scope).toEqual({ kind: "session", key: "sess-NEW" })

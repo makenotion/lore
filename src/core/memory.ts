@@ -256,8 +256,8 @@ export function matchesDefaultScope(
  * contain), so memories whose `Keywords` is empty are NOT silently
  * excluded. This is the intuitive answer and the only one consistent
  * with the existing `Keywords contains` filter on the contains-search
- * path. Verified empirically against the production Mail vault on
- * 2026-05-04 by Iron-Ham; the empty-keywords unit test on
+ * path. Verified empirically against the internal vault on
+ * 2026-05-04 by the author; the empty-keywords unit test on
  * `findByTopicKey` pins the request shape so a future contributor
  * adding a `is_empty` short-circuit can't silently regress.
  *
@@ -473,7 +473,7 @@ export async function hydrateMemoryRelationPropertiesForPages(
  *
  * - **Scan window.** `5 × page_size: 100 = 500` raw rows. Clears the
  *   post-filter-starvation case for every realistic Lore vault — the
- *   Mail vault audit (see `src/core/AGENTS.md` "Measuring whether
+ *   internal vault audit (see `src/core/AGENTS.md` "Measuring whether
  *   `--build-entities` collapsed the orphan graph") had ~560 facts and
  *   ~1,300 memories total; a 500-row scan covers most of either set
  *   in a single call.
@@ -3220,8 +3220,8 @@ export class MemoryService {
    * `includeContent: false` and need the body without re-fetching the
    * page properties Notion already returned.
    *
-   * Call-count math, motivated by `lore-task action='reconcile'`'s Mail
-   * vault budget: routing reconcile's per-candidate hydration through
+   * Call-count math, motivated by `lore-task action='reconcile'`'s
+   * internal-vault budget: routing reconcile's per-candidate hydration through
    * `getById` would issue `271 * 5 * 2 = 2710` Notion calls (half of
    * them re-fetching properties already returned by the index-tier
    * search). `materializeContent` issues exactly one

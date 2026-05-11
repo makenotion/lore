@@ -72,7 +72,7 @@ import type { LoreConfig } from "../types.js"
 
 const BASE_CONFIG: LoreConfig = {
   vault: { pageId: "v" },
-  projects: [{ name: "Mail", path: "." }],
+  projects: [{ name: "Widget", path: "." }],
 }
 
 function ctx(overrides: Partial<StopFailureContext> = {}): StopFailureContext {

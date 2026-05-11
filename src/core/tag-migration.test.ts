@@ -48,12 +48,12 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
 
 describe("isObviousFreeformTag", () => {
   it.each([
-    "pr-25701",
+    "pr-1234",
     "PR-12345",
-    "pr25701",
-    "SENTRY-MAIL-IOS-2DY",
-    "MAIL-1234",
-    "MailboxViewStore.swift",
+    "pr1234",
+    "SENTRY-APP-2DY",
+    "APP-1234",
+    "WidgetListStore.swift",
     "config.yaml",
     "ThreadListStore",
     "camelCaseName",
@@ -86,7 +86,7 @@ describe("isObviousFreeformTag", () => {
     "UX-Design",
     "API-Design",
     "Growth",
-    "MailApp-v2",
+    "Search-v2",
     "code-Review",
   ])("does NOT match %s (curated capitalized label, not an identifier)", (tag) => {
     expect(isObviousFreeformTag(tag)).toBe(false)
@@ -108,7 +108,7 @@ describe("canonicalVocabTag", () => {
 
   it("returns null when not in the vocabulary", () => {
     expect(canonicalVocabTag("custom-tag")).toBeNull()
-    expect(canonicalVocabTag("pr-25701")).toBeNull()
+    expect(canonicalVocabTag("pr-1234")).toBeNull()
   })
 })
 
@@ -117,13 +117,13 @@ describe("classifyTags", () => {
     const result = classifyTags([
       "ios",
       "performance",
-      "pr-25701",
-      "MailboxViewStore.swift",
+      "pr-1234",
+      "WidgetListStore.swift",
       "thread-list-store",
       "custom-project-tag",
     ])
     expect(result.vocab).toEqual(["ios", "performance"])
-    expect(result.freeform).toEqual(["pr-25701", "MailboxViewStore.swift"])
+    expect(result.freeform).toEqual(["pr-1234", "WidgetListStore.swift"])
     expect(result.ambiguous).toEqual(["thread-list-store", "custom-project-tag"])
   })
 
@@ -161,25 +161,25 @@ describe("planMemoryMigration", () => {
 
   it("moves obvious freeform tokens to Keywords, preserves vocab + ambiguous", () => {
     const memory = makeMemory({
-      tags: ["ios", "performance", "pr-25701", "ThreadListStore", "custom-proj"],
+      tags: ["ios", "performance", "pr-1234", "ThreadListStore", "custom-proj"],
       keywords: "",
     })
     const plan = planMemoryMigration(memory)
     expect(plan).not.toBeNull()
     expect(plan!.after.tags).toEqual(["ios", "performance", "custom-proj"])
-    expect(plan!.after.keywords).toBe("pr-25701 ThreadListStore")
-    expect(plan!.moved).toEqual(["pr-25701", "ThreadListStore"])
+    expect(plan!.after.keywords).toBe("pr-1234 ThreadListStore")
+    expect(plan!.moved).toEqual(["pr-1234", "ThreadListStore"])
     expect(plan!.ambiguous).toEqual(["custom-proj"])
   })
 
   it("appends to existing Keywords without duplicating", () => {
     const memory = makeMemory({
-      tags: ["performance", "pr-25701"],
-      keywords: "existing pr-25701",
+      tags: ["performance", "pr-1234"],
+      keywords: "existing pr-1234",
     })
     const plan = planMemoryMigration(memory)
     expect(plan).not.toBeNull()
-    expect(plan!.after.keywords).toBe("existing pr-25701")
+    expect(plan!.after.keywords).toBe("existing pr-1234")
     expect(plan!.after.tags).toEqual(["performance"])
   })
 

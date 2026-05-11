@@ -84,7 +84,7 @@ type ToolResult = {
  * sees 8 rows instead of 10). With it we fetch 3× the cap, collapse,
  * and then slice by cluster count so `limit` bounds the number of
  * distinct topics the agent sees — which is the intent. Three is the
- * smallest multiple that absorbs realistic dedup rates on the Mail
+ * smallest multiple that absorbs realistic dedup rates on an internal
  * vault (observed 3× duplication on hot debugging sessions) without
  * over-stuffing the body-off payload, and the tracking/knowledge fact
  * queries are unaffected.

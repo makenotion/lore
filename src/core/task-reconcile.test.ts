@@ -38,7 +38,7 @@ function makeTask(overrides: Partial<TaskSummary> = {}): TaskSummary {
     updatedAt: "2026-03-01T00:00:00.000Z",
     taskState: "open",
     blockedBy: "",
-    entity: "PR-25750",
+    entity: "PR-1234",
     topicKey: "",
     revisionCount: 1,
     comparedWith: [],
@@ -92,12 +92,12 @@ const TODAY_MS = new Date(TODAY).getTime()
 describe("composeReconcileQuery", () => {
   it("joins title, entity, and synopsis with spaces", () => {
     const task = makeTask({
-      title: "Track PR-25750 review",
-      entity: "PR-25750",
+      title: "Track PR-1234 review",
+      entity: "PR-1234",
       synopsis: "Outlook classifier review",
     })
     expect(composeReconcileQuery(task)).toBe(
-      "Track PR-25750 review PR-25750 Outlook classifier review",
+      "Track PR-1234 review PR-1234 Outlook classifier review",
     )
   })
 
@@ -118,11 +118,11 @@ describe("composeReconcileQuery", () => {
   it("degrades to entity + title when synopsis is empty (pre-#02 vault)", () => {
     const task = makeTask({
       title: "Track outlook classifier",
-      entity: "PR-25750",
+      entity: "PR-1234",
       synopsis: "",
     })
     expect(composeReconcileQuery(task)).toBe(
-      "Track outlook classifier PR-25750",
+      "Track outlook classifier PR-1234",
     )
   })
 })
@@ -140,15 +140,15 @@ describe("scoreCandidate — entity-match axis", () => {
 
   it("returns entity = 0 when task.entity is whitespace-only", () => {
     const task = makeTask({ entity: "   " })
-    const memory = makeMemory({ title: "PR-25750", content: "Merged it" })
+    const memory = makeMemory({ title: "PR-1234", content: "Merged it" })
     const result = scoreCandidate(task, memory, TODAY_MS)
     expect(result.entityMatch).toBe(0)
   })
 
   it("returns entity = 1.0 when entity appears in title", () => {
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
-      title: "Merged PR-25750 outlook classifier",
+      title: "Merged PR-1234 outlook classifier",
       content: "shipped",
     })
     const result = scoreCandidate(task, memory, TODAY_MS)
@@ -156,10 +156,10 @@ describe("scoreCandidate — entity-match axis", () => {
   })
 
   it("returns entity = 1.0 when entity appears in synopsis", () => {
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
       title: "Outlook merge",
-      synopsis: "Resolved PR-25750 fully",
+      synopsis: "Resolved PR-1234 fully",
       content: "merged",
     })
     const result = scoreCandidate(task, memory, TODAY_MS)
@@ -167,10 +167,10 @@ describe("scoreCandidate — entity-match axis", () => {
   })
 
   it("returns entity = 1.0 when entity appears in keywords", () => {
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
       title: "Outlook merge",
-      keywords: "PR-25750 mail-ios",
+      keywords: "PR-1234 widget-ios",
       content: "merged",
     })
     const result = scoreCandidate(task, memory, TODAY_MS)
@@ -178,17 +178,17 @@ describe("scoreCandidate — entity-match axis", () => {
   })
 
   it("returns entity = 0.5 when entity appears in body only", () => {
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
       title: "Outlook merge",
-      content: "Merged PR-25750 — outlook label.applied classifier rolled",
+      content: "Merged PR-1234 — outlook label.applied classifier rolled",
     })
     const result = scoreCandidate(task, memory, TODAY_MS)
     expect(result.entityMatch).toBe(0.5)
   })
 
   it("returns entity = 0 when entity does not appear anywhere", () => {
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
       title: "Other thing",
       content: "Merged something else",
@@ -228,7 +228,7 @@ describe("scoreCandidate — cue-match axis", () => {
   it("returns cue = 0 when no cue matches", () => {
     const task = makeTask()
     const memory = makeMemory({
-      content: "This is a memory about PR-25750 work that's blocking.",
+      content: "This is a memory about PR-1234 work that's blocking.",
     })
     const result = scoreCandidate(task, memory, TODAY_MS)
     expect(result.cueMatch).toBe(0)
@@ -272,9 +272,9 @@ describe("scoreCandidate — recency-bonus axis", () => {
 
 describe("scoreCandidate — composite score", () => {
   it("entity (1.0) + cue (1.0) + recent (1.0) lands at exactly 1.0", () => {
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
-      title: "PR-25750 status",
+      title: "PR-1234 status",
       content: "Merged today",
       createdAt: "2026-04-25T00:00:00.000Z",
     })
@@ -287,10 +287,10 @@ describe("scoreCandidate — composite score", () => {
     // Without the cue gate, this would land at 1.0 * 0.4 + 1.0 * 0.2 = 0.6,
     // which clears the default 0.5 threshold. The cueMatch === 0 gate
     // upstream is what filters this out.
-    const task = makeTask({ entity: "PR-25750" })
+    const task = makeTask({ entity: "PR-1234" })
     const memory = makeMemory({
-      title: "PR-25750 status",
-      content: "blocking on PR-25750 review",
+      title: "PR-1234 status",
+      content: "blocking on PR-1234 review",
       createdAt: "2026-04-25T00:00:00.000Z",
     })
     const result = scoreCandidate(task, memory, TODAY_MS)
@@ -332,7 +332,7 @@ describe("reconcileActiveTasks — orchestration", () => {
   })
 
   it("returns 0 candidates when active tasks exist but no memories clear threshold", async () => {
-    const task = makeTask({ id: "t1", entity: "PR-25750" })
+    const task = makeTask({ id: "t1", entity: "PR-1234" })
     const services = makeServices({
       activeTasks: [task],
       candidatesByTask: {
@@ -354,7 +354,7 @@ describe("reconcileActiveTasks — orchestration", () => {
     // Even a task row whose content carries a hard cue and entity match
     // must not surface as a candidate — reconcile scans tasks AGAINST
     // memories, not against other tasks.
-    const task = makeTask({ id: "t1", entity: "PR-25750" })
+    const task = makeTask({ id: "t1", entity: "PR-1234" })
     const services = makeServices({
       activeTasks: [task],
       candidatesByTask: {
@@ -362,15 +362,15 @@ describe("reconcileActiveTasks — orchestration", () => {
           makeMemory({
             id: "m-task",
             kind: "task",
-            title: "Other task on PR-25750",
-            content: "Merged PR-25750 from another task page",
+            title: "Other task on PR-1234",
+            content: "Merged PR-1234 from another task page",
             createdAt: "2026-04-25T00:00:00.000Z",
           }),
           makeMemory({
             id: "m-decision",
             kind: "decision",
-            title: "Decision on PR-25750",
-            content: "Resolved PR-25750",
+            title: "Decision on PR-1234",
+            content: "Resolved PR-1234",
             createdAt: "2026-04-25T00:00:00.000Z",
           }),
         ],
@@ -383,13 +383,13 @@ describe("reconcileActiveTasks — orchestration", () => {
   it("surfaces a clean candidate when entity + cue + recent align", async () => {
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750 review",
-      entity: "PR-25750",
+      title: "Track PR-1234 review",
+      entity: "PR-1234",
     })
     const memory = makeMemory({
       id: "m-good",
-      title: "Merged PR-25750 — outlook label.applied classifier",
-      content: "Merged PR-25750. Label applied classifier shipped.",
+      title: "Merged PR-1234 — outlook label.applied classifier",
+      content: "Merged PR-1234. Label applied classifier shipped.",
       createdAt: "2026-04-25T00:00:00.000Z",
     })
     const services = makeServices({
@@ -406,8 +406,8 @@ describe("reconcileActiveTasks — orchestration", () => {
   it("reduces to one row per task — no two rendered rows recommend the same close incantation", async () => {
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750",
-      entity: "PR-25750",
+      title: "Track PR-1234",
+      entity: "PR-1234",
     })
     const services = makeServices({
       activeTasks: [task],
@@ -415,14 +415,14 @@ describe("reconcileActiveTasks — orchestration", () => {
         t1: [
           makeMemory({
             id: "m-older",
-            title: "Merged PR-25750 first attempt",
-            content: "Merged PR-25750 first try",
+            title: "Merged PR-1234 first attempt",
+            content: "Merged PR-1234 first try",
             createdAt: "2026-04-15T00:00:00.000Z",
           }),
           makeMemory({
             id: "m-newer",
-            title: "Merged PR-25750 fix",
-            content: "Merged PR-25750 follow-up",
+            title: "Merged PR-1234 fix",
+            content: "Merged PR-1234 follow-up",
             createdAt: "2026-04-25T00:00:00.000Z",
           }),
         ],
@@ -436,8 +436,8 @@ describe("reconcileActiveTasks — orchestration", () => {
   it("breaks score ties by memory.createdAt (more recent wins) at the per-task reduce", async () => {
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750",
-      entity: "PR-25750",
+      title: "Track PR-1234",
+      entity: "PR-1234",
     })
     // Two memories with identical entity+cue+recency scores; the more
     // recent createdAt must win the per-task reduce step.
@@ -447,14 +447,14 @@ describe("reconcileActiveTasks — orchestration", () => {
         t1: [
           makeMemory({
             id: "m-older",
-            title: "Merged PR-25750",
-            content: "Merged PR-25750",
+            title: "Merged PR-1234",
+            content: "Merged PR-1234",
             createdAt: "2026-04-20T00:00:00.000Z",
           }),
           makeMemory({
             id: "m-newer",
-            title: "Merged PR-25750",
-            content: "Merged PR-25750",
+            title: "Merged PR-1234",
+            content: "Merged PR-1234",
             createdAt: "2026-04-25T00:00:00.000Z",
           }),
         ],
@@ -468,8 +468,8 @@ describe("reconcileActiveTasks — orchestration", () => {
   it("respects minScore threshold — entity-only candidates filtered via cue-gate before threshold", async () => {
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750",
-      entity: "PR-25750",
+      title: "Track PR-1234",
+      entity: "PR-1234",
     })
     const services = makeServices({
       activeTasks: [task],
@@ -477,8 +477,8 @@ describe("reconcileActiveTasks — orchestration", () => {
         t1: [
           makeMemory({
             id: "m-no-cue",
-            title: "PR-25750 status",
-            content: "Discussion about PR-25750 — no resolution language here.",
+            title: "PR-1234 status",
+            content: "Discussion about PR-1234 — no resolution language here.",
             createdAt: "2026-04-25T00:00:00.000Z",
           }),
         ],
@@ -542,18 +542,18 @@ describe("reconcileActiveTasks — orchestration", () => {
   it("hydrates bodies via materializeContent (no eager body fetch)", async () => {
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750",
-      entity: "PR-25750",
+      title: "Track PR-1234",
+      entity: "PR-1234",
     })
     const indexTierMemory = makeMemory({
       id: "m-index",
-      title: "Merged PR-25750",
+      title: "Merged PR-1234",
       content: "", // index tier returns no body
       createdAt: "2026-04-25T00:00:00.000Z",
     })
     const hydratedMemory = makeMemory({
       ...indexTierMemory,
-      content: "Merged PR-25750 today.",
+      content: "Merged PR-1234 today.",
     })
     const tasksList = vi.fn(async () => ({ items: [task] }))
     const memoriesSearch = vi.fn(async () => [indexTierMemory])
@@ -576,14 +576,14 @@ describe("reconcileActiveTasks — orchestration", () => {
   it("degrades gracefully when materializeContent throws (transient 5xx, archived)", async () => {
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750",
-      entity: "PR-25750",
+      title: "Track PR-1234",
+      entity: "PR-1234",
     })
     const tasksList = vi.fn(async () => ({ items: [task] }))
     const memoriesSearch = vi.fn(async () => [
       makeMemory({
         id: "m-fail",
-        title: "Merged PR-25750",
+        title: "Merged PR-1234",
         content: "",
         createdAt: "2026-04-25T00:00:00.000Z",
       }),
@@ -607,7 +607,7 @@ describe("reconcileActiveTasks — orchestration", () => {
   })
 
   it("uses the index-tier search with includeContent: false (over-fetch headroom)", async () => {
-    const task = makeTask({ id: "t1", entity: "PR-25750" })
+    const task = makeTask({ id: "t1", entity: "PR-1234" })
     const tasksList = vi.fn(async () => ({ items: [task] }))
     const memoriesSearch = vi.fn<(args: { limit: number }) => Promise<Memory[]>>(
       async () => [],
@@ -634,8 +634,8 @@ describe("reconcileActiveTasks — orchestration", () => {
     // also test the identity guard).
     const task = makeTask({
       id: "t1",
-      title: "Track PR-25750",
-      entity: "PR-25750",
+      title: "Track PR-1234",
+      entity: "PR-1234",
     })
     const services = makeServices({
       activeTasks: [task],
@@ -644,8 +644,8 @@ describe("reconcileActiveTasks — orchestration", () => {
           makeMemory({
             id: "t1", // same id as the task — explicit self-reference
             kind: "note",
-            title: "Track PR-25750",
-            content: "Merged PR-25750",
+            title: "Track PR-1234",
+            content: "Merged PR-1234",
             createdAt: "2026-04-25T00:00:00.000Z",
           }),
         ],
@@ -656,7 +656,7 @@ describe("reconcileActiveTasks — orchestration", () => {
   })
 
   it("walks tasks.list cursors across multiple pages until nextCursor is undefined", async () => {
-    // Mail-vault parity: vaults with > 100 active tasks must walk
+    // internal-vault parity: vaults with > 100 active tasks must walk
     // cursors. Mock the service to return two pages, the first with
     // `nextCursor` set, the second without; assert both pages were
     // exhausted and the count matches the safety cap correctly.
@@ -774,20 +774,20 @@ describe("formatReconcileOutput", () => {
   it("renders task id, title, state, age, memory id, score, and close incantation per row", () => {
     const task = makeTask({
       id: "t-abc",
-      title: "Track PR-25750",
+      title: "Track PR-1234",
       taskState: "in-progress",
       createdAt: "2026-02-01T00:00:00.000Z", // ~87 days ago
     })
     const memory = makeMemory({
       id: "m-xyz",
-      title: "Merged PR-25750",
-      content: "Merged PR-25750 — outlook label.applied classifier rolled.",
+      title: "Merged PR-1234",
+      content: "Merged PR-1234 — outlook label.applied classifier rolled.",
       createdAt: "2026-04-17T00:00:00.000Z",
     })
     const candidate = scoreCandidate(task, memory, TODAY_MS)
     const rendered = formatReconcileOutput([candidate], 1, TODAY)
     expect(rendered).toContain("## 1 candidate closure (out of 1 active task scanned)")
-    expect(rendered).toContain("### 1. Task t-abc — \"Track PR-25750\" [in-progress")
+    expect(rendered).toContain("### 1. Task t-abc — \"Track PR-1234\" [in-progress")
     expect(rendered).toContain("Best match: memory m-xyz")
     expect(rendered).toContain("Cue: \"")
     expect(rendered).toContain("Close: lore-task({ action: 'close', taskId: 't-abc' })")

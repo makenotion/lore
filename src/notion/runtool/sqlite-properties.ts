@@ -25,16 +25,16 @@
  * | `{ relation: [{ id: "abc" }, { id: "def" }] }` | JSON-stringified `[ "https://www.notion.so/abc", "https://www.notion.so/def" ]` |
  *
  * The pinned read-shape verification fired against the production
- * Mail vault Facts DB at `collection://5abdc6b6-...` and observed
+ * internal vault Facts DB at `collection://<facts-db-id>` and observed
  * rows like:
  *
  * ```jsonc
  * {
- *   "Subject": "EmailWebView: cidSchemeHandler.update(with:) ...",
- *   "Object": "WKWebView",
+ *   "Subject": "WebView: customSchemeHandler.update(with:) ...",
+ *   "Object": "BaseView",
  *   "Predicate": "mentions",
- *   "Project": "[\"https://dev.notion.so/343b35e6e67f8166aa41c607969fe52a\"]",
- *   "Source": "[\"https://dev.notion.so/352b35e6e67f81b3b97cf30ed6806af5\"]",
+ *   "Project": "[\"https://dev.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]",
+ *   "Source": "[\"https://dev.notion.so/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]",
  *   "Confidence": "speculative",
  *   "date:Valid From:start": "2026-04-30",
  *   "date:Valid From:end": null,
@@ -263,7 +263,7 @@ function extractTextArrayContent(value: unknown): string {
  * `relationUrlBase` MUST be the user-facing host root for the
  * workspace (e.g. `https://dev.notion.so/` for dev,
  * `https://www.notion.so/` for production). Live-verification on
- * the production Mail vault at PR #538 review time confirmed that
+ * an internal vault at PR #538 review time confirmed that
  * the server rejects relation URLs whose host doesn't match the
  * workspace environment with `400 validation_error: Invalid page
  * URL`. The base must be derived from the configured auth host,

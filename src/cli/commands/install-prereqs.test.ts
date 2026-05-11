@@ -882,9 +882,12 @@ describe("ensurePrerequisites — Notion environment display", () => {
   // The mismatch warning catches the silent footgun where canonical
   // auth resolves to one deployment but `.lore.yaml auth.baseUrl`
   // declares another — `resolveAuth` intentionally ignores
-  // `auth.baseUrl` on canonical paths for security (a checked-in
-  // `.lore.yaml: auth.baseUrl: https://attacker.example` could
-  // otherwise redirect a bearer token; see `src/config.ts:340-349`).
+  // `auth.baseUrl` on canonical paths for security. `.lore.yaml` is
+  // local-only but still persistent (backed up, synced, pasteable,
+  // one `git add -f` away from history), so it's less trusted than
+  // operator env. A `.lore.yaml: auth.baseUrl:
+  // https://attacker.example` could otherwise redirect a bearer
+  // token; see `resolveAuth` in `src/config.ts`.
   //
   // Keep the PRIOR_ENV map below in lockstep with
   // `describeBaseUrlSource`'s shell-var checks in `install.ts` —

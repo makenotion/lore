@@ -1328,7 +1328,7 @@ describe("lore-fact action='create' projectName resolution", () => {
     const mockServer = createMockServer()
     const createWithDedup = vi.fn()
     const findByName = vi.fn(async (name: string) =>
-      name === "Mail" ? { id: "proj-mail", name: "Mail" } : null
+      name === "Widget" ? { id: "proj-widget", name: "Widget" } : null
     )
     const services = {
       projects: { findByName },
@@ -1351,13 +1351,13 @@ describe("lore-fact action='create' projectName resolution", () => {
       predicate: "depends_on",
       object: "Database",
       sourceMemoryId: "mem-source",
-      projectNames: ["Mail", "Missing"],
+      projectNames: ["Widget", "Missing"],
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect(text).toContain('Project "Missing" could not be resolved')
-    expect(findByName).toHaveBeenCalledWith("Mail")
+    expect(findByName).toHaveBeenCalledWith("Widget")
     expect(findByName).toHaveBeenCalledWith("Missing")
     expect(createWithDedup).not.toHaveBeenCalled()
   })
@@ -2258,7 +2258,7 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
           id: "t-1",
           title: "Rotate JWT keys",
           taskState: "blocked",
-          blockedBy: "PR #25750 review",
+          blockedBy: "PR #1234 review",
           reviewBy: "2026-01-01",
           decidedAt: null,
           entity: "AuthService",
@@ -2274,7 +2274,7 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
 
     expect(text).toContain("### Tasks")
     expect(text).toContain("Rotate JWT keys")
-    expect(text).toContain("blocked by PR #25750 review")
+    expect(text).toContain("blocked by PR #1234 review")
     // Overdue tasks lead with the urgency marker.
     expect(text).toMatch(/⚠ \*\*Rotate JWT keys/)
   })
@@ -2556,10 +2556,10 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
         project:
           opts.project === undefined
             ? {
-                id: "proj-mail",
-                name: "Mail",
-                path: "apps/mail",
-                description: "Notion-backed mail client.",
+                id: "proj-widget",
+                name: "Widget",
+                path: "apps/widget",
+                description: "Widget application.",
               }
             : opts.project,
         isCatchAllFallback: opts.isCatchAllFallback ?? false,
@@ -2572,13 +2572,13 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     const mockServer = createMockServer()
     const services = makeServices({
       project: {
-        id: "proj-mail",
-        name: "Mail",
-        path: "apps/mail",
-        description: "Notion-backed mail client.",
+        id: "proj-widget",
+        name: "Widget",
+        path: "apps/widget",
+        description: "Widget application.",
       },
       configProjects: [
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
     })
@@ -2606,26 +2606,26 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     // Framing block sits ABOVE the count line.
-    const projectIdx = text.indexOf("Project: Mail (apps/mail)")
+    const projectIdx = text.indexOf("Project: Widget (apps/widget)")
     const countIdx = text.indexOf('1 facts about "AuthService"')
     expect(projectIdx).toBeGreaterThan(-1)
     expect(countIdx).toBeGreaterThan(projectIdx)
-    expect(text).toContain("  Notion-backed mail client.")
-    // Siblings names *peers* — Mail is excluded as the resolved project.
+    expect(text).toContain("  Widget application.")
+    // Siblings names *peers* — the resolved project is excluded.
     expect(text).toContain("  Siblings: Web.")
-    expect(text).not.toContain("Siblings: Mail")
+    expect(text).not.toContain("Siblings: Widget")
   })
 
   it("suppresses the framing block when includeContext: false", async () => {
     const mockServer = createMockServer()
     const services = makeServices({
       project: {
-        id: "proj-mail",
-        name: "Mail",
-        path: "apps/mail",
+        id: "proj-widget",
+        name: "Widget",
+        path: "apps/widget",
         description: "Should not appear.",
       },
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
@@ -2637,7 +2637,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).not.toContain("Project: Mail")
+    expect(text).not.toContain("Project: Widget")
     expect(text).not.toContain("Should not appear.")
     expect(text).not.toContain("Siblings:")
   })
@@ -2646,12 +2646,12 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     const mockServer = createMockServer()
     const services = makeServices({
       project: {
-        id: "proj-mail",
-        name: "Mail",
-        path: "apps/mail",
-        description: "Notion-backed mail client.",
+        id: "proj-widget",
+        name: "Widget",
+        path: "apps/widget",
+        description: "Widget application.",
       },
-      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      configProjects: [{ name: "Widget", path: "apps/widget" }],
     })
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
@@ -2660,7 +2660,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     const result = await ask({ entity: "Unknown" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain("Project: Mail (apps/mail)")
+    expect(text).toContain("Project: Widget (apps/widget)")
     expect(text).toContain('No facts or tasks found about "Unknown"')
   })
 
@@ -2676,7 +2676,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
       isCatchAllFallback: true,
       configProjects: [
         { name: "Monorepo", path: "." },
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
     })
@@ -2691,7 +2691,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     // `formatCatchAllScopeSummary` in `src/core/context.ts`); only the
     // call-to-action tail diverges (read tools take `projectName` only).
     expect(text).toContain(
-      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Mail, Web. Pass projectName to scope to a specific sub-project.'
+      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Widget, Web. Pass projectName to scope to a specific sub-project.'
     )
   })
 
@@ -2710,13 +2710,13 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     }
     const services = makeServices({
       project: {
-        id: "proj-mail",
-        name: "Mail",
-        path: "apps/mail",
-        description: "Mail client.",
+        id: "proj-widget",
+        name: "Widget",
+        path: "apps/widget",
+        description: "Widget application.",
       },
       configProjects: [
-        { name: "Mail", path: "apps/mail" },
+        { name: "Widget", path: "apps/widget" },
         { name: "Web", path: "apps/web" },
       ],
       findByName: async (name) => (name === "Web" ? webProject : null),
@@ -2733,8 +2733,8 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
 
     expect(text).toContain("Project: Web (apps/web)")
     expect(text).toContain("  Marketing site.")
-    // The auto-detected Mail project's description must NOT leak through.
-    expect(text).not.toContain("Mail client.")
+    // The auto-detected project's description must NOT leak through.
+    expect(text).not.toContain("Widget application.")
   })
 
   it("renders no framing block when no project resolved (vault-wide scope)", async () => {

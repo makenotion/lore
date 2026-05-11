@@ -176,9 +176,9 @@ describe("ProjectService.list — pagination", () => {
 
 describe("ProjectService.findByPath — active-only lookup", () => {
   it("returns the active row when active and archived rows share a path", async () => {
-    const active = projectPage("p-active", "alpha", { path: "services/mail" })
+    const active = projectPage("p-active", "alpha", { path: "services/widget" })
     const archived = projectPage("p-archived", "alpha", {
-      path: "services/mail",
+      path: "services/widget",
       status: "archived",
     })
     const client = createMockClient()
@@ -187,7 +187,7 @@ describe("ProjectService.findByPath — active-only lookup", () => {
     )
     const service = new ProjectService(client, DB)
 
-    const project = await service.findByPath("services/mail")
+    const project = await service.findByPath("services/widget")
 
     expect(project?.id).toBe("p-active")
     expect(client.dataSources.query).toHaveBeenCalledWith(
@@ -195,7 +195,7 @@ describe("ProjectService.findByPath — active-only lookup", () => {
         data_source_id: DB.dataSourceId,
         filter: {
           and: [
-            { property: "Path", rich_text: { equals: "services/mail" } },
+            { property: "Path", rich_text: { equals: "services/widget" } },
             { property: "Status", select: { equals: "active" } },
           ],
         },
@@ -205,14 +205,14 @@ describe("ProjectService.findByPath — active-only lookup", () => {
 
   it("returns null when only archived rows match a path", async () => {
     const archived = projectPage("p-archived", "alpha", {
-      path: "services/mail",
+      path: "services/widget",
       status: "archived",
     })
     const client = createMockClient()
     client.dataSources.query.mockImplementation(activeAwareResults([], [archived]))
     const service = new ProjectService(client, DB)
 
-    await expect(service.findByPath("services/mail")).resolves.toBeNull()
+    await expect(service.findByPath("services/widget")).resolves.toBeNull()
   })
 })
 

@@ -295,7 +295,7 @@ describe("createPagesViaRunTool — chunking", () => {
 describe("createPagesViaRunTool — converts Notion REST to SQLite-flat on the wire", () => {
   it("issues `create_pages` with SQLite-shape properties matching the empirical Facts DB schema", async () => {
     // Wire-format pin (PR #538 live-verification result against the
-    // production Mail vault Facts DB schema). The `notion-create-pages`
+    // internal vault Facts DB schema). The `notion-create-pages`
     // alias schema notes "Some property types require expanded
     // format" without documenting the rules; we derived the rules
     // from a `query_data_sources` read and pinned them in
@@ -314,11 +314,11 @@ describe("createPagesViaRunTool — converts Notion REST to SQLite-flat on the w
         {
           properties: {
             Subject: {
-              title: [{ text: { content: "EmailWebView mentions WKWebView" } }],
+              title: [{ text: { content: "WebView mentions BaseView" } }],
             },
             Predicate: { select: { name: "mentions" } },
-            Object: { rich_text: [{ text: { content: "WKWebView" } }] },
-            Project: { relation: [{ id: "343b35e6e67f8166aa41c607969fe52a" }] },
+            Object: { rich_text: [{ text: { content: "BaseView" } }] },
+            Project: { relation: [{ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] },
             "Valid From": { date: { start: "2026-05-05" } },
           },
         },
@@ -338,12 +338,12 @@ describe("createPagesViaRunTool — converts Notion REST to SQLite-flat on the w
 
     const wireProps = body.create_pages.pages[0]!.properties
     // Title / select / rich_text are flat strings on the wire.
-    expect(wireProps["Subject"]).toBe("EmailWebView mentions WKWebView")
+    expect(wireProps["Subject"]).toBe("WebView mentions BaseView")
     expect(wireProps["Predicate"]).toBe("mentions")
-    expect(wireProps["Object"]).toBe("WKWebView")
+    expect(wireProps["Object"]).toBe("BaseView")
     // Relation is a JSON-stringified array of canonical Notion URLs.
     expect(wireProps["Project"]).toBe(
-      '["https://www.notion.so/343b35e6e67f8166aa41c607969fe52a"]'
+      '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]'
     )
     // Date is the 3-key expansion.
     expect(wireProps["date:Valid From:start"]).toBe("2026-05-05")

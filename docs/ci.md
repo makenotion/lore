@@ -107,15 +107,30 @@ if (env["CI"] === "true" || env["LORE_SKIP_GIT_HOOK_INSTALL"] === "1") {
 GitHub Actions sets `CI=true` automatically, so the hooks installer is a
 no-op on every CI run, fork or otherwise.
 
-## What `npm run guard:config` does (and why CI doesn't run it)
+## How the `.lore.yaml` gitignore invariant is enforced
 
-`npm run guard:config` (`tools/check-lore-config.mjs`) is a *pre-commit*
-guard: it asserts that the committed `.lore.yaml` contains only the approved
-shared vault page id and has no `auth.token`. CI does not invoke it because
-the check is structural — once the file passes `guard:config` locally, the
-guard's invariants are preserved through to merge. Fork contributors do not
-need to run it; they are committing to their own branch, and the merge gate
-is the maintainer review, not CI.
+`.lore.yaml` is local-only — each clone copies `.lore.example.yaml` to
+`.lore.yaml` and fills in values from team onboarding docs. The repo
+enforces this with two complementary layers:
+
+- **Pre-commit guard.** `.githooks/pre-commit` invokes
+  `node tools/check-lore-config.mjs --staged`, which rejects any staged
+  `.lore.yaml` index entry regardless of content (keying off
+  `git ls-files --cached --error-unmatch`). The hook is installed by
+  `tools/install-git-hooks.mjs` during `npm install`. CI does not
+  invoke it directly — pre-commit hooks run on the contributor's
+  machine, and `LORE_SKIP_GIT_HOOK_INSTALL=1` plus the `CI=true` guard
+  in the installer skip the install path on CI runners anyway.
+- **CI-side repo invariant.** `src/config-guard.test.ts > repo
+  invariants > does not track a .lore.yaml at the repo root` runs in
+  the standard test suite and fails the build if `.lore.yaml` is ever
+  tracked at the repo root again, regardless of how it slipped in
+  (rebase, cherry-pick, manual sequencer). This is what catches a
+  bypass that the pre-commit hook missed.
+
+Fork contributors do not need to install the hooks; they commit to
+their own branches, and the repo-invariant test runs against the
+merge candidate.
 
 ## Rules for new CI steps
 

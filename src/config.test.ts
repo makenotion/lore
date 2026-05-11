@@ -1,7 +1,6 @@
 import {
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   statSync,
   utimesSync,
@@ -18,7 +17,6 @@ import {
   it,
   vi,
 } from "vitest"
-import { parse as parseYaml } from "yaml"
 import {
   _resetConfigAuthTokenWarningStateForTests,
   loadConfig,
@@ -259,21 +257,7 @@ upstreamVaults:
   })
 })
 
-describe("committed .lore.yaml", () => {
-  it("ships with shared vault config and without credentials", () => {
-    const raw = readFileSync(new URL("../.lore.yaml", import.meta.url), "utf-8")
-    const parsed = parseYaml(raw) as {
-      auth?: { token?: unknown }
-      vault?: { pageId?: unknown }
-    }
-    const serializedConfig = JSON.stringify(parsed)
-    const pageId = parsed.vault?.pageId
-
-    expect(parsed.auth?.token).toBeUndefined()
-    expect(pageId).toBe("343b35e6e67f81a0afa9c9801b35199f")
-    expect(serializedConfig).not.toMatch(/ntn_|secret_/)
-  })
-
+describe("loadConfig placeholder rejection", () => {
   it("fails fast at config load time until a placeholder is replaced", async () => {
     const dir = mkdtempSync(join(tmpdir(), "lore-placeholder-config-"))
     const path = join(dir, ".lore.yaml")
@@ -413,14 +397,16 @@ describe("resolveAuth", () => {
   })
 
   it("REJECTS auth.baseUrl from .lore.yaml on the NOTION_API_TOKEN path (security: token-redirect attack)", async () => {
-    // A checked-in `.lore.yaml` is repo-controlled, not
-    // operator-controlled. If `auth.baseUrl` from config flowed into
-    // the canonical NOTION_API_TOKEN path, a malicious `.lore.yaml`
-    // could redirect every Notion call to an attacker-controlled host
-    // and exfiltrate the engineer's bearer token. Pin the rejection
-    // so a regression here surfaces as a test failure rather than a
-    // production exfiltration. Operators who genuinely need a custom
-    // base URL set `LORE_NOTION_BASE_URL` (operator-controlled env).
+    // `.lore.yaml` is persistent file state beside the repo; even
+    // local-only, it can be copied, synced, pasted, or force-added to
+    // history, which is less trusted than operator-controlled env vars.
+    // If `auth.baseUrl` from config flowed into the canonical
+    // NOTION_API_TOKEN path, a malicious `.lore.yaml` could redirect
+    // every Notion call to an attacker-controlled host and exfiltrate
+    // the engineer's bearer token. Pin the rejection so a regression
+    // here surfaces as a test failure rather than a production
+    // exfiltration. Operators who genuinely need a custom base URL set
+    // `LORE_NOTION_BASE_URL` (operator-controlled env).
     setupNtnConfigHome()
     setupHookStateDir()
     process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
@@ -435,8 +421,9 @@ describe("resolveAuth", () => {
 
   it("HONORS LORE_NOTION_BASE_URL env on the NOTION_API_TOKEN path (operator-controlled override)", async () => {
     // The shell-rc env var is the operator-controlled escape hatch
-    // for non-prod endpoints. Since shell rc lives outside the repo,
-    // it can't be hijacked by a malicious checked-in `.lore.yaml`.
+    // for non-prod endpoints. Since shell rc lives outside the
+    // `.lore.yaml` blast radius (no sync, no paste, no `git add -f`),
+    // it can't be hijacked by a malicious `.lore.yaml`.
     setupNtnConfigHome()
     setupHookStateDir()
     process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
@@ -633,11 +620,13 @@ describe("resolveAuth", () => {
   })
 
   it("config-auth-token: emits on first call, no marker written — issue #484", async () => {
-    // `auth.token` in `.lore.yaml` is committable repo state, not
-    // session state. Treating it on the same 24h debounce as
-    // `LORE_NOTION_TOKEN` hid the warning between sequential CI runs
-    // and across engineers in the same worktree, masking the
-    // committed-secret class of misconfiguration. Per #484, the
+    // `auth.token` in `.lore.yaml` is persistent file state (local
+    // but still backed up, synced, and one `git add -f` away from
+    // history), not session state. Treating it on the same 24h
+    // debounce as `LORE_NOTION_TOKEN` hid the warning between
+    // sequential CI runs and across engineers in the same worktree,
+    // masking the persistent-secret class of misconfiguration. Per
+    // #484, the
     // warning bypasses the marker entirely.
     setupNtnConfigHome()
     setupHookStateDir()
@@ -797,7 +786,7 @@ describe("resolveAuth", () => {
     // Cross-source independence pin. With both legacy sources
     // present and the suppression env set, the env-var warning is
     // correctly silenced (its threat model is ephemeral session
-    // noise) but the committed-config warning still fires.
+    // noise) but the .lore.yaml warning still fires.
     setupNtnConfigHome()
     setupHookStateDir()
     process.env["LORE_NOTION_TOKEN"] = "tok-legacy-env"
@@ -830,7 +819,8 @@ describe("resolveAuth", () => {
     expect(result.source).toBe("env-notion-api-token")
     expect(result.token).toBe("tok-canonical")
     // The canonical source still wins, but a token sitting in the
-    // committable repo config is warned about even when masked.
+    // local .lore.yaml is warned about even when masked — local
+    // files are still backed up, synced, and easy to force into git.
     expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
     expect(stderrText()).toContain("remove the auth.token field")
   })
@@ -859,7 +849,8 @@ describe("resolveAuth", () => {
     expect(result.source).toBe("env-lore-notion-token")
     expect(result.token).toBe("tok-legacy-env")
     // The env token wins, but the inline token is still unsafe in a
-    // committable `.lore.yaml`, so the config-specific warning fires.
+    // local `.lore.yaml` (backed up, synced, one `git add -f` away
+    // from history), so the config-specific warning fires.
     expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
     expect(stderrText()).toContain("remove the auth.token field")
   })

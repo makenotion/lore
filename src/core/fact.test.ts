@@ -2190,7 +2190,7 @@ describe("FactService.queryOverdue", () => {
     // Pre-fix behavior: a single dataSources.query with no page_size
     // and no cursor loop silently truncated at Notion's default 100-row
     // page. A vault with 271 overdue facts (mirroring the production
-    // Mail vault's open-loops scale) lost ~63% of the result set.
+    // internal vault's open-loops scale) lost ~63% of the result set.
     const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f1-${i}` }))
     const page2 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f2-${i}` }))
     const page3 = Array.from({ length: 71 }, (_, i) => buildFactPage({ id: `f3-${i}` }))
@@ -2707,7 +2707,7 @@ describe("FactService.countByPredicateRaw (issue 0.6.0/24)", () => {
   })
 
   it("paginates across multiple Notion pages and sums the totals", async () => {
-    // The Mail vault carries 271 open loops in production, which spans
+    // The internal vault carries 271 open loops in production, which spans
     // three 100-row pages. A single-shot count would silently undercount
     // by ~63%; the preflight is supposed to be the alarm, not the leak.
     const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f1-${i}` }))

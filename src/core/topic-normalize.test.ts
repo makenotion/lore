@@ -92,9 +92,9 @@ describe("normalizeTopicNameForLookup", () => {
     )
   })
 
-  it("fixes the issue #109 Mail-vault repro: Eval & Testing ≡ Evals & Testing", () => {
+  it("fixes the issue #109 internal-vault repro: Eval & Testing ≡ Evals & Testing", () => {
     // The exact pair the issue cites as silently fanning out into two
-    // sibling topics in the production Mail vault.
+    // sibling topics in the internal vault.
     expect(normalizeTopicNameForLookup("Eval & Testing")).toBe(
       normalizeTopicNameForLookup("Evals & Testing")
     )

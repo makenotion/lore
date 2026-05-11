@@ -19,8 +19,8 @@ import { safeFilenameSegment } from "../../hooks/marker-key.js"
 
 /**
  * Resolve the absolute path configured for a project in `.lore.yaml`. When
- * the operator runs `lore digest --project Mail` from outside the Mail
- * subtree, we'd rather spawn the synthesizer inside Mail's configured path
+ * the operator runs `lore digest --project Widget` from outside the Widget
+ * subtree, we'd rather spawn the synthesizer inside Widget's configured path
  * so the child's own cwd-based context resolution agrees with the prompt's
  * explicit `projectName`. Falls back to `process.cwd()` when we can't find
  * a safe path (e.g., catch-all projects at `"."` or a stale config entry).

@@ -2,9 +2,9 @@
  * Classify and migrate out-of-vocabulary tags into `Keywords`.
  *
  * Before the closed `Tag` vocabulary landed, `Tags` was free-form and
- * accumulated a lot of point-in-time noise: PR numbers (`pr-25701`), Sentry
- * IDs (`SENTRY-MAIL-IOS-2DY`), class names (`ThreadListStore`), file paths
- * (`MailboxViewStore.swift`). Those belong in `Keywords`.
+ * accumulated a lot of point-in-time noise: PR numbers (`pr-1234`), Sentry
+ * IDs (`SENTRY-APP-2DY`), class names (`ThreadListStore`), file paths
+ * (`WidgetListStore.swift`). Those belong in `Keywords`.
  *
  * The migration is conservative: only tags matching an "obvious free-form"
  * pattern are reclassified automatically. Anything ambiguous stays in
@@ -31,14 +31,14 @@ export function canonicalVocabTag(tag: string): string | null {
 
 /**
  * Tests whether a tag is an obvious free-form label and should be moved to
- * `Keywords`. Covers the dominant noise patterns observed in the Mail
- * production vault census without over-reaching — a capitalized
+ * `Keywords`. Covers the dominant noise patterns observed in an
+ * internal vault census without over-reaching — a capitalized
  * human-curated tag like `UX-Design` or `API-Design` must *not* match:
  *
- * - PR numbers: `pr-25701`, `PR-12345`, `pr25701`
- * - Ticket / Sentry IDs: `SENTRY-MAIL-IOS-2DY`, `MAIL-1234`
+ * - PR numbers: `pr-1234`, `PR-12345`, `pr1234`
+ * - Ticket / Sentry IDs: `SENTRY-APP-2DY`, `APP-1234`
  * - File names: anything ending in `.ext`
- * - PascalCase identifiers: `ThreadListStore`, `MailboxViewStore`
+ * - PascalCase identifiers: `ThreadListStore`, `WidgetListStore`
  * - camelCase identifiers: `processBatchedItems`, `validateRedirectURI`
  * - Long hex / alphanumeric IDs
  *

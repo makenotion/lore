@@ -155,7 +155,7 @@ describe("parseMineCliOptions", () => {
 
   it("forwards string flags verbatim", () => {
     const result = parseMineCliOptions({
-      project: "Mail",
+      project: "Widget",
       topic: "auth",
       pattern: "src/**/*.ts",
       dryRun: true,
@@ -164,7 +164,7 @@ describe("parseMineCliOptions", () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value).toEqual<MineCliOptions>({
-        project: "Mail",
+        project: "Widget",
         topic: "auth",
         pattern: "src/**/*.ts",
         dryRun: true,
@@ -420,10 +420,10 @@ describe("resolveMineProject", () => {
 
   it("returns the project when --project resolves", async () => {
     const services = makeServices({
-      findByName: async (n) => (n === "Mail" ? { id: "p-mail", name: "Mail" } : null),
+      findByName: async (n) => (n === "Widget" ? { id: "p-widget", name: "Widget" } : null),
     })
-    const result = await resolveMineProject(services, "Mail")
-    expect(result).toEqual({ id: "p-mail" })
+    const result = await resolveMineProject(services, "Widget")
+    expect(result).toEqual({ id: "p-widget" })
   })
 
   it("throws with a 'lore status projects' hint when --project is unknown", async () => {
@@ -684,14 +684,14 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p-mail",
+      "p-widget",
     )
     expect(search).toHaveBeenCalledTimes(1)
     expect(search).toHaveBeenCalledWith(
       expect.objectContaining({
         query: "src/cli/commands/mine.ts",
         mode: "contains",
-        projectId: "p-mail",
+        projectId: "p-widget",
         limit: FIND_EXISTING_LIMIT,
         includeContent: false,
       }),

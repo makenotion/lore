@@ -64,7 +64,7 @@ describe("parseEvalRunCliOptions", () => {
     { flag: "baseline", value: "evals/baselines/x.json" },
     { flag: "minLift", value: "0.5" },
     { flag: "maxHarm", value: "0" },
-    { flag: "project", value: "Mail" },
+    { flag: "project", value: "Widget" },
   ])("rejects --$flag with --runner task ($flag)", ({ flag, value }) => {
     const result = parseEvalRunCliOptions({
       runner: "task",
@@ -87,12 +87,12 @@ describe("parseEvalRunCliOptions", () => {
   it("accepts --runner notion when --project is provided", () => {
     const result = parseEvalRunCliOptions({
       runner: "notion",
-      project: "Mail",
+      project: "Widget",
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value.runner).toBe("notion")
-      expect(result.value.projectName).toBe("Mail")
+      expect(result.value.projectName).toBe("Widget")
     }
   })
 
@@ -117,11 +117,11 @@ describe("assertSandboxProjectName", () => {
   })
 
   it.each([
-    "Mail-sandbox",
+    "Widget-sandbox",
     "Eval-Project",
     "Test-Vault",
     "scratch",
-    "Mail-staging",
+    "Widget-staging",
     "dev-vault",
     "Playground",
   ])("accepts sandbox-shaped project names like %s", (name) => {
@@ -130,7 +130,7 @@ describe("assertSandboxProjectName", () => {
   })
 
   it.each([
-    "Mail",
+    "Widget",
     "Greatest hits",
     "Latest releases",
     "Evaluation Q1",
@@ -144,7 +144,7 @@ describe("assertSandboxProjectName", () => {
 
   it("allows production-shaped names when LORE_EVAL_NOTION_ALLOW_PRODUCTION=1", () => {
     process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"] = "1"
-    expect(() => assertSandboxProjectName("Mail")).not.toThrow()
+    expect(() => assertSandboxProjectName("Widget")).not.toThrow()
   })
 })
 

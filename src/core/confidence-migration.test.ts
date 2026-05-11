@@ -338,18 +338,18 @@ describe("runBuildConfidenceScoresMigration — project scoping", () => {
     const memories = [makeMemory({ id: "m1", confidenceScore: null })]
     const { services, listSpy, findByNameSpy, applySpy } = makeServices({
       memories,
-      findByName: async (name) => (name === "Mail" ? { id: "project-mail", name } : null),
+      findByName: async (name) => (name === "Widget" ? { id: "project-widget", name } : null),
     })
 
     await runBuildConfidenceScoresMigration({
       services,
       apply: false,
       dryRun: false,
-      projectName: "Mail",
+      projectName: "Widget",
     })
 
-    expect(findByNameSpy).toHaveBeenCalledWith("Mail")
-    expect(listSpy).toHaveBeenCalledWith({ projectId: "project-mail" })
+    expect(findByNameSpy).toHaveBeenCalledWith("Widget")
+    expect(listSpy).toHaveBeenCalledWith({ projectId: "project-widget" })
     expect(applySpy).not.toHaveBeenCalled()
   })
 

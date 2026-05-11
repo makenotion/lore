@@ -199,7 +199,7 @@ export async function runStatus(): Promise<void> {
         console.log("")
         console.log("  Note: `ntn` does not appear to be installed.")
         console.log(
-          "  Install per the rollout runbook: docs/internal-rollout.md",
+          "  Install per the rollout runbook: docs/team-rollout.md",
         )
       }
     }
@@ -254,7 +254,7 @@ export async function runStatus(): Promise<void> {
     if (!isNtnInstalled()) {
       console.log("")
       console.log("  Note: `ntn` does not appear to be installed.")
-      console.log("  Install per the rollout runbook: docs/internal-rollout.md")
+      console.log("  Install per the rollout runbook: docs/team-rollout.md")
     }
     return
   }
@@ -482,7 +482,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   //
   // Environment selection precedence:
   //   1. `NOTION_ENV` env var (operator-set, wins).
-  //   2. Inferred from `.lore.yaml`'s `auth.baseUrl` (Mail-style dev
+  //   2. Inferred from `.lore.yaml`'s `auth.baseUrl` (PnP-style dev
   //      projects carry `auth.baseUrl: https://api-dev.notion.com`;
   //      threading that into `ntn login --env dev` keeps the
   //      Lore-managed login pointed at the same environment the
@@ -871,7 +871,7 @@ export async function runLogout(): Promise<void> {
  * writes a stderr breadcrumb so a misconfigured caller sees a
  * debuggable failure mode instead of a silent false.
  *
- * **Cross-PR coordination with `Iron-Ham/0.10.0-07-lore-auth-migrate`
+ * **Cross-PR coordination with `0.10.0-07-lore-auth-migrate`
  * (PR #176)**. As of #176's head `4f317fdc`, both PRs export this
  * helper with the same `(message, defaultYes = true)` signature, the
  * same suffix synthesis, and the same non-TTY breadcrumb — and #176's

@@ -1354,7 +1354,7 @@ function fixtureToFacts(fixture: ReadonlyArray<AggregateFixtureRow>): Fact[] {
  * the SQL gateway would return for `SELECT SubjectEntity, Subject,
  * COUNT(*) FROM facts GROUP BY SubjectEntity, Subject`. Relations
  * are JSON-stringified arrays of full URLs containing the undashed
- * id form (verified live 2026-05-05 against the production Mail
+ * id form (verified live 2026-05-05 against an internal
  * vault). Empty-relation rows take the `null` form so
  * `extractFirstRelationId` returns `null` for them.
  */

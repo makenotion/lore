@@ -392,9 +392,9 @@ describe("MissingVaultDatabasesError", () => {
     const previous = process.env["LORE_DEBUG"]
     delete process.env["LORE_DEBUG"]
     try {
-      const pageId = "343b35e6e67f8171aaaaef814eeb199f"
+      const pageId = "0123456789abcdef0123456789abcdef"
       const redacted = new MissingVaultDatabasesError(pageId, ["Entities"], ["Projects"])
-      expect(redacted.message).toContain("343b...199f")
+      expect(redacted.message).toContain("0123...cdef")
       expect(redacted.message).not.toContain(pageId)
 
       process.env["LORE_DEBUG"] = "1"

@@ -17,7 +17,7 @@
  * file paths, class names, ticket IDs) belong in `Keywords`, which is
  * indexed by Notion's text search.
  *
- * Curated from a frequency census against the Mail production vault: the
+ * Curated from a frequency census against the internal vault: the
  * high-signal labels cluster into engineering discipline (`architecture`,
  * `testing`, `performance`), platform (`ios`, `backend`, `web`), document
  * kind (`gotcha`, `runbook`, `postmortem`), and workflow (`code-review`,

@@ -152,7 +152,7 @@ export async function createWorkspaceLevelPage(
  *
  * Title-collision footgun (by design): two engineers running `lore init`
  * from different machines but in directories with the same basename
- * (e.g., both have `~/Developer/Mail`) produce identically-titled
+ * (e.g., both have `~/Developer/widget`) produce identically-titled
  * private pages in the same workspace. The page id distinguishes them
  * structurally — Lore identity is page-id-keyed, not title-keyed — but
  * Notion's UI sidebar shows both rows the same way. Operators who hit

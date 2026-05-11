@@ -1,7 +1,7 @@
 /**
  * Tests for the agent-identity canonicalizer (PF3-02).
  *
- * Pins the eight Mail-vault variants to a single canonical string and the
+ * Pins the eight internal-vault variants to a single canonical string and the
  * PF1-04 explicit-override contract for third-party agents. A regression in
  * either direction would re-fragment the `Agent` column or steamroll a
  * deliberately-set integrator name — both visibly bad outcomes.
@@ -10,15 +10,15 @@ import { describe, expect, it } from "vitest"
 import { CANONICAL_CLAUDE_CODE, canonicalizeAgentName } from "./agent-identity.js"
 
 describe("canonicalizeAgentName", () => {
-  describe("Mail-vault Claude variants collapse to Claude Code", () => {
-    // PF3-02's spec lists seven variants observed on production Mail-vault
+  describe("internal-vault Claude variants collapse to Claude Code", () => {
+    // PF3-02's spec lists seven variants observed on an internal-vault
     // memories (see /Phase-3-Followups/PF3-02-agent-identity-normalization.md).
     // The eighth — bare-version `Claude Opus 4.7` without a parenthetical —
     // isn't in the spec's bullet list but the regex grammar already covers it,
     // so it's pinned here as a stake-in-the-ground: the canonicalizer accepts
     // bare-version cousins of the spec's parenthesized form, and a regression
     // that started passing them through unchanged would be a real fragmentation
-    // bug. Production `--dry-run` against the Mail vault confirms 20 memories
+    // bug. Production `--dry-run` against an internal vault confirms 20 memories
     // with non-canonical Agent strings, all 7 spec'd variants present.
     const claudeVariants = [
       "Claude Code",

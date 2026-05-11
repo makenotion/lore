@@ -553,7 +553,7 @@ async function handleUpdate(
     if (updated.reviewBy) lines.push(`Due: ${updated.reviewBy}`)
     if (updated.blockedBy) lines.push(`Blocked by: ${updated.blockedBy}`)
     // Echo the entity so a rename (e.g. canonicalizing
-    // "PR 25750" → "PR-25750") is observable in the response,
+    // "PR 1234" → "PR-1234") is observable in the response,
     // mirroring the create path's echo line.
     if (updated.entity && updated.entity !== updated.title) {
       lines.push(`Entity: ${updated.entity}`)

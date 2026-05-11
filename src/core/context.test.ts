@@ -36,34 +36,34 @@ function makeProject(name: string, path: string): Project {
 const MONOREPO_CONFIG: LoreConfig = {
   vault: { pageId: "vault-id" },
   projects: [
-    { name: "Mail", path: "." },
-    { name: "Mail Backend", path: "services/mail" },
-    { name: "Mail Web", path: "mail-web" },
+    { name: "Widget", path: "." },
+    { name: "Widget Backend", path: "services/widget" },
+    { name: "Widget Web", path: "widget-web" },
     { name: "Router", path: "services/router" },
   ],
 }
 
 describe("isCatchAllProject", () => {
   it("treats path '.' as catch-all", () => {
-    expect(isCatchAllProject({ name: "Mail", path: "." })).toBe(true)
+    expect(isCatchAllProject({ name: "Widget", path: "." })).toBe(true)
   })
 
   it("treats empty path as catch-all", () => {
-    expect(isCatchAllProject({ name: "Mail", path: "" })).toBe(true)
+    expect(isCatchAllProject({ name: "Widget", path: "" })).toBe(true)
   })
 
   it("treats a leading-slash root as catch-all", () => {
-    expect(isCatchAllProject({ name: "Mail", path: "/" })).toBe(true)
+    expect(isCatchAllProject({ name: "Widget", path: "/" })).toBe(true)
   })
 
   it("does not treat sub-project paths as catch-all", () => {
-    expect(isCatchAllProject({ name: "Mail Backend", path: "services/mail" })).toBe(false)
+    expect(isCatchAllProject({ name: "Widget Backend", path: "services/widget" })).toBe(false)
   })
 })
 
 describe("subProjectNames", () => {
   it("excludes the catch-all and preserves declaration order", () => {
-    expect(subProjectNames(MONOREPO_CONFIG)).toEqual(["Mail Backend", "Mail Web", "Router"])
+    expect(subProjectNames(MONOREPO_CONFIG)).toEqual(["Widget Backend", "Widget Web", "Router"])
   })
 
   it("returns empty array when config has no projects", () => {
@@ -73,7 +73,7 @@ describe("subProjectNames", () => {
 
 describe("catchAllProjectName", () => {
   it("returns the name of the catch-all when one is configured", () => {
-    expect(catchAllProjectName(MONOREPO_CONFIG)).toBe("Mail")
+    expect(catchAllProjectName(MONOREPO_CONFIG)).toBe("Widget")
   })
 
   it("returns null when no catch-all is configured", () => {
@@ -89,13 +89,13 @@ describe("resolveProject", () => {
   const configRoot = "/home/user/monorepo"
 
   it("resolves to a sub-project when cwd sits under its path", async () => {
-    const backend = makeProject("Mail Backend", "services/mail")
+    const backend = makeProject("Widget Backend", "services/widget")
     const projects = makeProjectService({
-      findByPath: vi.fn(async (path) => (path === "services/mail" ? backend : null)),
+      findByPath: vi.fn(async (path) => (path === "services/widget" ? backend : null)),
     })
 
     const result = await resolveProject(
-      `${configRoot}/services/mail/graphql`,
+      `${configRoot}/services/widget/graphql`,
       configRoot,
       MONOREPO_CONFIG,
       projects,
@@ -103,7 +103,7 @@ describe("resolveProject", () => {
 
     expect(result.project).toEqual(backend)
     expect(result.isCatchAllFallback).toBe(false)
-    expect(result.candidates).toContain("Mail Backend")
+    expect(result.candidates).toContain("Widget Backend")
   })
 
   it("prefers the longest-prefix sub-project over the catch-all", async () => {
@@ -123,20 +123,20 @@ describe("resolveProject", () => {
   })
 
   it("falls back to the catch-all when cwd is the monorepo root", async () => {
-    const mail = makeProject("Mail", ".")
-    const findByPath = vi.fn(async (path) => (path === "." ? mail : null))
+    const widget = makeProject("Widget", ".")
+    const findByPath = vi.fn(async (path) => (path === "." ? widget : null))
     const projects = makeProjectService({ findByPath })
 
     const result = await resolveProject(configRoot, configRoot, MONOREPO_CONFIG, projects)
 
-    expect(result.project).toEqual(mail)
+    expect(result.project).toEqual(widget)
     expect(result.isCatchAllFallback).toBe(true)
-    expect(result.candidates).toEqual(["Mail Backend", "Mail Web", "Router"])
+    expect(result.candidates).toEqual(["Widget Backend", "Widget Web", "Router"])
   })
 
   it("falls back to the catch-all when cwd is in an uncovered subdir", async () => {
-    const mail = makeProject("Mail", ".")
-    const findByPath = vi.fn(async (path) => (path === "." ? mail : null))
+    const widget = makeProject("Widget", ".")
+    const findByPath = vi.fn(async (path) => (path === "." ? widget : null))
     const projects = makeProjectService({ findByPath })
 
     const result = await resolveProject(
@@ -170,14 +170,14 @@ describe("resolveProject", () => {
   })
 
   it("falls back from findByPath to findByName when path lookup misses", async () => {
-    const mail = makeProject("Mail", ".")
+    const widget = makeProject("Widget", ".")
     const projects = makeProjectService({
       findByPath: vi.fn().mockResolvedValue(null),
-      findByName: vi.fn(async (name) => (name === "Mail" ? mail : null)),
+      findByName: vi.fn(async (name) => (name === "Widget" ? widget : null)),
     })
 
     const result = await resolveProject(configRoot, configRoot, MONOREPO_CONFIG, projects)
-    expect(result.project).toEqual(mail)
+    expect(result.project).toEqual(widget)
   })
 
   it("returns null when the matching configured project is archived-only", async () => {
@@ -186,7 +186,7 @@ describe("resolveProject", () => {
     const projects = makeProjectService({ findByPath, findByName })
 
     const result = await resolveProject(
-      `${configRoot}/services/mail/graphql`,
+      `${configRoot}/services/widget/graphql`,
       configRoot,
       MONOREPO_CONFIG,
       projects,
@@ -194,8 +194,8 @@ describe("resolveProject", () => {
 
     expect(result.project).toBeNull()
     expect(result.isCatchAllFallback).toBe(false)
-    expect(findByPath).toHaveBeenCalledWith("services/mail")
-    expect(findByName).toHaveBeenCalledWith("Mail Backend")
+    expect(findByPath).toHaveBeenCalledWith("services/widget")
+    expect(findByName).toHaveBeenCalledWith("Widget Backend")
   })
 })
 
@@ -204,11 +204,11 @@ describe("resolveProjectPathFromCwd", () => {
 
   it("resolves to a sub-project when cwd sits under its path", () => {
     const result = resolveProjectPathFromCwd(
-      `${configRoot}/services/mail/graphql`,
+      `${configRoot}/services/widget/graphql`,
       configRoot,
       MONOREPO_CONFIG,
     )
-    expect(result).toEqual({ name: "Mail Backend", path: "services/mail" })
+    expect(result).toEqual({ name: "Widget Backend", path: "services/widget" })
   })
 
   it("prefers the longest-prefix sub-project over the catch-all", () => {
@@ -221,7 +221,7 @@ describe("resolveProjectPathFromCwd", () => {
   })
 
   it("returns null when the best match is the catch-all — auto-digest needs a specific project", () => {
-    // cwd at configRoot matches the catch-all `Mail` entry (path ".") only.
+    // cwd at configRoot matches the catch-all `Widget` entry (path ".") only.
     const result = resolveProjectPathFromCwd(configRoot, configRoot, MONOREPO_CONFIG)
     expect(result).toBeNull()
   })

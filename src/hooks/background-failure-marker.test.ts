@@ -41,7 +41,7 @@ describe("background-failure-marker", () => {
       CONFIG_ROOT,
       {
         kind: "autosave",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-123",
         code: "binary-missing",
         message: "x".repeat(500),
@@ -54,7 +54,7 @@ describe("background-failure-marker", () => {
       now: new Date("2026-04-24T12:00:01.000Z"),
     })
     expect(marker?.kind).toBe("autosave")
-    expect(marker?.projectName).toBe("Mail Backend")
+    expect(marker?.projectName).toBe("Widget Backend")
     expect(marker?.sessionId).toBe("sess-123")
     expect(marker?.code).toBe("binary-missing")
     expect(marker?.message.length).toBeLessThanOrEqual(220)
@@ -65,14 +65,14 @@ describe("background-failure-marker", () => {
 
   it("keeps raw project and session values out of marker filenames", () => {
     const path = backgroundFailureMarkerPath(CONFIG_ROOT, "autosave", {
-      projectName: "Mail/Backend",
+      projectName: "Widget/Backend",
       sessionId: "../escape/session",
     })
 
     const file = basename(path)
     expect(path.startsWith(`${getStateDir()}/`)).toBe(true)
     expect(file).toContain(`background-failure.${configKey(CONFIG_ROOT)}.autosave.`)
-    expect(file).not.toContain("Mail")
+    expect(file).not.toContain("Widget")
     expect(file).not.toContain("Backend")
     expect(file).not.toContain("escape")
     expect(file).not.toContain("session")
@@ -80,11 +80,11 @@ describe("background-failure-marker", () => {
 
   it("keys active markers by recoverable project scope and keeps latest session context", async () => {
     const pathA = backgroundFailureMarkerPath(CONFIG_ROOT, "autosave", {
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-a",
     })
     const pathB = backgroundFailureMarkerPath(CONFIG_ROOT, "autosave", {
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-b",
     })
     expect(pathA).toBe(pathB)
@@ -93,7 +93,7 @@ describe("background-failure-marker", () => {
       CONFIG_ROOT,
       {
         kind: "autosave",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-a",
         code: "binary-missing",
         message: "background command missing",
@@ -104,7 +104,7 @@ describe("background-failure-marker", () => {
       CONFIG_ROOT,
       {
         kind: "autosave",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         sessionId: "sess-b",
         code: "spawn-error",
         message: "spawn failed",
@@ -118,14 +118,14 @@ describe("background-failure-marker", () => {
     expect(markers).toHaveLength(1)
     expect(markers[0]).toMatchObject({
       kind: "autosave",
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-b",
       code: "spawn-error",
     })
   })
 
   it("clears the marker for the same recoverable scope across sessions", async () => {
-    const scope = { projectName: "Mail Backend", sessionId: "sess-clear" }
+    const scope = { projectName: "Widget Backend", sessionId: "sess-clear" }
     recordBackgroundFailure(CONFIG_ROOT, {
       kind: "autosave",
       ...scope,
@@ -135,7 +135,7 @@ describe("background-failure-marker", () => {
     expect(await listBackgroundFailures(CONFIG_ROOT)).toHaveLength(1)
 
     await clearBackgroundFailure(CONFIG_ROOT, "autosave", {
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-later-success",
     })
 
@@ -145,7 +145,7 @@ describe("background-failure-marker", () => {
   it("clears helper-spawn markers by project scope instead of session scope", async () => {
     recordBackgroundFailure(CONFIG_ROOT, {
       kind: "auto-digest-helper-spawn",
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-helper-a",
       code: "spawn-error",
       message: "spawn failed",
@@ -153,7 +153,7 @@ describe("background-failure-marker", () => {
     expect(await listBackgroundFailures(CONFIG_ROOT)).toHaveLength(1)
 
     await clearBackgroundFailure(CONFIG_ROOT, "auto-digest-helper-spawn", {
-      projectName: "Mail Backend",
+      projectName: "Widget Backend",
       sessionId: "sess-helper-b",
     })
 
@@ -161,7 +161,7 @@ describe("background-failure-marker", () => {
   })
 
   it("does not clear a newer failure marker with an older success timestamp", async () => {
-    const scope = { projectName: "Mail Backend", sessionId: "sess-race" }
+    const scope = { projectName: "Widget Backend", sessionId: "sess-race" }
     recordBackgroundFailure(
       CONFIG_ROOT,
       {
@@ -189,7 +189,7 @@ describe("background-failure-marker", () => {
   })
 
   it("keeps a marker recorded exactly at the recovery boundary", async () => {
-    const scope = { projectName: "Mail Backend", sessionId: "sess-same-ms" }
+    const scope = { projectName: "Widget Backend", sessionId: "sess-same-ms" }
     recordBackgroundFailure(
       CONFIG_ROOT,
       {
@@ -302,7 +302,7 @@ describe("background-failure-marker", () => {
       CONFIG_ROOT,
       {
         kind: "digest-scheduler",
-        projectName: "Mail Backend",
+        projectName: "Widget Backend",
         code: "gather-failed",
         message: "rate limit",
       },

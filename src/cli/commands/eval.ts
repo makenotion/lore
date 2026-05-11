@@ -229,7 +229,7 @@ export function assertSandboxProjectName(projectName: string): void {
  * `--runner notion` flag) gets the factory it needs. `runEvalSuite`
  * ignores the factory when the resolved runner is `retrieval`, so the
  * sandbox-name check is moved INTO the async factory body — that way
- * `lore eval baseline suite.yaml --project Mail` for a retrieval-mode
+ * `lore eval baseline suite.yaml --project Widget` for a retrieval-mode
  * suite does not surprise the operator with a sandbox-name throw on a
  * factory that's never invoked.
  */
