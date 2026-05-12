@@ -4,6 +4,7 @@ import { authCommand } from "./commands/auth.js"
 import { searchCommand } from "./commands/search.js"
 import { mineCommand } from "./commands/mine.js"
 import { inboxCommand } from "./commands/inbox.js"
+import { pinnedCommand } from "./commands/pinned.js"
 import { statusCommand } from "./commands/status.js"
 import { installCommand } from "./commands/install.js"
 import { migrateCommand } from "./commands/migrate.js"
@@ -27,6 +28,7 @@ program.addCommand(authCommand)
 program.addCommand(searchCommand)
 program.addCommand(mineCommand)
 program.addCommand(inboxCommand)
+program.addCommand(pinnedCommand)
 program.addCommand(statusCommand)
 program.addCommand(installCommand)
 program.addCommand(migrateCommand)

@@ -484,11 +484,9 @@ export async function deriveStopAuthSource(
 ): Promise<AuthSource | undefined> {
   if (!failureContext?.config || !failureContext.configRoot) return undefined
   try {
-    const resolved = await resolveAuth(
-      failureContext.config,
-      failureContext.configRoot,
-      { quiet: true }
-    )
+    const resolved = await resolveAuth(failureContext.config, failureContext.configRoot, {
+      quiet: true,
+    })
     return resolved.source
   } catch {
     return undefined
@@ -671,9 +669,7 @@ export async function handleStop(
     // the Stop path means we don't know what state we're in (transcript
     // corruption, lock-state inconsistency, fs errors), and the marker
     // debounce will let the next clean Stop hook fire the digest anyway.
-    process.stderr.write(
-      `[lore] Stop hook error: ${redactDebugError(err)}\n`
-    )
+    process.stderr.write(`[lore] Stop hook error: ${redactDebugError(err)}\n`)
     process.stdout.write("{}\n")
   }
 }
@@ -810,15 +806,15 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       marked = await tryMarkWakeupRun(eventMeta.sessionId)
     } catch (err) {
       process.stderr.write(
-        `[lore] wakeup: debounce mark failed — ${redactDebugError(err)}.\n`,
+        `[lore] wakeup: debounce mark failed — ${redactDebugError(err)}.\n`
       )
     }
     if (!marked) {
       if (debug) {
         process.stderr.write(
           `${formatWakeUpCoverage(
-            emptyWakeUpCoverageMetrics("default", "already-ranked-for-session"),
-          )}\n`,
+            emptyWakeUpCoverageMetrics("default", "already-ranked-for-session")
+          )}\n`
         )
       }
       return
@@ -857,13 +853,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // through to the data-layer defaults.
   const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
 
-  let digest,
-    memories,
-    tasks,
-    knowledgeFacts,
-    relatedMemories,
-    taskMemories,
-    coverage
+  let digest, memories, tasks, knowledgeFacts, relatedMemories, taskMemories, coverage
   try {
     ;({
       digest,
@@ -899,6 +889,15 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       // performance regression and a privacy posture change
       // operators hadn't opted into.
       includeInheritedMemories: false,
+      // Hook never renders the Pinned Context section (issue
+      // #282) — skip the `listPinnedBlocks` + `countPinnedBlocks`
+      // round-trips so the session-start hot path doesn't pay
+      // two extra `dataSources.query` calls per launch. Same
+      // posture as `includeInheritedMemories: false` above. The
+      // MCP `lore-context action='wake-up'` surface still renders
+      // pinned blocks at default; agents that need pinned
+      // context call the MCP surface explicitly.
+      includePinnedBlocks: false,
       includeCoverage: debug,
       userQuery,
       cache: services.wakeupCache,
@@ -909,9 +908,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // session startup — log and exit clean.
     if (debug) {
       process.stderr.write(
-        `${formatWakeUpCoverage(
-          emptyWakeUpCoverageMetrics("error", "load-failed"),
-        )}\n`,
+        `${formatWakeUpCoverage(emptyWakeUpCoverageMetrics("error", "load-failed"))}\n`
       )
     }
     // Load failures are exactly the path the Notion SDK is most likely
@@ -948,8 +945,8 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
                 knowledgeFactLimit: RANKED_WAKEUP_LIMITS.knowledgeFactLimit,
                 taskMemoryLimit: RANKED_WAKEUP_LIMITS.taskMemoryLimit,
               }
-            : {},
-        )}\n`,
+            : {}
+        )}\n`
       )
     }
   }
@@ -1190,9 +1187,7 @@ export async function handleSessionEnd(): Promise<void> {
 if (isEntryPoint()) {
   main().catch((err) => {
     const action = process.argv[2]
-    process.stderr.write(
-      `[lore] Hook error [${action}]: ${redactDebugError(err)}\n`
-    )
+    process.stderr.write(`[lore] Hook error [${action}]: ${redactDebugError(err)}\n`)
     if (action === "autosave") {
       process.stdout.write("{}\n")
       process.exit(0)

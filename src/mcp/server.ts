@@ -21,6 +21,7 @@ import { type LoreServices, initServices } from "../services.js"
 
 import { registerContextTools } from "./tools/context.js"
 import { registerMemoryTools } from "./tools/memory.js"
+import { registerPinnedTools } from "./tools/pinned.js"
 import { registerProjectTools } from "./tools/project.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerDecisionTools } from "./tools/decisions.js"
@@ -39,6 +40,7 @@ type ToolResult = {
 const DIAGNOSTIC_TOOL_NAMES = [
   "lore-context",
   "lore-memory",
+  "lore-pinned",
   "lore-query",
   "lore-fact",
   "lore-decision",
@@ -76,9 +78,10 @@ export async function startServer(): Promise<void> {
   // contract documented in `src/mcp/AGENTS.md`.
   //
   // 0.10.1 exposes a diagnostic MCP surface for interactive service-init
-  // failures. The success path still registers the same seven dispatchers,
+  // failures. The success path still registers the full dispatcher set,
   // but degraded startup now presents the same dispatcher names with setup
-  // recovery text instead of disconnecting the client.
+  // recovery text instead of disconnecting the client. (Surface count
+  // moved to eight in issue #282; the diagnostic set tracks it.)
   //
   // 0.11.0 packages the post-ntn dogfood hardening train: attribution,
   // retry-safe writes, task/audit/list output fixes, entity merge, and
@@ -130,14 +133,16 @@ export async function startServer(): Promise<void> {
   }
 
   if (services) {
-    // Register all tools. The polymorphic surface is seven dispatchers:
-    // lore-context / lore-memory / lore-query / lore-fact / lore-decision /
-    // lore-project / lore-task. P3-01 introduced the dispatch pattern,
-    // PF3-06 added lore-task, and the 0.6.0 deprecation purge removed the
-    // legacy journal dispatcher alongside the 28 single-purpose aliases.
+    // Register all tools. The polymorphic surface is eight dispatchers:
+    // lore-context / lore-memory / lore-pinned / lore-query / lore-fact /
+    // lore-decision / lore-project / lore-task. P3-01 introduced the
+    // dispatch pattern, PF3-06 added lore-task, the 0.6.0 deprecation
+    // purge removed the legacy journal dispatcher alongside the 28
+    // single-purpose aliases, and issue #282 added lore-pinned.
     // See src/mcp/AGENTS.md.
     registerContextTools(server, services)
     registerMemoryTools(server, services)
+    registerPinnedTools(server, services)
     registerQueryTools(server, services)
     registerProjectTools(server, services)
     registerKnowledgeTools(server, services)

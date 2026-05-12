@@ -89,3 +89,15 @@ export function extractNumber(prop: PropertyValue | undefined): number | null {
   if (prop?.type !== "number") return null
   return prop.number ?? null
 }
+
+/**
+ * Returns the boolean value of a checkbox property, defaulting to
+ * `false` when the property is missing or the wrong type. Pre-migration
+ * pages (no column) and explicitly-unchecked rows both yield `false`,
+ * which matches Notion's wire behavior — a checkbox is binary, with no
+ * "never set" sentinel.
+ */
+export function extractCheckbox(prop: PropertyValue | undefined): boolean {
+  if (prop?.type !== "checkbox") return false
+  return prop.checkbox
+}

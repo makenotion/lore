@@ -2,7 +2,7 @@
  * Core domain types for Lore.
  *
  * Vault → Project → Topic → Memory
- *                         → Fact (knowledge graph)
+ * → Fact (knowledge graph)
  */
 
 // ---------------------------------------------------------------------------
@@ -218,13 +218,13 @@ export type MemoryKind =
  * Lifecycle state for `Kind = task` memories.
  *
  * - `open` — needs action; no one yet picking it up. Default for fresh
- *   tasks.
+ * tasks.
  * - `in-progress` — actively being worked.
  * - `blocked` — waiting on an external dependency. Pair with `Blocked By`
- *   to name the blocker (PR number, person, service).
+ * to name the blocker (PR number, person, service).
  * - `done` — closed successfully. `lore-task action='close'` writes this.
  * - `cancelled` — dropped without completion. Distinct from `done` so
- *   metrics distinguish "shipped" from "abandoned".
+ * metrics distinguish "shipped" from "abandoned".
  *
  * Non-task memories carry no Task State; the field is read off the
  * `Task State` Notion column when present and elided otherwise.
@@ -232,7 +232,7 @@ export type MemoryKind =
 export type TaskState = "open" | "in-progress" | "blocked" | "done" | "cancelled"
 
 /** Task states that count as "still owing work" — surfaced by
- *  `lore-task action='list'` and the wake-up Tasks section by default. */
+ * `lore-task action='list'` and the wake-up Tasks section by default. */
 export const ACTIVE_TASK_STATES: TaskState[] = ["open", "in-progress", "blocked"]
 
 /**
@@ -340,10 +340,10 @@ export const CONFIDENCE_DISPLAY_THRESHOLD = 0.5
  * below the heading on recall / search / wake-up listings (#09). Three
  * empirical buckets:
  *
- *   `score < 0.2` → `"very low confidence"`
- *   `score < 0.4` → `"low confidence"`
- *   `score < CONFIDENCE_DISPLAY_THRESHOLD` (0.5) → `"moderate confidence"`
- *   `score >= CONFIDENCE_DISPLAY_THRESHOLD` → `null` (no indicator)
+ * `score < 0.2` → `"very low confidence"`
+ * `score < 0.4` → `"low confidence"`
+ * `score < CONFIDENCE_DISPLAY_THRESHOLD` (0.5) → `"moderate confidence"`
+ * `score >= CONFIDENCE_DISPLAY_THRESHOLD` → `null` (no indicator)
  *
  * The above-threshold case returns `null` so the function is the single
  * gate — a forgetful caller that drops the surrounding `score < threshold`
@@ -398,12 +398,12 @@ export const MS_PER_DAY = 86_400_000
  * Scope kind for a memory, fact, or task. Identity slot the row applies to.
  *
  * - `team`, `project`, `global` are *broadcast* scopes — every reader on
- *   any session sees them by default.
+ * any session sees them by default.
  * - `user`, `agent`, `role`, `session`, `run`, `environment` are *narrow*
- *   scopes — readers see them only when their resolved scope context's
- *   matching slot equals the row's `scopeKey`. A session note from
- *   one engineer's debugging run does not become team-wide recall by
- *   accident.
+ * scopes — readers see them only when their resolved scope context's
+ * matching slot equals the row's `scopeKey`. A session note from
+ * one engineer's debugging run does not become team-wide recall by
+ * accident.
  *
  * Existing rows have no `scopeKind` (column null). The retrieval default
  * treats null as "broadcast" — equivalent to `team`/`project`/`global` —
@@ -437,11 +437,7 @@ export const MEMORY_SCOPE_KINDS: MemoryScopeKind[] = [
  * Always returned by default reads, regardless of `scopeKey`. Anything
  * else requires a `scopeKey` match against the reader's `MemoryScopeContext`.
  */
-export const BROADCAST_SCOPE_KINDS: MemoryScopeKind[] = [
-  "team",
-  "project",
-  "global",
-]
+export const BROADCAST_SCOPE_KINDS: MemoryScopeKind[] = ["team", "project", "global"]
 
 /**
  * Narrow scopes — require a matching `scopeKey` against the reader's
@@ -460,26 +456,26 @@ export const NARROW_SCOPE_KINDS: MemoryScopeKind[] = [
  * Lifetime model for a memory, fact, or task.
  *
  * - `persistent` — never expires. The legacy default; null lifetime
- *   resolves to this on read.
+ * resolves to this on read.
  * - `expires` — explicit `Expires At` end-date. The row drops out of
- *   default retrieval when `Expires At < today`.
+ * default retrieval when `Expires At < today`.
  * - `session-only` — paired with `scopeKind = session` and a
- *   `Session` field; expires when the originating session is no
- *   longer current. Same retrieval behavior as `expires` for the
- *   common case (we drop the row when its scopeKey doesn't match the
- *   reader's session), but the explicit label gives operators a
- *   triage signal in `lore status` for "session-only memories that
- *   outlived their session and need cleanup."
+ * `Session` field; expires when the originating session is no
+ * longer current. Same retrieval behavior as `expires` for the
+ * common case (we drop the row when its scopeKey doesn't match the
+ * reader's session), but the explicit label gives operators a
+ * triage signal in `lore status` for "session-only memories that
+ * outlived their session and need cleanup."
  * - `until-task-closed` — for `kind = task` memories; the row's
- *   active reach ends when its `taskState` reaches `done` or
- *   `cancelled`. Tasks already drop out of `lore-task action='list'`
- *   default state filters when closed, so this label is a
- *   declaration of intent rather than a new retrieval rule.
+ * active reach ends when its `taskState` reaches `done` or
+ * `cancelled`. Tasks already drop out of `lore-task action='list'`
+ * default state filters when closed, so this label is a
+ * declaration of intent rather than a new retrieval rule.
  * - `until-decision-superseded` — for `kind = decision` memories;
- *   active reach ends when `status` reaches `superseded`. Same
- *   declarative posture as `until-task-closed` — superseded
- *   decisions already drop out of "currently governing" reads via
- *   `ACTIVE_DECISION_STATUSES`.
+ * active reach ends when `status` reaches `superseded`. Same
+ * declarative posture as `until-task-closed` — superseded
+ * decisions already drop out of "currently governing" reads via
+ * `ACTIVE_DECISION_STATUSES`.
  */
 export type MemoryLifetime =
   | "persistent"
@@ -590,36 +586,36 @@ export function memoryScopeToInput(
  * Decide whether a system-managed fact derived from a PAIR of
  * memories (compare-dispatch `conflicts_with` / `supersedes_decision`)
  * can be safely emitted, and if so what scope it should carry
- * (issue #283 round-3 review).
+ * (issue #283 review).
  *
  * The rule is "same scope on both sides → emit with that scope; any
  * mismatch → skip emission." Reasoning:
  *
  * - Same scope on both sides: emitting with that scope is safe.
- *   Both rows already share visibility, so the derived fact's
- *   visibility is identical to either row's visibility.
+ * Both rows already share visibility, so the derived fact's
+ * visibility is identical to either row's visibility.
  * - One narrower than the other (one session-scoped, one team /
- *   global / null): emitting with the narrower scope hides the
- *   relationship from the broader-scope reader who can see the
- *   broader row. Emitting with the broader scope leaks the
- *   narrower row's title and the relationship through `lore-query
- *   action='ask'` to readers who cannot see the narrower row.
- *   Both directions are wrong; the safe answer is to skip the
- *   derived-fact emission. The compare verdict still lands in the
- *   Compare Notes audit trail on both rows, so the contradiction
- *   isn't lost — just the broadcast-able fact-graph projection of
- *   it.
+ * global / null): emitting with the narrower scope hides the
+ * relationship from the broader-scope reader who can see the
+ * broader row. Emitting with the broader scope leaks the
+ * narrower row's title and the relationship through `lore-query
+ * action='ask'` to readers who cannot see the narrower row.
+ * Both directions are wrong; the safe answer is to skip the
+ * derived-fact emission. The compare verdict still lands in the
+ * Compare Notes audit trail on both rows, so the contradiction
+ * isn't lost — just the broadcast-able fact-graph projection of
+ * it.
  *
  * Returns:
  * - `{ ok: true, scope: MemoryScopeInput | undefined }` when the
- *   two rows share a scope. `scope` is the bundle to pass to
- *   `createWithDedup`; `undefined` means both rows are pre-#283 /
- *   broadcast (legacy passthrough preserved — the fact lands with
- *   no scope, exactly as it did before #283).
+ * two rows share a scope. `scope` is the bundle to pass to
+ * `createWithDedup`; `undefined` means both rows are pre-#283 /
+ * broadcast (legacy passthrough preserved — the fact lands with
+ * no scope, exactly as it did before #283).
  * - `{ ok: false, reason: string }` when the rows have different
- *   scopes. The caller skips fact emission and includes `reason`
- *   in operator-facing output / debug logs so the gap is
- *   diagnosable.
+ * scopes. The caller skips fact emission and includes `reason`
+ * in operator-facing output / debug logs so the gap is
+ * diagnosable.
  *
  * This helper is intentionally narrower than `scopesMatchForMerge`
  * in `core/fact.ts`: the merge predicate compares an existing
@@ -696,6 +692,135 @@ function describeScope(scope: MemoryScope | null | undefined): string {
  * surface as "expired."
  */
 export const EXPIRING_SOON_DAYS = 7
+
+// ---------------------------------------------------------------------------
+// Pinned context blocks (issue #282)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mutability for a pinned context block (issue #282).
+ *
+ * - `mutable` (default) — pinned block can be updated via the normal
+ * `lore-memory action='update'` and `lore-pinned action='update'`
+ * paths.
+ * - `read-only` — protected from `lore-memory action='update'` and
+ * from the generic `lore-pinned action='update'` mutation path
+ * unless the caller explicitly opts in via
+ * `allowReadOnlyUpdate: true`. The override on
+ * `lore-pinned action='update'` is `force: true`; every forced
+ * write lands a `> Forced read-only update` audit line on the
+ * memory body so the override is recoverable from the row
+ * itself. The override is a stop-sign visible in the audit trail,
+ * not an access-control gate — Lore writes through one operator
+ * bearer token, so any MCP caller can flip the flag. See AC #4
+ * for the visibility model.
+ *
+ * Non-pinned memories carry `Mutability = null` (column unset) and
+ * default to mutable — the read-only check is gated on `Pinned = true`
+ * in the service layer so non-pinned rows are never blocked.
+ */
+export type MemoryMutability = "mutable" | "read-only"
+
+export const MEMORY_MUTABILITIES: readonly [MemoryMutability, ...MemoryMutability[]] = [
+  "mutable",
+  "read-only",
+]
+
+/**
+ * Bundle of pinned-block-specific fields surfaced on `Memory` rows.
+ * `null` when the row is not a pinned context block — most memories
+ * have this slot empty.
+ *
+ * - `priority` — sort order; higher first. `0` for legacy rows where
+ * the column is unset.
+ * - `mutability` — `read-only` rows reject normal save/update; see
+ * `MemoryMutability`.
+ *
+ * Reused columns from issue #283: project relation (project scoping)
+ * and `Audience` rich_text (audience targeting — comma-separated tokens
+ * compared against the reader's scope context). Both stay on the
+ * top-level `scope` slot rather than being duplicated here so the
+ * scope/lifetime contract from #283 keeps one source of truth.
+ */
+export interface MemoryPinned {
+  priority: number
+  mutability: MemoryMutability
+}
+
+/**
+ * Default cap on pinned-block rows surfaced in the wake-up `Pinned
+ * Context` section. Tight enough to keep the section a governance
+ * surface (team policies, project invariants, current initiative
+ * state) rather than an inventory; operators with deeper sets can
+ * tune via `pinnedBlockLimit` on the MCP wake-up call.
+ */
+export const DEFAULT_PINNED_BLOCK_LIMIT = 10
+
+/**
+ * Maximum `Pinned Priority` value accepted at the MCP/service
+ * boundary. Notion's number column has no native range; clamping at
+ * the boundary keeps sort order predictable and protects against a
+ * malformed caller passing `Infinity`.
+ */
+export const PINNED_PRIORITY_MAX = 1_000_000
+export const PINNED_PRIORITY_MIN = -1_000_000
+
+/**
+ * Active-pinned-block count above which the wake-up Pinned Context
+ * section appends an operator-facing abuse warning (issue #282).
+ *
+ * A malicious agent that runs `lore-pinned action='pin'` in a loop
+ * can exhaust the wake-up Pinned Context render budget for every
+ * other agent on the same vault — the visible cap renders the
+ * highest-priority N rows, so high-priority spam pushes legitimate
+ * pins out of the window. The threshold is conservative (10× the
+ * default visible cap): a single project with a handful of pinned
+ * blocks plus a vault-wide governance set sits comfortably below,
+ * and crossing it surfaces an inline note so the operator sees the
+ * abuse signal without having to instrument the vault separately.
+ *
+ * Not a hard pin-creation cap — pinning still succeeds past the
+ * threshold so legitimate growth (a new governance program adding
+ * many blocks at once) isn't blocked. The signal lives at the
+ * render boundary so operators see it on the same surface that
+ * exposes the blocks themselves.
+ */
+export const PINNED_BLOCKS_ABUSE_THRESHOLD = 100
+
+/**
+ * Hard cap on the total active-pinned-block count enforced at the
+ * `lore-pinned action='pin'` write boundary (issue #282).
+ *
+ * The render-time abuse warning above is operator-facing but does
+ * not prevent the underlying defense-in-depth gap: a malicious or
+ * runaway caller pinning many narrow-audience rows can exhaust
+ * `collectLivePages`'s refill ceiling
+ * (`LIVE_PAGE_REFILL_MAX_PAGES * LIVE_PAGE_QUERY_SIZE` = 500 rows)
+ * before the walker reaches a matching pin for a different
+ * audience. The matching reader then sees zero pinned context,
+ * AND — because the renderer used to gate the warning on
+ * `pinnedBlocks.length > 0` — no abuse signal either.
+ *
+ * The cap closes that gap structurally. Sitting at 200 (2× the
+ * render warning threshold) gives operators headroom past the
+ * warning to grow a legitimate governance corpus, while keeping
+ * the total well below the refill ceiling so the audience filter
+ * has room to backfill matching pins from rows ranked behind
+ * non-matching ones.
+ *
+ * Pin attempts past the cap reject with a typed error pointing
+ * operators at `lore pinned list --all-audiences` and
+ * `lore-pinned action='unpin'` so the recovery path is obvious.
+ * Unpinning is unaffected — operators trying to clear backlog
+ * never hit the cap.
+ *
+ * Larger than `PINNED_BLOCKS_ABUSE_THRESHOLD` so the render
+ * warning fires first as an early signal; smaller than
+ * `LIVE_PAGE_REFILL_MAX_PAGES * LIVE_PAGE_QUERY_SIZE` so the
+ * audience-filter backfill can always traverse the entire pinned
+ * set within one refill window.
+ */
+export const PINNED_BLOCKS_HARD_CAP = 200
 
 export interface Memory {
   id: string
@@ -839,6 +964,22 @@ export interface Memory {
    * `Entity.projectIds` and `Fact.subjectEntityId`.
    */
   scope?: MemoryScope | null
+  /**
+   * Pinned-block declaration (issue #282). `null` when the memory is
+   * not a pinned context block — the common case. Populated with
+   * `priority` and `mutability` when `Pinned = true` on the Notion
+   * row.
+   *
+   * Audience targeting and project scoping reuse the existing
+   * `scope.audience` rich_text and `projectIds` relation respectively,
+   * so this slot only carries the pinned-block-specific knobs
+   * (priority and mutability).
+   *
+   * **Optional on the exported type** for the same source-compat
+   * reason as `scope`. Internal `pageToMemory` always populates it
+   * (`null` on non-pinned rows).
+   */
+  pinned?: MemoryPinned | null
 }
 
 export interface CreateMemoryInput {
@@ -934,6 +1075,36 @@ export interface CreateMemoryInput {
    * passes in).
    */
   scope?: MemoryScopeInput
+  /**
+   * Pinned-block declaration (issue #282). Omitted means "not a
+   * pinned context block" — the common case. Pass an object with
+   * `priority` / `mutability` to create a pinned row in one step;
+   * the more common path is to create the memory normally and then
+   * call `lore-pinned action='pin'` to convert.
+   */
+  pinned?: MemoryPinnedInput
+}
+
+/**
+ * Write-side shape for the pinned-block bundle (issue #282). Mirrors
+ * `MemoryPinned` but with every field optional and clear-aware
+ * semantics:
+ *
+ * - `pinned` — `true` flips the row into a pinned block; `false`
+ * un-pins; omitted leaves untouched.
+ * - `priority` — number write; `null` clears the column (sorts as
+ * `0`).
+ * - `mutability` — `MemoryMutability` to write; `null` clears the
+ * column (defaults to mutable).
+ *
+ * `audience` is NOT carried here — it lives on `MemoryScopeInput.audience`
+ * (reused from issue #283) so the audience-targeting contract has one
+ * source of truth.
+ */
+export interface MemoryPinnedInput {
+  pinned?: boolean
+  priority?: number | null
+  mutability?: MemoryMutability | null
 }
 
 /**
@@ -942,7 +1113,7 @@ export interface CreateMemoryInput {
  * for a Notion column update.
  *
  * - `kind` — pass a `MemoryScopeKind` to write; `null` clears the
- *   column. Omitted leaves untouched.
+ * column. Omitted leaves untouched.
  * - `key` — string write; empty string clears.
  * - `audience` — string write; empty string clears.
  * - `lifetime` — `MemoryLifetime` to write; `null` clears.
@@ -1007,33 +1178,66 @@ export interface UpdateMemoryInput {
    * empty strings clear the rich_text columns.
    */
   scope?: MemoryScopeInput
+  /**
+   * Pinned-block update (issue #282). Mirrors
+   * `MemoryPinnedInput` write semantics. When the target row has
+   * `Mutability = read-only`, every update path rejects with
+   * `MemoryReadOnlyError` unless `allowReadOnlyUpdate` is set; the
+   * `lore-pinned action='update'` MCP surface exposes the
+   * override behind an explicit `force: true` flag so the
+   * read-only stop-sign isn't silently bypassed by generic update
+   * calls.
+   */
+  pinned?: MemoryPinnedInput
+  /**
+   * Escape hatch for editing a `Mutability = read-only` pinned
+   * block. When `false` / omitted (the default), update calls
+   * against read-only rows reject with `MemoryReadOnlyError`. Set
+   * to `true` to bypass the gate — the MCP `lore-pinned
+   * action='update'` action threads it through behind an explicit
+   * `force: true` so the override lands a visible audit line.
+   * Not an access-control gate (Lore uses one operator bearer
+   * token); the audit line IS the contract.
+   */
+  allowReadOnlyUpdate?: boolean
+  /**
+   * Internal flag (issue #282). When `true`, the
+   * service-layer `PINNED_BLOCKS_HARD_CAP` check inside
+   * `MemoryService.update` is skipped. The MCP `handlePin` handler
+   * sets this after verifying the cap itself so the update path
+   * doesn't pay a second `countPinnedBlocks` round-trip per pin.
+   * Other callers (CLI, hooks, migrations) leave it unset; the
+   * service-layer cap is the canonical defense-in-depth gate for
+   * any path that flips `Pinned = true` through `update`.
+   */
+  bypassPinCapCheck?: boolean
 }
 
 /**
  * Search execution mode. Trades off scope precision against ranking quality:
  *
  * - `"contains"` — `dataSources.query` against the Memories DB with
- *   `Title contains` / `Keywords contains` / `Synopsis contains` filters.
- *   Strictly DS-scoped (no workspace leakage), supports server-side property
- *   filters (`kind` / `status` / `tags`), but loses Notion's vector relevance
- *   ranking over page bodies. Best for substring/exact-phrase queries on
- *   titles, keyword tokens (PR numbers, ticket IDs, function names), and the
- *   short curated synopsis written at save time.
+ * `Title contains` / `Keywords contains` / `Synopsis contains` filters.
+ * Strictly DS-scoped (no workspace leakage), supports server-side property
+ * filters (`kind` / `status` / `tags`), but loses Notion's vector relevance
+ * ranking over page bodies. Best for substring/exact-phrase queries on
+ * titles, keyword tokens (PR numbers, ticket IDs, function names), and the
+ * short curated synopsis written at save time.
  * - `"semantic"` — workspace-wide `client.search` ranked by Notion's vector
- *   index over titles AND bodies. Preserves relevance ranking, but cannot
- *   apply server-side property filters and may rank non-Memory pages from
- *   the same workspace ahead of real hits when the query is niche. Best for
- *   phrase-shaped or conceptual queries where body matches matter.
+ * index over titles AND bodies. Preserves relevance ranking, but cannot
+ * apply server-side property filters and may rank non-Memory pages from
+ * the same workspace ahead of real hits when the query is niche. Best for
+ * phrase-shaped or conceptual queries where body matches matter.
  * - `"hybrid"` (default) — fires `contains` and `semantic` in parallel via
- *   `Promise.allSettled`. If contains saturates
- *   (`>= HYBRID_FALLBACK_THRESHOLD` hits), the contains rows are used
- *   alone and the parallel semantic result is discarded; otherwise the
- *   two ranked lists are merged via Reciprocal Rank Fusion (RRF) with
- *   a deterministic tie-break (`score → best-rank → contains-presence
- *   → page id`). Speculative parallelism keeps the worst-case wall-clock
- *   at one round-trip (≈ `client.search` latency) regardless of which
- *   leg saturates — the cheap-path waste is one discarded Notion call
- *   governed by the shared rate limiter.
+ * `Promise.allSettled`. If contains saturates
+ * (`>= HYBRID_FALLBACK_THRESHOLD` hits), the contains rows are used
+ * alone and the parallel semantic result is discarded; otherwise the
+ * two ranked lists are merged via Reciprocal Rank Fusion (RRF) with
+ * a deterministic tie-break (`score → best-rank → contains-presence
+ * → page id`). Speculative parallelism keeps the worst-case wall-clock
+ * at one round-trip (≈ `client.search` latency) regardless of which
+ * leg saturates — the cheap-path waste is one discarded Notion call
+ * governed by the shared rate limiter.
  */
 export type SearchMode = "contains" | "semantic" | "hybrid"
 
@@ -1090,7 +1294,7 @@ export interface SearchMemoriesInput {
    * caller knows which sense they mean (e.g. `query: "auth"`,
    * `intent: "WeChat session cookie"`).
    *
-   * Whitespace-only intent (`"   "`) normalizes to unset across every
+   * Whitespace-only intent (`" "`) normalizes to unset across every
    * consumer.
    *
    * Under `mode: "hybrid"` (default), setting intent disables the
@@ -1128,19 +1332,19 @@ export interface SearchMemoriesInput {
  * semantics are pinned:
  *
  * - `"contains-only"` — `mode: "contains"`. `semanticRank` is always
- *   `null`; `rrfScore` is `null`.
+ * `null`; `rrfScore` is `null`.
  * - `"semantic-only"` — `mode: "semantic"` (including the
- *   `LORE_FORCE_SEMANTIC_SEARCH=1` kill-switch case). `containsRank`
- *   is always `null`; `rrfScore` is `null`.
+ * `LORE_FORCE_SEMANTIC_SEARCH=1` kill-switch case). `containsRank`
+ * is always `null`; `rrfScore` is `null`.
  * - `"contains-saturated"` — `mode: "hybrid"` and the saturation cutoff
- *   fired. `containsRank` reflects the row's position in the contains
- *   list; `semanticRank` is **always `null`** because the semantic
- *   branch's output was discarded — surfacing its rank would imply
- *   influence on ordering that did not happen. `rrfScore` is `null`.
+ * fired. `containsRank` reflects the row's position in the contains
+ * list; `semanticRank` is **always `null`** because the semantic
+ * branch's output was discarded — surfacing its rank would imply
+ * influence on ordering that did not happen. `rrfScore` is `null`.
  * - `"rrf"` — `mode: "hybrid"` and the under-saturation merge ran.
- *   Both ranks reflect actual branch presence (one may be `null` when
- *   only one branch surfaced the row); `rrfScore` is the fused score
- *   used for ordering.
+ * Both ranks reflect actual branch presence (one may be `null` when
+ * only one branch surfaced the row); `rrfScore` is the fused score
+ * used for ordering.
  *
  * Field names are canonical to lore (qmd uses `lexRank` for the contains
  * lane; we keep `containsRank` because the underlying Notion query is

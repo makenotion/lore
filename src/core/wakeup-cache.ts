@@ -223,7 +223,7 @@ export class WakeUpCache {
   async getOrLoad(
     key: string,
     startEpoch: number,
-    loader: () => Promise<WakeUpData>,
+    loader: () => Promise<WakeUpData>
   ): Promise<WakeUpData> {
     const hit = this.get(key)
     if (hit !== undefined) return hit
@@ -342,6 +342,27 @@ const KEY_OPTION_FIELDS = [
   // `wakeup-cache.test.ts`.
   "includeInheritedMemories",
   "inheritedMemoryLimit",
+  // pinned-block options change BOTH
+  // the `pinnedBlocks` slice AND the `pinnedBlocksTotal` abuse-
+  // warning gate. Without these fields a wake-up with
+  // `includePinnedBlocks: false` (a hook caller that intentionally
+  // skipped pinned context) and a later MCP caller computing the
+  // same key would cross-serve: the MCP surface would render no
+  // `## Pinned Context` section and no abuse warning until the
+  // cache invalidated. The reverse direction would serve pinned
+  // blocks to a caller that explicitly opted out. Because pinned
+  // context renders BEFORE the relevance-ranked sections and
+  // carries the abuse-warning gate, this is a correctness/safety
+  // issue rather than just stale metadata. Pinned by the
+  // pinned-options coverage in `wakeup-cache.test.ts`.
+  //
+  // `pinnedReaderContext` is a nested object; `computeWakeUpCacheKey`
+  // normalizes it to a stable string below so two readers with
+  // the same identity slots share a key and two readers with
+  // different slots see distinct keys.
+  "includePinnedBlocks",
+  "pinnedBlockLimit",
+  "pinnedReaderContext",
 ] as const satisfies readonly (keyof WakeUpOptions)[]
 
 /**
@@ -369,6 +390,36 @@ export function computeWakeUpCacheKey(opts: WakeUpOptions): string {
     if (field === "userQuery" && typeof value === "string") {
       const trimmed = value.trim().toLowerCase()
       if (trimmed.length > 0) normalized[field] = trimmed
+      continue
+    }
+    if (field === "pinnedReaderContext" && value !== undefined && value !== null) {
+      // Stable canonical form for the audience-matching slots so
+      // two readers with the same identity share a cache key and
+      // distinct identities never cross-serve audience-filtered
+      // pinned slices. Only the slots `pinnedBlockAudienceMatches`
+      // consults are included (`agent` / `role` / `userId`);
+      // unrelated `MemoryScopeContext` fields don't affect the
+      // pinned audience filter and would inflate the cache key
+      // surface if folded in.
+      const ctx = value as { agent?: string; role?: string; userId?: string }
+      const slots: Record<string, string> = {}
+      if (ctx.agent && ctx.agent.trim().length > 0) {
+        slots.agent = ctx.agent.trim().toLowerCase()
+      }
+      if (ctx.role && ctx.role.trim().length > 0) {
+        slots.role = ctx.role.trim().toLowerCase()
+      }
+      if (ctx.userId && ctx.userId.trim().length > 0) {
+        slots.userId = ctx.userId.trim().toLowerCase()
+      }
+      if (Object.keys(slots).length > 0) {
+        // Stable shape — sort keys so distinct insertion order
+        // produces identical strings.
+        const sortedSlotKeys = Object.keys(slots).sort()
+        const sortedSlots: Record<string, string> = {}
+        for (const k of sortedSlotKeys) sortedSlots[k] = slots[k]!
+        normalized[field] = sortedSlots
+      }
       continue
     }
     if (value !== undefined) normalized[field] = value

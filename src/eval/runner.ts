@@ -148,9 +148,7 @@ export async function runEvalSuite(
   const loaded = await loadEvalSuite(suitePath)
   const runner = options.runner ?? loaded.suite.runner
   if (runner !== "retrieval" && runner !== "notion") {
-    throw new Error(
-      `Unsupported eval runner "${runner}". Use "retrieval" or "notion".`
-    )
+    throw new Error(`Unsupported eval runner "${runner}". Use "retrieval" or "notion".`)
   }
 
   const requestedTrials = options.trials ?? loaded.suite.trials
@@ -171,8 +169,7 @@ export async function runEvalSuite(
   // calendar boundary). Notion mode is targeting the live vault and
   // uses real wall-clock time so the rate limiter and stale-confidence
   // queries see the same `now` an operator would.
-  const now =
-    options.now ?? (runner === "retrieval" ? DEFAULT_RETRIEVAL_NOW : new Date())
+  const now = options.now ?? (runner === "retrieval" ? DEFAULT_RETRIEVAL_NOW : new Date())
   const startedAt = now.toISOString()
   const surfacesExercised = new Set<EvalSurface>()
   for (const task of loaded.suite.tasks) {
@@ -358,8 +355,7 @@ const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
     // the production ranking algorithm. Mirroring production order in
     // the fixture stub is tracked under the same fixture-extraction
     // TODO as the `fixtureMemoryToMemory` literals below.
-    extract: (data, limit) =>
-      data.staleConfidence.slice(0, limit).map((m) => m.id),
+    extract: (data, limit) => data.staleConfidence.slice(0, limit).map((m) => m.id),
   },
 }
 
@@ -500,11 +496,7 @@ function buildRetrievalResult(input: {
  * runner exercises whatever production actually does and may report
  * harm > 0 until that lands.
  */
-const SUPPRESSED_RETRIEVAL_STATUSES = new Set([
-  "superseded",
-  "deprecated",
-  "rejected",
-])
+const SUPPRESSED_RETRIEVAL_STATUSES = new Set(["superseded", "deprecated", "rejected"])
 
 function isStatusRetrievable(memory: Memory): boolean {
   return !SUPPRESSED_RETRIEVAL_STATUSES.has(memory.status)
@@ -535,9 +527,10 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
       },
       search: async (input) =>
         searchFixtureMemories(input.query, memories).slice(0, input.limit),
-      queryStaleConfidence: async (opts) =>
-        staleConfidenceMemories.slice(0, opts.limit),
+      queryStaleConfidence: async (opts) => staleConfidenceMemories.slice(0, opts.limit),
       countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
+      listPinnedBlocks: async () => [],
+      countPinnedBlocks: async () => 0,
     },
     facts: {
       listRecent: async () => ({ items: [] as Fact[], hasMore: false }),
@@ -564,9 +557,7 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
 // TaskSummary / Memory evolve. Track alongside the future `orderBy`
 // mirror in `fixtureWakeUpServices.queryStaleConfidence` (see surface-
 // registry caveat for `wake-up.staleConfidence`).
-function fixtureTaskToSummary(
-  task: EvalMemoryScenario["tasks"][number]
-): TaskSummary {
+function fixtureTaskToSummary(task: EvalMemoryScenario["tasks"][number]): TaskSummary {
   const createdAt = new Date(Date.UTC(2026, 0, 1)).toISOString()
   return {
     id: task.id,

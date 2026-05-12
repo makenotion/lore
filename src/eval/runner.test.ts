@@ -501,9 +501,7 @@ tasks:
         list: async () => ({ items: [] }),
         search: async (input) => {
           // Token-overlap fixture-search to keep the test deterministic.
-          const tokens = (input.query.toLowerCase().match(/[a-z0-9]+/g) ?? []).join(
-            " "
-          )
+          const tokens = (input.query.toLowerCase().match(/[a-z0-9]+/g) ?? []).join(" ")
           return tokens.includes("live")
             ? (liveMemories.map((m) => ({
                 id: m.id,
@@ -544,6 +542,8 @@ tasks:
         },
         queryStaleConfidence: async () => [],
         countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
+        listPinnedBlocks: async () => [],
+        countPinnedBlocks: async () => 0,
       },
       facts: { listRecent: async () => ({ items: [], hasMore: false }) },
       decisions: {
@@ -615,6 +615,8 @@ tasks:
         search: async () => [],
         queryStaleConfidence: async () => [],
         countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
+        listPinnedBlocks: async () => [],
+        countPinnedBlocks: async () => 0,
       },
       facts: { listRecent: async () => ({ items: [], hasMore: false }) },
       decisions: {
@@ -683,9 +685,9 @@ tasks:
 `,
     })
 
-    await expect(
-      runEvalSuite(suitePath, { runner: "notion" })
-    ).rejects.toThrow("notionServices")
+    await expect(runEvalSuite(suitePath, { runner: "notion" })).rejects.toThrow(
+      "notionServices"
+    )
   })
 
   it("extracts surfaced ids from the wake-up.staleConfidence surface", async () => {
@@ -778,13 +780,11 @@ tasks:
         shouldSurface:
           - decision/legacy-cache-1
 `,
-      })
+    })
 
     const { artifact } = await runEvalSuite(suitePath, { outPath })
 
-    const result = artifact.results.find(
-      (r) => r.scenario === "helpful-memory"
-    )!
+    const result = artifact.results.find((r) => r.scenario === "helpful-memory")!
     expect(result.surfacedMemoryIds).toEqual(["decision/legacy-cache-1"])
     expect(result.retrieval.limit).toBe(1)
   })
@@ -833,9 +833,7 @@ tasks:
     })
 
     const { artifact } = await runEvalSuite(suitePath, { outPath })
-    const result = artifact.results.find(
-      (r) => r.scenario === "helpful-memory"
-    )!
+    const result = artifact.results.find((r) => r.scenario === "helpful-memory")!
     expect(result.surfacedMemoryIds).toHaveLength(STALE_CONFIDENCE_LIMIT)
     expect(result.surfacedMemoryIds).toEqual(expectedSurface)
   })

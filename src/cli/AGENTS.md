@@ -18,6 +18,7 @@ debugging, manual search).
 | `commands/search.ts`    | `lore search <query>` -- semantic search across memories                                                                                                                    |
 | `commands/mine.ts`      | `lore mine [path]` -- index project files as memories                                                                                                                       |
 | `commands/inbox.ts`     | `lore inbox` -- proposed-memory review inbox (issue #281): `list` / `approve` / `reject` / `archive`                                                                        |
+| `commands/pinned.ts`    | `lore pinned` -- operator inspection of pinned context blocks (issue #282): `list` (read-only; mutating ops live on the `lore-pinned` MCP tool surface)                     |
 | `commands/status.ts`    | `lore status` -- vault status + subcommands (projects, topics)                                                                                                              |
 | `commands/install.ts`   | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`) |
 | `commands/migrate.ts`   | `lore migrate` -- add missing schema properties to vault data sources                                                                                                       |

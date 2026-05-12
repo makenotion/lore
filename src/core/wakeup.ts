@@ -30,12 +30,19 @@ import type {
   ListDecisionsOpts,
   ListTasksOpts,
   Memory,
+  MemoryScopeContext,
   MemorySource,
   MemoryKind,
   MemoryStatus,
   TaskSummary,
 } from "../types.js"
-import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT, STALE_TASK_DAYS } from "../types.js"
+import {
+  DEFAULT_PINNED_BLOCK_LIMIT,
+  MS_PER_DAY,
+  PINNED_BLOCKS_ABUSE_THRESHOLD,
+  STALE_CONFIDENCE_LIMIT,
+  STALE_TASK_DAYS,
+} from "../types.js"
 import { taskDaysOverdue, taskDaysStale } from "./task.js"
 import { computeWakeUpCacheKey, WakeUpCache } from "./wakeup-cache.js"
 import type { UpstreamVaultBundle } from "./topology-readers.js"
@@ -234,6 +241,26 @@ export interface WakeUpServices {
       bySource: Record<string, number>
       byAgent: Record<string, number>
     }>
+    /**
+     * Pinned context blocks (issue #282). Required on the structural
+     * type so the type system catches a forgotten wiring — same
+     * posture as `queryStaleConfidence` / `countProposed`. Hook
+     * callers skip the query via `includePinnedBlocks: false` /
+     * `pinnedBlockLimit: 0`, NOT by omitting the method.
+     */
+    listPinnedBlocks(opts: {
+      projectId?: string
+      limit?: number
+      today?: string
+      readerContext?: MemoryScopeContext
+      includeContent?: boolean
+      audienceFilter?: boolean
+      includeOutOfScope?: boolean
+    }): Promise<Memory[]>
+    /** Active-pinned-block count (issue #282). Backs the abuse-
+     *  warning surfaced by the wake-up renderer when the total
+     *  exceeds `PINNED_BLOCKS_ABUSE_THRESHOLD`. */
+    countPinnedBlocks(): Promise<number>
   }
   facts: {
     listRecent(opts: {
@@ -242,7 +269,9 @@ export interface WakeUpServices {
     }): Promise<{ items: Fact[]; hasMore: boolean }>
   }
   decisions: {
-    list(opts?: ListDecisionsOpts): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
+    list(
+      opts?: ListDecisionsOpts
+    ): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
     queryOverdueWindow?(opts?: {
       projectId?: string
       limit?: number
@@ -366,8 +395,10 @@ export interface WakeUpCoverageMetrics {
   sectionCounts: WakeUpSectionCounts
 }
 
-export interface WakeUpCoverageOverrides
-  extends Omit<Partial<WakeUpCoverageMetrics>, "digest" | "sectionCounts"> {
+export interface WakeUpCoverageOverrides extends Omit<
+  Partial<WakeUpCoverageMetrics>,
+  "digest" | "sectionCounts"
+> {
   digest?: Partial<WakeUpDigestCoverage>
   sectionCounts?: Partial<WakeUpSectionCounts>
 }
@@ -431,7 +462,7 @@ function emptyWakeUpSectionCounts(): WakeUpSectionCounts {
 
 export function emptyWakeUpCoverageMetrics(
   mode: Exclude<WakeUpCoverageMode, "ranked">,
-  reason: WakeUpCoverageReason,
+  reason: WakeUpCoverageReason
 ): WakeUpCoverageMetrics {
   return {
     mode,
@@ -515,6 +546,30 @@ export interface WakeUpOptions {
    * the query without touching `includeProposedMemories`.
    */
   proposedMemoryLimit?: number
+  /**
+   * When false, skip the pinned context blocks query (issue #282).
+   * The shell hook never renders the section, so it has no reason
+   * to pay the extra Notion round-trip on every session start.
+   * Defaults to true so MCP callers (which DO render the section)
+   * keep working. Same posture as `includeDecisions` /
+   * `includeStaleConfidence` / `includeProposedMemories`.
+   */
+  includePinnedBlocks?: boolean
+  /**
+   * Override the pinned context blocks section cap. Defaults to
+   * `DEFAULT_PINNED_BLOCK_LIMIT` (10). Pass `0` to skip the query
+   * without touching `includePinnedBlocks`.
+   */
+  pinnedBlockLimit?: number
+  /**
+   * Reader identity slots for pinned-block audience matching
+   * (issue #282). When omitted, only universally-targeted pins
+   * (audience empty or `all`) surface. Mirrors `MemoryScopeContext`
+   * from issue #283 — pinned blocks ride atop the same identity
+   * resolution, so a caller that already populates the context for
+   * scope filtering reuses it here without duplication.
+   */
+  pinnedReaderContext?: MemoryScopeContext
   /**
    * When true, compute privacy-conscious wake-up coverage counters for
    * observability surfaces (`LORE_DEBUG=1` hook logging and MCP
@@ -656,6 +711,39 @@ export interface WakeUpData {
    */
   staleConfidence: Memory[]
   /**
+   * Pinned context blocks (issue #282) for the wake-up Pinned
+   * Context section. Sorted by `Pinned Priority` descending, then by
+   * `created_time` descending. Capped at `pinnedBlockLimit`
+   * (default `DEFAULT_PINNED_BLOCK_LIMIT`). Empty when
+   * `includePinnedBlocks: false` or the vault has no pinned rows
+   * matching the reader's project + audience.
+   *
+   * Rendered BEFORE the relevance-ranked sections per the issue's
+   * "always-visible, shareable, optionally read-only memory as a
+   * coordination primitive" framing — pinned blocks are governance
+   * context, not retrieved content.
+   *
+   * NOT deduped against other memory sections (recent / related /
+   * task-memories). A pinned policy that also surfaces in Recent
+   * Memories carries meaningful signal: the agent sees the pin as
+   * governance AND the recency as a touch signal. The wake-up
+   * renderer renders the pinned section first so the duplicate is
+   * a "remembered twice" emphasis, not "doubled into noise."
+   */
+  pinnedBlocks: Memory[]
+  /**
+   * Total active-pinned-block count across the vault (issue #282).
+   * Surfaced separately from `pinnedBlocks.length` so the wake-up
+   * renderer can compare against `PINNED_BLOCKS_ABUSE_THRESHOLD` and
+   * append an inline operator-facing warning when the count is
+   * unusually high — the abuse signal for a malicious caller
+   * spamming pins to evict legitimate governance from the visible
+   * window. Always >= `pinnedBlocks.length`; equal when the visible
+   * cap wasn't binding. `null` when the pinned-blocks query was
+   * skipped (`includePinnedBlocks: false`) or returned zero.
+   */
+  pinnedBlocksTotal: number | null
+  /**
    * Privacy-conscious wake-up coverage counters for observability and
    * on-demand status surfaces. Null unless `includeCoverage` was requested.
    * Counts track rendered section rows; the data layer caps flat-rendered task
@@ -676,7 +764,7 @@ export interface WakeUpData {
 }
 
 export function buildEmptyWakeUpCoverage(
-  overrides: WakeUpCoverageOverrides = {},
+  overrides: WakeUpCoverageOverrides = {}
 ): WakeUpCoverageMetrics {
   return {
     mode: overrides.mode ?? "default",
@@ -715,13 +803,13 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
   const digestFresh = isFreshDigest(
     input.latestDigest,
     input.digestFreshnessDays ?? DEFAULT_DIGEST_FRESHNESS_DAYS,
-    now,
+    now
   )
 
   return {
     mode: ranked ? "ranked" : "default",
     reason: ranked ? undefined : "no-ranked-search",
-    queryLength: ranked ? userQuery?.length ?? 0 : 0,
+    queryLength: ranked ? (userQuery?.length ?? 0) : 0,
     digest: {
       available: input.latestDigest !== null,
       fresh: digestFresh,
@@ -753,7 +841,7 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
 
 export function formatWakeUpCoverage(
   coverage: WakeUpCoverageMetrics,
-  caps: WakeUpCoverageCaps = {},
+  caps: WakeUpCoverageCaps = {}
 ): string {
   const counts = coverage.sectionCounts
   const parts = [
@@ -793,21 +881,19 @@ export function formatWakeUpCoverage(
     `sections.proposedDecisions=${counts.proposedDecisions}`,
     `sections.overdueDecisions=${counts.overdueDecisions}`,
     `sections.proposedMemories=${counts.proposedMemories}`,
-    `sections.staleConfidence=${counts.staleConfidence}`,
+    `sections.staleConfidence=${counts.staleConfidence}`
   )
 
   return parts.join(" ")
 }
 
-export function formatWakeUpCoverageReport(
-  coverage: WakeUpCoverageMetrics,
-): string[] {
+export function formatWakeUpCoverageReport(coverage: WakeUpCoverageMetrics): string[] {
   return ["Wake-up coverage:", `  ${formatWakeUpCoverage(coverage)}`]
 }
 
 export async function loadWakeUpData(
   services: WakeUpServices,
-  opts: WakeUpOptions = {},
+  opts: WakeUpOptions = {}
 ): Promise<WakeUpData> {
   const cache = opts.cache
   if (cache) {
@@ -821,8 +907,7 @@ export async function loadWakeUpData(
     // defaulting. Mirrors the same `now → todayDate` derivation
     // applied below for the fan-out.
     const now = opts.now ?? Date.now()
-    const effectiveTodayDate =
-      opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
+    const effectiveTodayDate = opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
     const keyOpts: WakeUpOptions = { ...opts, todayDate: effectiveTodayDate }
     const cacheKey = computeWakeUpCacheKey(keyOpts)
     // Capture the start epoch BEFORE dispatch — see
@@ -832,7 +917,7 @@ export async function loadWakeUpData(
     // firing close together cost one wake-up, not two.
     const startEpoch = cache.currentEpoch
     return cache.getOrLoad(cacheKey, startEpoch, () =>
-      runWakeUpFanOut(services, opts, now, effectiveTodayDate),
+      runWakeUpFanOut(services, opts, now, effectiveTodayDate)
     )
   }
 
@@ -845,7 +930,7 @@ async function runWakeUpFanOut(
   services: WakeUpServices,
   opts: WakeUpOptions,
   now: number,
-  todayDate: string,
+  todayDate: string
 ): Promise<WakeUpData> {
   const projectId = opts.projectId
   const memoryLimit = opts.memoryLimit ?? DEFAULT_WAKEUP_MEMORY_LIMIT
@@ -950,8 +1035,41 @@ async function runWakeUpFanOut(
   // `MemoryService.countProposed` skip the project filter in that
   // branch, matching the `MemoryService.confidenceStats` /
   // `queryStaleConfidence` posture.
-  const includeProposedSection =
-    includeProposedMemories && proposedMemoryLimit > 0
+  // Pinned context blocks (issue #282). Wake-up always runs the
+  // query unless the caller explicitly disables it; defaults to
+  // `DEFAULT_PINNED_BLOCK_LIMIT` (10). Single round-trip,
+  // server-filtered by `Pinned = true` and (when supplied) project
+  // scope + lifetime hygiene. Audience matching is applied
+  // client-side inside `listPinnedBlocks` — see its docstring for
+  // the comma-split exact-match rule.
+  //
+  // Hook callers turn the query off via `includePinnedBlocks:
+  // false`; the numeric escape `pinnedBlockLimit: 0` skips without
+  // changing the boolean. Vault-wide wake-up (`projectId ===
+  // undefined`) still fires the query — `listPinnedBlocks` returns
+  // every pinned row regardless of project scope when no project
+  // id is supplied.
+  const includePinnedBlocks = opts.includePinnedBlocks ?? true
+  const pinnedBlockLimit = opts.pinnedBlockLimit ?? DEFAULT_PINNED_BLOCK_LIMIT
+  const pinnedBlocksQuery =
+    includePinnedBlocks && pinnedBlockLimit > 0
+      ? services.memories.listPinnedBlocks({
+          projectId,
+          limit: pinnedBlockLimit,
+          today: todayDate,
+          readerContext: opts.pinnedReaderContext,
+          includeContent: false,
+        })
+      : Promise.resolve([] as Memory[])
+  // Total active pinned-block count for the abuse-warning gate.
+  // Only fires when the section runs — skipping pinned blocks
+  // skips the abuse signal too.
+  const pinnedBlocksTotalQuery =
+    includePinnedBlocks && pinnedBlockLimit > 0
+      ? services.memories.countPinnedBlocks()
+      : Promise.resolve(null as number | null)
+
+  const includeProposedSection = includeProposedMemories && proposedMemoryLimit > 0
   const proposedMemoriesQuery = includeProposedSection
     ? services.memories.list({
         projectId,
@@ -992,6 +1110,8 @@ async function runWakeUpFanOut(
     staleConfidence,
     { items: proposedMemories },
     { total: proposedMemoriesTotal },
+    pinnedBlocks,
+    pinnedBlocksTotal,
   ]: [
     { items: Memory[] },
     { items: Memory[] },
@@ -1007,6 +1127,8 @@ async function runWakeUpFanOut(
       bySource: Record<string, number>
       byAgent: Record<string, number>
     },
+    Memory[],
+    number | null,
   ] = await Promise.all([
     memoryLimit > 0 || memoryLimitWithDigest > 0
       ? services.memories.list({
@@ -1065,6 +1187,8 @@ async function runWakeUpFanOut(
     staleConfidenceQuery,
     proposedMemoriesQuery,
     proposedMemoriesTotalQuery,
+    pinnedBlocksQuery,
+    pinnedBlocksTotalQuery,
   ])
   const tasks = taskWindow.tasks
   const overdueDecisions = overdueDecisionWindow.items
@@ -1098,10 +1222,7 @@ async function runWakeUpFanOut(
       // recents), so `relatedLimit + alreadySurfaced.size` candidates are
       // enough to guarantee `relatedLimit` survivors. Bounded by Notion's
       // per-query row cap.
-      const fetchLimit = Math.min(
-        NOTION_PAGE_SIZE,
-        relatedLimit + alreadySurfaced.size,
-      )
+      const fetchLimit = Math.min(NOTION_PAGE_SIZE, relatedLimit + alreadySurfaced.size)
       // Join entities into a single relevance query so Notion's vector
       // index scores memory titles AND bodies against the union. This is
       // strictly more permissive than substring title matching — task
@@ -1199,7 +1320,7 @@ async function runWakeUpFanOut(
       ? await loadInheritedMemorySections(
           services.upstreams,
           inheritedMemoryLimit,
-          includeContent,
+          includeContent
         )
       : []
 
@@ -1217,6 +1338,8 @@ async function runWakeUpFanOut(
     proposedMemories,
     proposedMemoriesTotal,
     staleConfidence,
+    pinnedBlocks,
+    pinnedBlocksTotal,
     coverage,
     inheritedMemories,
   }
@@ -1225,7 +1348,7 @@ async function runWakeUpFanOut(
 async function loadInheritedMemorySections(
   upstreams: readonly UpstreamVaultBundle[],
   perUpstreamLimit: number,
-  includeContent: boolean,
+  includeContent: boolean
 ): Promise<InheritedMemorySection[]> {
   // Per-upstream `Promise.allSettled` + unwrap: a single upstream
   // failure (auth, missing databases, transient 5xx) MUST NOT
@@ -1267,9 +1390,7 @@ async function loadInheritedMemorySections(
             label: bundle.label,
             pageId: bundle.pageId,
             memories: [],
-            error: safeRedact(
-              bundle.lastError ?? "upstream vault unavailable",
-            ),
+            error: safeRedact(bundle.lastError ?? "upstream vault unavailable"),
           }
         }
         // Upstream taxonomies do NOT share project ids with the
@@ -1296,7 +1417,7 @@ async function loadInheritedMemorySections(
           error: safeRedact(err),
         }
       }
-    }),
+    })
   )
   return results.map((result, index): InheritedMemorySection => {
     if (result.status === "fulfilled") return result.value
@@ -1334,9 +1455,13 @@ function safeRedact(error: unknown): string {
   }
 }
 
+// Re-export so the MCP renderer can pin the abuse-threshold gate in
+// one place.
+export { PINNED_BLOCKS_ABUSE_THRESHOLD }
+
 async function loadWakeUpTaskWindow(
   tasks: WakeUpServices["tasks"],
-  opts: { projectId: string; today: string; limit: number },
+  opts: { projectId: string; today: string; limit: number }
 ): Promise<{ tasks: TaskSummary[]; coverage: WakeUpTaskBucketCoverage }> {
   // Three bounded windows are intentional. Notion gives one sort order
   // per query, while wake-up needs the soonest overdue rows, the oldest
@@ -1366,7 +1491,7 @@ async function loadWakeUpTaskWindow(
     ])
 
   const overdue = overdueWindow.items.filter(
-    (task) => taskDaysOverdue(task, opts.today) !== null,
+    (task) => taskDaysOverdue(task, opts.today) !== null
   )
   const stale = staleCandidatesWindow.items.filter((task) => {
     if (taskDaysOverdue(task, opts.today) !== null) return false
@@ -1388,12 +1513,9 @@ async function loadWakeUpTaskWindow(
       // sort away from the opposite bucket, a saturated window with
       // fewer than `limit` survivors means later pages cannot fill that
       // bucket.
-      staleCapped:
-        taskWindowCapped(staleCandidatesWindow) &&
-        stale.length >= opts.limit,
+      staleCapped: taskWindowCapped(staleCandidatesWindow) && stale.length >= opts.limit,
       activeCapped:
-        taskWindowCapped(activeCandidatesWindow) &&
-        active.length >= opts.limit,
+        taskWindowCapped(activeCandidatesWindow) && active.length >= opts.limit,
     },
   }
 }
@@ -1414,9 +1536,11 @@ function dedupeTaskBuckets(buckets: TaskSummary[][]): TaskSummary[] {
   return merged
 }
 
-function taskWindowCapped(
-  window: { items: TaskSummary[]; nextCursor?: string; capped?: boolean },
-): boolean {
+function taskWindowCapped(window: {
+  items: TaskSummary[]
+  nextCursor?: string
+  capped?: boolean
+}): boolean {
   return Boolean(window.capped || window.nextCursor)
 }
 
@@ -1430,7 +1554,7 @@ function emptyTaskBucketCoverage(): WakeUpTaskBucketCoverage {
 
 async function queryOverdueDecisionWindow(
   decisions: WakeUpServices["decisions"],
-  opts: { projectId?: string },
+  opts: { projectId?: string }
 ): Promise<{ items: DecisionSummary[]; capped: boolean }> {
   if (typeof decisions.queryOverdueWindow === "function") {
     return decisions.queryOverdueWindow(opts)
@@ -1506,7 +1630,7 @@ function digestAgeDays(digest: Memory | null, now: number): number | null {
  */
 export function dateBucket(
   isoDate: string,
-  now: number = Date.now(),
+  now: number = Date.now()
 ): "Today" | "Yesterday" | "Earlier" {
   const d = isoDate.split("T")[0]
   const today = new Date(now).toISOString().split("T")[0]

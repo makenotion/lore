@@ -2856,13 +2856,14 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       description:
         "Save, update, archive, batch-expand, suggest a topic key, record a compare verdict, or review a proposed memory. Action-dispatched:\n\n" +
         "- `action: 'save'` — create a new memory page; runs a near-duplicate probe in parallel. With `topicKey` set, upserts onto an existing memory with the same key AND project-set (appends a revision block instead of creating a new row).\n" +
-        "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched.\n" +
+        "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched. Rejects with `MemoryReadOnlyError` on read-only pinned blocks; use `lore-pinned action='update'` with `force: true` to override.\n" +
         "- `action: 'archive'` — soft-delete a memory by ID (Notion archive flag).\n" +
         "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
         "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Notes and tasks return null.\n" +
         "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n" +
         "- `action: 'approve'` / `'reject'` — inbox-review a `Status: proposed` memory (#281); flips Status and appends a Reviewed audit block.\n" +
         "- `action: 'promote'` — copy a memory into a configured `promotionTargets` entry with origin audit block; `requireReview` targets land as `Status: proposed`. See docs/topology.md#promotion.\n\n" +
+        "For pinned context blocks (always-visible governing memory rendered in wake-up before relevance-ranked sections), use `lore-pinned`.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {

@@ -31,6 +31,7 @@ import type {
   MemoryConfidence,
   MemoryScopeContext,
   MemoryScopeInput,
+  MemoryMutability,
   TaskState,
   DatabaseRef,
   FreshCreatePreparation,
@@ -40,6 +41,9 @@ import {
   EXPIRING_SOON_DAYS,
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
+  PINNED_BLOCKS_HARD_CAP,
+  PINNED_PRIORITY_MAX,
+  PINNED_PRIORITY_MIN,
   pairScopeForFactEmission,
 } from "../types.js"
 import {
@@ -95,6 +99,7 @@ import {
   extractRelationIds,
   extractDate,
   extractNumber,
+  extractCheckbox,
 } from "../notion/extractors.js"
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
 import {
@@ -105,13 +110,16 @@ import {
   fetchNearDuplicateCandidatePageIds,
   isRunToolFilterSqlEnabled,
 } from "../notion/runtool/index.js"
-import { isSqlValidationError, logRunToolFallback } from "../notion/runtool/error-helpers.js"
+import {
+  isSqlValidationError,
+  logRunToolFallback,
+} from "../notion/runtool/error-helpers.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
- *  30s) because title text is cheaper-to-be-stale than decision lifecycle
- *  state — a stale title only shows the wrong label until the next write
- *  evicts the slot, whereas a stale decision status could mis-apply
- *  governance. Titles and `Kind=decision` pages share this pool. */
+ * 30s) because title text is cheaper-to-be-stale than decision lifecycle
+ * state — a stale title only shows the wrong label until the next write
+ * evicts the slot, whereas a stale decision status could mis-apply
+ * governance. Titles and `Kind=decision` pages share this pool. */
 const TITLE_CACHE_MAX = 500
 const TITLE_CACHE_TTL_MS = 60_000
 const AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS = 500
@@ -149,9 +157,7 @@ function sleep(ms: number): Promise<void> {
  *
  * Issue #283.
  */
-function scopeInputToBuilderProps(
-  scope: MemoryScopeInput | undefined
-): {
+function scopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
   scopeKind?: string | null
   scopeKey?: string
   audience?: string
@@ -178,7 +184,7 @@ function scopeInputToBuilderProps(
  * Returns `true` when the row passes the default scope filter:
  * - Scope Kind empty / `team` / `project` / `global` (broadcast); OR
  * - Scope Kind is one of the narrow kinds AND Scope Key equals the
- *   reader's resolved context value for that kind.
+ * reader's resolved context value for that kind.
  *
  * AND not expired:
  * - Expires At empty OR Expires At >= today.
@@ -325,12 +331,12 @@ export const HYBRID_FALLBACK_THRESHOLD = 3
  * The two `intent === null` clauses are NOT redundant:
  *
  * - **Cutoff site**: `intent !== null` bypasses the cutoff so the
- *   intent-augmented semantic lane gets to influence ordering under
- *   RRF (#17).
+ * intent-augmented semantic lane gets to influence ordering under
+ * RRF (#17).
  * - **Abort site**: `intent !== null` skips the abort because aborting
- *   the semantic branch would silently nullify the very thing #17
- *   added — an agent passing intent on every saturating one-word
- *   query would never see semantic pagination land.
+ * the semantic branch would silently nullify the very thing #17
+ * added — an agent passing intent on every saturating one-word
+ * query would never see semantic pagination land.
  *
  * Same predicate, same rationale, one helper.
  */
@@ -352,11 +358,11 @@ function shouldUseSaturationCutoff(
  *
  * - `Status: { equals: "proposed" }` — the inbox state.
  * - `Kind: { does_not_equal: "decision" }` — `proposed` is also a
- *   normal in-flight `decision` lifecycle state per
- *   `ACTIVE_DECISION_STATUSES` (`src/types.ts`); counting those rows
- *   would conflate governance decisions with auto-extracted
- *   learnings. Mirrors the `excludeKinds: ["decision"]` posture in
- *   the memory near-duplicate probe.
+ * normal in-flight `decision` lifecycle state per
+ * `ACTIVE_DECISION_STATUSES` (`src/types.ts`); counting those rows
+ * would conflate governance decisions with auto-extracted
+ * learnings. Mirrors the `excludeKinds: ["decision"]` posture in
+ * the memory near-duplicate probe.
  *
  * Notion's `does_not_equal` is permissive on null — a row with no
  * `Kind` column set (a hand-edited or pre-migration page) passes the
@@ -378,15 +384,15 @@ export function proposedMemoryFilter(): { and: Array<Record<string, unknown>> } 
  * that have either left or never entered the active recall surface:
  *
  * - `proposed` — awaiting reviewer approval. Surfaced through the
- *   inbox (`lore inbox list`, wake-up `Proposed Memories`); excluded
- *   from `lore-query action='recall'` / `'search'` so a noisy
- *   autosave-as-proposed flow cannot pollute recall. The
- *   `includeProposed: true` opt-in flag exists for this case.
+ * inbox (`lore inbox list`, wake-up `Proposed Memories`); excluded
+ * from `lore-query action='recall'` / `'search'` so a noisy
+ * autosave-as-proposed flow cannot pollute recall. The
+ * `includeProposed: true` opt-in flag exists for this case.
  * - `rejected` — a reviewer explicitly rejected the row via
- *   `lore inbox reject` / `lore-memory action='reject'`. Permanently
- *   off the recall surface; the audit body keeps the verdict +
- *   reviewer + reason for forensics. No opt-in flag — rejected rows
- *   surface only via explicit `status: "rejected"` (the audit path).
+ * `lore inbox reject` / `lore-memory action='reject'`. Permanently
+ * off the recall surface; the audit body keeps the verdict +
+ * reviewer + reason for forensics. No opt-in flag — rejected rows
+ * surface only via explicit `status: "rejected"` (the audit path).
  *
  * Both are `Status: { does_not_equal: "<value>" }` server-side
  * clauses pushed onto the existing filter `and:` chain.
@@ -405,9 +411,7 @@ export const REVIEW_TERMINAL_STATUSES = ["proposed", "rejected"] as const
  * paths that explicitly opt in via `status: "<value>"` short-
  * circuit the exclusion at the caller level.
  */
-export function reviewTerminalStatusExclusionFilters(): Array<
-  Record<string, unknown>
-> {
+export function reviewTerminalStatusExclusionFilters(): Array<Record<string, unknown>> {
   return REVIEW_TERMINAL_STATUSES.map((status) => ({
     property: MEMORY_PROPS.STATUS,
     select: { does_not_equal: status },
@@ -472,19 +476,19 @@ export async function hydrateMemoryRelationPropertiesForPages(
  * the cap:
  *
  * - **Scan window.** `5 × page_size: 100 = 500` raw rows. Clears the
- *   post-filter-starvation case for every realistic Lore vault — the
- *   internal vault audit (see `src/core/AGENTS.md` "Measuring whether
- *   `--build-entities` collapsed the orphan graph") had ~560 facts and
- *   ~1,300 memories total; a 500-row scan covers most of either set
- *   in a single call.
+ * post-filter-starvation case for every realistic Lore vault — the
+ * internal vault audit (see `src/core/AGENTS.md` "Measuring whether
+ * `--build-entities` collapsed the orphan graph") had ~560 facts and
+ * ~1,300 memories total; a 500-row scan covers most of either set
+ * in a single call.
  * - **Tail latency.** `5 × ~500ms` (typical Notion search round-trip
- *   ≈ 500ms) ≈ **2.5s** maximum wall-clock for the pathological case.
- *   Acceptable for a search surface that is not on session-start hot
- *   paths (`loadWakeUpData` uses `list()`, not `client.search`).
+ * ≈ 500ms) ≈ **2.5s** maximum wall-clock for the pathological case.
+ * Acceptable for a search surface that is not on session-start hot
+ * paths (`loadWakeUpData` uses `list()`, not `client.search`).
  * - **Rate-limit budget.** Per-token `client.search` bucket runs ~3
- *   rps; 5 sequential calls ≈ 1.7s of budget. Saturation cuts this
- *   in the common case — operators only pay the full cost on
- *   pathological queries.
+ * rps; 5 sequential calls ≈ 1.7s of budget. Saturation cuts this
+ * in the common case — operators only pay the full cost on
+ * pathological queries.
  *
  * Loop exits early once enough filtered Lore rows are accumulated for
  * the requested `limit`, or once Notion signals `has_more: false`. The
@@ -563,18 +567,18 @@ type SearchPagesResult = {
  *
  * 1. Higher `score` wins (primary).
  * 2. Lower best-rank wins. `bestRank = min(containsRank ?? Infinity,
- *    semanticRank ?? Infinity)`. A row that ranked #1 anywhere beats a
- *    row whose best rank is #2 even when their fused scores match — the
- *    score equality is a coincidence of the formula, the rank gap is
- *    the real signal.
+ * semanticRank ?? Infinity)`. A row that ranked #1 anywhere beats a
+ * row whose best rank is #2 even when their fused scores match — the
+ * score equality is a coincidence of the formula, the rank gap is
+ * the real signal.
  * 3. Contains-presence wins. A row with `containsRank !== null` beats a
- *    row with `containsRank === null` at equal score AND best-rank.
- *    This preserves the "contains is precision" intuition the prior
- *    concat-first heuristic encoded; a future contributor tempted to
- *    "make tie-break symmetric" would silently shift ordering on this
- *    edge case, which the test fixtures pin.
+ * row with `containsRank === null` at equal score AND best-rank.
+ * This preserves the "contains is precision" intuition the prior
+ * concat-first heuristic encoded; a future contributor tempted to
+ * "make tie-break symmetric" would silently shift ordering on this
+ * edge case, which the test fixtures pin.
  * 4. Page id ascending. Final deterministic fallback so test fixtures
- *    pin a stable order regardless of `Map` iteration.
+ * pin a stable order regardless of `Map` iteration.
  */
 export function tieBreakingRrfCompare(a: RrfEntry, b: RrfEntry): number {
   if (a.score !== b.score) return b.score - a.score
@@ -679,13 +683,13 @@ function rejectionToLogLine(reason: unknown): string {
  * abort-aware pagination loop. Two shapes are both legitimate:
  *
  * - `DOMException` with `name === "AbortError"` — what the loop itself
- *   throws when it observes `signal.aborted`. `DOMException` is a
- *   global on Node 18+, so the `instanceof` check is safe in this
- *   codebase.
+ * throws when it observes `signal.aborted`. `DOMException` is a
+ * global on Node 18+, so the `instanceof` check is safe in this
+ * codebase.
  * - Any other thrown value whose `name` field is `"AbortError"` — a
- *   defensive widening so a future refactor that swaps in `Error`-
- *   subclassed abort errors (or a third-party `AbortError`) doesn't
- *   silently start logging cooperative aborts as partial failures.
+ * defensive widening so a future refactor that swaps in `Error`-
+ * subclassed abort errors (or a third-party `AbortError`) doesn't
+ * silently start logging cooperative aborts as partial failures.
  *
  * `null` / `undefined` rejection reasons (`Promise.reject()`) are
  * explicitly NOT abort errors — those are real bugs in a downstream
@@ -1068,6 +1072,105 @@ export class MemoryUpdatePartialFailureError extends Error {
 }
 
 /**
+ * Thrown by `MemoryService.update` when the target memory has
+ * `Mutability = read-only` (issue #282) and the caller did not pass
+ * `allowReadOnlyUpdate: true`. The error names the memory id and
+ * title so the agent surface can render a clear message:
+ *
+ * "Cannot update '<title>': pinned block is read-only. Pass
+ * `force: true` to `lore-pinned action='update'` to override."
+ *
+ * Caught and surfaced verbatim by the MCP `toolError` wrapper; CLI
+ * `lore pinned` commands surface it as a non-zero exit with the
+ * message. Operators flipping a read-only pin to mutable use
+ * `lore-pinned action='update'` with `mutability: "mutable"` and
+ * `force: true` in a single call.
+ */
+export class MemoryReadOnlyError extends Error {
+  readonly memoryId: string
+  readonly memoryTitle: string
+
+  constructor(memoryId: string, memoryTitle: string) {
+    // scrub control chars (newlines, tabs,
+    // C0 / DEL) and truncate the title before interpolation so a
+    // pin author cannot plant a title that breaks log formatting
+    // or visually disguises the error message. The raw title
+    // stays available on `.memoryTitle` for programmatic
+    // consumers; only the user-visible `.message` is sanitized.
+    const safeTitle = sanitizeMemoryTitleForMessage(memoryTitle)
+    super(
+      `MemoryReadOnlyError: cannot modify pinned block "${safeTitle}" (${memoryId}): ` +
+        `Mutability is read-only. Pass force=true on lore-pinned action='update' ` +
+        `(or allowReadOnlyUpdate=true at the service layer) to override.`
+    )
+    this.name = "MemoryReadOnlyError"
+    this.memoryId = memoryId
+    this.memoryTitle = memoryTitle
+  }
+}
+
+/**
+ * Service-layer mirror of the MCP `PinnedCapExceededError` (issue
+ * #282 review). Thrown by `MemoryService.update` when an
+ * `UpdateMemoryInput` would transition a row from un-pinned to
+ * pinned and the vault is already at or above
+ * `PINNED_BLOCKS_HARD_CAP`. The cap was originally enforced only
+ * at the MCP `handlePin` boundary; sinking it into `update`
+ * closes the defense-in-depth gap for future service-layer
+ * callers (CLI / hooks / migrations) that flip `Pinned = true`
+ * through this entry point.
+ *
+ * Service-layer callers that have already verified the cap (the
+ * MCP `handlePin` handler) bypass this check by passing
+ * `bypassPinCapCheck: true` on the update input — that avoids a
+ * second `countPinnedBlocks` round-trip per pin call.
+ *
+ * Distinct error class from `MemoryReadOnlyError` so callers can
+ * branch via `instanceof`. The MCP layer keeps its own
+ * `PinnedCapExceededError` for the user-facing surface (operator
+ * recovery copy is tied to the MCP / CLI vocabulary).
+ */
+export class MemoryPinCapExceededError extends Error {
+  readonly memoryId: string
+  readonly currentCount: number
+  readonly cap: number
+
+  constructor(memoryId: string, currentCount: number, cap: number) {
+    super(
+      `MemoryPinCapExceededError: cannot pin memory ${memoryId} — vault ` +
+        `already has ${currentCount} active pinned block(s), at the ${cap}-` +
+        "block hard cap. Unpin stale blocks before pinning new rows."
+    )
+    this.name = "MemoryPinCapExceededError"
+    this.memoryId = memoryId
+    this.currentCount = currentCount
+    this.cap = cap
+  }
+}
+
+/**
+ * Sanitize a memory title for interpolation into a user-facing
+ * error message (issue #282). Strips ASCII control chars
+ * and Unicode bidi-override / zero-width chars, collapses
+ * whitespace, truncates to 120 chars. Mirrors the
+ * `scrubAuditField` posture in `src/mcp/tools/pinned.ts` for
+ * pinned-block audit lines.
+ *
+ * Exported for unit-test coverage; production callers route
+ * through `MemoryReadOnlyError`.
+ */
+export function sanitizeMemoryTitleForMessage(title: string): string {
+  const MAX = 120
+  const cleaned = title
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1F\x7F]+/g, " ")
+    .replace(/[\u200B-\u200D\u202A-\u202E\u2066-\u2069\uFEFF]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  return cleaned.length > MAX ? `${cleaned.slice(0, MAX - 1)}…` : cleaned
+}
+
+/**
  * Structured partial-state error raised by `MemoryService.create`
  * when the `pages.create` call landed (a Memories DB row exists) but
  * the follow-up `pages.updateMarkdown` body-write rejected. Notion's
@@ -1080,21 +1183,21 @@ export class MemoryUpdatePartialFailureError extends Error {
  * options were on the table when this surface was added (issue #190):
  *
  * 1. *Archive/delete the orphan and throw a structured error.* The
- *    chosen path. Mirrors `MemoryService.archive`'s soft-delete
- *    posture — the row is removed from queries but remains
- *    inspectable in Notion's trash, preserving audit signal for
- *    operators triaging a partial-failure burst. Idempotent on the
- *    hot path (a successful retry creates a fresh row, no
- *    duplicate-resolution needed).
+ * chosen path. Mirrors `MemoryService.archive`'s soft-delete
+ * posture — the row is removed from queries but remains
+ * inspectable in Notion's trash, preserving audit signal for
+ * operators triaging a partial-failure burst. Idempotent on the
+ * hot path (a successful retry creates a fresh row, no
+ * duplicate-resolution needed).
  * 2. *Throw a structured error without cleanup.* Rejected because the
- *    issue's acceptance criterion is "no silently-unrecoverable
- *    orphan." Naive callers retrying the same `lore-memory
- *    action='save'` would land a duplicate row alongside the orphan
- *    until an operator manually archived the original.
+ * issue's acceptance criterion is "no silently-unrecoverable
+ * orphan." Naive callers retrying the same `lore-memory
+ * action='save'` would land a duplicate row alongside the orphan
+ * until an operator manually archived the original.
  * 3. *Idempotency key / session-aware retry path.* Rejected because
- *    it would extend the schema with a new column (or co-opt an
- *    existing one) for a defensive guardrail that fires on a rare
- *    transient failure mode. Heavyweight relative to the bug.
+ * it would extend the schema with a new column (or co-opt an
+ * existing one) for a defensive guardrail that fires on a rare
+ * transient failure mode. Heavyweight relative to the bug.
  *
  * The cleanup is best-effort: a second failure leaves the orphan
  * live and surfaces as `cleanedUp: false` so the operator finishes
@@ -1104,16 +1207,16 @@ export class MemoryUpdatePartialFailureError extends Error {
  * shapes:
  *
  * - **`cleanedUp: true`** — the orphan row is soft-deleted on Notion.
- *   The vault is consistent with "create never happened" from a query
- *   perspective; a retry of the original operation will create a fresh
- *   row without any operator action. The error still surfaces so the
- *   caller can decide whether to retry or surface the body-write
- *   failure to the user.
+ * The vault is consistent with "create never happened" from a query
+ * perspective; a retry of the original operation will create a fresh
+ * row without any operator action. The error still surfaces so the
+ * caller can decide whether to retry or surface the body-write
+ * failure to the user.
  * - **`cleanedUp: false`** — both the body-write AND the cleanup
- *   archive failed. The properties-only row remains live in the vault.
- *   A retry without operator intervention would create a duplicate
- *   row. The `pageId` field names the orphan; `cleanupError` carries
- *   the archive failure so an operator can act on it directly.
+ * archive failed. The properties-only row remains live in the vault.
+ * A retry without operator intervention would create a duplicate
+ * row. The `pageId` field names the orphan; `cleanupError` carries
+ * the archive failure so an operator can act on it directly.
  *
  * The `bodyWriteError` field is always populated and carries the
  * underlying `updateMarkdown` failure that triggered the partial
@@ -1444,32 +1547,32 @@ function extractLatestTopicRevision(
  * load-bearing properties:
  *
  * 1. **Uniqueness.** The fingerprint hashes (kind, title, content,
- *    synopsis, keywords, source, confidence, author) — content-derived,
- *    so two revisions with byte-identical effective inputs would have
- *    short-circuited through the no-op branch above instead of
- *    appending. A non-unique fingerprint line would therefore be a
- *    structural impossibility for the path that reaches here, but the
- *    occurrence-count guard below makes the contract explicit and fails
- *    closed if a hand-edited body somehow contains the line twice.
+ * synopsis, keywords, source, confidence, author) — content-derived,
+ * so two revisions with byte-identical effective inputs would have
+ * short-circuited through the no-op branch above instead of
+ * appending. A non-unique fingerprint line would therefore be a
+ * structural impossibility for the path that reaches here, but the
+ * occurrence-count guard below makes the contract explicit and fails
+ * closed if a hand-edited body somehow contains the line twice.
  *
  * 2. **Tail coverage.** The fingerprint line lives inside the latest
- *    revision block, and the latest revision is, by definition, the
- *    last block in the body. Anchoring on `<fp line> + <rest-to-end>`
- *    means substituting the anchor for `anchor + revisionBlock`
- *    semantically appends — the new revision lands strictly after the
- *    previous one, preserving the document's structural ordering.
+ * revision block, and the latest revision is, by definition, the
+ * last block in the body. Anchoring on `<fp line> + <rest-to-end>`
+ * means substituting the anchor for `anchor + revisionBlock`
+ * semantically appends — the new revision lands strictly after the
+ * previous one, preserving the document's structural ordering.
  *
  * Falls back to `null` when:
  * - no latest revision exists (first append on a body with no prior
- *   revision blocks) — the legacy / un-fingerprinted shape gives no
- *   safe anchor;
+ * revision blocks) — the legacy / un-fingerprinted shape gives no
+ * safe anchor;
  * - the latest revision lacks a fingerprint (legacy un-fingerprinted
- *   revision blocks predate the audit fingerprint and could collide
- *   with other content);
+ * revision blocks predate the audit fingerprint and could collide
+ * with other content);
  * - the fingerprint line does not occur exactly once in the body
- *   (defensive: structural impossibility today, but the explicit guard
- *   keeps a future hand-edited body from silently routing into the
- *   wrong replacement).
+ * (defensive: structural impossibility today, but the explicit guard
+ * keeps a future hand-edited body from silently routing into the
+ * wrong replacement).
  */
 function pickRevisionAppendAnchor(
   markdown: string,
@@ -1514,17 +1617,17 @@ function pickRekeyAuditAnchor(content: string): string | null {
 }
 
 /** Construct the canonical `RekeyAuditError` for a partial-state
- *  failure. The `cause`'s message is routed through the shared
- *  `redactDebugMessage` so a Notion error carrying a workspace id /
- *  page-id substring (rare but possible on auth-shaped errors) does
- *  not bypass the redactor. The original `err` is still attached as
- *  `cause` on the structured error so callers branching via
- *  `instanceof RekeyAuditError` retain access to the underlying SDK
- *  shape — only the rendered `message` is scrubbed.
+ * failure. The `cause`'s message is routed through the shared
+ * `redactDebugMessage` so a Notion error carrying a workspace id /
+ * page-id substring (rare but possible on auth-shaped errors) does
+ * not bypass the redactor. The original `err` is still attached as
+ * `cause` on the structured error so callers branching via
+ * `instanceof RekeyAuditError` retain access to the underlying SDK
+ * shape — only the rendered `message` is scrubbed.
  *
- *  Keeping a single helper for both the RunTool and REST audit
- *  failure surfaces ensures the error shape and redaction posture
- *  cannot drift between the two transports. */
+ * Keeping a single helper for both the RunTool and REST audit
+ * failure surfaces ensures the error shape and redaction posture
+ * cannot drift between the two transports. */
 function buildRekeyAuditError(
   memoryId: string,
   oldTopicKey: string,
@@ -1545,18 +1648,18 @@ function buildRekeyAuditError(
 }
 
 /** Emit one stderr line under `LORE_DEBUG=1` when `rekeyTopicKey`'s
- *  RunTool branch is enabled but the body's tail anchor is not unique
- *  (typically because the body has accumulated repetitive structures
- *  like multiple `## Re-keyed (...)` audit blocks).
+ * RunTool branch is enabled but the body's tail anchor is not unique
+ * (typically because the body has accumulated repetitive structures
+ * like multiple `## Re-keyed (...)` audit blocks).
  *
- *  Same posture as the existing `[lore] semantic-search-cap-fired`
- *  emission — silent under default logging, observable when the
- *  operator is debugging. Without this signal an operator running
- *  flag-on against a corpus with repetitive tails would see RunTool
- *  engaged for some calls and not others with no diagnostic.
+ * Same posture as the existing `[lore] semantic-search-cap-fired`
+ * emission — silent under default logging, observable when the
+ * operator is debugging. Without this signal an operator running
+ * flag-on against a corpus with repetitive tails would see RunTool
+ * engaged for some calls and not others with no diagnostic.
  *
- *  Bodies for which the anchor IS unique (the common case) emit
- *  nothing; this is strictly the no-anchor diagnostic surface. */
+ * Bodies for which the anchor IS unique (the common case) emit
+ * nothing; this is strictly the no-anchor diagnostic surface. */
 function debugLogRekeyAnchorMiss(memoryId: string, bodyLength: number): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
@@ -1651,7 +1754,6 @@ export function computePromotionAdvisory(input: {
         "and starting a fresh chain with a more specific topicKey."
   return { reasons, suggestion }
 }
-
 
 export class MemoryService {
   /**
@@ -1874,8 +1976,18 @@ export class MemoryService {
 
   private async waitForAutosaveLearningIndexStability(
     duplicateConfig:
-      | { scope: "session"; session: string; projectIds: string[]; scopeId: string | null }
-      | { scope: "project"; session: string; projectIds: string[]; scopeId: string | null },
+      | {
+          scope: "session"
+          session: string
+          projectIds: string[]
+          scopeId: string | null
+        }
+      | {
+          scope: "project"
+          session: string
+          projectIds: string[]
+          scopeId: string | null
+        },
     memory: Memory,
     input: CreateMemoryInput
   ): Promise<void> {
@@ -2306,16 +2418,16 @@ export class MemoryService {
    *
    * **Field policy on upsert:**
    * - **THROW on mismatch**: Kind (per-kind chain). Project-set is
-   *   handled by the lookup; not a separate throw at this layer.
+   * handled by the lookup; not a separate throw at this layer.
    * - **PRESERVE silently** (input dropped, no warning): Status,
-   *   Topic relation. State transitions belong on `lore-memory
-   *   action='update'`; the upsert path treats these as forgotten-to-
-   *   omit envelopes.
+   * Topic relation. State transitions belong on `lore-memory
+   * action='update'`; the upsert path treats these as forgotten-to-
+   * omit envelopes.
    * - **REPLACE on every save** (latest write wins): Title, Synopsis,
-   *   Keywords, Source. Confidence (categorical) bumps if input
-   *   provides one.
+   * Keywords, Source. Confidence (categorical) bumps if input
+   * provides one.
    * - **UNTOUCHED**: Confidence Score (system-managed per 0.8.0/#01),
-   *   Last Referenced At (read-citation signal per 0.8.0/#02).
+   * Last Referenced At (read-citation signal per 0.8.0/#02).
    *
    * **Empty-project guard.** An upsert with `projectIds: []` is
    * structurally undefined — set-equality on the empty set matches
@@ -2744,27 +2856,27 @@ export class MemoryService {
    * Re-keying is identity surgery, not content evolution:
    *
    * - **No `Revision Count` bump.** Revision Count tracks topic content
-   *   evolution (N saves under the same identity meant the topic was
-   *   refined N times). Bumping on re-key would conflate identity
-   *   changes with content changes.
+   * evolution (N saves under the same identity meant the topic was
+   * refined N times). Bumping on re-key would conflate identity
+   * changes with content changes.
    * - **No `Last Referenced At` write.** Re-keying is a write, not a
-   *   read citation, same posture as #06's upsert.
+   * read citation, same posture as #06's upsert.
    * - **Audit block format** (`## Re-keyed (YYYY-MM-DD)`) deliberately
-   *   differs from #06's revision-block prefix (`## Revision N`) so a
-   *   future memory-history renderer can distinguish identity events
-   *   from content events without parsing body text.
+   * differs from #06's revision-block prefix (`## Revision N`) so a
+   * future memory-history renderer can distinguish identity events
+   * from content events without parsing body text.
    *
    * Validation is strict and fail-fast — every guard fires before any
    * Notion mutation, so a rejected call leaves the row entirely
    * untouched. Two structurally undefined cases short-circuit:
    *
    * - **No-op short-circuit.** Re-keying to the existing value is a
-   *   user-error, not an invariant violation; respond truthfully but
-   *   write nothing.
+   * user-error, not an invariant violation; respond truthfully but
+   * write nothing.
    * - **Empty-set guard.** Topic-key identity is `(Topic Key,
-   *   Project-set)`-keyed. A memory with no projects has no identity
-   *   slot to re-key into; rejecting is structurally correct (mirrors
-   *   #06's empty-project rejection on the upsert path).
+   * Project-set)`-keyed. A memory with no projects has no identity
+   * slot to re-key into; rejecting is structurally correct (mirrors
+   * #06's empty-project rejection on the upsert path).
    *
    * **Cross-kind collision detection is intentional.** The collision
    * check delegates to `findByTopicKey`, which is deliberately
@@ -2898,17 +3010,17 @@ export class MemoryService {
     // With property-first, the failure modes are:
     //
     // 1. **Property write fails.** Nothing was written. The memory is
-    //    unchanged. A retry runs the full pipeline cleanly — collision
-    //    check is still valid, no body drift. The thrown error matches
-    //    a normal Notion error.
+    // unchanged. A retry runs the full pipeline cleanly — collision
+    // check is still valid, no body drift. The thrown error matches
+    // a normal Notion error.
     // 2. **Property write succeeds, audit append fails.** The re-key
-    //    persisted (the load-bearing identity change). Only the
-    //    cosmetic audit trail is missing. A retry would observe
-    //    `oldTopicKey === newTopicKey` (we already updated the
-    //    property), short-circuit through the no-op guard, and exit
-    //    without re-attempting the audit. The audit block is
-    //    permanently lost — but the row's structural state is
-    //    correct and self-consistent.
+    // persisted (the load-bearing identity change). Only the
+    // cosmetic audit trail is missing. A retry would observe
+    // `oldTopicKey === newTopicKey` (we already updated the
+    // property), short-circuit through the no-op guard, and exit
+    // without re-attempting the audit. The audit block is
+    // permanently lost — but the row's structural state is
+    // correct and self-consistent.
     //
     // The audit-append failure throws a structured `RekeyAuditError`
     // so callers can distinguish "rekey didn't happen" from "rekey
@@ -3012,11 +3124,11 @@ export class MemoryService {
    * Two verdicts:
    *
    * - **`approve`** — flips `Status` from `proposed` to `accepted`.
-   *   The row enters default recall on the next read pass.
+   * The row enters default recall on the next read pass.
    * - **`reject`** — flips `Status` from `proposed` to `rejected`.
-   *   The row stays out of default recall (the Phase 2 default-exclude
-   *   filters `proposed` only, but recall-shaped consumers should
-   *   continue ignoring `rejected` via their own status filtering).
+   * The row stays out of default recall (the Phase 2 default-exclude
+   * filters `proposed` only, but recall-shaped consumers should
+   * continue ignoring `rejected` via their own status filtering).
    *
    * Both verdicts append a `## Reviewed (YYYY-MM-DD)` audit block to
    * the page body recording the verdict, the reviewer, the timestamp,
@@ -3116,8 +3228,7 @@ export class MemoryService {
       )
     }
 
-    const newStatus: MemoryStatus =
-      input.verdict === "approve" ? "accepted" : "rejected"
+    const newStatus: MemoryStatus = input.verdict === "approve" ? "accepted" : "rejected"
     const trimmedReviewer = input.reviewer.trim()
     if (trimmedReviewer.length === 0) {
       throw new Error(
@@ -3251,17 +3362,17 @@ export class MemoryService {
    *
    * **Caching discipline** — distinguishes two null-result regimes:
    * - *Known absent* (archived full page, 404 `ObjectNotFound`,
-   *   `RestrictedResource`): `fetchTitle` returns `null` and `getOrLoad`
-   *   commits a null tombstone. Repeated wake-ups over the same id set
-   *   stop re-fetching the same missing ids within the TTL window.
+   * `RestrictedResource`): `fetchTitle` returns `null` and `getOrLoad`
+   * commits a null tombstone. Repeated wake-ups over the same id set
+   * stop re-fetching the same missing ids within the TTL window.
    * - *Transient failure* (401 / 429 / 5xx / network / unknown errors):
-   *   `fetchTitle` re-throws, `getOrLoad` rejects without caching, and
-   *   the try/catch below converts the rejection into `null` for the
-   *   caller. The slot is NOT cached, so the next caller retries.
-   *   Rate-limit / network blips therefore degrade to a single `(?)`
-   *   render, not a 60-second stretch of `(?)` labels. 401 is
-   *   deliberately not tombstoned — see `fetchTitle` for the auth-
-   *   refresh rationale.
+   * `fetchTitle` re-throws, `getOrLoad` rejects without caching, and
+   * the try/catch below converts the rejection into `null` for the
+   * caller. The slot is NOT cached, so the next caller retries.
+   * Rate-limit / network blips therefore degrade to a single `(?)`
+   * render, not a 60-second stretch of `(?)` labels. 401 is
+   * deliberately not tombstoned — see `fetchTitle` for the auth-
+   * refresh rationale.
    */
   async getTitleById(id: string): Promise<string | null> {
     // Stampede dedup, TTL, LRU, negative-tombstone caching, and the
@@ -3287,10 +3398,10 @@ export class MemoryService {
     // under `cacheNegatives: true`:
     //
     // - Returning `null` commits a tombstone via `getOrLoad` so the
-    //   next read short-circuits without a Notion call.
+    // next read short-circuits without a Notion call.
     // - Throwing routes through `getOrLoad`'s rejection path, which
-    //   clears the pending slot without caching anything; the next
-    //   read re-fetches.
+    // clears the pending slot without caching anything; the next
+    // read re-fetches.
     //
     // Tombstone the id-level absence cases (404 ObjectNotFound,
     // RestrictedResource) and the archived-page case (Notion returns
@@ -3328,15 +3439,79 @@ export class MemoryService {
   }
 
   /** Drop the in-process title cache. Used by tests and by the
-   *  cross-service `clearServiceCaches()` helper. `LruCache.clear`
-   *  also drops any in-flight `getOrLoad` pending slots so test
-   *  fixtures start clean. */
+   * cross-service `clearServiceCaches()` helper. `LruCache.clear`
+   * also drops any in-flight `getOrLoad` pending slots so test
+   * fixtures start clean. */
   clearTitleCache(): void {
     this.titleCache.clear()
+    // clear the pinned-count cache too on the
+    // cross-service `clearServiceCaches()` reset so test fixtures
+    // see a fresh count between cases.
+    this.pinnedCountCache = null
   }
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
     validateRichTextMetadataFields(input, "MemoryService.update")
+
+    // Read-only enforcement for pinned context blocks (issue #282
+    // AC #3). Preflight before any decode / property build so the
+    // refusal lands without touching Notion via update. The check
+    // is gated on `Pinned = true` (the row IS a pinned block) AND
+    // `Mutability = "read-only"` AND the caller did not pass
+    // `allowReadOnlyUpdate: true`. Non-pinned rows skip this gate
+    // entirely so generic memory edits are unaffected.
+    //
+    // The only update path that legitimately needs to land changes
+    // on a read-only pin is the MCP `lore-pinned action='update'`
+    // with `force: true` — that's the AC #3 carve-out for
+    // "operator/owner approves." Every other path (autosave, plain
+    // update, re-key) hits this guard.
+    //
+    // The preflight reads only the `Pinned` and `Mutability`
+    // columns plus the `Title` column (for the error message);
+    // intentionally NOT routing through `getPropertiesById` because
+    // that helper enforces parent-DB equality, which test fixtures
+    // and certain cross-DB callers may not satisfy. The lightweight
+    // inline read keeps the preflight scoped to the AC #3
+    // contract.
+    // also enforce `PINNED_BLOCKS_HARD_CAP`
+    // when this update would transition a row from un-pinned to
+    // pinned. The MCP `handlePin` already enforces the cap at the
+    // tool boundary; this is the defense-in-depth gate for any
+    // service-layer caller (CLI / hooks / migrations) that flips
+    // the flag through `update`. Callers that have already
+    // verified the cap pass `bypassPinCapCheck: true` to avoid a
+    // duplicate `countPinnedBlocks` round-trip per pin.
+    const wouldPin = input.pinned?.pinned === true
+    const needsPreflight =
+      !input.allowReadOnlyUpdate || (wouldPin && !input.bypassPinCapCheck)
+    if (needsPreflight) {
+      const probe = (await this.client.pages.retrieve({
+        page_id: id,
+      })) as PageObjectResponse
+      const props = probe.properties
+      const isPinned = extractCheckbox(props[MEMORY_PROPS.PINNED])
+      if (!input.allowReadOnlyUpdate && isPinned) {
+        const mutabilityProp = props[MEMORY_PROPS.MUTABILITY]
+        const mutability =
+          mutabilityProp && mutabilityProp.type === "select" && mutabilityProp.select
+            ? (mutabilityProp.select.name as MemoryMutability)
+            : "mutable"
+        if (mutability === "read-only") {
+          throw new MemoryReadOnlyError(id, extractTitle(props[MEMORY_PROPS.TITLE]))
+        }
+      }
+      // Cap check fires only on a true un-pinned → pinned
+      // transition. A no-op pin (already pinned), an unpin
+      // (`pinned: false`), or a property-only update on a pinned
+      // row all skip this gate.
+      if (wouldPin && !isPinned && !input.bypassPinCapCheck) {
+        const activePinCount = await this.countPinnedBlocks()
+        if (activePinCount >= PINNED_BLOCKS_HARD_CAP) {
+          throw new MemoryPinCapExceededError(id, activePinCount, PINNED_BLOCKS_HARD_CAP)
+        }
+      }
+    }
 
     // Same decode-at-write discipline as `create`: encoded titles /
     // content / alternatives / consequences flowing in from re-saves of
@@ -3412,7 +3587,9 @@ export class MemoryService {
           : { date: { start: input.lastReferencedAt } }
     }
     if (input.supersedesIds) {
-      props[MEMORY_PROPS.SUPERSEDES] = { relation: input.supersedesIds.map((id) => ({ id })) }
+      props[MEMORY_PROPS.SUPERSEDES] = {
+        relation: input.supersedesIds.map((id) => ({ id })),
+      }
     }
     if (input.affectsIds) {
       props[MEMORY_PROPS.AFFECTS] = { relation: input.affectsIds.map((id) => ({ id })) }
@@ -3471,9 +3648,40 @@ export class MemoryService {
       }
       if (scope.expiresAt !== undefined) {
         props[MEMORY_PROPS.EXPIRES_AT] =
-          scope.expiresAt === null
-            ? { date: null }
-            : { date: { start: scope.expiresAt } }
+          scope.expiresAt === null ? { date: null } : { date: { start: scope.expiresAt } }
+      }
+    }
+
+    // Pinned context block update (issue #282). Mirrors the scope/
+    // lifetime branch above — the update path inlines column writes
+    // rather than calling `buildMemoryProps` because Notion's
+    // `pages.update` is partial-update only. The checkbox column has
+    // no clear sentinel; `priority` and `mutability` accept `null`
+    // for the clear path.
+    //
+    // Priority is clamped to `[PINNED_PRIORITY_MIN, PINNED_PRIORITY_MAX]`
+    // at the service boundary — the MCP Zod schema also clamps, but
+    // the service-layer guard catches CLI / hook callers and is the
+    // load-bearing protection against a malformed write.
+    if (input.pinned !== undefined) {
+      const pinnedInput = input.pinned
+      if (pinnedInput.pinned !== undefined) {
+        props[MEMORY_PROPS.PINNED] = { checkbox: pinnedInput.pinned }
+        // Invalidate the in-process pinned-count cache so a same-process
+        // pin / unpin sees the fresh count without waiting on the 30s TTL.
+        this.invalidatePinnedCountCache()
+      }
+      if (pinnedInput.priority !== undefined) {
+        props[MEMORY_PROPS.PINNED_PRIORITY] =
+          pinnedInput.priority === null
+            ? { number: null }
+            : { number: clampPinnedPriority(pinnedInput.priority) }
+      }
+      if (pinnedInput.mutability !== undefined) {
+        props[MEMORY_PROPS.MUTABILITY] =
+          pinnedInput.mutability === null
+            ? { select: null }
+            : { select: { name: pinnedInput.mutability } }
       }
     }
 
@@ -3773,22 +3981,22 @@ export class MemoryService {
    * **Failure model.** Three settle outcomes:
    *
    * - **Both writes succeed.** Returns `{ wroteA, wroteB }` reflecting
-   *   which sides this call actually issued (versus which were skipped
-   *   via per-side idempotency).
+   * which sides this call actually issued (versus which were skipped
+   * via per-side idempotency).
    * - **Both writes reject.** Throws the first underlying rejection
-   *   directly. Per-side idempotency makes a same-input retry safe — a
-   *   fresh snapshot will see neither audit entry and write both
-   *   sides cleanly. No structured error here because there is no
-   *   partial-success state to surface.
+   * directly. Per-side idempotency makes a same-input retry safe — a
+   * fresh snapshot will see neither audit entry and write both
+   * sides cleanly. No structured error here because there is no
+   * partial-success state to surface.
    * - **Exactly one side rejects.** Throws
-   *   `RecordComparedPartialWriteError` carrying `result: {wroteA,
-   *   wroteB}` (the partial-success outcome), `failedSide` (the side
-   *   whose `pages.update` rejected), and `cause` (the underlying SDK
-   *   error). The MCP handler uses this to drive a single-shot
-   *   reload-and-retry path: the survivor's audit entry is now in
-   *   Notion, so a fresh `getById` snapshot lets the retry's per-side
-   *   idempotency check skip the survivor and write only the missing
-   *   side.
+   * `RecordComparedPartialWriteError` carrying `result: {wroteA,
+   * wroteB}` (the partial-success outcome), `failedSide` (the side
+   * whose `pages.update` rejected), and `cause` (the underlying SDK
+   * error). The MCP handler uses this to drive a single-shot
+   * reload-and-retry path: the survivor's audit entry is now in
+   * Notion, so a fresh `getById` snapshot lets the retry's per-side
+   * idempotency check skip the survivor and write only the missing
+   * side.
    *
    * Pre-issue-#471 the call used `Promise.all` and rejected on the
    * first failure — discarding the concurrent success and leaving the
@@ -3814,18 +4022,18 @@ export class MemoryService {
    * **Caller contract.**
    *
    * - The caller MUST have already validated overflow against
-   *   `COMPARE_NOTES_MAX_CHARS` by running `appendCompareNote` on
-   *   each side as a preflight (see `handleCompare` step 7). When
-   *   per-side idempotency skips a write, the preflight cost
-   *   already incurred is wasted but harmless; the alternative —
-   *   moving the preflight inside `recordCompared` — would couple
-   *   the dispatch path to the audit-marker layout.
+   * `COMPARE_NOTES_MAX_CHARS` by running `appendCompareNote` on
+   * each side as a preflight (see `handleCompare` step 7). When
+   * per-side idempotency skips a write, the preflight cost
+   * already incurred is wasted but harmless; the alternative —
+   * moving the preflight inside `recordCompared` — would couple
+   * the dispatch path to the audit-marker layout.
    * - The caller is responsible for the OUTER pair-scoped gate that
-   *   decides whether to invoke this method at all. For symmetric
-   *   verdicts the gate must check BOTH sides; for asymmetric
-   *   verdicts the gate's single-side check is correct because the
-   *   destructive dispatch (decrement + fact) is the dominant
-   *   concern there.
+   * decides whether to invoke this method at all. For symmetric
+   * verdicts the gate must check BOTH sides; for asymmetric
+   * verdicts the gate's single-side check is correct because the
+   * destructive dispatch (decrement + fact) is the dominant
+   * concern there.
    *
    * **Compared With set semantics.** `Compared With` is a Notion
    * `single_property` self-relation; the API treats the relation list
@@ -4030,8 +4238,7 @@ export class MemoryService {
     // logic is the same.
     const failedSide: "A" | "B" = aFailed ? "A" : "B"
     const cause = aFailed ? aFailure : bFailure
-    const survivorWasSkipped =
-      failedSide === "A" ? !shouldWriteB : !shouldWriteA
+    const survivorWasSkipped = failedSide === "A" ? !shouldWriteB : !shouldWriteA
     const survivorState = survivorWasSkipped
       ? "was already present (skipped via per-side idempotency)"
       : "landed"
@@ -4146,17 +4353,17 @@ export class MemoryService {
    *
    * - `totalMemories` — every non-archived row the iterator yields.
    * - `scoredMemories` — `Memory.confidenceScore !== null`. On a
-   *   pre-#11 vault that hasn't run the backfill, this stays at zero
-   *   and the renderer collapses the `(avg …, … below threshold)`
-   *   suffix off the line accordingly.
+   * pre-#11 vault that hasn't run the backfill, this stays at zero
+   * and the renderer collapses the `(avg …, … below threshold)`
+   * suffix off the line accordingly.
    * - `averageScore` — arithmetic mean across scored rows. Returns
-   *   `0` when no scored rows exist; the renderer suppresses the avg
-   *   surface in that case via the `scoredMemories === 0` guard, so
-   *   the placeholder zero never reaches the operator.
+   * `0` when no scored rows exist; the renderer suppresses the avg
+   * surface in that case via the `scoredMemories === 0` guard, so
+   * the placeholder zero never reaches the operator.
    * - `belowThreshold` — count of scored rows whose stored value is
-   *   strictly below `CONFIDENCE_DISPLAY_THRESHOLD` (the same gate
-   *   the trust indicator and Stale Confidence wake-up use, so all
-   *   three surfaces agree on what "below threshold" means).
+   * strictly below `CONFIDENCE_DISPLAY_THRESHOLD` (the same gate
+   * the trust indicator and Stale Confidence wake-up use, so all
+   * three surfaces agree on what "below threshold" means).
    *
    * Cost is one paginated walk over the (project-scoped) Memories
    * data source — the same shape `--build-confidence-scores`
@@ -4221,20 +4428,20 @@ export class MemoryService {
    *
    * Returns three counts:
    * - `expired`: rows whose `Expires At < today` and whose page is
-   *   not archived. Already invisible to default reads — surfaced
-   *   here so an operator can run `lore-memory action='archive'` to
-   *   actually clean them up.
+   * not archived. Already invisible to default reads — surfaced
+   * here so an operator can run `lore-memory action='archive'` to
+   * actually clean them up.
    * - `expiringSoon`: rows with `Expires At` in the inclusive window
-   *   `[today, today + EXPIRING_SOON_DAYS]`. The "expiring this
-   *   week" triage signal — agents whose memories are about to drop
-   *   out of recall get an audit nudge.
+   * `[today, today + EXPIRING_SOON_DAYS]`. The "expiring this
+   * week" triage signal — agents whose memories are about to drop
+   * out of recall get an audit nudge.
    * - `narrowScopeOutOfContext`: count of rows whose Scope Kind is
-   *   one of the narrow kinds (`user` / `agent` / `role` / `session`
-   *   / `run` / `environment`) AND whose Scope Key does NOT match
-   *   the current resolved scope context. This is the "session-
-   *   scoped notes outliving their session" signal — the load-
-   *   bearing acceptance criterion that #283 exists to make
-   *   visible.
+   * one of the narrow kinds (`user` / `agent` / `role` / `session`
+   * / `run` / `environment`) AND whose Scope Key does NOT match
+   * the current resolved scope context. This is the "session-
+   * scoped notes outliving their session" signal — the load-
+   * bearing acceptance criterion that #283 exists to make
+   * visible.
    *
    * Single paginated walk via `listAllForBackfill`, project-scoped
    * when `projectId` is provided. Counts archived rows out (the
@@ -4325,9 +4532,9 @@ export class MemoryService {
    *
    * Server-side filter:
    *
-   *     Status = proposed
-   *     AND Kind != decision
-   *     AND (when scoped) (Project contains projectId OR Project is_empty)
+   * Status = proposed
+   * AND Kind != decision
+   * AND (when scoped) (Project contains projectId OR Project is_empty)
    *
    * Direct `client.dataSources.query` rather than `MemoryService.list`
    * because the inbox surface only needs the property tuple
@@ -4371,9 +4578,7 @@ export class MemoryService {
     // invariant. Appended at the end of the flat filter array so the
     // existing `[status, kind, project]` order in API logs is unchanged
     // for the common case.
-    const filters: Array<Record<string, unknown>> = [
-      ...proposedMemoryFilter().and,
-    ]
+    const filters: Array<Record<string, unknown>> = [...proposedMemoryFilter().and]
     if (opts.projectId) filters.push(projectOrUnscopedFilter(opts.projectId))
     filters.push(cleanupOrphanExclusionFilter())
     const filter = filters.length > 1 ? { and: filters } : filters[0]
@@ -4413,12 +4618,12 @@ export class MemoryService {
    *
    * Server-side filter (when `opts.projectId` is supplied):
    *
-   *     (Project contains projectId OR Project is_empty)
-   *     AND Confidence Score is_not_empty
-   *     AND (
-   *       Confidence Score < CONFIDENCE_DISPLAY_THRESHOLD
-   *       OR Last Referenced At on_or_before today - STALE_CONFIDENCE_DAYS
-   *     )
+   * (Project contains projectId OR Project is_empty)
+   * AND Confidence Score is_not_empty
+   * AND (
+   * Confidence Score < CONFIDENCE_DISPLAY_THRESHOLD
+   * OR Last Referenced At on_or_before today - STALE_CONFIDENCE_DAYS
+   * )
    *
    * Server-side filter (vault-wide, when `opts.projectId` is omitted):
    * the project clause is dropped entirely so the query covers every
@@ -4561,6 +4766,261 @@ export class MemoryService {
   }
 
   /**
+   * Pinned context blocks for the wake-up Pinned Context section
+   * (issue #282).
+   *
+   * Server-side filter:
+   *
+   * Pinned = true
+   * AND (Project contains projectId OR Project is_empty) [when scoped]
+   * AND <#283 default scope filter> [when scope columns present
+   * and the caller did not opt out via `includeOutOfScope`]
+   *
+   * The #283 scope filter is composed via `withDefaultScopeFilter`,
+   * which folds in the broadcast/narrow scope-kind OR-clause plus the
+   * expiry-not-passed clause. Without it, a row with
+   * `Scope Kind = session` / `user` / `agent` / `role` and a
+   * non-matching `Scope Key` would still surface as a pinned context
+   * block — a local pin would silently leak across readers/sessions
+   * at the top of every wake-up. The corresponding client-side mirror
+   * runs inside the `collectLivePages` `extraFilter` so the kind+key
+   * binding (which Notion's 2-level compound-filter cap can't express
+   * server-side) is enforced row-by-row during pagination.
+   *
+   * Audience matching is also applied via the same `extraFilter`
+   * because the `Audience` column is free-form rich_text — a
+   * Notion-side `contains` filter would surface partial-token matches
+   * (`"team"` matching `"team-leads"`), which is the wrong precision
+   * for an authorization-shaped check. Client-side comma-split +
+   * exact match against the reader's scope context (`agent` /
+   * `role` / `userId`) gives the right semantics:
+   *
+   * - Empty audience (column unset) OR contains `"all"` / `"*"` /
+   * `"everyone"` / `"agents"` → matches every reader.
+   * - Otherwise: comma-split, case-fold, exact match against the
+   * reader's resolved identity slots.
+   *
+   * **Both filters run inside the paginating loop via `extraFilter`**,
+   * not as post-materialization filters. The earlier shape applied
+   * audience after limiting to N raw rows, which could starve
+   * matching pins when the top-priority slice happened to target
+   * other audiences. Filtering inside the loop lets the walker
+   * over-fetch and backfill until `limit` visible rows are
+   * collected.
+   *
+   * Sorted by `Pinned Priority` descending, then by `created_time`
+   * descending as tie-break so newer blocks at the same priority
+   * surface first.
+   *
+   * Pre-#282 vaults (missing the `Pinned` column entirely) hit
+   * `isMissingPropertyError` and return `[]` — same gracefully-degrade
+   * posture as `queryStaleConfidence` for pre-#283 vaults. The
+   * operator runs `lore migrate` to add the columns and pin blocks
+   * surface on the next wake-up.
+   *
+   * No body fetch by default — the wake-up renderer surfaces
+   * pinned-block titles, labels, and synopses; bodies appear via
+   * `lore-memory action='expand'` for deeper inspection. Callers
+   * that need bodies pass `includeContent: true`.
+   */
+  async listPinnedBlocks(opts: {
+    /** Omit for vault-wide wake-up. Project-scoped pins surface only
+     * within their project's wake-up; unscoped pins surface in every
+     * project's wake-up (broadcast). */
+    projectId?: string
+    /** Cap on rows returned. Defaults to `DEFAULT_PINNED_BLOCK_LIMIT`. */
+    limit?: number
+    /** YYYY-MM-DD anchor for lifetime hygiene; matches the wake-up
+     * loader's `todayDate`. When omitted, expired pins are not
+     * filtered. */
+    today?: string
+    /** Reader's resolved identity slots for audience matching.
+     * When omitted (and `audienceFilter !== false`), only
+     * audience-`all` / empty-audience pins surface. Same shape as
+     * `MemoryScopeContext`. */
+    readerContext?: MemoryScopeContext
+    /** Fetch markdown bodies. Defaults to false (title-tier). */
+    includeContent?: boolean
+    /** When `false`, skip the audience filter entirely so the caller
+     * sees every pinned block in scope regardless of audience
+     * tokens. Required for the operator inspection surface
+     * (`lore pinned list --all-audiences` and
+     * `lore-pinned action='list' includeAllAudiences=true`) — an
+     * empty `readerContext` alone is not enough because the
+     * audience matcher rejects narrow tokens when no reader slot
+     * is populated. Defaults to `true`. */
+    audienceFilter?: boolean
+    /** When `true`, bypass the #283 default scope filter so every
+     * pinned row passes regardless of `Scope Kind` / `Scope Key`.
+     * Used by maintenance / audit surfaces that intentionally need
+     * to see scoped rows outside the reader's context (mirrors
+     * `MemoryService.list`'s out-of-scope reads). Defaults to
+     * `false` — wake-up and the agent-facing list path see only
+     * in-scope rows. */
+    includeOutOfScope?: boolean
+  }): Promise<Memory[]> {
+    const limit = opts.limit ?? 10
+    if (limit <= 0) return []
+
+    const filters: Array<Record<string, unknown>> = [
+      { property: MEMORY_PROPS.PINNED, checkbox: { equals: true } },
+    ]
+    if (opts.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+    const baseFilter = { and: filters } as Record<string, unknown>
+    // Compose the #283 default scope filter when scope columns are
+    // present on this vault and the caller hasn't opted out. On
+    // pre-#283 vaults the columns are missing and `scopeFilterEnabled`
+    // is false at service init, so the bare base filter applies and
+    // the row passes through (matches the legacy "broadcast on null
+    // scope" contract).
+    const reader = opts.readerContext ?? {}
+    const today = opts.today ?? todayUtc()
+    const scopeFilterActive = this.scopeFilterEnabled && opts.includeOutOfScope !== true
+    const filter = (
+      scopeFilterActive
+        ? withDefaultScopeFilter(baseFilter, this.scopeCtx, today)
+        : baseFilter
+    ) as QueryDataSourceParameters["filter"]
+    const applyAudienceFilter = opts.audienceFilter !== false
+
+    let result: Awaited<ReturnType<typeof collectLivePages>>
+    try {
+      result = await collectLivePages({
+        limit,
+        source: "MemoryService.listPinnedBlocks",
+        query: ({ page_size, start_cursor }) =>
+          this.client.dataSources.query({
+            data_source_id: this.db.dataSourceId,
+            filter,
+            sorts: [
+              {
+                property: MEMORY_PROPS.PINNED_PRIORITY,
+                direction: "descending",
+              },
+              { timestamp: "created_time", direction: "descending" },
+            ],
+            page_size,
+            start_cursor,
+          }),
+        extraFilter: (page) => {
+          if (
+            scopeFilterActive &&
+            !matchesDefaultScope(page.properties, this.scopeCtx, today)
+          ) {
+            return false
+          }
+          if (applyAudienceFilter) {
+            const audience = extractRichText(page.properties[MEMORY_PROPS.AUDIENCE])
+            if (!pinnedBlockAudienceMatches(audience, reader)) return false
+          }
+          return true
+        },
+      })
+    } catch (err) {
+      // Vault hasn't run the issue #282 schema migration — the
+      // `Pinned` / `Pinned Priority` columns don't exist. Degrade
+      // to an empty section rather than failing wake-up. Transient
+      // failures still propagate.
+      if (isMissingPropertyError(err)) return []
+      throw err
+    }
+    if (result.capped) {
+      warnLivePageCapFired({
+        source: "MemoryService.listPinnedBlocks",
+        pages: result.pageCount,
+        accumulated: result.pages.length,
+        limit,
+      })
+    }
+
+    return this.materializeMemories(result.pages, opts.includeContent ?? false)
+  }
+
+  /**
+   * Active-pinned-block count (issue #282). Backs the per-vault DoS
+   * cap surfaced as a warning on wake-up: a malicious caller pinning
+   * dozens of rows can push legitimate governance context out of
+   * the visible cap. The renderer threshold lives in
+   * `src/core/wakeup.ts` (`PINNED_BLOCKS_ABUSE_THRESHOLD`).
+   *
+   * Server-side count via the same `Pinned = true` clause used by
+   * `listPinnedBlocks`. Does NOT apply the audience or scope
+   * filters — operators must see the TOTAL number of pinned rows
+   * across the vault even when most are out-of-scope or
+   * out-of-audience for the current reader.
+   *
+   * Pre-#282 vaults hit `isMissingPropertyError` and return `0` —
+   * same graceful-degrade posture as `listPinnedBlocks`.
+   *
+   * **30s TTL cache :** the count runs on every
+   * wake-up via `loadWakeUpData`'s fan-out AND on every
+   * `handlePin` / write-path cap check. The TTL window collapses
+   * back-to-back callers onto one Notion round-trip while keeping
+   * the cap reactive within 30s of any external change. The cache
+   * invalidates on every `update` that flips the `Pinned` checkbox
+   * so a same-process pin / unpin sees the fresh count without
+   * waiting on the TTL. Mirrors `WakeUpCache`'s posture.
+   */
+  private pinnedCountCache: { value: number; expiresAt: number } | null = null
+  private readonly PINNED_COUNT_TTL_MS = 30_000
+
+  /**
+   * Invalidate the in-process count cache. Called from `update`
+   * whenever the `Pinned` checkbox flips so the next caller sees
+   * a fresh count without waiting on the 30s TTL.
+   */
+  private invalidatePinnedCountCache(): void {
+    this.pinnedCountCache = null
+  }
+
+  async countPinnedBlocks(opts: { bypassCache?: boolean } = {}): Promise<number> {
+    if (!opts.bypassCache && this.pinnedCountCache !== null) {
+      if (Date.now() < this.pinnedCountCache.expiresAt) {
+        return this.pinnedCountCache.value
+      }
+      this.pinnedCountCache = null
+    }
+    let total = 0
+    let cursor: string | undefined
+    const filter = {
+      property: MEMORY_PROPS.PINNED,
+      checkbox: { equals: true },
+    } as QueryDataSourceParameters["filter"]
+    try {
+      for (;;) {
+        const response = await this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter,
+          page_size: 100,
+          ...(cursor ? { start_cursor: cursor } : {}),
+        })
+        // Mirror the live-page filter so soft-deleted pins don't
+        // inflate the count.
+        total += response.results.filter(isLiveFullPage).length
+        if (!response.has_more) break
+        cursor = response.next_cursor ?? undefined
+        if (!cursor) break
+      }
+    } catch (err) {
+      if (isMissingPropertyError(err)) {
+        this.pinnedCountCache = {
+          value: 0,
+          expiresAt: Date.now() + this.PINNED_COUNT_TTL_MS,
+        }
+        return 0
+      }
+      throw err
+    }
+    this.pinnedCountCache = {
+      value: total,
+      expiresAt: Date.now() + this.PINNED_COUNT_TTL_MS,
+    }
+    return total
+  }
+
+  /**
    * Project-grouped paginated walk for `lore conflicts scan` (0.9.0/#09).
    * Returns `Memory[][]` aligned by index with the input `projectIds` —
    * `result[i]` holds every non-archived memory whose `Project` relation
@@ -4608,7 +5068,7 @@ export class MemoryService {
   async listForScan(opts: {
     projectIds: string[]
     /** Optional human-readable labels aligned by index with `projectIds`
-     *  for `onProgress` rendering; defaults to the project ID when omitted. */
+     * for `onProgress` rendering; defaults to the project ID when omitted. */
     projectLabels?: string[]
     includeBodies?: boolean
     onProgress?: (info: {
@@ -4681,20 +5141,20 @@ export class MemoryService {
    * limit when the operator opts into the RunTool SQL path:
    *
    * - **Flag on (`LORE_USE_RUNTOOL_FILTER_SQL=1`) AND a RunTool
-   *   client is wired:** issue one parameterized SQL query through
-   *   `query_data_sources` with both predicates pushed
-   *   server-side and `LIMIT N` applied AFTER. The SQL query
-   *   returns page ids; each id hydrates through
-   *   `getPropertiesById` so the returned `Memory[]` matches the
-   *   REST path's content-off shape (`content: ""`).
+   * client is wired:** issue one parameterized SQL query through
+   * `query_data_sources` with both predicates pushed
+   * server-side and `LIMIT N` applied AFTER. The SQL query
+   * returns page ids; each id hydrates through
+   * `getPropertiesById` so the returned `Memory[]` matches the
+   * REST path's content-off shape (`content: ""`).
    * - **Flag off OR no RunTool client OR SQL throws:** falls back
-   *   to {@link MemoryService.list}. `excludeKinds` is forwarded
-   *   so the REST path also pushes `Kind != X` server-side via the
-   *   existing `does_not_equal` clauses (a one-line REST
-   *   improvement that lands alongside the SQL path); `statuses`
-   *   on the REST path stays as the caller's JS post-filter
-   *   responsibility because Notion's `dataSources.query` only
-   *   accepts a single `select.equals` clause for `Status`.
+   * to {@link MemoryService.list}. `excludeKinds` is forwarded
+   * so the REST path also pushes `Kind != X` server-side via the
+   * existing `does_not_equal` clauses (a one-line REST
+   * improvement that lands alongside the SQL path); `statuses`
+   * on the REST path stays as the caller's JS post-filter
+   * responsibility because Notion's `dataSources.query` only
+   * accepts a single `select.equals` clause for `Status`.
    *
    * Acceptance criterion #3 of #535: "Near-duplicate status and
    * kind filters move before candidate-pool truncation, so `limit`
@@ -4789,12 +5249,12 @@ export class MemoryService {
               if (process.env["LORE_DEBUG"] === "1") {
                 process.stderr.write(
                   `[lore] partial-failure: source=near-duplicate-hydrate ` +
-                    `pageId=${id} error=${err instanceof Error ? err.message : "unknown"}\n`,
+                    `pageId=${id} error=${err instanceof Error ? err.message : "unknown"}\n`
                 )
               }
               return null
-            }),
-          ),
+            })
+          )
         )
         // SQL applies exact tag filter before LIMIT (see SQL
         // composition above), so the hydrated list is already
@@ -5003,7 +5463,10 @@ export class MemoryService {
     }
     if (opts?.tags?.length) {
       if (opts.tags.length === 1) {
-        filters.push({ property: MEMORY_PROPS.TAGS, multi_select: { contains: opts.tags[0] } })
+        filters.push({
+          property: MEMORY_PROPS.TAGS,
+          multi_select: { contains: opts.tags[0] },
+        })
       } else {
         filters.push({
           or: opts.tags.map((t) => ({
@@ -5118,22 +5581,22 @@ export class MemoryService {
    * Search memories. Three execution modes (see `SearchMode` in `types.ts`):
    *
    * - `"contains"` — DS-scoped `dataSources.query` with Title/Keywords
-   *   `contains` filters and server-side property filters
-   *   (`projectId` / `topicId` / `tags` / `kind` / `status`). No workspace
-   *   leakage, no vector ranking — best for substring/exact-phrase queries.
+   * `contains` filters and server-side property filters
+   * (`projectId` / `topicId` / `tags` / `kind` / `status`). No workspace
+   * leakage, no vector ranking — best for substring/exact-phrase queries.
    * - `"semantic"` — Workspace-wide `client.search`, ranked by Notion's
-   *   embedding index over titles AND bodies. Property filters degrade to
-   *   client-side post-filters since `client.search` lacks property-filter
-   *   support. Best for phrase-shaped queries that need body relevance.
+   * embedding index over titles AND bodies. Property filters degrade to
+   * client-side post-filters since `client.search` lacks property-filter
+   * support. Best for phrase-shaped queries that need body relevance.
    * - `"hybrid"` (default) — fire contains and semantic in parallel; if
-   *   contains saturates (`>= HYBRID_FALLBACK_THRESHOLD` hits), use the
-   *   contains rows alone and discard the parallel semantic result.
-   *   Otherwise merge the two ranked lists via Reciprocal Rank Fusion
-   *   (RRF) with a deterministic tie-break — see `searchByHybridPages`.
-   *   Speculative parallelism keeps wall-clock at one round-trip
-   *   (≈ `client.search` latency) regardless of which leg saturates —
-   *   the cheap-path waste is one discarded Notion call, governed by the
-   *   shared rate limiter.
+   * contains saturates (`>= HYBRID_FALLBACK_THRESHOLD` hits), use the
+   * contains rows alone and discard the parallel semantic result.
+   * Otherwise merge the two ranked lists via Reciprocal Rank Fusion
+   * (RRF) with a deterministic tie-break — see `searchByHybridPages`.
+   * Speculative parallelism keeps wall-clock at one round-trip
+   * (≈ `client.search` latency) regardless of which leg saturates —
+   * the cheap-path waste is one discarded Notion call, governed by the
+   * shared rate limiter.
    *
    * **Materialization happens exactly once** — the per-mode helpers
    * return raw `PageObjectResponse[]` and `materializeMemories` runs at
@@ -5203,7 +5666,7 @@ export class MemoryService {
     // Normalize intent once at the entry point. Both the saturation-bypass
     // gate in `searchByHybridPages` and the query composition in
     // `searchBySemanticPages` need to agree on what counts as "intent is
-    // set." Whitespace-only intent (`"   "`) collapses to `null` here so a
+    // set." Whitespace-only intent (`" "`) collapses to `null` here so a
     // caller can't accidentally bypass the cutoff or pollute the semantic
     // query with whitespace. See #17 / `src/core/AGENTS.md` for the rule.
     const trimmedIntent = input.intent?.trim()
@@ -5240,7 +5703,9 @@ export class MemoryService {
     const selectedPages = pages.slice(0, limit)
     const memories = await this.materializeMemories(selectedPages, input.includeContent)
     const explain = selectedPages.map((page, i): SearchExplain => {
-      const factor = confidenceFactor(extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]))
+      const factor = confidenceFactor(
+        extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE])
+      )
       if (explainBranch === "contains-only") {
         return {
           memoryId: page.id,
@@ -5315,7 +5780,10 @@ export class MemoryService {
       filters.push(projectOrUnscopedFilter(input.projectId))
     }
     if (input.topicId) {
-      filters.push({ property: MEMORY_PROPS.TOPIC, relation: { contains: input.topicId } })
+      filters.push({
+        property: MEMORY_PROPS.TOPIC,
+        relation: { contains: input.topicId },
+      })
     }
     if (input.tags?.length) {
       // Mirrors the OR semantics of `MemoryService.list`: any-tag-matches.
@@ -5468,13 +5936,13 @@ export class MemoryService {
    * curtail the in-flight semantic pagination. The signal is checked
    * at three points per iteration:
    *
-   *   1. **Pre-loop**, once on entry — defensive against direct
-   *      callers passing an already-aborted signal.
-   *   2. **Pre-call**, before each `await this.client.search(...)` —
-   *      catches an abort that fired between the previous iteration's
-   *      post-page check and the current iteration's network call.
-   *   3. **Post-page**, after the page lands — catches an abort that
-   *      fired during the page's `await`.
+   * 1. **Pre-loop**, once on entry — defensive against direct
+   * callers passing an already-aborted signal.
+   * 2. **Pre-call**, before each `await this.client.search(...)` —
+   * catches an abort that fired between the previous iteration's
+   * post-page check and the current iteration's network call.
+   * 3. **Post-page**, after the page lands — catches an abort that
+   * fired during the page's `await`.
    *
    * `applySemanticPostFilters` additionally re-checks the signal
    * before its `hydrateRelationPropertiesForPages` call so a long
@@ -5537,20 +6005,20 @@ export class MemoryService {
     // wrapper cannot mask:
     //
     // - **Empty query.** RunTool requires `query.length >= 1`; REST
-    //   accepts `""` for unscoped relevance / list-like callers. We
-    //   route empty composed queries through REST.
+    // accepts `""` for unscoped relevance / list-like callers. We
+    // route empty composed queries through REST.
     // - **Window cap.** RunTool's `page_size <= 25` and no documented
-    //   cursor; REST paginates 100/page up to
-    //   `SEMANTIC_SEARCH_MAX_PAGES`. When the caller asks for `limit`
-    //   greater than the RunTool cap, the wrapper cannot represent
-    //   the requested window in one call so we route through REST.
+    // cursor; REST paginates 100/page up to
+    // `SEMANTIC_SEARCH_MAX_PAGES`. When the caller asks for `limit`
+    // greater than the RunTool cap, the wrapper cannot represent
+    // the requested window in one call so we route through REST.
     // - **Saturation under post-filter.** Even within the cap, Lore's
-    //   `applySemanticPostFilters` may discard most of a 25-row
-    //   response (project / kind / status / scope / archive / cleanup-
-    //   orphan client-side narrowing). When the post-filter survivors
-    //   come up short AND the raw response saturated at the cap, the
-    //   RunTool path's recall is provably under-served and we fall
-    //   back to REST per call.
+    // `applySemanticPostFilters` may discard most of a 25-row
+    // response (project / kind / status / scope / archive / cleanup-
+    // orphan client-side narrowing). When the post-filter survivors
+    // come up short AND the raw response saturated at the cap, the
+    // RunTool path's recall is provably under-served and we fall
+    // back to REST per call.
     //
     // 403 `RestrictedResource` is fall-back-able via
     // `RunToolSearchRestrictedError` (auth-refresh proxy can't repair;
@@ -5595,18 +6063,18 @@ export class MemoryService {
     // reasons:
     //
     // - **Hybrid (`searchByHybridPages`).** Without dedup, the RRF
-    //   accumulator processes the same id twice and adds two
-    //   per-branch contributions (`(1/(RRF_K+rank1+1)) * factor +
-    //   (1/(RRF_K+rank2+1)) * factor`) under the *same* `branchKind`,
-    //   inflating that row's fused score above what a single
-    //   observation would produce. Cross-branch agreement (the signal
-    //   RRF surfaces) gets falsified into intra-branch double-credit;
-    //   fixture-pinned ordering drifts.
+    // accumulator processes the same id twice and adds two
+    // per-branch contributions (`(1/(RRF_K+rank1+1)) * factor +
+    // (1/(RRF_K+rank2+1)) * factor`) under the *same* `branchKind`,
+    // inflating that row's fused score above what a single
+    // observation would produce. Cross-branch agreement (the signal
+    // RRF surfaces) gets falsified into intra-branch double-credit;
+    // fixture-pinned ordering drifts.
     // - **Semantic-only (`searchBySemanticPages`).** Without dedup,
-    //   the caller sees the same `Memory` rendered twice in the
-    //   result list — a visible correctness bug, not just a ranking
-    //   shift. `runSearch`'s `pages.slice(0, limit)` cap doesn't
-    //   collapse duplicates either; it just truncates.
+    // the caller sees the same `Memory` rendered twice in the
+    // result list — a visible correctness bug, not just a ranking
+    // shift. `runSearch`'s `pages.slice(0, limit)` cap doesn't
+    // collapse duplicates either; it just truncates.
     //
     // One Set; one mechanism; both consumers protected.
     const seen = new Set<string>()
@@ -5727,15 +6195,15 @@ export class MemoryService {
     // return correct:
     //
     // - Semantic-only path: `runSearch` trims `pages.slice(0, limit)` at
-    //   the call boundary (the authoritative final cap). Re-trimming
-    //   here would be redundant.
+    // the call boundary (the authoritative final cap). Re-trimming
+    // here would be redundant.
     // - Hybrid path: `searchByHybridPages` consumes the full accumulator
-    //   in its RRF merge. A row at semantic-rank 11 that ALSO appears
-    //   in contains contributes its `1/(RRF_K + 11 + 1)` to the fused
-    //   score and can plausibly beat a contains-only row — but only if
-    //   it survives long enough to reach the accumulator. Trimming to
-    //   `limit` here would silently nullify that cross-branch signal
-    //   for the under-shoot case RRF exists to handle.
+    // in its RRF merge. A row at semantic-rank 11 that ALSO appears
+    // in contains contributes its `1/(RRF_K + 11 + 1)` to the fused
+    // score and can plausibly beat a contains-only row — but only if
+    // it survives long enough to reach the accumulator. Trimming to
+    // `limit` here would silently nullify that cross-branch signal
+    // for the under-shoot case RRF exists to handle.
     //
     // Pre-PR the equivalent narrowing was structural (single page of
     // 100 trimmed to limit), so this is not a fix-for-regression but a
@@ -5904,22 +6372,22 @@ export class MemoryService {
     // the visible 25 already produced `>= limit` survivors:
     //
     // - **Semantic-only (`mode: "semantic"`)** runs
-    //   `rerankByConfidence` AFTER `fetchSemanticPages` returns
-    //   (`runSearch` → public `searchBySemanticPages` path). A
-    //   high-confidence row at REST semantic survivor rank 11
-    //   (within REST's 100-row first page) can be promoted into
-    //   the final top-`limit` by the confidence factor. The
-    //   RunTool path never sees that row if it sits beyond raw
-    //   hit 25 — even though we have `limit` survivors visibly
-    //   available.
+    // `rerankByConfidence` AFTER `fetchSemanticPages` returns
+    // (`runSearch` → public `searchBySemanticPages` path). A
+    // high-confidence row at REST semantic survivor rank 11
+    // (within REST's 100-row first page) can be promoted into
+    // the final top-`limit` by the confidence factor. The
+    // RunTool path never sees that row if it sits beyond raw
+    // hit 25 — even though we have `limit` survivors visibly
+    // available.
     //
     // - **Hybrid (`mode: "hybrid"`, the default)** consumes the
-    //   semantic accumulator beyond the display limit when
-    //   computing RRF. A row outside the first `limit` survivors
-    //   can still win after cross-branch fusion if it also
-    //   appears in contains. Truncating to 25 silently shrinks
-    //   the RRF pool relative to REST's up-to-500 raw-row pool
-    //   (`SEMANTIC_SEARCH_MAX_PAGES × page_size`).
+    // semantic accumulator beyond the display limit when
+    // computing RRF. A row outside the first `limit` survivors
+    // can still win after cross-branch fusion if it also
+    // appears in contains. Truncating to 25 silently shrinks
+    // the RRF pool relative to REST's up-to-500 raw-row pool
+    // (`SEMANTIC_SEARCH_MAX_PAGES × page_size`).
     //
     // Therefore: `filtered.length >= limit` is NOT a proof of
     // ranking parity with REST. The only safe condition for
@@ -6055,7 +6523,8 @@ export class MemoryService {
     if (input.status) {
       filtered = filtered.filter(
         (page) =>
-          extractSelect(page.properties[MEMORY_PROPS.STATUS], "informational") === input.status
+          extractSelect(page.properties[MEMORY_PROPS.STATUS], "informational") ===
+          input.status
       )
     } else if (input.includeProposed !== true) {
       // Default-exclude review-terminal rows (`proposed` and
@@ -6139,17 +6608,17 @@ export class MemoryService {
    * *after* both queries settle.
    *
    * - **Saturating case** (`containsHits >= HYBRID_FALLBACK_THRESHOLD`):
-   *   uses contains rows alone, ignoring the parallel semantic call.
-   *   Wasted one Notion call but no wall-clock cost. The shared rate
-   *   limiter (see `notion/rate-limit.ts`) bounds the cost.
+   * uses contains rows alone, ignoring the parallel semantic call.
+   * Wasted one Notion call but no wall-clock cost. The shared rate
+   * limiter (see `notion/rate-limit.ts`) bounds the cost.
    * - **Under-shooting case (RRF)**: merges the two ranked lists via
-   *   Reciprocal Rank Fusion. Each row's score is `Σ 1 / (RRF_K + rank +
-   *   1)` summed across the branches it appears in (`RRF_K = 60`,
-   *   Cormack 2009). Cross-branch agreement scores higher than
-   *   single-branch presence — a row ranked #1 in both branches scores
-   *   `2/61` and beats a row ranked #1 in only one branch (`1/61`).
-   *   Tie-break order is `score → best-rank → contains-presence → page
-   *   id ascending` (see `tieBreakingRrfCompare`). Capped at `limit`.
+   * Reciprocal Rank Fusion. Each row's score is `Σ 1 / (RRF_K + rank +
+   * 1)` summed across the branches it appears in (`RRF_K = 60`,
+   * Cormack 2009). Cross-branch agreement scores higher than
+   * single-branch presence — a row ranked #1 in both branches scores
+   * `2/61` and beats a row ranked #1 in only one branch (`1/61`).
+   * Tie-break order is `score → best-rank → contains-presence → page
+   * id ascending` (see `tieBreakingRrfCompare`). Capped at `limit`.
    *
    * The earlier sequential design paid `containsLatency + semanticLatency`
    * on under-shoot — strictly worse than the pre-PR single-call wall-clock
@@ -6273,17 +6742,17 @@ export class MemoryService {
     // Map an `AbortError`-shaped rejection to a fulfilled-empty value
     // here so:
     //
-    //   1. The both-failure check below cannot trip on the
-    //      `(contains rejected) + (semantic aborted because we asked
-    //      for it)` combo. A semantic abort fires only after contains
-    //      settles fulfilled-saturating; a contains-rejected path
-    //      never aborts the semantic side. But the type system doesn't
-    //      enforce that ordering, and a future refactor that introduces
-    //      a different abort trigger should not silently break
-    //      both-failure detection.
-    //   2. The partial-failure log below stays quiet on the abort path
-    //      — a cooperative discard isn't transient noise to surface
-    //      under `LORE_DEBUG=1`.
+    // 1. The both-failure check below cannot trip on the
+    // `(contains rejected) + (semantic aborted because we asked
+    // for it)` combo. A semantic abort fires only after contains
+    // settles fulfilled-saturating; a contains-rejected path
+    // never aborts the semantic side. But the type system doesn't
+    // enforce that ordering, and a future refactor that introduces
+    // a different abort trigger should not silently break
+    // both-failure detection.
+    // 2. The partial-failure log below stays quiet on the abort path
+    // — a cooperative discard isn't transient noise to surface
+    // under `LORE_DEBUG=1`.
     const semanticEffective: PromiseSettledResult<PageObjectResponse[]> =
       semanticResult.status === "rejected" && isAbortRejection(semanticResult.reason)
         ? { status: "fulfilled", value: [] }
@@ -6492,7 +6961,10 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     // via the hardened extractors — no backfill required.
     kind: extractSelect(props[MEMORY_PROPS.KIND], "note") as MemoryKind,
     status: extractSelect(props[MEMORY_PROPS.STATUS], "informational") as MemoryStatus,
-    confidence: extractSelect(props[MEMORY_PROPS.CONFIDENCE], "certain") as MemoryConfidence,
+    confidence: extractSelect(
+      props[MEMORY_PROPS.CONFIDENCE],
+      "certain"
+    ) as MemoryConfidence,
     confidenceScore: extractNumber(props[MEMORY_PROPS.CONFIDENCE_SCORE]),
     reviewBy: extractDate(props[MEMORY_PROPS.REVIEW_BY]),
     doneAt: extractDate(props[MEMORY_PROPS.DONE_AT]),
@@ -6526,6 +6998,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     comparedWith: extractRelationIds(props[MEMORY_PROPS.COMPARED_WITH]),
     compareNotes: extractRichText(props[MEMORY_PROPS.COMPARE_NOTES]),
     scope: extractMemoryScope(props),
+    pinned: extractMemoryPinned(props),
   }
 }
 
@@ -6569,6 +7042,103 @@ function extractMemoryScope(
   return { kind, key, audience, lifetime, expiresAt }
 }
 
+/**
+ * Read the pinned-block columns into a `MemoryPinned` bundle (issue
+ * #282). Returns `null` when `Pinned = false` / unset — the
+ * overwhelming majority of memories. Returns a populated bundle when
+ * the row is a pinned context block, defaulting `priority` to `0`
+ * (number column cleared) and `mutability` to `mutable` (select
+ * column cleared).
+ *
+ * The check is gated solely on the `Pinned` checkbox: a row with
+ * `Pinned Priority` set but `Pinned = false` is treated as "not a
+ * pinned block" — the checkbox is the source of truth, and the
+ * other columns are advisory state attached to the pin.
+ */
+function extractMemoryPinned(
+  props: PageObjectResponse["properties"]
+): import("../types.js").MemoryPinned | null {
+  const isPinned = extractCheckbox(props[MEMORY_PROPS.PINNED])
+  if (!isPinned) return null
+  const priority = extractNumber(props[MEMORY_PROPS.PINNED_PRIORITY]) ?? 0
+  const mutabilityProp = props[MEMORY_PROPS.MUTABILITY]
+  const mutability =
+    mutabilityProp && mutabilityProp.type === "select" && mutabilityProp.select
+      ? (mutabilityProp.select.name as import("../types.js").MemoryMutability)
+      : "mutable"
+  return { priority, mutability }
+}
+
+/**
+ * Clamp a pinned-block priority to `[PINNED_PRIORITY_MIN,
+ * PINNED_PRIORITY_MAX]` and round to a whole number so Notion's
+ * display formatting stays predictable (issue #282). The MCP Zod
+ * schema also clamps; this is the load-bearing protection at the
+ * service layer for CLI / hook / internal callers.
+ *
+ * Exported for unit-test coverage; production callers should let
+ * `MemoryService.update`'s pinned branch invoke this helper.
+ */
+export function clampPinnedPriority(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (value > PINNED_PRIORITY_MAX) return PINNED_PRIORITY_MAX
+  if (value < PINNED_PRIORITY_MIN) return PINNED_PRIORITY_MIN
+  return Math.round(value)
+}
+
+/**
+ * Audience matching for pinned context blocks (issue #282).
+ *
+ * Rules:
+ * - Empty `audience` or whitespace-only → matches every reader
+ * (treated as broadcast, same posture as `MemoryScope` audience).
+ * - Comma-separated tokens; case-folded for comparison.
+ * - `all` / `*` / `everyone` / `agents` tokens are universal — any
+ * of them matches every reader regardless of identity slots.
+ * - Otherwise the reader's `agent`, `role`, or `userId` (in that
+ * precedence) must appear as a token in the audience list.
+ *
+ * The precedence (agent → role → userId) reflects how operators
+ * actually scope blocks: most pins target an agent role (e.g.
+ * `code-reviewers`); some target a specific agent identity
+ * (`Claude Code`); user-specific pins are the rarest case but
+ * supported. A row's audience is a single rich_text cell in Notion;
+ * commas are the only standardized separator.
+ *
+ * Exported for unit-test coverage; production callers route through
+ * `MemoryService.listPinnedBlocks`.
+ */
+export function pinnedBlockAudienceMatches(
+  audience: string,
+  reader: MemoryScopeContext
+): boolean {
+  const trimmed = audience.trim()
+  if (trimmed.length === 0) return true
+  const tokens = trimmed
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => t.length > 0)
+  if (tokens.length === 0) return true
+  // Universal tokens — any of these unconditionally surfaces the pin.
+  if (
+    tokens.some((t) => t === "all" || t === "*" || t === "everyone" || t === "agents")
+  ) {
+    return true
+  }
+  const readerSlots: string[] = []
+  if (reader.agent && reader.agent.trim().length > 0) {
+    readerSlots.push(reader.agent.trim().toLowerCase())
+  }
+  if (reader.role && reader.role.trim().length > 0) {
+    readerSlots.push(reader.role.trim().toLowerCase())
+  }
+  if (reader.userId && reader.userId.trim().length > 0) {
+    readerSlots.push(reader.userId.trim().toLowerCase())
+  }
+  if (readerSlots.length === 0) return false
+  return tokens.some((token) => readerSlots.includes(token))
+}
+
 // ---------------------------------------------------------------------------
 // Compare Notes (0.9.0/#02) — append-only NDJSON audit trail
 // ---------------------------------------------------------------------------
@@ -6578,13 +7148,13 @@ function extractMemoryScope(
 // module so #05's compare-write path imports everything from one
 // location:
 //
-//     import {
-//       COMPARE_NOTES_MAX_CHARS,
-//       appendCompareNote,
-//       encodeCompareNotesRichText,
-//       type CompareNoteEntry,
-//       type CompareNotesTextChunk,
-//     } from "../core/memory.js"
+// import {
+// COMPARE_NOTES_MAX_CHARS,
+// appendCompareNote,
+// encodeCompareNotesRichText,
+// type CompareNoteEntry,
+// type CompareNotesTextChunk,
+// } from "../core/memory.js"
 //
 // Implementation lives where the layering wants it: the pure-NDJSON
 // helpers (`appendCompareNote`, `CompareNoteEntry`) stay here because
@@ -6872,7 +7442,7 @@ export interface CompareDispatchServices {
       projectIds?: string[]
       sourceMemoryId?: string
       confidence?: "certain" | "likely" | "speculative"
-      // Issue #283 round-3 — compare-dispatch helpers pass the
+      // Issue #283 — compare-dispatch helpers pass the
       // pair-scope when both compared rows share scope, or
       // `undefined` when the pair-scope rule rejects emission
       // (in which case the helper short-circuits before this
@@ -6930,13 +7500,13 @@ export class CompareDispatchPartialFailureError extends Error {
  * the same Notion update as the score. Order matters for retry safety:
  *
  * - `createWithDedup` is idempotent on the triple hash — a retry that
- *   races with a successful first call no-ops at the dedup probe.
+ * races with a successful first call no-ops at the dedup probe.
  * - `decrementConfidence` is non-idempotent without a marker, so the
- *   affected memory's `Compare Notes` gets a `compare_dispatch` ledger
- *   line in the same `pages.update` as the score write. If the SDK call
- *   fails after Notion applied the update, the retry sees the marker and
- *   skips the second decrement; if the update never landed, the marker
- *   is absent and the retry applies the decrement once.
+ * affected memory's `Compare Notes` gets a `compare_dispatch` ledger
+ * line in the same `pages.update` as the score write. If the SDK call
+ * fails after Notion applied the update, the retry sees the marker and
+ * skips the second decrement; if the update never landed, the marker
+ * is absent and the retry applies the decrement once.
  *
  * The fact's `subject = source memory's title`, `object = contradicted
  * memory's title` — `lore-query action='ask'` retrieves it via the
@@ -6970,7 +7540,7 @@ export async function recordContradiction(
       | "lastReferencedAt"
       | "createdAt"
     > &
-      // Issue #283 round-3 — `scope` is needed for the pair-scope
+      // Issue #283 — `scope` is needed for the pair-scope
       // emission decision. Optional so legacy callers that
       // pre-date #283 still typecheck (their scope is undefined,
       // which `pairScopeForFactEmission` treats as broadcast).
@@ -6982,7 +7552,7 @@ export async function recordContradiction(
 ): Promise<{
   /**
    * The id of the emitted `conflicts_with` fact. `null` when the
-   * pair-scope rule rejected emission (issue #283 round-3): the
+   * pair-scope rule rejected emission (issue #283 ): the
    * compare verdict still landed in Compare Notes on both sides
    * (audit trail intact), but no broadcast-able fact was created
    * because the two memories carry mismatched scopes and emitting
@@ -6993,7 +7563,7 @@ export async function recordContradiction(
   affectedCompareNotes: string
   decremented: boolean
   /** Populated when the fact was skipped; explains why for operator-
-   *  facing output / debug logs. Issue #283 round-3. */
+   * facing output / debug logs. Issue #283 . */
   factEmissionSkippedReason?: string
 }> {
   const ledgerEntry = buildCompareDispatchLedgerEntry({
@@ -7015,7 +7585,7 @@ export async function recordContradiction(
     input.contradictedMemory.projectIds
   )
 
-  // Issue #283 round-3 — pair-scope rule. The `conflicts_with`
+  // Issue #283 — pair-scope rule. The `conflicts_with`
   // fact references both memories' titles; emitting it under
   // either side's scope when the two scopes differ leaks the
   // narrower row across the broader reader context. Skip the
@@ -7099,23 +7669,23 @@ export async function recordContradiction(
  * Order mirrors `recordContradiction` for retry safety:
  *
  * 1. `decisions.supersede` — atomic-by-ordering inside `DecisionService`
- *    (writes `Supersedes` first, `Status` second). Failure here leaves
- *    the system in a "new points at old; old still accepted" state per
- *    `DecisionService.supersede`'s docstring; safe to retry. Retries
- *    still pay this round-trip because gating on loaded `Status` would
- *    drop the repair path where the relation landed but later steps did
- *    not. Concurrent `recordSupersedence` calls against the same
- *    `supersedingMemory.id` are serialized by `withEntityRelationLocks`
- *    inside `DecisionService.supersede` (see its docstring), so two
- *    parallel compare-dispatch fan-outs no longer race on the
- *    `Supersedes` relation.
+ * (writes `Supersedes` first, `Status` second). Failure here leaves
+ * the system in a "new points at old; old still accepted" state per
+ * `DecisionService.supersede`'s docstring; safe to retry. Retries
+ * still pay this round-trip because gating on loaded `Status` would
+ * drop the repair path where the relation landed but later steps did
+ * not. Concurrent `recordSupersedence` calls against the same
+ * `supersedingMemory.id` are serialized by `withEntityRelationLocks`
+ * inside `DecisionService.supersede` (see its docstring), so two
+ * parallel compare-dispatch fan-outs no longer race on the
+ * `Supersedes` relation.
  * 2. `createWithDedup` — idempotent on the triple hash. If this fails
- *    after step 1 landed, the helper raises a
- *    `CompareDispatchPartialFailureError(step: "supersede")`.
+ * after step 1 landed, the helper raises a
+ * `CompareDispatchPartialFailureError(step: "supersede")`.
  * 3. `decrementConfidence` — protected by the affected memory's
- *    `compare_dispatch` ledger marker. If this fails after steps 1-2
- *    landed, retrying the same compare either applies the decrement
- *    once or observes the marker and skips it.
+ * `compare_dispatch` ledger marker. If this fails after steps 1-2
+ * landed, retrying the same compare either applies the decrement
+ * once or observes the marker and skips it.
  *
  * Direction is encoded by the `superseding` / `superseded` parameter
  * names — NOT by positional order — so a flipped scan order can't
@@ -7125,11 +7695,8 @@ export async function recordContradiction(
 export async function recordSupersedence(
   services: CompareDispatchServices,
   input: {
-    supersedingMemory: Pick<
-      Memory,
-      "id" | "title" | "projectIds" | "confidence"
-    > &
-      // Issue #283 round-3 — scope needed for pair-scope decision.
+    supersedingMemory: Pick<Memory, "id" | "title" | "projectIds" | "confidence"> &
+      // Issue #283 — scope needed for pair-scope decision.
       Partial<Pick<Memory, "scope">>
     supersededMemory: Pick<
       Memory,
@@ -7147,7 +7714,7 @@ export async function recordSupersedence(
 ): Promise<{
   /**
    * The id of the emitted `supersedes_decision` fact. `null` when
-   * the pair-scope rule rejected emission (issue #283 round-3):
+   * the pair-scope rule rejected emission (issue #283 ):
    * `decisions.supersede` still landed (Status flip + relation
    * write), the compare verdict still landed in Compare Notes,
    * and the loser's confidence was still decremented — but the
@@ -7189,7 +7756,7 @@ export async function recordSupersedence(
     input.supersededMemory.projectIds
   )
 
-  // Issue #283 round-3 — pair-scope rule. Same logic as
+  // Issue #283 — pair-scope rule. Same logic as
   // `recordContradiction`: skip the fact emission when the two
   // decisions carry mismatched scopes. `decisions.supersede`
   // already landed above (Status flip + relation write), so the

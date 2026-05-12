@@ -1,8 +1,9 @@
 /**
- * Polymorphic dispatcher tests for the seven `lore-*` tools — six
+ * Polymorphic dispatcher tests for the eight `lore-*` tools — six
  * introduced in P3-01 (`lore-context`, `lore-memory`, `lore-query`,
- * `lore-fact`, `lore-decision`, `lore-project`) plus `lore-task` added
- * in PF3-06 to subsume the standalone task tools landed by P3-02.
+ * `lore-fact`, `lore-decision`, `lore-project`), `lore-task` added
+ * in PF3-06 to subsume the standalone task tools landed by P3-02,
+ * and `lore-pinned` added in issue #282 for pinned context blocks.
  * `lore-journal` was removed in the 0.6.0 deprecation purge alongside
  * the single-purpose aliases.
  *
@@ -11,19 +12,20 @@
  * 2. Each declared `action` value reaches the right underlying handler.
  * 3. Invalid `action` values produce a clean discriminated-union error.
  * 4. Missing required-per-action params produce a clean error.
- * 5. The MCP tool surface is exactly the 7 polymorphic dispatchers — no
+ * 5. The MCP tool surface is exactly the 8 polymorphic dispatchers — no
  *    deprecated aliases remain after the 0.6.0 deprecation purge.
  *
  * Per-handler behavior is exercised by the existing per-file test suites
  * (`memory.test.ts`, `decisions.test.ts`, `knowledge.test.ts`,
- * `context.test.ts`, `tasks.test.ts`). This file specifically covers
- * the dispatcher.
+ * `context.test.ts`, `tasks.test.ts`, `pinned.test.ts`). This file
+ * specifically covers the dispatcher.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { registerMemoryTools } from "./memory.js"
+import { registerPinnedTools } from "./pinned.js"
 import { queryDispatchSchema, registerQueryTools } from "./query.js"
 import { registerKnowledgeTools } from "./knowledge.js"
 import { registerDecisionTools } from "./decisions.js"
@@ -214,6 +216,8 @@ function makeServices(opts: StubOpts = {}): unknown {
       decrementConfidence: vi.fn(async () => 0.45),
       queryStaleConfidence: vi.fn(async () => []),
       countProposed: vi.fn(async () => ({ total: 0, bySource: {}, byAgent: {} })),
+      listPinnedBlocks: vi.fn(async () => []),
+      countPinnedBlocks: vi.fn(async () => 0),
       expiringScopedStats: vi.fn(async () => ({
         expired: 0,
         expiringSoon: 0,
@@ -485,10 +489,7 @@ describe("lore-memory polymorphic dispatcher", () => {
       previousStatus: "proposed",
     }))
     const mock = createMockServer()
-    registerMemoryTools(
-      mock.server,
-      makeServices({ memoriesRecordReview }) as never,
-    )
+    registerMemoryTools(mock.server, makeServices({ memoriesRecordReview }) as never)
     const result = await mock.get("lore-memory")({
       action: "approve",
       memoryId: "mem-1",
@@ -512,10 +513,7 @@ describe("lore-memory polymorphic dispatcher", () => {
       previousStatus: "proposed",
     }))
     const mock = createMockServer()
-    registerMemoryTools(
-      mock.server,
-      makeServices({ memoriesRecordReview }) as never,
-    )
+    registerMemoryTools(mock.server, makeServices({ memoriesRecordReview }) as never)
     const result = await mock.get("lore-memory")({
       action: "reject",
       memoryId: "mem-2",
@@ -541,7 +539,7 @@ describe("lore-memory polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerMemoryTools(
       mock.server,
-      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never,
+      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never
     )
     await mock.get("lore-memory")({
       action: "approve",
@@ -567,7 +565,7 @@ describe("lore-memory polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerMemoryTools(
       mock.server,
-      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never,
+      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never
     )
     const result = await mock.get("lore-memory")({
       action: "approve",
@@ -592,7 +590,7 @@ describe("lore-memory polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerMemoryTools(
       mock.server,
-      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never,
+      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never
     )
     const result = await mock.get("lore-memory")({
       action: "reject",
@@ -1620,7 +1618,7 @@ describe("lore-task polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("MCP tool surface", () => {
-  it("registers exactly the 7 polymorphic tools — zero aliases", () => {
+  it("registers exactly the 8 polymorphic tools — zero aliases", () => {
     // The 0.6.0 deprecation purge removed the 28 single-purpose aliases
     // (24 from P3-01 + 4 from PF3-06) and the `lore-journal` polymorphic
     // tool itself. This assertion is the load-bearing guard against
@@ -1631,10 +1629,21 @@ describe("MCP tool surface", () => {
     // transition") would re-introduce the prompt-budget drift this purge
     // corrected. A legitimate new tool family should update the expected
     // list here rather than route around the assertion.
+    //
+    // The surface moved 7 → 8 in issue #282: `lore-pinned` adds a coherent
+    // four-action sub-surface for pinned context blocks. The actions
+    // would also have fit on `lore-memory`, but the per-tool description
+    // budget below was already at the high-water mark and absorbing the
+    // four new bullets would have pushed `lore-memory` ~80% past its
+    // ceiling — exactly the lopsided-growth failure mode this per-tool
+    // gate exists to catch. Splitting it onto its own family keeps
+    // `lore-memory` lean AND surfaces "pinned blocks" as a first-class
+    // concept in the tool surface.
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
     registerMemoryTools(mock.server, services)
+    registerPinnedTools(mock.server, services)
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
@@ -1644,6 +1653,7 @@ describe("MCP tool surface", () => {
     const polymorphic = [
       "lore-context",
       "lore-memory",
+      "lore-pinned",
       "lore-query",
       "lore-fact",
       "lore-decision",
@@ -1656,7 +1666,7 @@ describe("MCP tool surface", () => {
   // -----------------------------------------------------------------------
   // Polymorphic-tool prompt-economy budgets.
   //
-  // The seven polymorphic tools are now the only registered surface, so
+  // The eight polymorphic tools are now the only registered surface, so
   // these ceilings guard against a future PR quietly appending an
   // action's worth of bullets to a description and re-inflating every
   // reconnecting session's prompt — the same pressure that motivated
@@ -1672,6 +1682,7 @@ describe("MCP tool surface", () => {
     const services = makeServices() as never
     registerContextTools(mock.server, services)
     registerMemoryTools(mock.server, services)
+    registerPinnedTools(mock.server, services)
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
@@ -1692,10 +1703,19 @@ describe("MCP tool surface", () => {
     // action without inviting a paragraph of narration. The earlier
     // 1400 number left only ~17 chars of headroom — the next action
     // would have tripped this on the same day it landed.
-    const PER_TOOL_DESCRIPTION_LIMIT = 1750
+    //
+    // Bumped 1750 → 1950 in #282 to absorb the `lore-memory`
+    // cross-reference paragraph pointing pinned-block users at the
+    // new `lore-pinned` family AND tighten the `update` bullet with
+    // the MemoryReadOnlyError contract. The +200 chars stack against
+    // the sibling fine-grained `PER_TOOL_DESCRIPTION_LIMITS` map
+    // below, which retains the same 1900 entry for `lore-memory`
+    // (per-tool detection of lopsided growth across the surface).
+    const PER_TOOL_DESCRIPTION_LIMIT = 2050
     const polymorphic = [
       "lore-context",
       "lore-memory",
+      "lore-pinned",
       "lore-query",
       "lore-fact",
       "lore-decision",
@@ -1711,22 +1731,23 @@ describe("MCP tool surface", () => {
     }
   })
 
-  it("the seven polymorphic tools' descriptions sum stays within the combined budget", () => {
+  it("the eight polymorphic tools' descriptions sum stays within the combined budget", () => {
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
     registerMemoryTools(mock.server, services)
+    registerPinnedTools(mock.server, services)
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
-    // Combined ceiling. The surface has moved 7 → 8 → 7 across P3-01,
-    // PF3-06, and the 0.6.0 purge; the budget covers the high-water
-    // mark plus comfortable headroom so a future action lands without
-    // inviting a surface-doubling regression. Four recent bumps stack:
-    // (a) 7000 → 7100 in #265 to accommodate the `lore-task
+    // Combined ceiling. The surface has moved 7 → 8 → 7 → 8 across P3-01,
+    // PF3-06, the 0.6.0 purge, and issue #282; the budget covers the
+    // high-water mark plus comfortable headroom so a future action lands
+    // without inviting a surface-doubling regression. Five recent bumps
+    // stack: (a) 7000 → 7100 in #265 to accommodate the `lore-task
     // action='create'` reuse note — agent-observable behavior change
     // that warranted a one-line schema signal alongside the
     // response-text vocabulary; (b) 7100 → 7200 in issue #281 Phase 1
@@ -1736,27 +1757,42 @@ describe("MCP tool surface", () => {
     // knows proposed-state decisions surface via `lore-decision`
     // instead); (c) 7200 → 7500 in issue #281 Phase 4 to absorb
     // the `lore-memory action='approve' / 'reject'` inbox-review
-    // actions and their `reviewer` parameter (+300 chars); and
+    // actions and their `reviewer` parameter (+300 chars);
     // (d) 7500 → 7900 in PR #550 / 0.13.1 to absorb the
     // `lore-task` `CRITICAL SCOPE RULE` block (parallel to the
     // existing `CRITICAL CLOSURE RULE`) and the matching tighten
     // on the `create` bullet so live agents tokenize the
     // tangential/out-of-scope rule with the same early-token
-    // weight the autosave subagent reads in `prompts.ts`. (e) 7900
-    // → 8000 in the issue #286 read-inheritance + promote PR to
-    // absorb the `lore-memory action='promote'` bullet (+~150
-    // chars, kept terse with a docs/topology.md link). Each delta
-    // stays within a "≤ ~300 chars per single-action-add"
-    // envelope (delta (d) is +400 — a structural critical-rule
-    // block, larger than the per-action envelope and explicitly
-    // documented as such); doc-string clauses dominate, not the
-    // action-name additions themselves. Future description adds
-    // should continue to stack the budget explicitly rather than
+    // weight the autosave subagent reads in `prompts.ts`;
+    // (e) 7900 → 8000 in the issue #286 read-inheritance +
+    // promote PR to absorb the `lore-memory action='promote'`
+    // bullet (+~150 chars, kept terse with a
+    // docs/topology.md link); and (f) 8000 → 9400 in issue
+    // #282 to absorb the new `lore-pinned` family (four
+    // actions: pin/unpin/update/list) for pinned context
+    // blocks. Putting pinned-block actions on `lore-memory`
+    // would have busted the per-tool ceiling below (lopsided
+    // growth — the principal failure mode the per-tool
+    // ceiling guards against), so the +1400 chars land as a
+    // dedicated family description with its own per-tool
+    // budget AND load-bearing security framing on `lore-pinned`
+    // (`force: true` is a stop-sign
+    // visible in the audit trail, NOT an access-control gate;
+    // `audience` is render metadata, not authorization).
+    // Each delta stays within a "≤ ~300 chars per
+    // single-action-add" envelope (deltas (d) and (f) exceed
+    // it — (d) is a structural critical-rule block, (f) is
+    // four actions plus a new family header plus load-bearing
+    // security framing — and are explicitly documented as
+    // such); doc-string clauses dominate, not the action-name
+    // additions themselves. Future description adds should
+    // continue to stack the budget explicitly rather than
     // burning headroom silently.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 8000
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 9400
     const polymorphic = [
       "lore-context",
       "lore-memory",
+      "lore-pinned",
       "lore-query",
       "lore-fact",
       "lore-decision",
@@ -1782,8 +1818,8 @@ describe("MCP tool surface", () => {
     // of unstructured commentary added to one bullet." Without it,
     // a future Phase 5/6 of #281 could add 300+ chars to a single
     // tool's description with the combined budget still passing —
-    // exactly the failure mode the principal review on PR #453 (r3)
-    // flagged as aspirational rather than mechanical.
+    // the per-tool ceiling makes that growth mechanically loud
+    // instead of an aspirational rule.
     //
     // Ceilings are current observed length + ~150 char headroom per
     // tool. A contributor who hits a ceiling must (a) bump the
@@ -1799,22 +1835,25 @@ describe("MCP tool surface", () => {
     const services = makeServices() as never
     registerContextTools(mock.server, services)
     registerMemoryTools(mock.server, services)
+    registerPinnedTools(mock.server, services)
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
-    // Current observed lengths (post-#550 / 0.13.1 SCOPE RULE block):
-    // lore-context: 1087, lore-memory: 1368, lore-query: 1038,
+    // Current observed lengths (post-#550 / 0.13.1 SCOPE RULE block
+    // + issue #282 lore-pinned family):
+    // lore-context: 1087, lore-memory: 1775, lore-query: 1038,
     // lore-fact: 1233, lore-decision: 848, lore-project: 323,
-    // lore-task: 1704. Each ceiling is `current + ~150 chars` —
-    // accommodates one single-action-add at the documented envelope
-    // before the test fails LOUDLY and forces the contributor to
-    // bump the entry here AND the combined ceiling above.
+    // lore-task: 1704, lore-pinned: 880. Each ceiling is
+    // `current + ~150 chars` — accommodates one single-action-add at
+    // the documented envelope before the test fails LOUDLY and
+    // forces the contributor to bump the entry here AND the combined
+    // ceiling above.
     //
-    // Sum of per-tool ceilings (~8670) deliberately exceeds the
-    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (7900) so the
+    // Sum of per-tool ceilings (~9900) deliberately exceeds the
+    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (8800) so the
     // combined ceiling stays the real envelope; per-tool ceilings
     // exist to catch lopsided growth (one tool absorbs all the
     // additions while the others stay quiet — hides the growth from
@@ -1822,13 +1861,36 @@ describe("MCP tool surface", () => {
     // when bumping either: a future combined-ceiling raise should
     // confirm the sum-of-ceilings still has headroom (or bump
     // individual entries alongside).
+    //
+    // `lore-memory` bumped 1520 → 1900 in #282 to absorb the
+    // cross-reference paragraph pointing pinned-block users at the
+    // new `lore-pinned` family AND a tightened wording on the
+    // `update` bullet noting the MemoryReadOnlyError contract. The
+    // +255 chars keep `lore-memory` as the largest mutator surface
+    // without inviting a paragraph of unstructured commentary.
+    // `lore-pinned` sized at 1330 — current ~1180 plus headroom.
+    // The description carries load-bearing security framing on
+    // `force: true` ("stop-sign visible in the audit trail, NOT
+    // an access-control gate"), an explicit "Audience is render
+    // metadata, not authorization" sentence on the `list` bullet,
+    // and an `includeAllAudiences` clarification on the same.
+    // Each clause is load-bearing — trimming them would
+    // re-introduce the access-control misconception that the
+    // wording exists to prevent.
     const PER_TOOL_DESCRIPTION_LIMITS: Record<string, number> = {
       "lore-context": 1240,
       // 1520 → 1720 to absorb the `lore-memory action='promote'`
-      // bullet (issue #286). Kept terse with a docs/topology.md
-      // link rather than expanding the cross-vault rationale
-      // inline.
-      "lore-memory": 1720,
+      // bullet (issue #286). 1720 → 2050 after merging issue
+      // #282 onto the post-#286 head: the pinned cross-reference
+      // paragraph + tightened `update`-bullet MemoryReadOnlyError
+      // wording stack on top of the promote bullet. Both deltas
+      // keep `lore-memory` as the largest mutator surface
+      // without inviting a paragraph of unstructured commentary.
+      "lore-memory": 2050,
+      // `lore-pinned` lands fresh at 1330 — current ~1180 plus
+      // the ~150-char headroom envelope. Description carries
+      // load-bearing security framing on `force` / `audience`.
+      "lore-pinned": 1330,
       "lore-query": 1190,
       "lore-fact": 1390,
       "lore-decision": 1000,
@@ -1842,7 +1904,7 @@ describe("MCP tool surface", () => {
         `${name} description (${length} chars) exceeds the ${limit}-char per-tool envelope. ` +
           `If this is intentional (a new action / required schema signal), bump the ` +
           `entry in PER_TOOL_DESCRIPTION_LIMITS AND the combined TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT, ` +
-          `and add a paired bump-history bullet to the combined-ceiling comment above.`,
+          `and add a paired bump-history bullet to the combined-ceiling comment above.`
       ).toBeLessThanOrEqual(limit)
     }
   })
@@ -1857,6 +1919,7 @@ describe("MCP tool surface", () => {
     const services = makeServices() as never
     registerContextTools(mock.server, services)
     registerMemoryTools(mock.server, services)
+    registerPinnedTools(mock.server, services)
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
@@ -1891,12 +1954,19 @@ describe("MCP tool surface", () => {
     // `dryRun` parameter description carries ~250 chars of
     // rationale for why the MCP equivalent of `--dry-run` exists)
     // plus the longer `targetName` describe text covering the
-    // configured-list error contract. Future actions should
-    // continue stacking the budget explicitly.
-    const PER_TOOL_CONFIG_LIMIT = 6600
+    // configured-list error contract. Issue #282 bumped 6600 →
+    // 6900 for the lore-memory cross-reference paragraph
+    // pointing pinned-block users at `lore-pinned` plus a
+    // tightened wording on the `update` bullet noting the
+    // MemoryReadOnlyError contract. `lore-pinned` lives in its
+    // own file and stays within the same per-tool budget.
+    // Future actions should continue stacking the budget
+    // explicitly.
+    const PER_TOOL_CONFIG_LIMIT = 6900
     const polymorphic = [
       "lore-context",
       "lore-memory",
+      "lore-pinned",
       "lore-query",
       "lore-fact",
       "lore-decision",

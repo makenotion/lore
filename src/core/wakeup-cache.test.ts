@@ -21,6 +21,8 @@ function makeData(): WakeUpData {
     proposedMemories: [],
     proposedMemoriesTotal: 0,
     staleConfidence: [],
+    pinnedBlocks: [],
+    pinnedBlocksTotal: null,
     coverage: null,
     inheritedMemories: [],
   }
@@ -164,10 +166,13 @@ describe("WakeUpCache", () => {
     let bCalls = 0
 
     const startEpochA = cache.currentEpoch
-    const a = cache.getOrLoad("key-1", startEpochA, () =>
-      new Promise<WakeUpData>((r) => {
-        aResolve = r
-      }),
+    const a = cache.getOrLoad(
+      "key-1",
+      startEpochA,
+      () =>
+        new Promise<WakeUpData>((r) => {
+          aResolve = r
+        })
     )
 
     cache.bumpEpoch() // a save lands while A is in flight
@@ -195,7 +200,7 @@ describe("WakeUpCache", () => {
       cache.getOrLoad("key-1", startEpoch, async () => {
         calls += 1
         throw new Error("transient")
-      }),
+      })
     ).rejects.toThrow("transient")
 
     const data = makeData()
@@ -222,38 +227,36 @@ describe("computeWakeUpCacheKey", () => {
 
   it("produces distinct keys for distinct projectIds", () => {
     expect(computeWakeUpCacheKey({ projectId: "a" })).not.toBe(
-      computeWakeUpCacheKey({ projectId: "b" }),
+      computeWakeUpCacheKey({ projectId: "b" })
     )
   })
 
   it("produces distinct keys for distinct userQuery values", () => {
     expect(computeWakeUpCacheKey({ userQuery: "fix bug" })).not.toBe(
-      computeWakeUpCacheKey({ userQuery: "fix tests" }),
+      computeWakeUpCacheKey({ userQuery: "fix tests" })
     )
   })
 
   it("normalizes userQuery casing and whitespace before keying", () => {
     expect(computeWakeUpCacheKey({ userQuery: "Fix Bug" })).toBe(
-      computeWakeUpCacheKey({ userQuery: "  fix bug  " }),
+      computeWakeUpCacheKey({ userQuery: " fix bug " })
     )
   })
 
   it("treats empty / whitespace-only userQuery as no userQuery", () => {
     expect(computeWakeUpCacheKey({})).toBe(computeWakeUpCacheKey({ userQuery: "" }))
-    expect(computeWakeUpCacheKey({})).toBe(
-      computeWakeUpCacheKey({ userQuery: "   " }),
-    )
+    expect(computeWakeUpCacheKey({})).toBe(computeWakeUpCacheKey({ userQuery: " " }))
   })
 
   it("ignores `now` so back-to-back invocations land on the same slot", () => {
     expect(computeWakeUpCacheKey({ projectId: "p", now: 1 })).toBe(
-      computeWakeUpCacheKey({ projectId: "p", now: 999 }),
+      computeWakeUpCacheKey({ projectId: "p", now: 999 })
     )
   })
 
   it("includes todayDate so a midnight crossing forces a refetch", () => {
     expect(computeWakeUpCacheKey({ todayDate: "2026-05-03" })).not.toBe(
-      computeWakeUpCacheKey({ todayDate: "2026-05-04" }),
+      computeWakeUpCacheKey({ todayDate: "2026-05-04" })
     )
   })
 
@@ -273,6 +276,12 @@ describe("computeWakeUpCacheKey", () => {
       // including it the MCP path (default 3) and a hook path
       // (would-be 0) would collide on key.
       "inheritedMemoryLimit",
+      // `pinnedBlockLimit` changes both
+      // the `pinnedBlocks` slice AND the rendered abuse-warning
+      // header count. Without including it a wake-up with
+      // `pinnedBlockLimit: 0` (opt-out) and the MCP default
+      // would collide and cross-serve incompatible slices.
+      "pinnedBlockLimit",
     ]
     const baseline = computeWakeUpCacheKey(base)
     for (const field of fields) {
@@ -291,9 +300,94 @@ describe("computeWakeUpCacheKey", () => {
       // (default on) collide on key and silently cross-serve
       // each other's `inheritedMemories` array.
       "includeInheritedMemories",
+      // toggling `includePinnedBlocks`
+      // swings the pinned fan-out on/off AND the abuse-warning
+      // gate. Without including it a hook-style caller (opt-out)
+      // and an MCP-style caller (default on) collide on key and
+      // silently cross-serve each other's pinned slice — the
+      // MCP caller would lose its `## Pinned Context` section
+      // and abuse warning until cache invalidation. Pinned
+      // context renders BEFORE the relevance-ranked sections so
+      // the collision is a correctness/safety issue rather than
+      // just stale metadata.
+      "includePinnedBlocks",
     ] as const) {
       const variant = computeWakeUpCacheKey({ ...base, [field]: false })
       expect(variant).not.toBe(baseline)
     }
+  })
+
+  it("varies on pinnedReaderContext so different audiences don't cross-serve filtered slices (issue #282)", () => {
+    // The reader context governs which audience-filtered pins
+    // surface for a given session. Two readers with different
+    // identities must never share a cached pinned slice.
+    const codeReviewer = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { role: "code-reviewers" },
+    })
+    const releaseAgent = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { role: "release-agents" },
+    })
+    const noContext = computeWakeUpCacheKey({ projectId: "p" })
+    expect(codeReviewer).not.toBe(releaseAgent)
+    expect(codeReviewer).not.toBe(noContext)
+    expect(releaseAgent).not.toBe(noContext)
+  })
+
+  it("treats equivalent pinnedReaderContext shapes as the same key (case-insensitive identity slots)", () => {
+    // Audience matching is case-folded; the cache key must
+    // match that normalization so two callers with the same
+    // identity in different casing share a slot.
+    const lower = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { agent: "claude code" },
+    })
+    const upper = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { agent: "Claude Code" },
+    })
+    expect(lower).toBe(upper)
+  })
+
+  it("ignores empty / whitespace-only identity slots so they don't pollute the cache key", () => {
+    // An identity slot exported as empty / whitespace doesn't
+    // affect the audience match (`pinnedBlockAudienceMatches`
+    // trims and filters empty slots). The cache key must mirror
+    // that so two callers — one with an empty `agent`, one with
+    // no `agent` field at all — share a slot.
+    const empty = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { agent: "" },
+    })
+    const whitespace = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { agent: " " },
+    })
+    const absent = computeWakeUpCacheKey({ projectId: "p" })
+    expect(empty).toBe(absent)
+    expect(whitespace).toBe(absent)
+  })
+
+  it("ignores MemoryScopeContext fields that don't affect the pinned audience filter", () => {
+    // `pinnedBlockAudienceMatches` consults only agent / role /
+    // userId. Fields like `session` / `run` / `environment` are
+    // part of the broader `MemoryScopeContext` (issue #283 scope
+    // filter) but don't participate in pinned audience matching,
+    // so they must NOT inflate the pinned-slice cache key.
+    const noisy = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: {
+        agent: "code-reviewers",
+        session: "abc",
+        run: "xyz",
+        environment: "dev",
+      },
+    })
+    const clean = computeWakeUpCacheKey({
+      projectId: "p",
+      pinnedReaderContext: { agent: "code-reviewers" },
+    })
+    expect(noisy).toBe(clean)
   })
 })

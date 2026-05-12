@@ -277,6 +277,22 @@ function stubServices(opts: {
    * smaller than the true total.
    */
   proposedMemoriesTotal?: number
+  /**
+   * Pinned context blocks (issue #282) returned by
+   * `services.memories.listPinnedBlocks`. The stub slices to the
+   * caller's `limit`. Default `[]` — pinned-block behavior is
+   * additive, every pre-#282 fixture sees the section empty.
+   */
+  pinnedBlocks?: Memory[]
+  /**
+   * Total active-pinned-block count returned by
+   * `services.memories.countPinnedBlocks` (issue #282 abuse warning).
+   * Defaults to `pinnedBlocks.length` so the no-saturation case
+   * reads as "rendered slice IS the total." Set explicitly to
+   * simulate a vault flooded with pinned rows that exceeds the
+   * abuse threshold.
+   */
+  pinnedBlocksTotal?: number
 } = {}): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
@@ -334,6 +350,12 @@ function stubServices(opts: {
         bySource: {} as Record<string, number>,
         byAgent: {} as Record<string, number>,
       })),
+      listPinnedBlocks: vi.fn(async (args: { limit?: number }) => {
+        return (opts.pinnedBlocks ?? []).slice(0, args.limit ?? 10)
+      }),
+      countPinnedBlocks: vi.fn(async () =>
+        opts.pinnedBlocksTotal ?? (opts.pinnedBlocks?.length ?? 0),
+      ),
     },
     facts: {
       listRecent: vi.fn(async (listOpts: ListRecentCall) => {
@@ -2454,6 +2476,8 @@ describe("loadWakeUpData with WakeUpCache", () => {
           bySource: {},
           byAgent: {},
         }),
+        listPinnedBlocks: async () => [],
+        countPinnedBlocks: async () => 0,
       },
       facts: {
         listRecent: async () => ({ items: [], hasMore: false }),

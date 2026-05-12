@@ -1,10 +1,12 @@
 # MCP Tools
 
-Lore exposes seven polymorphic tools, each multiplexing several actions behind
-one MCP registration: `lore-context`, `lore-memory`, `lore-query`, `lore-fact`,
-`lore-decision`, `lore-project`, and `lore-task`. The prior single-purpose tool
-names and task aliases were removed in the 0.6.0 deprecation purge; see
-[`src/mcp/AGENTS.md`](../src/mcp/AGENTS.md) for the historical timeline.
+Lore exposes eight polymorphic tools, each multiplexing several actions behind
+one MCP registration: `lore-context`, `lore-memory`, `lore-pinned`,
+`lore-query`, `lore-fact`, `lore-decision`, `lore-project`, and `lore-task`.
+The prior single-purpose tool names and task aliases were removed in the 0.6.0
+deprecation purge; see [`src/mcp/AGENTS.md`](../src/mcp/AGENTS.md) for the
+historical timeline. `lore-pinned` was added in issue #282 (pinned context
+blocks).
 
 ## `lore-context` — vault context
 
@@ -109,6 +111,28 @@ omit to leave the column untouched, pass `null` on the select / date
 columns to clear, or pass an empty string on the rich_text columns
 to clear. Pre-#283 rows have all five columns null and pass through
 default reads byte-identically.
+
+## `lore-pinned` — pinned context blocks (issue #282)
+
+| Action   | Description                                                                                                                                                                                                                                                                                  |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pin`    | Flip an existing memory into a pinned context block. Sets `priority` (sort order; higher first), `audience` (comma-separated tokens, reused from issue #283's `Audience` column), and `mutability` (`mutable` default or `read-only`).                                                       |
+| `unpin`  | Flip a pinned block back to a regular memory. Rejects when `Mutability = read-only` unless a separate `lore-pinned action='update'` flips mutability first.                                                                                                                                  |
+| `update` | Change priority / audience / mutability on an existing pin. Pass `force: true` to override `Mutability: read-only` — every override appends a `> Forced read-only update` audit line to the memory body.                                                                                     |
+| `list`   | List active pinned blocks for the current project + audience. `includeAllAudiences: true` skips the audience filter for operator inspection across audiences. `audience: "<token>"` simulates a specific reader's perspective. Default cap is 10, max 100.                                   |
+
+Pinned context blocks render in `lore-context action='wake-up'` under
+a dedicated `## Pinned Context` section BEFORE the relevance-ranked
+sections (digest / recent / for-your-current-task). Audience matching
+is comma-split + case-folded against the reader's resolved scope
+context (`LORE_USER_NAME` / `LORE_AGENT_NAME` / `LORE_ROLE`); `all`
+/ `*` / `everyone` / `agents` are universal tokens. Empty audience
+matches every reader.
+
+Every pin / unpin / update appends an audit line to the memory body
+(`> <Action> <YYYY-MM-DD> by <author>: <reason>`) so the change is
+recoverable from the row itself without consulting an external audit
+log (AC #4).
 
 ## `lore-query` — vault read paths
 

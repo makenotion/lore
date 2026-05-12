@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   initServices: vi.fn(),
   registerContextTools: vi.fn(),
   registerMemoryTools: vi.fn(),
+  registerPinnedTools: vi.fn(),
   registerQueryTools: vi.fn(),
   registerProjectTools: vi.fn(),
   registerKnowledgeTools: vi.fn(),
@@ -34,6 +35,10 @@ vi.mock("./tools/context.js", () => ({
 
 vi.mock("./tools/memory.js", () => ({
   registerMemoryTools: mocks.registerMemoryTools,
+}))
+
+vi.mock("./tools/pinned.js", () => ({
+  registerPinnedTools: mocks.registerPinnedTools,
 }))
 
 vi.mock("./tools/query.js", () => ({
@@ -85,6 +90,7 @@ const DIAGNOSTIC_TOOL_NAMES = [
   "lore-decision",
   "lore-fact",
   "lore-memory",
+  "lore-pinned",
   "lore-project",
   "lore-query",
   "lore-task",
@@ -95,6 +101,7 @@ afterEach(() => {
   mocks.initServices.mockReset()
   mocks.registerContextTools.mockReset()
   mocks.registerMemoryTools.mockReset()
+  mocks.registerPinnedTools.mockReset()
   mocks.registerQueryTools.mockReset()
   mocks.registerProjectTools.mockReset()
   mocks.registerKnowledgeTools.mockReset()
@@ -179,9 +186,7 @@ describe("startServer", () => {
       expect(stderr).toHaveBeenCalledWith(
         expect.stringContaining("starting diagnostic MCP server")
       )
-      expect(stderr).toHaveBeenCalledWith(
-        expect.stringMatching(/\n {4}at .+:\d+:\d+/)
-      )
+      expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/\n {4}at .+:\d+:\d+/))
       expect(stdoutLog).not.toHaveBeenCalled()
       expect(stdoutWrite).not.toHaveBeenCalled()
     } finally {
@@ -346,9 +351,7 @@ describe("startServer", () => {
           })
         ).content[0]?.text ?? ""
       expect(text).toContain("plain string failure")
-      expect(stderr).toHaveBeenCalledWith(
-        expect.stringContaining("plain string failure")
-      )
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("plain string failure"))
     } finally {
       stderr.mockRestore()
     }

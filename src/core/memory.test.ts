@@ -5,8 +5,12 @@ import { APIErrorCode, APIResponseError } from "@notionhq/client"
 import {
   MemoryService,
   MemoryCreatePartialFailureError,
+  MemoryPinCapExceededError,
+  MemoryReadOnlyError,
   MemoryUpdatePartialFailureError,
+  clampPinnedPriority,
   pageToMemory,
+  pinnedBlockAudienceMatches,
   tieBreakingRrfCompare,
   appendCompareNote,
   appendCompareDispatchLedgerEntry,
@@ -28,6 +32,7 @@ import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import { AutosaveLearningDuplicateProbeError } from "./near-duplicate.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
 import {
+  PINNED_BLOCKS_HARD_CAP,
   SYNOPSIS_MAX,
   type CreateMemoryInput,
   type DatabaseRef,
@@ -1002,7 +1007,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     const service = new MemoryService(client, db)
 
     await service
-      .create({ title: "x", content: "body prose", keywords: "   " })
+      .create({ title: "x", content: "body prose", keywords: " " })
       .catch(() => {})
 
     expect(updateSpy).toHaveBeenCalledTimes(1)
@@ -1015,15 +1020,15 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
 
   it("archive→restore round-trip: orphan is soft-archived with sentinel, restoring it from trash leaves the sentinel in place, and findByTopicKey filters it out (issue #477)", async () => {
     // Bug repro from the original issue. Steps:
-    //   1. createFresh body-write fails → cleanup archive lands sentinel
-    //   2. Operator restores the orphan from Notion's workspace trash
-    //   3. The next lore-memory action='save' against the same topic key
-    //      runs findByTopicKey
-    //   4. WITHOUT the fix, the resurfaced row matches the topic-key
-    //      query and the upsert path appends a revision to an
-    //      empty-body shell; WITH the fix, the server-side
-    //      `Keywords does_not_contain` filter excludes the row before
-    //      it can reach the upsert path.
+    // 1. createFresh body-write fails → cleanup archive lands sentinel
+    // 2. Operator restores the orphan from Notion's workspace trash
+    // 3. The next lore-memory action='save' against the same topic key
+    // runs findByTopicKey
+    // 4. WITHOUT the fix, the resurfaced row matches the topic-key
+    // query and the upsert path appends a revision to an
+    // empty-body shell; WITH the fix, the server-side
+    // `Keywords does_not_contain` filter excludes the row before
+    // it can reach the upsert path.
     //
     // The previous tests collapsed step 2 (restore) into the fixture by
     // building a "live" row with the keyword preset — they confirm the
@@ -1034,8 +1039,9 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
 
     // Step 1: simulate the partial-failure cleanup write.
     const bodyWriteError = new Error("Notion body update failed (502)")
-    const { client: createClient, updateSpy: createUpdateSpy } =
-      makePartialFailureClient({ bodyWriteError })
+    const { client: createClient, updateSpy: createUpdateSpy } = makePartialFailureClient(
+      { bodyWriteError }
+    )
     const createService = new MemoryService(createClient, db)
     await createService
       .create({
@@ -1047,7 +1053,9 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     expect(createUpdateSpy).toHaveBeenCalledTimes(1)
     const cleanupCall = createUpdateSpy.mock.calls[0]![0]
     const cleanupKeywordsProp = (
-      cleanupCall.properties as { Keywords: { rich_text: Array<{ text: { content: string } }> } }
+      cleanupCall.properties as {
+        Keywords: { rich_text: Array<{ text: { content: string } }> }
+      }
     ).Keywords
     // The cleanup write uses two rich_text segments when keywords are
     // present (issue #477 review-feedback) so the at-cap edge cannot
@@ -1362,7 +1370,19 @@ describe("MemoryService.update — partial-failure on body write", () => {
     const bodyWriteError = new Error("notion 503")
     const updateSpy = vi.fn(async () => ({}))
     const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
-    const retrieveSpy = vi.fn()
+    // Issue #282: `update()` runs a read-only preflight via
+    // `pages.retrieve` before any write so the read-only contract
+    // can reject before mutation. The retrieve returns a non-pinned
+    // page so the preflight passes through to the body of update().
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Memory" }] },
+          Pinned: { type: "checkbox", checkbox: false },
+        },
+        { id: "mem-1" }
+      )
+    )
     const retrieveMarkdownSpy = vi.fn()
     const client = {
       pages: {
@@ -1389,7 +1409,10 @@ describe("MemoryService.update — partial-failure on body write", () => {
     expect(updateSpy.mock.invocationCallOrder[0]).toBeLessThan(
       updateMarkdownSpy.mock.invocationCallOrder[0]
     )
-    expect(retrieveSpy).not.toHaveBeenCalled()
+    // The read-only preflight fires one retrieve before the writes;
+    // the post-body-failure return path is short-circuited by the
+    // thrown error so retrieveMarkdown stays untouched.
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
     expect(caught).toBeInstanceOf(MemoryUpdatePartialFailureError)
     const partial = caught as MemoryUpdatePartialFailureError
@@ -1403,17 +1426,30 @@ describe("MemoryService.update — partial-failure on body write", () => {
 
     const cachedTitle = await service.getTitleById("mem-1")
     expect(cachedTitle).toBe("Updated title")
-    expect(retrieveSpy).not.toHaveBeenCalled()
+    // The cached read short-circuits the post-update `getTitleById`
+    // so retrieve fires once total — the read-only preflight call
+    // — and not a second time for the title cache.
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
   })
 
   it("treats empty content as an explicit body clear on the partial-failure path", async () => {
     const bodyWriteError = new Error("notion 503")
     const updateSpy = vi.fn(async () => ({}))
     const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Memory" }] },
+          Pinned: { type: "checkbox", checkbox: false },
+        },
+        { id: "mem-1" }
+      )
+    )
     const client = {
       pages: {
         update: updateSpy,
         updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
       },
     } as unknown as Client
     const service = new MemoryService(client, db)
@@ -1441,10 +1477,20 @@ describe("MemoryService.update — partial-failure on body write", () => {
     const bodyWriteError = new Error("notion 503")
     const updateSpy = vi.fn()
     const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Memory" }] },
+          Pinned: { type: "checkbox", checkbox: false },
+        },
+        { id: "mem-1" }
+      )
+    )
     const client = {
       pages: {
         update: updateSpy,
         updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
       },
     } as unknown as Client
     const service = new MemoryService(client, db)
@@ -1460,10 +1506,20 @@ describe("MemoryService.update — partial-failure on body write", () => {
     const bodyWriteError = "notion string failure"
     const updateSpy = vi.fn(async () => ({}))
     const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Memory" }] },
+          Pinned: { type: "checkbox", checkbox: false },
+        },
+        { id: "mem-1" }
+      )
+    )
     const client = {
       pages: {
         update: updateSpy,
         updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
       },
     } as unknown as Client
     const service = new MemoryService(client, db)
@@ -1488,10 +1544,20 @@ describe("MemoryService.update — partial-failure on body write", () => {
     const bodyWriteError = new Error("notion 503")
     const updateSpy = vi.fn()
     const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Memory" }] },
+          Pinned: { type: "checkbox", checkbox: false },
+        },
+        { id: "mem-1" }
+      )
+    )
     const client = {
       pages: {
         update: updateSpy,
         updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
       },
     } as unknown as Client
     const service = new MemoryService(client, db)
@@ -1872,7 +1938,7 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
   }
 
   /** Stub `dataSources.query` returning a fixed set of pages, optionally
-   *  paginated across multiple Notion pages. */
+   * paginated across multiple Notion pages. */
   function makeQueryClient(
     pages: Array<{
       results: PageObjectResponse[]
@@ -3648,10 +3714,10 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     //
     // The test seeds the cache with the pre-upsert title, runs the
     // upsert, then re-reads via `getTitleById` and asserts:
-    //   1. The new title is returned.
-    //   2. No additional `pages.retrieve` call fires (the write-
-    //      through committed the new value, so the read short-
-    //      circuits on the cache hit).
+    // 1. The new title is returned.
+    // 2. No additional `pages.retrieve` call fires (the write-
+    // through committed the new value, so the read short-
+    // circuits on the cache hit).
     const existing = buildExistingMemoryPage("existing-mem", {
       topicKey: "runbook/db-migration",
       projectIds: ["P1"],
@@ -3815,11 +3881,11 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     // Runbook is a non-decision kind. The upsert path forwards
     // `input.kind` to `computePromotionAdvisory`, which selects the
     // non-decision suggestion that drops `supersedesIds`
-    // (DecisionService.getById would reject the non-decision id —
-    // see the principal review on 0.9.0/15). Pinned end-to-end
-    // through the upsert integration so a future contributor that
-    // forgets to thread `kind` doesn't silently regress the user-
-    // facing CTA back to the broken decision-only wording.
+    // (DecisionService.getById would reject the non-decision id).
+    // Pinned end-to-end through the upsert integration so a future
+    // contributor that forgets to thread `kind` doesn't silently
+    // regress the user-facing CTA back to the broken decision-only
+    // wording.
     expect(result.promotionAdvisory!.suggestion).not.toContain("supersedesIds")
     expect(result.promotionAdvisory!.suggestion).not.toContain("<this-memory-id>")
     expect(result.promotionAdvisory!.suggestion).toContain(
@@ -3884,10 +3950,10 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
 
   describe("LORE_USE_RUNTOOL_BLOCK_EDIT (issue #534)", () => {
     /** Build a body containing a fingerprinted revision-1 block whose
-     *  fingerprint matches the existing memory's effective snapshot.
-     *  The `pickRevisionAppendAnchor` helper requires a fingerprint
-     *  line that occurs exactly once; this helper constructs the
-     *  canonical revision-1 shape that `upsertByTopicKey` produces. */
+     * fingerprint matches the existing memory's effective snapshot.
+     * The `pickRevisionAppendAnchor` helper requires a fingerprint
+     * line that occurs exactly once; this helper constructs the
+     * canonical revision-1 shape that `upsertByTopicKey` produces. */
     function fingerprintedRevisionBody(opts: {
       title: string
       content: string
@@ -3929,7 +3995,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     }
 
     /** Make a client where `client.request` (the RunTool transport)
-     *  is captured alongside the standard upsert spies. */
+     * is captured alongside the standard upsert spies. */
     function makeRunToolClient(
       base: ReturnType<typeof makeUpsertClient>,
       runToolBehavior: (body: unknown) => unknown = () => ({ page_id: "ok" })
@@ -4173,22 +4239,17 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         // by a failing test, not by a production outage on
         // integration-secret operators.
         process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
-        const stderrSpy = vi
-          .spyOn(process.stderr, "write")
-          .mockImplementation(() => true)
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
         try {
-          const existing = buildExistingMemoryPage(
-            "11111111111111111111111111111111",
-            {
-              topicKey: "decision/jwt",
-              projectIds: ["P1"],
-              revisionCount: 1,
-              kind: "decision",
-              title: "JWT auth",
-              source: "manual",
-              confidence: "likely",
-            }
-          )
+          const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+            topicKey: "decision/jwt",
+            projectIds: ["P1"],
+            revisionCount: 1,
+            kind: "decision",
+            title: "JWT auth",
+            source: "manual",
+            confidence: "likely",
+          })
           const { body } = fingerprintedRevisionBody({
             title: "JWT auth",
             content: "v1 content",
@@ -4317,8 +4378,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         findResults: [existing],
         existingBody: body,
       })
-      const { client: clientOff, requestSpy: requestSpyOff } =
-        makeRunToolClient(baseOff)
+      const { client: clientOff, requestSpy: requestSpyOff } = makeRunToolClient(baseOff)
       await new MemoryService(clientOff, db).upsertByTopicKey({
         topicKey: "decision/jwt",
         projectIds: ["P1"],
@@ -5152,7 +5212,10 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       const service = new MemoryService(client, db)
 
       await expect(
-        service.rekeyTopicKey({ memoryId: "11111111111111111111111111111111", newTopicKey: "decision/jwt-new" })
+        service.rekeyTopicKey({
+          memoryId: "11111111111111111111111111111111",
+          newTopicKey: "decision/jwt-new",
+        })
       ).rejects.toMatchObject({
         name: "RekeyAuditError",
         memoryId: "11111111111111111111111111111111",
@@ -5199,7 +5262,10 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       const service = new MemoryService(client, db)
 
       await expect(
-        service.rekeyTopicKey({ memoryId: "11111111111111111111111111111111", newTopicKey: "decision/jwt-new" })
+        service.rekeyTopicKey({
+          memoryId: "11111111111111111111111111111111",
+          newTopicKey: "decision/jwt-new",
+        })
       ).rejects.toMatchObject({
         name: "RekeyAuditError",
         memoryId: "11111111111111111111111111111111",
@@ -5261,9 +5327,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
         // failing test, not by a production false-positive
         // partial-state error.
         process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
-        const stderrSpy = vi
-          .spyOn(process.stderr, "write")
-          .mockImplementation(() => true)
+        const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
         try {
           const target = buildMemoryPage("11111111111111111111111111111111", {
             title: "Use JWT",
@@ -5309,9 +5373,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       const priorDebug = process.env.LORE_DEBUG
       process.env.LORE_DEBUG = "1"
       process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
-      const stderrSpy = vi
-        .spyOn(process.stderr, "write")
-        .mockImplementation(() => true)
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
       try {
         const target = buildMemoryPage("11111111111111111111111111111111", {
           title: "Repetitive",
@@ -5408,7 +5470,7 @@ describe("MemoryService.recordReview", () => {
 
   function buildProposedPage(
     id: string,
-    overrides: { archived?: boolean; kind?: string } = {},
+    overrides: { archived?: boolean; kind?: string } = {}
   ): PageObjectResponse {
     // `kind` defaults to `"note"` — not optional / undefined — because
     // `pageToMemory` resolves `Kind` via `extractSelect(props["Kind"], "note")`
@@ -5493,9 +5555,11 @@ describe("MemoryService.recordReview", () => {
 
     // Audit block appended SECOND.
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as {
-      replace_content: { new_str: string }
-    }).replace_content.new_str
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as {
+        replace_content: { new_str: string }
+      }
+    ).replace_content.new_str
     expect(body).toContain("# Original body")
     expect(body).toContain("## Reviewed (")
     expect(body).toContain("**Verdict:** approved")
@@ -5504,15 +5568,13 @@ describe("MemoryService.recordReview", () => {
     // timestamp evidence). Pinned via regex so the assertion
     // doesn't bind to a specific second.
     expect(body).toMatch(
-      /\*\*Reviewed At:\*\* \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/,
+      /\*\*Reviewed At:\*\* \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/
     )
   })
 
   it("reject flips Status to rejected and records the optional reason", async () => {
     const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-2"))
-    const retrieveMarkdownSpy = vi
-      .fn()
-      .mockResolvedValueOnce({ markdown: "Body" })
+    const retrieveMarkdownSpy = vi.fn().mockResolvedValueOnce({ markdown: "Body" })
     const updateSpy = vi.fn().mockResolvedValueOnce(undefined)
     const updateMarkdownSpy = vi.fn().mockResolvedValueOnce(undefined)
     const client = {
@@ -5536,23 +5598,23 @@ describe("MemoryService.recordReview", () => {
     expect(updateSpy.mock.calls[0]![0]).toMatchObject({
       properties: { Status: { select: { name: "rejected" } } },
     })
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as {
-      replace_content: { new_str: string }
-    }).replace_content.new_str
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as {
+        replace_content: { new_str: string }
+      }
+    ).replace_content.new_str
     expect(body).toContain("**Verdict:** rejected")
     expect(body).toContain("**Reviewer:** Bob")
     expect(body).toContain("**Reason:** Duplicate of an earlier note")
     // Same ISO 8601 timestamp invariant on the reject path.
     expect(body).toMatch(
-      /\*\*Reviewed At:\*\* \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/,
+      /\*\*Reviewed At:\*\* \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/
     )
   })
 
   it("throws MemoryReviewStateError when Status is not 'proposed'", async () => {
     const retrieveSpy = vi.fn().mockResolvedValueOnce(buildAcceptedPage("mem-3"))
-    const retrieveMarkdownSpy = vi
-      .fn()
-      .mockResolvedValueOnce({ markdown: "Body" })
+    const retrieveMarkdownSpy = vi.fn().mockResolvedValueOnce({ markdown: "Body" })
     const updateSpy = vi.fn()
     const updateMarkdownSpy = vi.fn()
     const client = {
@@ -5572,7 +5634,7 @@ describe("MemoryService.recordReview", () => {
         memoryId: "mem-3",
         verdict: "approve",
         reviewer: "Alice",
-      }),
+      })
     ).rejects.toBeInstanceOf(MemoryReviewStateError)
     // Property + body writes must NOT fire on the rejected branch — the
     // load-bearing fail-fast guard.
@@ -5589,9 +5651,7 @@ describe("MemoryService.recordReview", () => {
 
   it("throws on empty / whitespace-only reviewer", async () => {
     const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-4"))
-    const retrieveMarkdownSpy = vi
-      .fn()
-      .mockResolvedValueOnce({ markdown: "Body" })
+    const retrieveMarkdownSpy = vi.fn().mockResolvedValueOnce({ markdown: "Body" })
     const updateSpy = vi.fn()
     const updateMarkdownSpy = vi.fn()
     const client = {
@@ -5608,8 +5668,8 @@ describe("MemoryService.recordReview", () => {
       service.recordReview({
         memoryId: "mem-4",
         verdict: "approve",
-        reviewer: "   ",
-      }),
+        reviewer: " ",
+      })
     ).rejects.toThrow(/reviewer must be a non-empty string/)
     expect(updateSpy).not.toHaveBeenCalled()
     expect(updateMarkdownSpy).not.toHaveBeenCalled()
@@ -5617,13 +5677,9 @@ describe("MemoryService.recordReview", () => {
 
   it("throws MemoryReviewAuditError when audit-block write fails after status flip", async () => {
     const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-5"))
-    const retrieveMarkdownSpy = vi
-      .fn()
-      .mockResolvedValueOnce({ markdown: "Body" })
+    const retrieveMarkdownSpy = vi.fn().mockResolvedValueOnce({ markdown: "Body" })
     const updateSpy = vi.fn().mockResolvedValueOnce(undefined)
-    const updateMarkdownSpy = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("notion 5xx"))
+    const updateMarkdownSpy = vi.fn().mockRejectedValueOnce(new Error("notion 5xx"))
     const client = {
       pages: {
         retrieve: retrieveSpy,
@@ -5641,7 +5697,7 @@ describe("MemoryService.recordReview", () => {
         memoryId: "mem-5",
         verdict: "approve",
         reviewer: "Alice",
-      }),
+      })
     ).rejects.toBeInstanceOf(MemoryReviewAuditError)
     // Property write DID land — the partial-state contract pinned by
     // the docstring. Operators see a clear error and the row is in
@@ -5664,9 +5720,7 @@ describe("MemoryService.recordReview", () => {
     const retrieveSpy = vi
       .fn()
       .mockResolvedValue(buildProposedPage("dec-1", { kind: "decision" }))
-    const retrieveMarkdownSpy = vi
-      .fn()
-      .mockResolvedValue({ markdown: "Body" })
+    const retrieveMarkdownSpy = vi.fn().mockResolvedValue({ markdown: "Body" })
     const updateSpy = vi.fn()
     const updateMarkdownSpy = vi.fn()
     const client = {
@@ -5703,9 +5757,7 @@ describe("MemoryService.recordReview", () => {
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
     // Error message redirects at the decision-lifecycle surface.
     expect((caught as Error).message).toContain('Kind is "decision"')
-    expect((caught as Error).message).toContain(
-      "lore-decision action='supersede'",
-    )
+    expect((caught as Error).message).toContain("lore-decision action='supersede'")
   })
 
   it("rejects archived memory pages with the live-memory error before the Status guard runs", async () => {
@@ -5743,7 +5795,7 @@ describe("MemoryService.recordReview", () => {
         memoryId: "mem-archived",
         verdict: "approve",
         reviewer: "Alice",
-      }),
+      })
     ).rejects.toThrow(/Memory mem-archived is archived/)
     // No Notion writes should land on the archived branch.
     expect(updateSpy).not.toHaveBeenCalled()
@@ -6617,7 +6669,7 @@ describe("MemoryService.search — contains mode", () => {
     // suppresses the default proposed-exclusion clause (issue #281)
     // so the assertion can pin the bare project filter shape.
     await service.search({
-      query: "   ",
+      query: " ",
       projectId: "proj-1",
       mode: "contains",
       includeProposed: true,
@@ -7244,8 +7296,8 @@ describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", ()
     // 0.9-scored row at rank 1 (score 1/62 * (0.5+0.5*0.9) = 1/62 * 0.95)
     // sorts above the 0.1-scored row at rank 0 (score 1/61 * 0.55) ONLY
     // when the confidence delta is large enough. With these constants:
-    //   row-low:  (1/61) * 0.55 ≈ 0.00902
-    //   row-high: (1/62) * 0.95 ≈ 0.01532
+    // row-low: (1/61) * 0.55 ≈ 0.00902
+    // row-high: (1/62) * 0.95 ≈ 0.01532
     // So the higher-confidence rank-1 row beats the lower-confidence
     // rank-0 row. Pin this end-to-end through hybrid's RRF accumulator.
     const querySpy = vi.fn(async () => ({
@@ -7278,8 +7330,8 @@ describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", ()
 
   it("contains mode: a fresh-rank-3 row sorts above a decayed-rank-1 row", async () => {
     // The acceptance-criteria worked example:
-    //   rank 3 with confidence=0.95: (1/64) * (0.5+0.5*0.95) = (1/64) * 0.975 ≈ 0.01523
-    //   rank 1 with confidence=0.0:  (1/62) * 0.5 ≈ 0.00806
+    // rank 3 with confidence=0.95: (1/64) * (0.5+0.5*0.95) = (1/64) * 0.975 ≈ 0.01523
+    // rank 1 with confidence=0.0: (1/62) * 0.5 ≈ 0.00806
     // Fresh-rank-3 wins.
     const querySpy = vi.fn(async () => ({
       results: [
@@ -8038,10 +8090,10 @@ describe("MemoryService.search — intent parameter (#17)", () => {
     expect(searchSpy.mock.calls[0][0]["query"]).toBe("performance")
   })
 
-  it("whitespace-only intent (`'   '`) is byte-identical to unset on the semantic-branch composition", async () => {
+  it("whitespace-only intent (`' '`) is byte-identical to unset on the semantic-branch composition", async () => {
     // Pins the semantic-branch consumer of the normalize-once rule —
     // whitespace-only intent collapses to `null` and the composed query
-    // is `"auth"`, not `"auth "` or `"auth    "`. The other two
+    // is `"auth"`, not `"auth "` or `"auth "`. The other two
     // consumers (saturation gate, lane weighting under hybrid) are
     // pinned independently by the dedicated test
     // `"whitespace-only intent triggers neither saturation bypass nor
@@ -8053,9 +8105,9 @@ describe("MemoryService.search — intent parameter (#17)", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    await service.search({ query: "auth", intent: "   ", mode: "semantic" })
+    await service.search({ query: "auth", intent: " ", mode: "semantic" })
 
-    // Whitespace-only intent → semantic query is `"auth"`, NOT `"auth    "`
+    // Whitespace-only intent → semantic query is `"auth"`, NOT `"auth "`
     // and NOT `"auth "` — byte-identical to the unset path.
     expect(searchSpy.mock.calls[0][0]["query"]).toBe("auth")
   })
@@ -8264,7 +8316,7 @@ describe("MemoryService.search — intent parameter (#17)", () => {
 
       const { explain } = await service.searchWithExplain({
         query: "auth",
-        intent: "   ",
+        intent: " ",
         mode: "hybrid",
         includeContent: false,
       })
@@ -8292,7 +8344,7 @@ describe("MemoryService.search — intent parameter (#17)", () => {
 
       const { explain } = await service.searchWithExplain({
         query: "auth",
-        intent: "   ",
+        intent: " ",
         mode: "hybrid",
         includeContent: false,
       })
@@ -9085,14 +9137,14 @@ describe("MemoryService.search — hybrid abort on contains saturation (issue #4
    * Build a `Client` mock for the abort/saturation tests. The four
    * abort tests differ only in:
    *
-   *   - the contains result shape (saturating vs under-shooting vs
-   *     rejected),
-   *   - the cursor → semantic-page map,
-   *   - whether the first semantic page yields to a macrotask before
-   *     resolving (the load-bearing pin for the "exactly one
-   *     `client.search` call" assertion in the synchronous-mock
-   *     setup; production gets the same residual-call bound from the
-   *     actual `client.search` HTTP latency).
+   * - the contains result shape (saturating vs under-shooting vs
+   * rejected),
+   * - the cursor → semantic-page map,
+   * - whether the first semantic page yields to a macrotask before
+   * resolving (the load-bearing pin for the "exactly one
+   * `client.search` call" assertion in the synchronous-mock
+   * setup; production gets the same residual-call bound from the
+   * actual `client.search` HTTP latency).
    *
    * Without this helper, each test inlined ~30 lines of mock client
    * construction with subtle differences that obscured the actual
@@ -9121,12 +9173,17 @@ describe("MemoryService.search — hybrid abort on contains saturation (issue #4
      * produce 1 (the network round-trip provides the same yield).
      */
     yieldOnFirstSemanticPage: boolean
-  }): { client: Client; querySpy: ReturnType<typeof vi.fn>; searchSpy: ReturnType<typeof vi.fn> } {
+  }): {
+    client: Client
+    querySpy: ReturnType<typeof vi.fn>
+    searchSpy: ReturnType<typeof vi.fn>
+  } {
     const querySpy =
       opts.contains.kind === "fulfilled"
         ? vi.fn(async () => ({
-            results: (opts.contains as { kind: "fulfilled"; results: PageObjectResponse[] })
-              .results,
+            results: (
+              opts.contains as { kind: "fulfilled"; results: PageObjectResponse[] }
+            ).results,
             has_more: false,
             next_cursor: null,
           }))
@@ -9814,7 +9871,7 @@ describe("MemoryService.search — default-excludes Status = proposed (contains)
     expect(filter.and).toEqual(
       expect.arrayContaining([
         { property: "Status", select: { does_not_equal: "proposed" } },
-      ]),
+      ])
     )
   })
 
@@ -9849,7 +9906,7 @@ describe("MemoryService.queryStaleConfidence — default-excludes Status = propo
     expect(filter.and).toEqual(
       expect.arrayContaining([
         { property: "Status", select: { does_not_equal: "proposed" } },
-      ]),
+      ])
     )
   })
 
@@ -10901,7 +10958,7 @@ describe("MemoryService.getTitleById — title cache", () => {
   })
 
   it("does not clobber when a reader dispatches DURING the writer's pages.update", async () => {
-    // Finding #5 from PR #54 round-2 review (originally guarded by the
+    // Finding #5 from PR #54 review (originally guarded by the
     // bespoke `writeEpoch` sandwich; PF1-09 collapsed onto the shared
     // `LruCache.getOrLoad` primitive whose identity guard, paired with
     // `LruCache.set` clearing the pending slot, suppresses the same
@@ -10913,20 +10970,20 @@ describe("MemoryService.getTitleById — title cache", () => {
     // clobber the writer's authoritative value.
     //
     // The scenario, using only the public API:
-    //   t0: writer.update("Newest") fires pre-write delete (sync),
-    //       awaits gated pages.update
-    //   t1: reader.getTitleById dispatches loader → pages.retrieve
-    //       (gated) → installs pending slot
-    //   t2: release writer's pages.update → writer continues:
-    //       getById (2nd retrieve → "Newest"), titleCache.set("Newest")
-    //       which clears the reader's pending slot
-    //   t3: release reader's pages.retrieve → loader resolves
-    //       "Pre-race". `getOrLoad`'s identity guard
-    //       (`pending.get(id) === loaderPromise`) sees `undefined ===
-    //       loaderPromise` → false → commit suppressed.
-    //   final: reader's caller observes "Pre-race" (one-shot stale
-    //          read; reads do not block on writes); cache retains
-    //          the writer's authoritative "Newest".
+    // t0: writer.update("Newest") fires pre-write delete (sync),
+    // awaits gated pages.update
+    // t1: reader.getTitleById dispatches loader → pages.retrieve
+    // (gated) → installs pending slot
+    // t2: release writer's pages.update → writer continues:
+    // getById (2nd retrieve → "Newest"), titleCache.set("Newest")
+    // which clears the reader's pending slot
+    // t3: release reader's pages.retrieve → loader resolves
+    // "Pre-race". `getOrLoad`'s identity guard
+    // (`pending.get(id) === loaderPromise`) sees `undefined ===
+    // loaderPromise` → false → commit suppressed.
+    // final: reader's caller observes "Pre-race" (one-shot stale
+    // read; reads do not block on writes); cache retains
+    // the writer's authoritative "Newest".
     let releaseWriterUpdate!: () => void
     const writerUpdateGate = new Promise<void>((resolve) => {
       releaseWriterUpdate = resolve
@@ -10936,12 +10993,25 @@ describe("MemoryService.getTitleById — title cache", () => {
       releaseReaderRetrieve = resolve
     })
 
+    // Three retrieve calls fire in this scenario:
+    // 1. Writer's read-only preflight (issue #282) — returns
+    // immediately with a non-pinned page so the preflight
+    // passes through; not part of the title-cache race.
+    // 2. Reader's getTitleById loader — gated so it is still in
+    // flight when the writer's `titleCache.set` fires.
+    // 3. Writer's post-update getById — returns "Newest".
     let retrieveCount = 0
     const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
       retrieveCount++
       if (retrieveCount === 1) {
-        // Reader's retrieve — gated so it is still in flight when the
-        // writer's set fires.
+        // Writer's read-only preflight; the `Pinned` column is absent
+        // on this fixture and `extractCheckbox` defaults to false, so
+        // the preflight passes through and the update proceeds.
+        return titlePage(page_id, "Pre-race")
+      }
+      if (retrieveCount === 2) {
+        // Reader's retrieve — gated so it stays in flight across
+        // the writer's `titleCache.set`.
         await readerRetrieveGate
         return titlePage(page_id, "Pre-race")
       }
@@ -12317,7 +12387,7 @@ describe("MemoryService.countProposed", () => {
     const query = vi.fn().mockResolvedValueOnce({
       results: [
         makeProposedPage("m1", "conversation", ""),
-        makeProposedPage("m2", "manual", "   "),
+        makeProposedPage("m2", "manual", " "),
         makeProposedPage("m3", "conversation", "Claude Code"),
       ],
       has_more: false,
@@ -12984,7 +13054,7 @@ describe("appendCompareNote (0.9.0/02)", () => {
     // COMPARE_NOTES_MAX_CHARS is allowed; only `>` triggers the throw.
     const entryLen = JSON.stringify(sampleEntry).length
     // existing + "\n" + entry must equal the cap exactly. So:
-    //   existing.length = cap - entryLen - 1
+    // existing.length = cap - entryLen - 1
     const existing = "a".repeat(COMPARE_NOTES_MAX_CHARS - entryLen - 1)
     const next = appendCompareNote(existing, sampleEntry)
     expect(next.length).toBe(COMPARE_NOTES_MAX_CHARS)
@@ -14845,5 +14915,733 @@ describe("MemoryService.listForScan (0.9.0/09)", () => {
 
     expect(grouped).toEqual([])
     expect(querySpy).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pinned context blocks (issue #282)
+// ---------------------------------------------------------------------------
+
+describe("pinnedBlockAudienceMatches (issue #282)", () => {
+  it("matches every reader when audience is empty", () => {
+    expect(pinnedBlockAudienceMatches("", {})).toBe(true)
+    expect(pinnedBlockAudienceMatches(" ", { agent: "Anyone" })).toBe(true)
+  })
+
+  it("matches every reader when audience contains a universal token", () => {
+    for (const token of ["all", "*", "everyone", "agents"]) {
+      expect(pinnedBlockAudienceMatches(token, {})).toBe(true)
+      expect(pinnedBlockAudienceMatches(`team-leads, ${token}`, { agent: "X" })).toBe(
+        true
+      )
+    }
+  })
+
+  it("matches when the reader's agent appears in the audience list", () => {
+    expect(
+      pinnedBlockAudienceMatches("code-reviewers, release-agents", {
+        agent: "Code-Reviewers",
+      })
+    ).toBe(true)
+  })
+
+  it("matches when the reader's role or userId appears in the audience list", () => {
+    expect(pinnedBlockAudienceMatches("code-reviewers", { role: "code-reviewers" })).toBe(
+      true
+    )
+    expect(pinnedBlockAudienceMatches("hsalman", { userId: "hsalman" })).toBe(true)
+  })
+
+  it("rejects when no reader slot matches an audience token", () => {
+    expect(
+      pinnedBlockAudienceMatches("code-reviewers", { agent: "release-agents" })
+    ).toBe(false)
+  })
+
+  it("rejects when the reader has no identity slots populated and audience is narrow", () => {
+    expect(pinnedBlockAudienceMatches("code-reviewers", {})).toBe(false)
+  })
+
+  it("ignores whitespace and case-folds tokens for comparison", () => {
+    expect(
+      pinnedBlockAudienceMatches(" Code-Reviewers , Release-Agents ", {
+        agent: "code-reviewers",
+      })
+    ).toBe(true)
+  })
+})
+
+describe("clampPinnedPriority (issue #282)", () => {
+  it("rounds finite values to whole numbers", () => {
+    expect(clampPinnedPriority(3.7)).toBe(4)
+    expect(clampPinnedPriority(-1.4)).toBe(-1)
+  })
+
+  it("clamps to PINNED_PRIORITY_MAX / PINNED_PRIORITY_MIN at the boundaries", () => {
+    expect(clampPinnedPriority(99_999_999)).toBe(1_000_000)
+    expect(clampPinnedPriority(-99_999_999)).toBe(-1_000_000)
+  })
+
+  it("returns 0 for non-finite inputs", () => {
+    expect(clampPinnedPriority(Number.POSITIVE_INFINITY)).toBe(0)
+    expect(clampPinnedPriority(Number.NEGATIVE_INFINITY)).toBe(0)
+    expect(clampPinnedPriority(Number.NaN)).toBe(0)
+  })
+})
+
+describe("MemoryService.listPinnedBlocks (issue #282)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function pinnedPage(opts: {
+    id: string
+    title: string
+    priority: number
+    mutability?: "mutable" | "read-only"
+    audience?: string
+    projectId?: string
+  }): PageObjectResponse {
+    const properties: Record<string, unknown> = {
+      Title: { type: "title", title: [{ plain_text: opts.title }] },
+      Project: {
+        type: "relation",
+        relation: opts.projectId ? [{ id: opts.projectId }] : [],
+      },
+      Source: { type: "select", select: { name: "manual" } },
+      Pinned: { type: "checkbox", checkbox: true },
+      "Pinned Priority": { type: "number", number: opts.priority },
+      Audience: {
+        type: "rich_text",
+        rich_text: opts.audience
+          ? [{ plain_text: opts.audience, text: { content: opts.audience } }]
+          : [],
+      },
+    }
+    if (opts.mutability) {
+      properties["Mutability"] = { type: "select", select: { name: opts.mutability } }
+    }
+    return buildPage(properties, {
+      id: opts.id,
+      parent: { type: "database_id", database_id: db.databaseId },
+    })
+  }
+
+  it("returns pinned blocks sorted by Pinned Priority descending", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [
+        pinnedPage({ id: "high", title: "High", priority: 50 }),
+        pinnedPage({ id: "low", title: "Low", priority: 10 }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const blocks = await service.listPinnedBlocks({ limit: 10 })
+
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0]!.id).toBe("high")
+    expect(blocks[1]!.id).toBe("low")
+    expect(blocks[0]!.pinned?.priority).toBe(50)
+  })
+
+  it("filters by audience match against the reader context", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [
+        pinnedPage({
+          id: "team",
+          title: "Team",
+          priority: 10,
+          audience: "code-reviewers",
+        }),
+        pinnedPage({ id: "all", title: "All", priority: 5 }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    // A reader without a matching agent / role / userId sees only
+    // the universally-audienced block.
+    const noMatch = await service.listPinnedBlocks({ limit: 10 })
+    expect(noMatch.map((b) => b.id)).toEqual(["all"])
+
+    // A reader whose role matches sees both.
+    const match = await service.listPinnedBlocks({
+      limit: 10,
+      readerContext: { role: "code-reviewers" },
+    })
+    expect(match.map((b) => b.id)).toEqual(["team", "all"])
+  })
+
+  it("returns empty array when the schema has not been migrated", async () => {
+    const querySpy = vi.fn(async () => {
+      throw new APIResponseError({
+        code: APIErrorCode.ValidationError,
+        status: 400,
+        message: "Could not find property: Pinned",
+        headers: new Headers(),
+        rawBodyText: `{"code":"validation_error","message":"Could not find property: Pinned"}`,
+        additional_data: undefined,
+        request_id: undefined,
+      })
+    })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const blocks = await service.listPinnedBlocks({ limit: 10 })
+    expect(blocks).toEqual([])
+  })
+
+  it("short-circuits when limit is zero — no Notion call", async () => {
+    const querySpy = vi.fn()
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const blocks = await service.listPinnedBlocks({ limit: 0 })
+    expect(blocks).toEqual([])
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("populates the pinned slot on returned memories with priority and mutability", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [
+        pinnedPage({
+          id: "ro",
+          title: "Read-only block",
+          priority: 100,
+          mutability: "read-only",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const blocks = await service.listPinnedBlocks({ limit: 10 })
+
+    expect(blocks[0]!.pinned).toEqual({ priority: 100, mutability: "read-only" })
+  })
+
+  it("surfaces every block when audienceFilter is false (operator inspection across audiences)", async () => {
+    // `includeAllAudiences` was
+    // previously implemented by passing `readerContext: {}`, but
+    // the matcher still rejected narrow tokens when no reader
+    // slot was populated. The new `audienceFilter: false` opt-out
+    // skips the filter entirely so operators can audit every
+    // pinned block in scope regardless of audience.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        pinnedPage({
+          id: "narrow",
+          title: "Narrow",
+          priority: 10,
+          audience: "code-reviewers",
+        }),
+        pinnedPage({ id: "all", title: "All", priority: 5 }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    // Empty reader + default audience filter excludes the narrow
+    // row (pre-fix behavior).
+    const filtered = await service.listPinnedBlocks({ limit: 10 })
+    expect(filtered.map((b) => b.id)).toEqual(["all"])
+
+    // Empty reader + audienceFilter:false surfaces BOTH rows.
+    const all = await service.listPinnedBlocks({
+      limit: 10,
+      audienceFilter: false,
+    })
+    expect(all.map((b) => b.id)).toEqual(["narrow", "all"])
+  })
+
+  it("backfills the visible window when top-priority pins target other audiences (issue #282 starvation fix)", async () => {
+    // the earlier shape applied audience
+    // filtering AFTER limiting the query to N raw rows, so the top
+    // N priority pins targeting other audiences would starve the
+    // visible window even when matching pins existed below. The
+    // fix is to run the audience filter inside `collectLivePages`'s
+    // `extraFilter` so the walker over-fetches and backfills.
+    //
+    // Fixture: three pins, two top-priority targeting another
+    // audience and one matching pin at lower priority. With
+    // `limit: 1` the matching row must surface despite the higher
+    // priority misses preceding it.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        pinnedPage({
+          id: "high-1",
+          title: "High 1",
+          priority: 100,
+          audience: "other",
+        }),
+        pinnedPage({
+          id: "high-2",
+          title: "High 2",
+          priority: 90,
+          audience: "other",
+        }),
+        pinnedPage({
+          id: "match",
+          title: "Match",
+          priority: 10,
+          audience: "code-reviewers",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const blocks = await service.listPinnedBlocks({
+      limit: 1,
+      readerContext: { role: "code-reviewers" },
+    })
+
+    expect(blocks.map((b) => b.id)).toEqual(["match"])
+  })
+})
+
+describe("MemoryService.countPinnedBlocks (issue #282)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("returns the count of live pinned rows ignoring audience/scope", async () => {
+    function pinPage(id: string, archived = false): PageObjectResponse {
+      return buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: id }] },
+          Pinned: { type: "checkbox", checkbox: true },
+        },
+        {
+          id,
+          archived,
+          parent: { type: "database_id", database_id: db.databaseId },
+        }
+      )
+    }
+    const querySpy = vi.fn(async () => ({
+      results: [pinPage("a"), pinPage("b"), pinPage("c"), pinPage("d", true)],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.countPinnedBlocks()).toBe(3)
+  })
+
+  it("returns 0 on pre-migration vaults (graceful degrade)", async () => {
+    const querySpy = vi.fn(async () => {
+      throw new APIResponseError({
+        code: APIErrorCode.ValidationError,
+        status: 400,
+        message: "Could not find property: Pinned",
+        headers: new Headers(),
+        rawBodyText: `{"code":"validation_error","message":"Could not find property: Pinned"}`,
+        additional_data: undefined,
+        request_id: undefined,
+      })
+    })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.countPinnedBlocks()).toBe(0)
+  })
+})
+
+describe("MemoryService.update — read-only enforcement (issue #282)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function readOnlyPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Pinned: { type: "checkbox", checkbox: true },
+        Mutability: { type: "select", select: { name: "read-only" } },
+      },
+      { id, parent: { type: "database_id", database_id: db.databaseId } }
+    )
+  }
+
+  it("rejects updates on read-only pinned blocks without writing to Notion", async () => {
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveSpy = vi.fn(async () => readOnlyPage("mem-1", "Locked"))
+    const client = {
+      pages: {
+        update: updateSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: vi.fn(),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.update("mem-1", { title: "New title" })).rejects.toBeInstanceOf(
+      MemoryReadOnlyError
+    )
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("includes the memory id and title in the thrown error so callers can render a clear message", async () => {
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveSpy = vi.fn(async () => readOnlyPage("mem-1", "Team policies"))
+    const client = {
+      pages: { update: updateSpy, retrieve: retrieveSpy, retrieveMarkdown: vi.fn() },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    try {
+      await service.update("mem-1", { title: "Override" })
+      throw new Error("Should have thrown")
+    } catch (err) {
+      expect(err).toBeInstanceOf(MemoryReadOnlyError)
+      const ro = err as MemoryReadOnlyError
+      expect(ro.memoryId).toBe("mem-1")
+      expect(ro.memoryTitle).toBe("Team policies")
+      expect(ro.message).toContain("Team policies")
+      // Pins the corrected recovery hint introduced after the
+      // the override action is
+      // `lore-pinned action='update' force=true`, NOT the
+      // nonexistent `lore-memory action='update-pinned'`. A
+      // future contributor reverting the wording would fail
+      // this test loudly.
+      expect(ro.message).toContain("force=true")
+      expect(ro.message).toContain("lore-pinned action='update'")
+      expect(ro.message).not.toContain("update-pinned")
+    }
+  })
+
+  it("allows updates when allowReadOnlyUpdate=true is passed — operator override path", async () => {
+    const updateSpy = vi.fn(async () => ({}))
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const retrieveSpy = vi.fn(async () => readOnlyPage("mem-1", "Locked"))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", {
+      content: "Updated content",
+      allowReadOnlyUpdate: true,
+    })
+
+    // With the override, the preflight retrieve is skipped entirely
+    // so the update writes the body directly. The final getById
+    // still fires — same posture as every other update path.
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(retrieveSpy).toHaveBeenCalledTimes(1) // only the final getById
+  })
+
+  it("allows updates on mutable pinned blocks — only read-only is blocked", async () => {
+    const mutablePinPage = buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: "Mutable pin" }] },
+        Project: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Pinned: { type: "checkbox", checkbox: true },
+        Mutability: { type: "select", select: { name: "mutable" } },
+      },
+      { id: "mem-1", parent: { type: "database_id", database_id: db.databaseId } }
+    )
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveSpy = vi.fn(async () => mutablePinPage)
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        update: updateSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", { title: "Updated" })
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("MemoryService.update — pinned-block hard cap (issue #282)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function unpinnedPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Pinned: { type: "checkbox", checkbox: false },
+      },
+      { id, parent: { type: "database_id", database_id: db.databaseId } }
+    )
+  }
+
+  function pinnedPageResult(id: string, total: number) {
+    return Array.from({ length: total }, (_, i) =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: `pin-${id}-${i}` }] },
+          Pinned: { type: "checkbox", checkbox: true },
+        },
+        {
+          id: `${id}-${i}`,
+          parent: { type: "database_id", database_id: db.databaseId },
+        }
+      )
+    )
+  }
+
+  it("rejects an un-pinned → pinned transition when the vault is at the hard cap", async () => {
+    const retrieveSpy = vi.fn(async () => unpinnedPage("mem-1", "Fresh"))
+    const querySpy = vi.fn(async () => ({
+      results: pinnedPageResult("p", PINNED_BLOCKS_HARD_CAP),
+      has_more: false,
+      next_cursor: null,
+    }))
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: { retrieve: retrieveSpy, update: updateSpy, retrieveMarkdown: vi.fn() },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.update("mem-1", { pinned: { pinned: true, priority: 50 } })
+    ).rejects.toBeInstanceOf(MemoryPinCapExceededError)
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("allows an un-pinned → pinned transition when the vault is below the cap", async () => {
+    const retrieveSpy = vi.fn(async () => unpinnedPage("mem-1", "Fresh"))
+    const querySpy = vi.fn(async () => ({
+      results: pinnedPageResult("p", PINNED_BLOCKS_HARD_CAP - 1),
+      has_more: false,
+      next_cursor: null,
+    }))
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        update: updateSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", { pinned: { pinned: true } })
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("skips the cap check when bypassPinCapCheck=true (handlePin already verified)", async () => {
+    const retrieveSpy = vi.fn(async () => unpinnedPage("mem-1", "Fresh"))
+    const querySpy = vi.fn() // should NEVER be called
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        update: updateSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", {
+      pinned: { pinned: true },
+      bypassPinCapCheck: true,
+    })
+
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("does NOT enforce the cap on an unpin transition", async () => {
+    // Operators trying to clear backlog must never be blocked by
+    // the cap. Sets `Pinned = true` already; the transition
+    // `pinned: false` (unpin) skips the cap.
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Already pinned" }] },
+          Project: { type: "relation", relation: [] },
+          Source: { type: "select", select: { name: "manual" } },
+          Pinned: { type: "checkbox", checkbox: true },
+        },
+        {
+          id: "mem-1",
+          parent: { type: "database_id", database_id: db.databaseId },
+        }
+      )
+    )
+    const querySpy = vi.fn() // should NEVER be called
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        update: updateSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", {
+      pinned: { pinned: false },
+      allowReadOnlyUpdate: true,
+    })
+
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("exposes MemoryPinCapExceededError with current count and cap on the error class", () => {
+    const err = new MemoryPinCapExceededError("mem-1", 250, PINNED_BLOCKS_HARD_CAP)
+    expect(err).toBeInstanceOf(MemoryPinCapExceededError)
+    expect(err.memoryId).toBe("mem-1")
+    expect(err.currentCount).toBe(250)
+    expect(err.cap).toBe(PINNED_BLOCKS_HARD_CAP)
+    expect(err.message).toContain("250 active pinned block")
+    expect(err.message).toContain(`${PINNED_BLOCKS_HARD_CAP}-block hard cap`)
+  })
+})
+
+describe("MemoryService.countPinnedBlocks caching (issue #282)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function pinPage(id: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: id }] },
+        Pinned: { type: "checkbox", checkbox: true },
+      },
+      { id, parent: { type: "database_id", database_id: db.databaseId } }
+    )
+  }
+
+  it("caches the count for the 30s TTL so back-to-back callers don't double-query Notion", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [pinPage("a"), pinPage("b")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.countPinnedBlocks()).toBe(2)
+    expect(await service.countPinnedBlocks()).toBe(2)
+    expect(await service.countPinnedBlocks()).toBe(2)
+
+    // Cache hit: one Notion call total across three sequential
+    // callers within the 30s window.
+    expect(querySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("respects bypassCache=true so tests can force a fresh count", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [pinPage("a")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.countPinnedBlocks()).toBe(1)
+    expect(await service.countPinnedBlocks({ bypassCache: true })).toBe(1)
+
+    expect(querySpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("invalidates the cache when update flips the Pinned checkbox", async () => {
+    // Same-process pin / unpin must see the fresh count
+    // without waiting on the 30s TTL.
+    let queryCount = 0
+    const querySpy = vi.fn(async () => {
+      queryCount += 1
+      return {
+        results: queryCount === 1 ? [pinPage("a")] : [pinPage("a"), pinPage("b")],
+        has_more: false,
+        next_cursor: null,
+      }
+    })
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Mem" }] },
+          Project: { type: "relation", relation: [] },
+          Source: { type: "select", select: { name: "manual" } },
+          Pinned: { type: "checkbox", checkbox: false },
+        },
+        {
+          id: "mem-1",
+          parent: { type: "database_id", database_id: db.databaseId },
+        }
+      )
+    )
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        update: updateSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.countPinnedBlocks()).toBe(1) // cached
+    await service.update("mem-1", {
+      pinned: { pinned: true },
+      bypassPinCapCheck: true,
+    })
+    // Cache invalidated by the flip; next call re-queries.
+    expect(await service.countPinnedBlocks()).toBe(2)
   })
 })

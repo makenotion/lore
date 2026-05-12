@@ -146,6 +146,18 @@ export const MEMORY_PROPS = {
   AUDIENCE: "Audience",
   LIFETIME: "Lifetime",
   EXPIRES_AT: "Expires At",
+  // Pinned context blocks (issue #282). Three columns added together
+  // so a schema-drift caller sees the whole feature land or none of
+  // it — same posture as the scope/lifetime cluster above.
+  // `Pinned` discriminates pinned blocks from normal memories;
+  // `Pinned Priority` orders them in the wake-up Pinned Context
+  // section (higher first); `Mutability` enforces the read-only
+  // contract from AC #3. Audience targeting reuses the existing
+  // `Audience` rich_text column added by #283 — pinned blocks ride
+  // atop the same audience plumbing rather than duplicating it.
+  PINNED: "Pinned",
+  PINNED_PRIORITY: "Pinned Priority",
+  MUTABILITY: "Mutability",
 } as const
 
 /**
@@ -339,6 +351,29 @@ export function memoriesProperties(
       },
     },
     [MEMORY_PROPS.EXPIRES_AT]: { date: {} },
+    // Pinned context blocks (issue #282). Three columns land in
+    // lockstep with the schema-drift contract `migrateVaultSchema`
+    // enforces. `Pinned` is a plain checkbox (cheap server-side
+    // filter for `listPinnedBlocks`). `Pinned Priority` is an
+    // unconstrained `number`; the service-layer write boundary
+    // clamps to `[PINNED_PRIORITY_MIN, PINNED_PRIORITY_MAX]` so a
+    // malformed caller can't blow Notion's display formatting.
+    // `Mutability` select options must stay in lockstep with the
+    // `MEMORY_MUTABILITIES` enum in `src/types.ts` — the schema-
+    // drift test pins the enum-to-options mapping. A new value
+    // requires updating both files in the same change so an option
+    // missing from Notion doesn't surface as a `validation_error`
+    // on first write.
+    [MEMORY_PROPS.PINNED]: { checkbox: {} },
+    [MEMORY_PROPS.PINNED_PRIORITY]: { number: { format: "number" } },
+    [MEMORY_PROPS.MUTABILITY]: {
+      select: {
+        options: [
+          { name: "mutable", color: "default" },
+          { name: "read-only", color: "red" },
+        ],
+      },
+    },
   }
 
   if (memoriesDsId) {
@@ -370,9 +405,7 @@ export function memoriesProperties(
  * to patch `Supersedes` and `Affects` in as a second step once the database
  * (and its data source ID) exists.
  */
-export function memoriesSelfRelationProperties(
-  memoriesDsId: string
-): PropertyConfig {
+export function memoriesSelfRelationProperties(memoriesDsId: string): PropertyConfig {
   return {
     [MEMORY_PROPS.SUPERSEDES]: {
       relation: {
@@ -785,7 +818,7 @@ export function encodeCompareNotesRichText(notes: string): CompareNotesTextChunk
       `Compare Notes overflow: input is ${notes.length} chars, exceeds cap ` +
         `${COMPARE_NOTES_MAX_CHARS}. Use \`appendCompareNote\` to grow the ` +
         `audit trail incrementally with overflow protection, or consolidate ` +
-        `via lore-memory action='archive' on duplicate pairs before writing.`,
+        `via lore-memory action='archive' on duplicate pairs before writing.`
     )
   }
   if (notes.length === 0) return []
@@ -931,6 +964,17 @@ export function buildMemoryProps(input: {
   audience?: string
   lifetime?: string | null
   expiresAt?: string | null
+  /**
+   * Pinned context block fields (issue #282). Each carries
+   * clear-cell semantics aligned with the existing builder
+   * contract: `undefined` leaves the column untouched, `null` (for
+   * the number / select columns) clears, a value writes verbatim.
+   * The boolean `pinned` column has no clear sentinel — `undefined`
+   * leaves untouched, `true` / `false` write.
+   */
+  pinned?: boolean
+  pinnedPriority?: number | null
+  mutability?: string | null
 }): PageProperties {
   const props: PageProperties = {
     [MEMORY_PROPS.TITLE]: { title: [{ text: { content: input.title } }] },
@@ -990,16 +1034,22 @@ export function buildMemoryProps(input: {
         : { date: { start: input.lastReferencedAt } }
   }
   if (input.supersedesIds) {
-    props[MEMORY_PROPS.SUPERSEDES] = { relation: input.supersedesIds.map((id) => ({ id })) }
+    props[MEMORY_PROPS.SUPERSEDES] = {
+      relation: input.supersedesIds.map((id) => ({ id })),
+    }
   }
   if (input.affectsIds) {
     props[MEMORY_PROPS.AFFECTS] = { relation: input.affectsIds.map((id) => ({ id })) }
   }
   if (input.alternatives !== undefined) {
-    props[MEMORY_PROPS.ALTERNATIVES] = { rich_text: [{ text: { content: input.alternatives } }] }
+    props[MEMORY_PROPS.ALTERNATIVES] = {
+      rich_text: [{ text: { content: input.alternatives } }],
+    }
   }
   if (input.consequences !== undefined) {
-    props[MEMORY_PROPS.CONSEQUENCES] = { rich_text: [{ text: { content: input.consequences } }] }
+    props[MEMORY_PROPS.CONSEQUENCES] = {
+      rich_text: [{ text: { content: input.consequences } }],
+    }
   }
   if (input.author) {
     props[MEMORY_PROPS.AUTHOR] = { rich_text: [{ text: { content: input.author } }] }
@@ -1025,7 +1075,9 @@ export function buildMemoryProps(input: {
     props[MEMORY_PROPS.TASK_STATE] = { select: { name: input.taskState } }
   }
   if (input.blockedBy !== undefined) {
-    props[MEMORY_PROPS.BLOCKED_BY] = { rich_text: [{ text: { content: input.blockedBy } }] }
+    props[MEMORY_PROPS.BLOCKED_BY] = {
+      rich_text: [{ text: { content: input.blockedBy } }],
+    }
   }
   if (input.entity !== undefined) {
     props[MEMORY_PROPS.ENTITY] = { rich_text: [{ text: { content: input.entity } }] }
@@ -1049,7 +1101,9 @@ export function buildMemoryProps(input: {
   // would silently change the clear semantics for callers that pass
   // an empty array intending a write.
   if (input.comparedWith) {
-    props[MEMORY_PROPS.COMPARED_WITH] = { relation: input.comparedWith.map((id) => ({ id })) }
+    props[MEMORY_PROPS.COMPARED_WITH] = {
+      relation: input.comparedWith.map((id) => ({ id })),
+    }
   }
   // 0.9.0/#02 — Compare Notes is an append-only NDJSON cell. Routes
   // through `encodeCompareNotesRichText` so any string up to
@@ -1092,6 +1146,24 @@ export function buildMemoryProps(input: {
   if (input.expiresAt !== undefined) {
     props[MEMORY_PROPS.EXPIRES_AT] =
       input.expiresAt === null ? { date: null } : { date: { start: input.expiresAt } }
+  }
+  // Pinned context blocks (issue #282). Tristate semantics on the
+  // number + select columns mirror `confidenceScore` / `lifetime`:
+  // `undefined` leaves the column untouched, `null` clears, a value
+  // writes verbatim. The checkbox column has no clear sentinel —
+  // `undefined` leaves untouched, `true` / `false` write.
+  if (input.pinned !== undefined) {
+    props[MEMORY_PROPS.PINNED] = { checkbox: input.pinned }
+  }
+  if (input.pinnedPriority !== undefined) {
+    props[MEMORY_PROPS.PINNED_PRIORITY] =
+      input.pinnedPriority === null ? { number: null } : { number: input.pinnedPriority }
+  }
+  if (input.mutability !== undefined) {
+    props[MEMORY_PROPS.MUTABILITY] =
+      input.mutability === null
+        ? { select: null }
+        : { select: { name: input.mutability } }
   }
   return props
 }
