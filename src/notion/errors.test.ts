@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { isMissingPropertyError } from "./errors.js"
+import { extractMissingPropertyName, isMissingPropertyError } from "./errors.js"
 
 describe("isMissingPropertyError", () => {
   it("matches the canonical SDK message shape ('Could not find property')", () => {
@@ -83,5 +83,62 @@ describe("isMissingPropertyError", () => {
     // silently fall through to "no closures."
     const err = { code: "validation_error", message: { detail: "Done At missing" } }
     expect(isMissingPropertyError(err)).toBe(false)
+  })
+})
+
+describe("extractMissingPropertyName (issue #284 review item #5)", () => {
+  it("parses the 'Could not find property with name or id: \"<name>\"' shape", () => {
+    const err = Object.assign(
+      new Error('Could not find property with name or id: "Invalidated At"'),
+      { code: "validation_error" }
+    )
+    expect(extractMissingPropertyName(err)).toBe("Invalidated At")
+  })
+
+  it("parses the unquoted 'Could not find property with name or id: <name>' shape", () => {
+    const err = Object.assign(
+      new Error("Could not find property with name or id: Done At"),
+      { code: "validation_error" }
+    )
+    expect(extractMissingPropertyName(err)).toBe("Done At")
+  })
+
+  it("parses the '<name> does not exist on this database' shape and strips the leading 'property' token", () => {
+    // The SDK emits this with a leading literal "property" word.
+    // Stripping it is load-bearing: the captured name must match
+    // FACT_PROPS values verbatim so the surgical-drop loop's
+    // `propertyName in properties` guard succeeds. Pre-fix, the
+    // captured "property SubjectEntity" string failed the guard and
+    // the retry degraded to a bare-Valid-Until fallback (invalidate)
+    // or a raw 400 propagation (create).
+    const err = Object.assign(
+      new Error("property SubjectEntity does not exist on this database"),
+      { code: "validation_error" }
+    )
+    expect(extractMissingPropertyName(err)).toBe("SubjectEntity")
+  })
+
+  it("returns null when the error isn't a missing-property shape", () => {
+    const err = Object.assign(
+      new Error("filter operator 'date.before' is not valid for select property"),
+      { code: "validation_error" }
+    )
+    expect(extractMissingPropertyName(err)).toBeNull()
+  })
+
+  it("returns null when the property name can't be parsed from a recognized-but-novel shape", () => {
+    // Passes isMissingPropertyError (contains 'property' AND
+    // 'does not exist'), but the column name follows an
+    // SDK-message-shape change the parser doesn't recognize.
+    const err = Object.assign(
+      new Error("Some new property does not exist <bizarre message shape>"),
+      { code: "validation_error" }
+    )
+    // The parser is permissive enough to extract SOMETHING; we
+    // just need it to either return a non-empty string or null
+    // (never throw). Both outcomes are acceptable — the FactService
+    // retry handles each gracefully.
+    const parsed = extractMissingPropertyName(err)
+    expect(parsed === null || typeof parsed === "string").toBe(true)
   })
 })

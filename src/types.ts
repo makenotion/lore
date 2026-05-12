@@ -1823,6 +1823,32 @@ export interface Fact {
    * doesn't blow up the consumer.
    */
   scope?: MemoryScope | null
+  /**
+   * Transaction-time observation timestamp in `YYYY-MM-DD` form (issue
+   * #284). `null` on pre-#284 rows that have not yet been backfilled by
+   * `lore migrate --backfill-fact-observed-at`. Distinct from `validFrom`
+   * (domain-truth start) — `observedAt` answers "when did Lore learn this
+   * fact?" while `validFrom` answers "when did the fact start being true
+   * in the world?". Optional on the public type for the same
+   * backward-compat reason as `subjectEntityId`.
+   */
+  observedAt?: string | null
+  /**
+   * Transaction-time invalidation timestamp in `YYYY-MM-DD` form (issue
+   * #284). `null` for live facts and for invalidated facts on pre-#284
+   * vaults. Distinct from `validUntil` (domain-truth end) — `invalidatedAt`
+   * answers "when did Lore learn this fact stopped being true?" while
+   * `validUntil` answers "when did the fact stop being true in the world?".
+   * `FactService.invalidate` writes this alongside `validUntil` in a single
+   * atomic update.
+   */
+  invalidatedAt?: string | null
+  /**
+   * Memory id that prompted the invalidation (issue #284). Distinct from
+   * `sourceMemoryId` (the supporting memory at creation time). `null` when
+   * the row was invalidated without an explicit provenance link.
+   */
+  invalidatedBySourceMemoryId?: string | null
 }
 
 export interface CreateFactInput {

@@ -1767,28 +1767,40 @@ describe("MCP tool surface", () => {
     // (e) 7900 → 8000 in the issue #286 read-inheritance +
     // promote PR to absorb the `lore-memory action='promote'`
     // bullet (+~150 chars, kept terse with a
-    // docs/topology.md link); and (f) 8000 → 9400 in issue
-    // #282 to absorb the new `lore-pinned` family (four
-    // actions: pin/unpin/update/list) for pinned context
-    // blocks. Putting pinned-block actions on `lore-memory`
-    // would have busted the per-tool ceiling below (lopsided
+    // docs/topology.md link); (f) 8000 → 9400 in issue #282
+    // to absorb the new `lore-pinned` family (four actions:
+    // pin/unpin/update/list) for pinned context blocks.
+    // Putting pinned-block actions on `lore-memory` would
+    // have busted the per-tool ceiling below (lopsided
     // growth — the principal failure mode the per-tool
     // ceiling guards against), so the +1400 chars land as a
     // dedicated family description with its own per-tool
     // budget AND load-bearing security framing on `lore-pinned`
-    // (`force: true` is a stop-sign
-    // visible in the audit trail, NOT an access-control gate;
-    // `audience` is render metadata, not authorization).
-    // Each delta stays within a "≤ ~300 chars per
-    // single-action-add" envelope (deltas (d) and (f) exceed
-    // it — (d) is a structural critical-rule block, (f) is
-    // four actions plus a new family header plus load-bearing
-    // security framing — and are explicitly documented as
-    // such); doc-string clauses dominate, not the action-name
-    // additions themselves. Future description adds should
-    // continue to stack the budget explicitly rather than
-    // burning headroom silently.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 9400
+    // (`force: true` is a stop-sign visible in the audit
+    // trail, NOT an access-control gate; `audience` is render
+    // metadata, not authorization); (g) 9400 → 9700 for issue
+    // #284 to absorb temporal-provenance signal across
+    // `lore-query action='ask'` (asOf / includeHistory bullet
+    // + parameter descriptions) and `lore-fact
+    // action='invalidate'` (the `Invalidated At` /
+    // `Invalidated By` mention on the existing description
+    // bullet plus the new `sourceMemoryId` describe clause);
+    // and (h) 9700 → 9800 for issue #284 R3 nit —
+    // `lore-fact action='invalidate'` description now names
+    // the DEFERRED-02 / 0.8.0/#06 confidence-decrement side
+    // effect on the fact's `Source` memory so an agent
+    // reading the schema in isolation knows the invalidate
+    // call has a downstream signal. Each delta stays within
+    // a "≤ ~300 chars per single-action-add" envelope
+    // (deltas (d) and (f) exceed it — (d) is a structural
+    // critical-rule block, (f) is four actions plus a new
+    // family header plus load-bearing security framing —
+    // and are explicitly documented as such); doc-string
+    // clauses dominate, not the action-name additions
+    // themselves. Future description adds should continue
+    // to stack the budget explicitly rather than burning
+    // headroom silently.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 9900
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1891,8 +1903,16 @@ describe("MCP tool surface", () => {
       // the ~150-char headroom envelope. Description carries
       // load-bearing security framing on `force` / `audience`.
       "lore-pinned": 1330,
-      "lore-query": 1190,
-      "lore-fact": 1390,
+      // Issue #284 — bumped 1190 → 1340 to absorb the
+      // `lore-query action='ask'` asOf / includeHistory bullet.
+      "lore-query": 1340,
+      // Issue #284 — bumped 1390 → 1440 to absorb the
+      // `Invalidated At` / `Invalidated By` mention on
+      // `lore-fact action='invalidate'` and the new `sourceMemoryId`
+      // describe clause; bumped 1440 → 1540 for R3 nit (confidence-
+      // decrement side-effect note on the `invalidate` action so
+      // agents see the DEFERRED-02 / 0.8.0/#06 downstream signal).
+      "lore-fact": 1540,
       "lore-decision": 1000,
       "lore-project": 480,
       "lore-task": 1850,

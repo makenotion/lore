@@ -390,9 +390,13 @@ describe("FactService.invalidate", () => {
     expect(args.properties["Confidence Score"]).toEqual({ number: 0.4 })
   })
 
-  it("falls back to a Valid Until-only write when the read fails", async () => {
+  it("falls back to a Valid Until + Invalidated At write when the read fails", async () => {
     // A transient 5xx on the read shouldn't block the invalidate
-    // contract — operators expect Valid Until to land regardless.
+    // contract — operators expect both Valid Until (domain truth)
+    // and Invalidated At (transaction time, issue #284) to land
+    // regardless. The Confidence Score decrement is best-effort and
+    // skipped when the read fails because the algebra needs the
+    // pre-decrement value.
     const { client, updateSpy } = mkClient({ retrieve: new Error("transient 5xx") })
     const service = new FactService(client, DB)
     await service.invalidate("f1")
@@ -402,6 +406,7 @@ describe("FactService.invalidate", () => {
     }
     expect(args.properties).toEqual({
       "Valid Until": { date: { start: expect.any(String) } },
+      "Invalidated At": { date: { start: expect.any(String) } },
     })
     expect(args.properties).not.toHaveProperty("Confidence Score")
   })
@@ -433,15 +438,15 @@ describe("FactService.invalidate", () => {
     expect(updateSpy).not.toHaveBeenCalled()
   })
 
-  it("retries with Valid Until-only write when the schema is missing the Confidence Score column", async () => {
+  it("surgically drops only Confidence Score on legacy retry (issue #284 review item #5)", async () => {
     // Pre-DEFERRED-02 vault that hasn't run `lore migrate`: the
     // schema has no `Confidence Score` / `Last Referenced At`
-    // columns, so writing all three would 400 on
-    // `validation_error: Could not find property "Confidence Score"`.
-    // The helper detects the missing-property error and re-issues a
-    // bare `Valid Until` write so legacy vaults can still
-    // invalidate. Pin the recovery so a future refactor that drops
-    // the catch silently breaks legacy vaults.
+    // columns. Pre-#284 the retry dropped EVERY column and wrote
+    // only `Valid Until`; the surgical-drop fix (#284 review item
+    // #5) parses the failing property name and drops only that
+    // column, then re-attempts. A vault missing `Confidence Score`
+    // but with `Last Referenced At` AND `Invalidated At` retries
+    // and lands every column the schema does support.
     const today = new Date().toISOString().slice(0, 10)
     const factPage = pageWithConfidence({
       id: "f1",
@@ -453,9 +458,6 @@ describe("FactService.invalidate", () => {
     const updateSpy = vi.fn(async (_args: UpdateArgs) => {
       updateCount += 1
       if (updateCount === 1) {
-        // Notion's missing-property error shape, mirroring what
-        // `isMissingPropertyError` recognizes: status 400, code
-        // `validation_error`, body mentions the missing property.
         const err = new Error(
           'Could not find property with name or id: "Confidence Score"'
         ) as Error & {
@@ -478,13 +480,15 @@ describe("FactService.invalidate", () => {
     const service = new FactService(client, DB)
     await service.invalidate("f1")
 
-    // Two pages.update calls: the first attempts all three columns
-    // and 400s; the second writes Valid Until alone.
+    // Two pages.update calls: the first attempts every column and
+    // 400s; the second drops ONLY the parsed-missing column and
+    // keeps every sibling write the schema does support.
     expect(updateSpy).toHaveBeenCalledTimes(2)
     const recoveryArgs = updateSpy.mock.calls[1][0]
-    expect(recoveryArgs.properties).toEqual({
-      "Valid Until": { date: { start: expect.any(String) } },
-    })
+    expect(recoveryArgs.properties).not.toHaveProperty("Confidence Score")
+    expect(recoveryArgs.properties).toHaveProperty("Valid Until")
+    expect(recoveryArgs.properties).toHaveProperty("Invalidated At")
+    expect(recoveryArgs.properties).toHaveProperty("Last Referenced At")
   })
 })
 

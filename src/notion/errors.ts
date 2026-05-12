@@ -53,6 +53,59 @@ export function isMissingPropertyError(err: unknown): boolean {
 }
 
 /**
+ * Extract the property name from a Notion `validation_error` raised
+ * when a write references a column that doesn't exist on the data
+ * source. Returns `null` when the error isn't a missing-property
+ * shape or when the property name can't be parsed.
+ *
+ * Used by call sites that want to surgically drop ONLY the failing
+ * column from the retry payload rather than dropping every recently-
+ * added column unconditionally (which would silently swallow writes
+ * the schema actually does support on a partially-migrated vault).
+ *
+ * Matches the two message shapes the SDK emits today, both with and
+ * without surrounding quotes:
+ *
+ *   Could not find property with name or id: "<name>"
+ *   <name> does not exist on this database
+ */
+export function extractMissingPropertyName(err: unknown): string | null {
+  if (!isMissingPropertyError(err)) return null
+  const message = (err as { message: string }).message
+  // Pattern 1: "Could not find property with name or id: <name>"
+  // Anchor on "name or id:" so we don't match other intermediate
+  // tokens (e.g. the "find property" prefix would otherwise capture
+  // its own clause).
+  const findMatch = message.match(
+    /(?:name or id)[: ]+["']?([^"'.\n]+?)["']?\s*(?:[.\n]|$)/i
+  )
+  if (findMatch?.[1]) return findMatch[1]!.trim()
+  // Pattern 1b: bare "Could not find property: <name>" without
+  // the "name or id" prefix (older SDK shape, defense in depth).
+  const findBare = message.match(
+    /(?:could not find|not found).*?property[: ]+["']?([^"'.\n]+?)["']?\s*(?:[.\n]|$)/i
+  )
+  if (findBare?.[1]) return findBare[1]!.trim()
+  // Pattern 2: "<name> does not exist on this database" — including
+  // the SDK shape that prefixes the name with the literal word
+  // "property" (e.g. `property SubjectEntity does not exist...`).
+  // The non-capturing `(?:property\s+)?` prefix strips that word so
+  // the captured name matches the FACT_PROPS values verbatim (e.g.
+  // `SubjectEntity`, NOT `property SubjectEntity`). Without this
+  // strip, the surgical-drop loop in `FactService.invalidate` /
+  // `createPageWithMissingPropertyRetry` would fail the
+  // `propertyName in properties` guard for every Pattern 2 emission
+  // and fall through to a degraded recovery — invalidate to a bare
+  // `Valid Until` write (dropping every supported column), create
+  // to a raw 400 (blocking every new fact write on a stale vault).
+  const existMatch = message.match(
+    /(?:property\s+)?["']?([^"'\n]+?)["']?\s+does not exist/i
+  )
+  if (existMatch?.[1]) return existMatch[1]!.trim()
+  return null
+}
+
+/**
  * Match transient Notion/API transport failures that are worth retrying
  * rather than recasting as domain absence.
  *

@@ -21,7 +21,7 @@ registered flags for a command.
 | `lore pinned list`                                         | Inspect pinned context blocks active for the current project / audience (issue #282). Optional `--project <name>`, `--audience <token>` (single-token reader-simulation), `--all-audiences` (operator inspection across audiences), `-n <limit>` (default 10, max 100), `--json` for machine-readable output. Mutating ops (pin / unpin / update) land on the MCP `lore-pinned` tool surface.                                                                                                       |
 | `lore status projects`                                     | List active projects (`-a` / `--all` includes archived; `--archived-only` lists only archived projects)                                                                                                                                                                                                                                                                                                                                                                                              |
 | `lore status topics [project]`                             | List topics in a project                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `lore migrate`                                             | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--report-orphan-rate` (issue #542 — pair with `--build-entities`; prints the PF3-01 orphan-rate metric, `pre-pass` on plan-only / `--dry-run`, `post-pass` on `--yes`; gated by `LORE_USE_RUNTOOL_AGGREGATE` for the SQL aggregate path with JS fallback), `--fix-fact-encoding`, `--fix-memory-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, etc.). Project-capable data migrations require `--project <name>` or explicit `--allow-unscoped`; pass `--include-archived` with `--project` when repairing archived projects. See [Migrating From Unscoped Writes](memory-workflows.md#migrating-from-unscoped-writes). |
+| `lore migrate`                                             | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--report-orphan-rate` (issue #542 — pair with `--build-entities`; prints the PF3-01 orphan-rate metric, `pre-pass` on plan-only / `--dry-run`, `post-pass` on `--yes`; gated by `LORE_USE_RUNTOOL_AGGREGATE` for the SQL aggregate path with JS fallback), `--fix-fact-encoding`, `--fix-memory-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, `--backfill-fact-observed-at` (issue #284 — see [Backfilling transaction-time fact provenance](#backfilling-transaction-time-fact-provenance) for the full contract), etc.). Project-capable data migrations require `--project <name>` or explicit `--allow-unscoped`; pass `--include-archived` with `--project` when repairing archived projects. See [Migrating From Unscoped Writes](memory-workflows.md#migrating-from-unscoped-writes). |
 | `lore digest`                                              | Gather digest data for the resolved or named project and spawn a background synthesizer (`--project`, `--period`, `--since`, `--until`, `--dry-run`)                                                                                                                                                                                                                                                                                                                                                 |
 | `lore tasks list`                                          | List tasks with Overdue/Active sections (`--project`, `--entity`, `--state`, `--due-before`, `-n`/`--limit`, `--json`); pass `--state done` or `cancelled` to inspect closed work. Cursor-walks Notion across up to 5 pages × 100 rows; over-cap results render as `≥N tasks (lower-bound total)` with a "narrow filters" footer                                                                                                                                                                     |
 | `lore tasks create <subject>`                              | Create a task with optional `--description`, `--entity`, `--state`, `--blocked-by`, `--due-date`, `--project`, `--topic`, `--tags` (closed vocabulary; use `--keywords` for free-form), `--keywords`, `--synopsis`, `--json`. Idempotent on exact `(subject, entity, projectIds)` match — short-circuits to `Reused existing task: ...` instead of landing a duplicate                                                                                                                               |
@@ -44,6 +44,40 @@ registered flags for a command.
 See [`conflict-detection.md`](conflict-detection.md) for the full conflict scan
 workflow.
 See [`evals.md`](evals.md) for eval suite format, metrics, and artifact details.
+
+## Backfilling transaction-time fact provenance
+
+`lore migrate --backfill-fact-observed-at` (issue #284) seeds the three
+transaction-time columns added to the Facts DB so pre-#284 vaults gain
+the bitemporal axis the new `lore-query action='ask'` `asOf` / `includeHistory`
+controls depend on.
+
+What the migration writes per row:
+
+- `Observed At = page.created_time` (YYYY-MM-DD) — when `Observed At`
+  is empty. Best available proxy for "when Lore learned this fact" on
+  rows that pre-date #284. Newly-created rows get the column seeded at
+  write time by `FactService.create`; this migration covers history.
+- `Invalidated At = Valid Until` — on rows whose `Valid Until` is set
+  AND `Invalidated At` is empty. Conservative best-effort fallback for
+  pre-#284 invalidations, where the operator didn't separately record
+  the transaction-time invalidation date. On the common path
+  (`FactService.invalidate` flips both columns today), the two dates
+  align by construction.
+
+What the migration does NOT write:
+
+- `Invalidated By` — the relation requires a valid Memories row id,
+  and historical invalidations carry no audit trail of which memory
+  prompted them. Operators wanting to retro-link provenance run
+  `lore-fact action='invalidate'` with an explicit `sourceMemoryId`
+  on the specific rows they care about.
+
+Lifecycle: plan-only by default, `--yes` applies. Idempotent per-axis:
+re-runs skip rows whose target column is already populated. Project-
+scoped via `--project <name>`; vault-wide otherwise. Per-row failures
+are isolated and reported in a final summary so the operator can
+distinguish transient 429s from schema-mismatch on a specific row.
 
 ## Scope and lifetime in `lore status` (issue #283)
 

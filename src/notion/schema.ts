@@ -532,6 +532,19 @@ export const FACT_PROPS = {
   CONFIDENCE_SCORE: "Confidence Score",
   VALID_FROM: "Valid From",
   VALID_UNTIL: "Valid Until",
+  // Issue #284 — transaction-time provenance. `Valid From` / `Valid Until`
+  // model domain truth (when the fact was true in the world); `Observed At`
+  // and `Invalidated At` model what Lore knew and when. Together they
+  // implement the bitemporal axis Zep/Graphiti use for as-of recall.
+  // `Observed At` is written by `FactService.create` at write time;
+  // `Invalidated At` is written by `FactService.invalidate` alongside the
+  // existing `Valid Until` flip so a single atomic update carries both
+  // signals. `Invalidated By` points at the source memory that prompted
+  // the invalidation — distinct from `Source` (the supporting memory at
+  // creation time).
+  OBSERVED_AT: "Observed At",
+  INVALIDATED_AT: "Invalidated At",
+  INVALIDATED_BY: "Invalidated By",
   REVIEW_BY: "Review By",
   LAST_REFERENCED_AT: "Last Referenced At",
   DEDUP_KEY: "DedupKey",
@@ -603,6 +616,19 @@ export function factsProperties(
     },
     [FACT_PROPS.VALID_FROM]: { date: {} },
     [FACT_PROPS.VALID_UNTIL]: { date: {} },
+    // Issue #284 — transaction-time provenance columns. System-managed at
+    // write boundaries (`FactService.create` seeds `Observed At` from `today`;
+    // `FactService.invalidate` writes `Invalidated At` alongside the
+    // `Valid Until` flip). Read paths can use these for as-of recall
+    // (`lore-query action='ask'` with `asOf` / `includeHistory`).
+    [FACT_PROPS.OBSERVED_AT]: { date: {} },
+    [FACT_PROPS.INVALIDATED_AT]: { date: {} },
+    [FACT_PROPS.INVALIDATED_BY]: {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDbId,
+      },
+    },
     [FACT_PROPS.REVIEW_BY]: { date: {} },
     [FACT_PROPS.SOURCE]: {
       relation: {
@@ -1218,6 +1244,28 @@ export function buildFactProps(input: {
   validUntil?: string | null
   reviewBy?: string
   sourceMemoryId?: string
+  /**
+   * Transaction-time observation timestamp (issue #284). YYYY-MM-DD form.
+   * `undefined` leaves the column untouched, `null` clears, a string writes
+   * verbatim. `FactService.create` seeds this at the write boundary; the
+   * backfill migration writes it from `created_time` on pre-#284 rows.
+   */
+  observedAt?: string | null
+  /**
+   * Transaction-time invalidation timestamp (issue #284). YYYY-MM-DD form.
+   * `undefined` leaves the column untouched, `null` clears, a string writes
+   * verbatim. `FactService.invalidate` writes this alongside `Valid Until`
+   * so a single `pages.update` carries both the domain-truth-ended date
+   * and the "Lore learned it stopped being true" date.
+   */
+  invalidatedAt?: string | null
+  /**
+   * Memory id that prompted the invalidation (issue #284). Distinct from
+   * `sourceMemoryId` (the supporting memory at creation time). Optional
+   * even when invalidating — operators may invalidate without a structured
+   * provenance link, in which case the column stays empty.
+   */
+  invalidatedBySourceMemoryId?: string
   confidence?: string
   /**
    * System-managed numeric confidence (DEFERRED-02). Three-state semantics
@@ -1259,6 +1307,24 @@ export function buildFactProps(input: {
   if (input.validUntil !== undefined) {
     props[FACT_PROPS.VALID_UNTIL] =
       input.validUntil === null ? { date: null } : { date: { start: input.validUntil } }
+  }
+  // Issue #284 — transaction-time provenance. Same tristate semantics as
+  // confidenceScore / lastReferencedAt above: undefined leaves untouched,
+  // null clears, a string writes verbatim.
+  if (input.observedAt !== undefined) {
+    props[FACT_PROPS.OBSERVED_AT] =
+      input.observedAt === null ? { date: null } : { date: { start: input.observedAt } }
+  }
+  if (input.invalidatedAt !== undefined) {
+    props[FACT_PROPS.INVALIDATED_AT] =
+      input.invalidatedAt === null
+        ? { date: null }
+        : { date: { start: input.invalidatedAt } }
+  }
+  if (input.invalidatedBySourceMemoryId) {
+    props[FACT_PROPS.INVALIDATED_BY] = {
+      relation: [{ id: input.invalidatedBySourceMemoryId }],
+    }
   }
   if (input.reviewBy) {
     props[FACT_PROPS.REVIEW_BY] = { date: { start: input.reviewBy } }

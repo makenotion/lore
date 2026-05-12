@@ -25,7 +25,10 @@ import type {
 } from "../types.js"
 import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
 import { buildFactProps, FACT_PROPS } from "../notion/schema.js"
-import { isMissingPropertyError } from "../notion/errors.js"
+import {
+  extractMissingPropertyName,
+  isMissingPropertyError,
+} from "../notion/errors.js"
 import {
   projectOrUnscopedFilter,
   withDefaultScopeFilter,
@@ -72,6 +75,25 @@ type QueryFactsOpts = {
   projectId?: string
   includeInvalidated?: boolean
   predicates?: FactPredicate[]
+  /**
+   * Transaction-time as-of cutoff in `YYYY-MM-DD` form (issue #284). When
+   * set, the read returns the slice of facts Lore knew about at `asOf`
+   * (Observed At ≤ asOf) AND had not yet invalidated by `asOf`
+   * (Invalidated At is empty OR > asOf). Pre-migration rows with empty
+   * Observed At are treated as known (the `is_empty` short-circuit on
+   * each clause keeps un-backfilled rows visible during the migration
+   * window so `lore-query action='ask'` doesn't suddenly empty out before
+   * the operator runs `lore migrate --backfill-fact-observed-at`).
+   *
+   * Independent of `includeInvalidated` (domain-truth `Valid Until` axis).
+   * When `asOf` is set, the legacy `Valid Until is_empty` filter is NOT
+   * applied — domain-truth state at the asOf point is a separate query
+   * the operator can layer on top via `Valid From` / `Valid Until` if
+   * needed. The default `lore-query action='ask'` surface does not
+   * combine the two axes; an operator wanting the intersection asks for
+   * each separately.
+   */
+  asOf?: string
   /**
    * Cap total results. Pagination stops as soon as this is reached.
    * Without a limit, all matching facts are fetched across pages.
@@ -132,6 +154,65 @@ const NOTION_MAX_PAGE_SIZE = 100
  * (`created_time ASC`) and proceeds; this warning surfaces the
  * gap to operators so they know to run the migration.
  */
+/**
+ * Issue #284 review item #5 — once-per-process stderr warning when
+ * `FactService.invalidate` drops a missing column on retry. Operators
+ * triaging a partially-migrated vault see WHICH column the schema
+ * lacks instead of a silent degrade. Sticky across the process so a
+ * batch invalidate doesn't spam stderr.
+ */
+const invalidateMissingColumnWarned = new Set<string>()
+function warnInvalidateMissingColumnOnce(propertyName: string | null): void {
+  const key = propertyName ?? "<unparsed>"
+  if (invalidateMissingColumnWarned.has(key)) return
+  invalidateMissingColumnWarned.add(key)
+  if (propertyName === null) {
+    process.stderr.write(
+      "[lore] fact-invalidate: vault schema lacks at least one of the " +
+        "Issue #284 transaction-time columns (Invalidated At / Invalidated " +
+        "By) or DEFERRED-02 columns (Confidence Score / Last Referenced " +
+        "At); falling back to a bare `Valid Until` write. Run `lore migrate" +
+        " --backfill-fact-observed-at` and `lore migrate --build-fact-" +
+        "confidence-scores` to seed the missing columns.\n"
+    )
+    return
+  }
+  const hint =
+    propertyName === "Invalidated At" || propertyName === "Invalidated By"
+      ? "Run `lore migrate --backfill-fact-observed-at` to seed transaction-time columns."
+      : propertyName === "Confidence Score" || propertyName === "Last Referenced At"
+        ? "Run `lore migrate --build-fact-confidence-scores` to seed DEFERRED-02 columns."
+        : "Run `lore migrate` to add the missing column."
+  process.stderr.write(
+    `[lore] fact-invalidate: vault schema lacks \`${propertyName}\`; ` +
+      `dropping that column from the invalidate write. ${hint}\n`
+  )
+}
+
+/**
+ * Issue #284 review item #7 — once-per-process stderr warning when
+ * `freshCreateAfterDedupMiss` drops a missing column on retry.
+ * Symmetric with `warnInvalidateMissingColumnOnce` for the
+ * partially-migrated-vault create path: operators triaging "fact
+ * creation succeeded despite missing schema column X" see WHICH
+ * column the schema lacks and the right migration to seed it.
+ */
+const factCreateMissingColumnWarned = new Set<string>()
+function warnFactCreateMissingColumnOnce(propertyName: string): void {
+  if (factCreateMissingColumnWarned.has(propertyName)) return
+  factCreateMissingColumnWarned.add(propertyName)
+  const hint =
+    propertyName === "Observed At" ||
+    propertyName === "Invalidated At" ||
+    propertyName === "Invalidated By"
+      ? "Run `lore migrate` to add issue #284 transaction-time columns, then `lore migrate --backfill-fact-observed-at` to seed pre-#284 rows."
+      : "Run `lore migrate` to add missing schema columns."
+  process.stderr.write(
+    `[lore] fact-create: vault schema lacks \`${propertyName}\`; ` +
+      `dropping that column from the create write so the fact still lands. ${hint}\n`
+  )
+}
+
 let dedupDuplicateScopeMatchWarned = false
 function logDedupDuplicateScopeMatchOnce(dedupKey: string): void {
   if (dedupDuplicateScopeMatchWarned) return
@@ -235,6 +316,124 @@ function predicateFilterClause(
 }
 
 /**
+ * Build the server-side as-of filter for a temporal recall (issue #284).
+ * Returns the AND-of-clauses array the caller pushes flat into its
+ * existing filter pipeline (saves a level of nesting when the caller
+ * already has 4+ AND clauses).
+ *
+ * **Bitemporal contract.** `Observed At` and `Invalidated At` are
+ * transaction-time (when Lore learned things), distinct from
+ * `Valid From` / `Valid Until` (domain truth). The asOf cutoff means
+ * "what Lore knew at this point":
+ *
+ *  1. `Observed At is_empty OR <= asOf` — Lore knew about the row.
+ *  2. `Invalidated At is_empty OR > asOf` — Lore had not yet
+ *     invalidated it.
+ *
+ * **Un-migrated-vault correction.** Both transaction-time legs keep
+ * an `is_empty` short-circuit so pre-migration rows surface during
+ * the `--backfill-fact-observed-at` rollout window. Without further
+ * gating, a legacy already-invalidated row (`Valid Until` set,
+ * `Observed At` null, `Invalidated At` null) would also surface in an
+ * asOf recall because its `Invalidated At is_empty` leg matches —
+ * even though it was invalidated BEFORE asOf. The third clause
+ * approximates transaction-time invalidation with domain-truth
+ * `Valid Until` to close that asymmetry: when the row has no
+ * `Invalidated At` (pre-migration or live), only surface it when
+ * its `Valid Until` is either empty (still live) or strictly after
+ * asOf (became domain-untrue after the cutoff). Once an operator
+ * runs `lore migrate --backfill-fact-observed-at`, `Invalidated At
+ * = Valid Until` on those rows and the third clause is byte-equivalent
+ * to the second — the safety net narrows to "Observed At backfilled
+ * but Invalidated At not yet" rows the migration walks atomically.
+ *
+ * After backfill the `is_empty` legs match no rows for `Observed At`
+ * (every row carries a timestamp). The `Invalidated At` `is_empty`
+ * leg keeps matching live rows.
+ */
+function asOfFilterClauses(
+  asOf: string,
+  opts: { includeInvalidated?: boolean } = {}
+): Array<Record<string, unknown>> {
+  const clauses: Array<Record<string, unknown>> = [
+    {
+      or: [
+        { property: FACT_PROPS.OBSERVED_AT, date: { is_empty: true } },
+        { property: FACT_PROPS.OBSERVED_AT, date: { on_or_before: asOf } },
+      ],
+    },
+  ]
+  // R3 blocker fix: when `includeInvalidated` is set alongside `asOf`,
+  // surface rows invalidated by asOf too — semantics is "everything
+  // Lore knew up through asOf, including rows already invalidated by
+  // then." Without this, `pushLiveOrAsOfClauses` silently ignored the
+  // `includeInvalidated` flag whenever `asOf` was set, contradicting
+  // the documented contract that the two flags are independent.
+  // Default `asOf` recall (no `includeInvalidated`) keeps the live-at-
+  // asOf gate on the Invalidated At axis.
+  if (!opts.includeInvalidated) {
+    clauses.push({
+      // Either Lore explicitly recorded a transaction-time invalidation
+      // after the cutoff (or none yet), OR — for pre-migration rows
+      // missing Invalidated At — domain truth signals the row was still
+      // valid at asOf. The second branch keeps un-migrated vaults
+      // honest until the backfill lands.
+      or: [
+        {
+          and: [
+            { property: FACT_PROPS.INVALIDATED_AT, date: { is_empty: true } },
+            {
+              or: [
+                { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
+                { property: FACT_PROPS.VALID_UNTIL, date: { after: asOf } },
+              ],
+            },
+          ],
+        },
+        { property: FACT_PROPS.INVALIDATED_AT, date: { after: asOf } },
+      ],
+    })
+  }
+  return clauses
+}
+
+/**
+ * Apply the bitemporal live-or-asOf gate to a filter accumulator
+ * (issue #284). Centralizes the four-call-site repeated pattern:
+ *
+ *   if (opts?.asOf) {
+ *     filters.push(...asOfFilterClauses(opts.asOf))
+ *   } else if (!opts?.includeInvalidated) {
+ *     filters.push({ property: VALID_UNTIL, date: { is_empty: true } })
+ *   }
+ *
+ * Mutates `filters` in place — same contract callers already use.
+ */
+function pushLiveOrAsOfClauses(
+  filters: Array<Record<string, unknown>>,
+  opts: { asOf?: string; includeInvalidated?: boolean } | undefined
+): void {
+  if (opts?.asOf) {
+    // R3 blocker fix (review of `1b92d1a`): forward `includeInvalidated`
+    // into the asOf clause builder so the combined `asOf + includeHistory`
+    // case actually surfaces rows Lore had already invalidated by asOf.
+    // Pre-fix, this call dropped the flag on the way through, leaving the
+    // core filter byte-identical to the asOf-only path even when MCP
+    // correctly threaded `includeHistory: true`.
+    filters.push(
+      ...asOfFilterClauses(opts.asOf, {
+        includeInvalidated: opts.includeInvalidated,
+      })
+    )
+  } else if (!opts?.includeInvalidated) {
+    filters.push({
+      property: FACT_PROPS.VALID_UNTIL,
+      date: { is_empty: true },
+    })
+  }
+}
+
+/**
  * A created-or-deduped fact. `deduped === true` means the write was absorbed
  * into an existing live row (same normalized triple) and the caller should
  * surface that to the user instead of silently returning a stale-looking ID.
@@ -308,6 +507,16 @@ function logProbeFailureOnce(err: unknown): void {
 /** Reset between tests. Not exported on the public API surface. */
 export function __resetProbeFailureLogForTests(): void {
   probeFailureLogged = false
+}
+
+/** Reset between tests. Not exported on the public API surface. */
+export function __resetInvalidateMissingColumnWarningForTests(): void {
+  invalidateMissingColumnWarned.clear()
+}
+
+/** Reset between tests. Not exported on the public API surface. */
+export function __resetFactCreateMissingColumnWarningForTests(): void {
+  factCreateMissingColumnWarned.clear()
 }
 
 /**
@@ -802,6 +1011,8 @@ export class FactService {
       limit?: number
       /** Issue #283. See `applyDefaultScope` for semantics. */
       includeOutOfScope?: boolean
+      /** Issue #284. See `asOfFilterClauses` for semantics. */
+      asOf?: string
     }
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
@@ -816,12 +1027,7 @@ export class FactService {
     if (opts?.projectId) {
       filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
-    if (!opts?.includeInvalidated) {
-      filters.push({
-        property: FACT_PROPS.VALID_UNTIL,
-        date: { is_empty: true },
-      })
-    }
+    pushLiveOrAsOfClauses(filters, opts)
 
     const predicateClause = predicateFilterClause(opts?.predicates)
     if (predicateClause) filters.push(predicateClause)
@@ -975,38 +1181,124 @@ export class FactService {
     reviewBy: string | undefined
   }): Promise<CreateFactResult> {
     const { relationSafeInput, dedupKey, subjectKey, reviewBy } = args
-    const page = await this.client.pages.create({
-      parent: { type: "database_id", database_id: this.db.databaseId },
-      properties: buildFactProps({
-        subject: relationSafeInput.subject,
-        predicate: relationSafeInput.predicate,
-        object: relationSafeInput.object,
-        projectIds: relationSafeInput.projectIds,
-        validFrom: relationSafeInput.validFrom ?? new Date().toISOString().split("T")[0],
-        reviewBy,
-        sourceMemoryId: relationSafeInput.sourceMemoryId,
-        confidence: relationSafeInput.confidence ?? "certain",
-        dedupKey,
-        subjectKey,
-        // PF3-01 — optional entity ids. When the caller has resolved
-        // them upstream (`lore-fact action='create'` after
-        // `EntityService.resolveOrCreateEntity`), the new fact lands
-        // with canonical relations from day one. Omitted callers
-        // (legacy paths, internal decision-graph helpers) still write
-        // valid rows; the migration backfills relations later.
-        subjectEntityId: relationSafeInput.subjectEntityId,
-        objectEntityId: relationSafeInput.objectEntityId,
-        ...factScopeInputToBuilderProps(relationSafeInput.scope),
-      }),
-    })
+    const validFrom =
+      relationSafeInput.validFrom ?? new Date().toISOString().split("T")[0]!
+    const properties = buildFactProps({
+      subject: relationSafeInput.subject,
+      predicate: relationSafeInput.predicate,
+      object: relationSafeInput.object,
+      projectIds: relationSafeInput.projectIds,
+      validFrom,
+      // Issue #284 — `Observed At` is the transaction-time anchor: when
+      // Lore learned about the fact. Defaults to today (matching
+      // `validFrom`'s default) so a vanilla create lands with both
+      // axes seeded; callers backfilling historical facts can decouple
+      // by passing `validFrom` explicitly while leaving `observedAt`
+      // to the today default.
+      observedAt: todayUtc(),
+      reviewBy,
+      sourceMemoryId: relationSafeInput.sourceMemoryId,
+      confidence: relationSafeInput.confidence ?? "certain",
+      dedupKey,
+      subjectKey,
+      // PF3-01 — optional entity ids. When the caller has resolved
+      // them upstream (`lore-fact action='create'` after
+      // `EntityService.resolveOrCreateEntity`), the new fact lands
+      // with canonical relations from day one. Omitted callers
+      // (legacy paths, internal decision-graph helpers) still write
+      // valid rows; the migration backfills relations later.
+      subjectEntityId: relationSafeInput.subjectEntityId,
+      objectEntityId: relationSafeInput.objectEntityId,
+      ...factScopeInputToBuilderProps(relationSafeInput.scope),
+    }) as Record<string, unknown>
+    // Issue #284 review item #7 — surgical retry on stale-schema vaults.
+    // Before #284, every column on a fresh create existed in the schema
+    // by construction (the migration runner adds new columns before new
+    // code ships writes for them). Adding `Observed At` to the create
+    // payload broke that invariant: a vault that pulled this code but
+    // has not yet run `lore migrate` 400s on every fact write, since
+    // Notion rejects unknown properties before creating the page.
+    //
+    // Mirror the surgical-drop loop `invalidate` uses on the same
+    // partially-migrated failure class: parse the failing property
+    // name, drop it from the payload, retry, up to the number of
+    // optional columns we might be writing. Unlike `invalidate`,
+    // create has no minimum-viable bare-write fallback — the dedup key,
+    // subject/predicate/object, and project relations are all
+    // load-bearing for the dedup contract, so on an unparseable error
+    // we propagate the failure rather than silently degrading.
+    const page = await this.createPageWithMissingPropertyRetry(properties)
 
     // We just created the row with a typed `FactPredicate` value, so
     // `pageToFact`'s historical-tracking filter cannot reject it.
     return {
-      fact: (await this.pageToFact(page as PageObjectResponse))!,
+      fact: (await this.pageToFact(page))!,
       deduped: false,
       enriched: [],
     }
+  }
+
+  /**
+   * Issue #284 review item #7 — pages.create wrapper with iterative
+   * missing-property drop. Identical drop-loop shape to
+   * `invalidate`'s schema-mismatch retry, but with no bare-properties
+   * fallback (create has no minimum-viable degraded write — the dedup
+   * key and identity columns are all load-bearing).
+   *
+   * **Loop budget.** `MAX_OPTIONAL_DROPS = 4` is the count of optional
+   * columns we might drop on a maximally-stale vault (post-#284
+   * `Observed At` + `Invalidated At` + `Invalidated By`, plus
+   * DEFERRED-02 `Confidence Score`). The loop runs at most
+   * `MAX_OPTIONAL_DROPS + 1` iterations: up to MAX missing-column
+   * drops followed by a single final retry with the trimmed payload.
+   * The +1 is load-bearing — without it, four sequential missing-
+   * property errors exhaust the iteration count before the final
+   * retry fires and the function falls through to the post-loop
+   * throw without ever issuing a successful create. R5 review caught
+   * this regression: an earlier `<` bound (instead of `<=`) silently
+   * dropped the trailing retry.
+   *
+   * On parse failure (unrecognized SDK message shape) propagates the
+   * original error so the caller surfaces the failure instead of
+   * silently landing a partial row.
+   */
+  private async createPageWithMissingPropertyRetry(
+    properties: Record<string, unknown>
+  ): Promise<PageObjectResponse> {
+    const MAX_OPTIONAL_DROPS = 4
+    for (let attempt = 0; attempt <= MAX_OPTIONAL_DROPS; attempt += 1) {
+      try {
+        const page = await this.client.pages.create({
+          parent: { type: "database_id", database_id: this.db.databaseId },
+          properties: properties as Parameters<
+            (typeof this.client)["pages"]["create"]
+          >[0]["properties"],
+        })
+        return page as PageObjectResponse
+      } catch (err) {
+        if (!isMissingPropertyError(err)) throw err
+        const missing = extractMissingPropertyName(err)
+        if (missing && missing in properties) {
+          warnFactCreateMissingColumnOnce(missing)
+          delete properties[missing]
+          if (Object.keys(properties).length === 0) throw err
+          continue
+        }
+        // Unparseable validation_error: propagate so the caller can
+        // surface the failure. No bare-fallback for create — silently
+        // dropping every optional column would land a row missing the
+        // load-bearing dedup key.
+        throw err
+      }
+    }
+    // Reached only if the loop's post-drop retry ALSO returned a
+    // parseable missing-property error — i.e. more than MAX optional
+    // columns were missing in sequence. Surface a clear error rather
+    // than landing a row with no observable state.
+    throw new Error(
+      `FactService.createPageWithMissingPropertyRetry: exhausted ${MAX_OPTIONAL_DROPS} drops + 1 retry; ` +
+        `vault schema appears to be severely out of date — run \`lore migrate\` to refresh.`
+    )
   }
 
   /**
@@ -1184,6 +1476,7 @@ export class FactService {
     // `RUNTOOL_CREATE_PAGES_MAX_CHUNK` — so callers can pass any
     // number of misses without thinking about the server cap.
     const validFromDefault = new Date().toISOString().split("T")[0]
+    const observedAtDefault = todayUtc()
     const pagePayloads: RunToolCreatePagesInputPage[] = misses.map((m) => ({
       properties: buildFactProps({
         subject: m.relationSafeInput.subject,
@@ -1191,6 +1484,9 @@ export class FactService {
         object: m.relationSafeInput.object,
         projectIds: m.relationSafeInput.projectIds,
         validFrom: m.relationSafeInput.validFrom ?? validFromDefault,
+        // Issue #284 — batch path seeds `Observed At` to mirror the
+        // single-call create's transaction-time anchor.
+        observedAt: observedAtDefault,
         reviewBy: m.reviewBy,
         sourceMemoryId: m.relationSafeInput.sourceMemoryId,
         confidence: m.relationSafeInput.confidence ?? "certain",
@@ -1283,7 +1579,8 @@ export class FactService {
           fact: synthesizeFactFromCreateInput(
             committedIds[j]!,
             m.relationSafeInput,
-            validFromDefault
+            validFromDefault,
+            observedAtDefault
           ),
           deduped: false,
           enriched: [],
@@ -1781,12 +2078,7 @@ export class FactService {
       filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
-    if (!opts?.includeInvalidated) {
-      filters.push({
-        property: FACT_PROPS.VALID_UNTIL,
-        date: { is_empty: true },
-      })
-    }
+    pushLiveOrAsOfClauses(filters, opts)
 
     if (opts?.predicates?.length) {
       if (opts.predicates.length === 1) {
@@ -1865,12 +2157,7 @@ export class FactService {
       filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
-    if (!opts?.includeInvalidated) {
-      filters.push({
-        property: FACT_PROPS.VALID_UNTIL,
-        date: { is_empty: true },
-      })
-    }
+    pushLiveOrAsOfClauses(filters, opts)
 
     if (opts?.predicates?.length) {
       if (opts.predicates.length === 1) {
@@ -2119,6 +2406,22 @@ export class FactService {
        * substring legs. Audit / migration paths set `true`.
        */
       includeOutOfScope?: boolean
+      /**
+       * Issue #284 — transaction-time as-of cutoff in `YYYY-MM-DD` form.
+       * Forwarded into every underlying branch so the bitemporal filter
+       * applies symmetrically across the relation and substring legs.
+       * Independent of `includeInvalidated`; the asOf clause replaces the
+       * legacy `Valid Until is_empty` filter when set.
+       */
+      asOf?: string
+      /**
+       * Issue #284 — when true, drop the default `Valid Until is_empty`
+       * filter so invalidated rows surface alongside live ones. Useful
+       * when an agent is asking for a full history of facts about an
+       * entity. Independent of `asOf` — pass `asOf` for "at point T",
+       * pass `includeInvalidated` for "every fact ever recorded".
+       */
+      includeInvalidated?: boolean
     }
   ): Promise<Fact[]> {
     // Empty / whitespace entity would otherwise reach `queryBySubject`
@@ -2153,12 +2456,16 @@ export class FactService {
           predicates: opts.predicates,
           limit,
           includeOutOfScope: opts.includeOutOfScope,
+          asOf: opts.asOf,
+          includeInvalidated: opts.includeInvalidated,
         }),
         this.queryByEntityTextOnUnmigrated(entity, {
           projectId: opts.projectId,
           predicates: opts.predicates,
           limit,
           includeOutOfScope: opts.includeOutOfScope,
+          asOf: opts.asOf,
+          includeInvalidated: opts.includeInvalidated,
         }),
       ])
       const seen = new Set(byRelation.map((f) => f.id))
@@ -2192,6 +2499,10 @@ export class FactService {
       limit?: number
       /** Issue #283 — forwarded from `queryByEntity`. */
       includeOutOfScope?: boolean
+      /** Issue #284 — forwarded from `queryByEntity`. */
+      asOf?: string
+      /** Issue #284 — forwarded from `queryByEntity`. */
+      includeInvalidated?: boolean
     }
   ): Promise<Fact[]> {
     // Whitespace-only entity must short-circuit too. `Subject contains
@@ -2210,8 +2521,8 @@ export class FactService {
       // return empty here so we don't double-count."
       { property: FACT_PROPS.SUBJECT_ENTITY, relation: { is_empty: true } },
       { property: FACT_PROPS.OBJECT_ENTITY, relation: { is_empty: true } },
-      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
     ]
+    pushLiveOrAsOfClauses(baseFilters, opts)
     if (opts?.projectId) {
       baseFilters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
@@ -2570,7 +2881,21 @@ export class FactService {
    *   path as a never-scored row, the decrement still runs against the
    *   seeded categorical.
    */
-  async invalidate(id: string): Promise<void> {
+  async invalidate(
+    id: string,
+    opts: {
+      /**
+       * Memory id that prompted the invalidation (issue #284). Written to
+       * the `Invalidated By` relation column alongside `Invalidated At`.
+       * Optional — operators may invalidate without structured provenance,
+       * in which case only `Invalidated At` is set. Caller is responsible
+       * for resolving the memory id; this helper does NOT validate that
+       * the row exists or is accessible (consistent with how `setSource`
+       * treats `sourceMemoryId`).
+       */
+      sourceMemoryId?: string
+    } = {}
+  ): Promise<void> {
     const today = todayUtc()
     let page: PageObjectResponse | null = null
     try {
@@ -2608,6 +2933,16 @@ export class FactService {
 
     const properties: Record<string, unknown> = {
       [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
+      // Issue #284 — transaction-time invalidation timestamp lands in the
+      // same atomic update as `Valid Until` so the bitemporal axis stays
+      // consistent. `Invalidated By` is optional; only populated when the
+      // caller threads an explicit `sourceMemoryId`.
+      [FACT_PROPS.INVALIDATED_AT]: { date: { start: today } },
+    }
+    if (opts.sourceMemoryId) {
+      properties[FACT_PROPS.INVALIDATED_BY] = {
+        relation: [{ id: opts.sourceMemoryId }],
+      }
     }
 
     if (fact !== null) {
@@ -2635,18 +2970,60 @@ export class FactService {
       properties[FACT_PROPS.LAST_REFERENCED_AT] = { date: { start: today } }
     }
 
-    try {
-      await this.client.pages.update({
-        page_id: id,
-        properties: properties as UpdatePageParameters["properties"],
-      })
-    } catch (err) {
-      // If the write failed because the schema column doesn't exist on
-      // legacy vaults that haven't run `lore migrate`, fall back to the
-      // bare `Valid Until` write so the invalidate still lands. The
-      // operator's next migrate run will add the columns; subsequent
-      // invalidates pick up the full atom.
-      if (isMissingPropertyError(err)) {
+    // Issue #284 review item #5 — surgical retry on partially-migrated
+    // vaults. The earlier shape ("any validation_error → drop everything
+    // and bare-Valid-Until write") silently dropped `Invalidated At` /
+    // `Invalidated By` AND `Confidence Score` / `Last Referenced At`
+    // even when the schema only lacked ONE of them. Parsing the failing
+    // property name lets the retry drop ONLY the missing column, so a
+    // vault that has `Invalidated At` but is still missing
+    // `Confidence Score` (or vice versa) keeps the transaction-time
+    // write that its schema DOES support.
+    //
+    // **Loop budget.** `MAX_OPTIONAL_DROPS = 4` is the count of optional
+    // columns this method might be writing on top of the load-bearing
+    // `Valid Until` (`Invalidated At` + `Invalidated By` + `Confidence
+    // Score` + `Last Referenced At`). The loop runs at most
+    // `MAX_OPTIONAL_DROPS + 1` iterations: up to MAX missing-column
+    // drops followed by a single final retry with the trimmed payload.
+    // The +1 is load-bearing for the invalidate contract — without it,
+    // four sequential missing-property errors exhaust the iteration
+    // count BEFORE the final retry fires, the loop falls through, and
+    // the function returns without ever issuing a `Valid Until` write.
+    // R5 review caught this regression: an earlier `<` bound silently
+    // dropped the trailing retry, so a maximally-stale vault saw zero
+    // visible state change after a "successful" invalidate call.
+    const MAX_OPTIONAL_DROPS = 4
+    for (let attempt = 0; attempt <= MAX_OPTIONAL_DROPS; attempt += 1) {
+      try {
+        await this.client.pages.update({
+          page_id: id,
+          properties: properties as UpdatePageParameters["properties"],
+        })
+        return
+      } catch (err) {
+        if (!isMissingPropertyError(err)) throw err
+        const missing = extractMissingPropertyName(err)
+        if (missing && missing in properties) {
+          warnInvalidateMissingColumnOnce(missing)
+          delete properties[missing]
+          // Re-attempt with the failing column removed. If a sibling
+          // column is ALSO missing, the next attempt parses that one
+          // and drops it too. Valid Until is load-bearing for the
+          // invalidate contract — under normal usage Notion will not
+          // surface it as missing because the column ships with the
+          // pre-#284 schema; this guard is defense-in-depth for a
+          // pathologically corrupted vault where even the legacy
+          // columns are gone.
+          if (Object.keys(properties).length === 0) throw err
+          continue
+        }
+        // Couldn't parse the property name OR the parsed name isn't
+        // in our payload. Fall back to the pre-PR behavior so the
+        // invalidate contract (`Valid Until = today`) still lands;
+        // legacy vaults without ANY of the new columns convert to
+        // the bare-Valid-Until write in one shot.
+        warnInvalidateMissingColumnOnce(null)
         await this.client.pages.update({
           page_id: id,
           properties: {
@@ -2655,8 +3032,23 @@ export class FactService {
         })
         return
       }
-      throw err
     }
+    // Defense in depth: every loop iteration ends in `return`, `throw`,
+    // or `continue`, and the `MAX_OPTIONAL_DROPS + 1` budget covers
+    // every optional column we might write. Falling off the loop means
+    // either the loop budget was too small for this vault's schema
+    // drift, or a future contributor added an optional column without
+    // bumping MAX_OPTIONAL_DROPS. Either way, the invalidate contract
+    // (`Valid Until = today` must land) is non-negotiable; degrade to
+    // the bare-Valid-Until write so the call doesn't silently return
+    // without changing visible state.
+    warnInvalidateMissingColumnOnce(null)
+    await this.client.pages.update({
+      page_id: id,
+      properties: {
+        [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
+      },
+    })
   }
 
   /**
@@ -2815,15 +3207,30 @@ export class FactService {
   async *listAllForBackfill(
     opts: {
       projectId?: string
+      /**
+       * When true, drop the default `Valid Until is_empty` filter so
+       * invalidated rows surface alongside live ones. Used by issue
+       * #284's `--backfill-fact-observed-at` migration so the walker
+       * sees historical invalidations (whose `Invalidated At` needs
+       * backfilling from `Valid Until`). Defaults to false — the
+       * confidence-score migration only needs live rows.
+       */
+      includeInvalidated?: boolean
     } = {}
   ): AsyncGenerator<Fact, void, void> {
-    const filters: Array<Record<string, unknown>> = [
-      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
-    ]
+    const filters: Array<Record<string, unknown>> = []
+    if (!opts.includeInvalidated) {
+      filters.push({ property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } })
+    }
     if (opts.projectId) {
       filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
-    const filter = filters.length > 1 ? { and: filters } : filters[0]
+    const filter =
+      filters.length > 1
+        ? { and: filters }
+        : filters.length === 1
+          ? filters[0]
+          : undefined
     let cursor: string | undefined
     do {
       const response = await this.client.dataSources.query({
@@ -2866,6 +3273,40 @@ export class FactService {
         [FACT_PROPS.CONFIDENCE_SCORE]: { number: score },
         [FACT_PROPS.LAST_REFERENCED_AT]: { date: { start: lastReferencedAt } },
       },
+    })
+  }
+
+  /**
+   * Single `pages.update` writing the transaction-time provenance
+   * columns (`Observed At` / `Invalidated At`) — issue #284. Either
+   * argument may be `null` to skip writing that column; both `null`
+   * issues no Notion call. Callers
+   * (`runBackfillFactObservedAtMigration`) compute the values from
+   * `page.created_time` (for `Observed At`) and `Valid Until` (for
+   * `Invalidated At`) and hand them in. `Invalidated By` is NOT
+   * written by this path — the relation column requires an explicit
+   * source memory id, which pre-#284 historical invalidations don't
+   * carry; operators wanting to backfill provenance retroactively use
+   * `lore-fact action='invalidate'` with `sourceMemoryId` on a per-row
+   * basis.
+   */
+  async applyObservedAtBackfill(
+    factId: string,
+    values: { observedAt: string | null; invalidatedAt: string | null }
+  ): Promise<void> {
+    const properties: Record<string, unknown> = {}
+    if (values.observedAt !== null) {
+      properties[FACT_PROPS.OBSERVED_AT] = { date: { start: values.observedAt } }
+    }
+    if (values.invalidatedAt !== null) {
+      properties[FACT_PROPS.INVALIDATED_AT] = {
+        date: { start: values.invalidatedAt },
+      }
+    }
+    if (Object.keys(properties).length === 0) return
+    await this.client.pages.update({
+      page_id: factId,
+      properties: properties as UpdatePageParameters["properties"],
     })
   }
 
@@ -3021,6 +3462,12 @@ export class FactService {
     // Fact only ever points at one canonical Entity per side).
     const subjectEntityIds = extractRelationIds(props[FACT_PROPS.SUBJECT_ENTITY])
     const objectEntityIds = extractRelationIds(props[FACT_PROPS.OBJECT_ENTITY])
+    // Issue #284 — transaction-time provenance. `Observed At` /
+    // `Invalidated At` are `null` on rows the backfill migration hasn't
+    // touched yet; the read-side filters in `applyTransactionTimeFilter`
+    // tolerate that absence (`is_empty` short-circuit for the migration
+    // window).
+    const invalidatedByIds = extractRelationIds(props[FACT_PROPS.INVALIDATED_BY])
 
     return {
       id: page.id,
@@ -3030,6 +3477,9 @@ export class FactService {
       projectIds: extractRelationIds(props[FACT_PROPS.PROJECT]),
       validFrom: extractDate(props[FACT_PROPS.VALID_FROM]),
       validUntil: extractDate(props[FACT_PROPS.VALID_UNTIL]),
+      observedAt: extractDate(props[FACT_PROPS.OBSERVED_AT]),
+      invalidatedAt: extractDate(props[FACT_PROPS.INVALIDATED_AT]),
+      invalidatedBySourceMemoryId: invalidatedByIds[0] ?? null,
       reviewBy: extractDate(props[FACT_PROPS.REVIEW_BY]),
       sourceMemoryId: sourceIds[0] ?? null,
       confidence: extractSelect(props[FACT_PROPS.CONFIDENCE], "certain") as FactConfidence,
@@ -3241,7 +3691,8 @@ function factScopeInputToBuilderProps(
 function synthesizeFactFromCreateInput(
   id: string,
   input: CreateFactInput,
-  validFromDefault: string
+  validFromDefault: string,
+  observedAtDefault: string
 ): Fact {
   return {
     id,
@@ -3251,6 +3702,17 @@ function synthesizeFactFromCreateInput(
     projectIds: input.projectIds ? [...input.projectIds] : [],
     validFrom: input.validFrom ?? validFromDefault,
     validUntil: null,
+    // Issue #284 — `observedAt` is bitemporally distinct from `validFrom`:
+    // `validFrom` is domain truth (when the fact started being true in
+    // the world), `observedAt` is transaction time (when Lore learned
+    // about it). The caller passes both defaults explicitly so a future
+    // backfill caller decoupling them (e.g., `validFrom: "2024-01-01",
+    // observedAt: today`) can't silently land an `observedAt` derived
+    // from the wrong axis. `invalidatedAt` and
+    // `invalidatedBySourceMemoryId` stay null until invalidation.
+    observedAt: observedAtDefault,
+    invalidatedAt: null,
+    invalidatedBySourceMemoryId: null,
     reviewBy: input.reviewBy ?? null,
     sourceMemoryId: input.sourceMemoryId ?? null,
     confidence: input.confidence ?? "certain",

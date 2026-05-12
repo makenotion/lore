@@ -10,6 +10,7 @@ import {
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { mergeHookDefaults, type BackgroundAgentConfig } from "../../hooks/config.js"
+import { redactDebugMessage } from "../../debug-redact.js"
 import type { MemoryTagPlan } from "../../core/tag-migration.js"
 import { classifyTags, planMemoryMigration } from "../../core/tag-migration.js"
 import {
@@ -49,6 +50,10 @@ import {
   type BuildFactConfidenceScoresPlan,
   type BuildFactConfidenceScoresResult,
 } from "../../core/fact-confidence-migration.js"
+import {
+  runBackfillFactObservedAtMigration,
+  type BackfillFactObservedAtResult,
+} from "../../core/fact-observed-at-migration.js"
 import {
   releaseMigrationLock,
   tryAcquireMigrationLock,
@@ -149,6 +154,10 @@ export const migrateCommand = new Command("migrate")
     "Mirror of `--build-confidence-scores` for the Facts DB (DEFERRED-02). Seeds every fact's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and writes Last Referenced At = created_time, then realizes any decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope. Idempotent: rows already scored are skipped. The Last Referenced At column ships alongside Confidence Score because decay needs a per-fact reference timestamp distinct from Notion's last_edited_time. Last Referenced At = created_time is a fiction (the fact wasn't actually 'referenced' at creation) — operators who want a true read-citation anchor re-run after read traffic naturally bumps the column via touchOnRead."
   )
   .option(
+    "--backfill-fact-observed-at",
+    "Backfill issue #284 transaction-time columns (`Observed At`, `Invalidated At`) on pre-#284 fact rows. Plan-only by default; pair with `--yes` to apply, `--project <name>` to scope. Idempotent. See `docs/cli.md` for the full backfill contract (including why `Invalidated By` is not auto-seeded)."
+  )
+  .option(
     "--project <name>",
     "Scope project-capable migrations to a single project. Unknown / typo'd names abort before any plan or write; see docs/memory-workflows.md#migrating-from-unscoped-writes."
   )
@@ -162,7 +171,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, or `--build-fact-confidence-scores`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, `--build-fact-confidence-scores`, or `--backfill-fact-observed-at`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -188,6 +197,7 @@ export const migrateCommand = new Command("migrate")
       synopsisBatchSize?: string
       buildConfidenceScores?: boolean
       buildFactConfidenceScores?: boolean
+      backfillFactObservedAt?: boolean
       project?: string
       includeArchived?: boolean
       allowUnscoped?: boolean
@@ -213,17 +223,18 @@ export const migrateCommand = new Command("migrate")
           !opts.mergeSimilarTopics &&
           !opts.backfillSynopses &&
           !opts.buildConfidenceScores &&
-          !opts.buildFactConfidenceScores
+          !opts.buildFactConfidenceScores &&
+          !opts.backfillFactObservedAt
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, --build-confidence-scores, or --build-fact-confidence-scores."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, --build-confidence-scores, --build-fact-confidence-scores, or --backfill-fact-observed-at."
           )
           process.exit(1)
         }
         const scopedMigration = isProjectScopedMigrationRequested(opts)
         if (opts.project !== undefined && !scopedMigration) {
           console.error(
-            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --build-confidence-scores, or --build-fact-confidence-scores."
+            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --build-confidence-scores, --build-fact-confidence-scores, or --backfill-fact-observed-at."
           )
           process.exit(1)
         }
@@ -604,6 +615,15 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.backfillFactObservedAt) {
+          await runBackfillFactObservedAt(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: Boolean(opts.dryRun),
+            projectName: opts.project,
+            projectId: migrationScope.projectId,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -661,7 +681,8 @@ export const migrateCommand = new Command("migrate")
             opts.mergeSimilarTopics ||
             opts.backfillSynopses ||
             opts.buildConfidenceScores ||
-            opts.buildFactConfidenceScores
+            opts.buildFactConfidenceScores ||
+            opts.backfillFactObservedAt
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -703,6 +724,7 @@ interface MigrationScopeIntent {
   backfillSynopses?: boolean
   buildConfidenceScores?: boolean
   buildFactConfidenceScores?: boolean
+  backfillFactObservedAt?: boolean
   project?: string
   includeArchived?: boolean
 }
@@ -721,7 +743,8 @@ function isProjectScopedMigrationRequested(opts: MigrationScopeIntent): boolean 
     opts.backfillFactSources ||
     opts.backfillSynopses ||
     opts.buildConfidenceScores ||
-    opts.buildFactConfidenceScores
+    opts.buildFactConfidenceScores ||
+    opts.backfillFactObservedAt
   )
 }
 
@@ -2304,6 +2327,123 @@ export async function runBuildFactConfidenceScores(
     console.log(
       `\n[lore] build-fact-confidence-scores: wrote ${written} row${written === 1 ? "" : "s"}.`
     )
+  }
+  return result
+}
+
+/**
+ * Driver for `--backfill-fact-observed-at` (issue #284). Same
+ * plan-then-execute discipline as the sibling fact-confidence
+ * migration: strict-resolve `--project`, walk every fact via
+ * `FactService.listAllForBackfill` (including invalidated rows so
+ * historical `Valid Until` values can seed `Invalidated At`), render
+ * the plan, optionally apply with progress lines.
+ */
+export async function runBackfillFactObservedAt(
+  services: LoreServices,
+  options: {
+    apply: boolean
+    dryRun: boolean
+    projectName?: string
+    projectId?: string
+  }
+): Promise<BackfillFactObservedAtResult> {
+  const planOnly = !options.apply
+  const explicitProjectName = validateExplicitProjectScopeName(
+    options.projectName,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+      omittedScopeLabel: "vault-wide scope",
+      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+    }
+  )
+  let projectId = options.projectId
+  if (explicitProjectName !== undefined && projectId === undefined) {
+    const project = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+        omittedScopeLabel: "vault-wide scope",
+        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+      }
+    )
+    projectId = project.id
+  }
+
+  printDiscoveryBreadcrumb(
+    options.projectName
+      ? `facts missing transaction-time provenance in project "${options.projectName}"`
+      : "facts missing transaction-time provenance"
+  )
+
+  const result = await runBackfillFactObservedAtMigration({
+    services,
+    apply: options.apply,
+    dryRun: options.dryRun,
+    projectName: options.projectName,
+    projectId,
+  })
+  const { plan, written, failures } = result
+
+  console.log(
+    `\n[lore] backfill-fact-observed-at: scanned ${plan.totalFactsScanned} ` +
+      `fact${plan.totalFactsScanned === 1 ? "" : "s"}`
+  )
+  console.log(
+    `       ${plan.rowsToBackfill.length} to backfill ` +
+      `(${plan.observedAtRowsToWrite} Observed At, ` +
+      `${plan.invalidatedAtRowsToWrite} Invalidated At from Valid Until)`
+  )
+  console.log(`       ${plan.rowsAlreadyBackfilled} already backfilled`)
+
+  if (plan.rowsToBackfill.length === 0) {
+    if (planOnly) {
+      console.log(
+        "\nNo facts need backfilling — every row already carries Observed At / Invalidated At."
+      )
+    } else {
+      console.log(
+        "\nNo facts needed backfilling — every row already had Observed At / Invalidated At."
+      )
+    }
+    return result
+  }
+
+  if (planOnly) {
+    console.log("\n[lore] dry-run: no writes performed. Re-run with --yes to apply.")
+  } else {
+    console.log(
+      `\n[lore] backfill-fact-observed-at: wrote ${written} row${written === 1 ? "" : "s"}.`
+    )
+    // Issue #284 review item #4 — per-row failure surface. Lets the
+    // operator distinguish transient errors (likely re-runnable) from
+    // schema mismatches (need their own remediation) without parsing
+    // stderr progress lines.
+    if (failures.length > 0) {
+      console.log(
+        `[lore] backfill-fact-observed-at: ${failures.length} row${failures.length === 1 ? "" : "s"} failed; re-run to retry`
+      )
+      const PREVIEW = 5
+      for (const failure of failures.slice(0, PREVIEW)) {
+        // R3-C — route SDK error messages through redactDebugMessage
+        // before rendering to a user-visible channel. Today's Notion
+        // SDK does not interpolate page bodies into Error.message;
+        // the redactor is forward-compat hardening that matches the
+        // posture every other operator-visible error surface in this
+        // codebase already adopts (per src/cli/commands/mine.ts and
+        // the partial-failure observability contract in
+        // src/mcp/AGENTS.md).
+        console.log(
+          `       - ${failure.factId}: ${redactDebugMessage(failure.message)}`
+        )
+      }
+      if (failures.length > PREVIEW) {
+        console.log(`       ... and ${failures.length - PREVIEW} more`)
+      }
+    }
   }
   return result
 }

@@ -98,6 +98,9 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     limit: z.number().int().min(1).optional(),
     includeContext: z.boolean().optional(),
+    // Issue #284 — transaction-time recall controls.
+    asOf: ymdDateSchema.optional(),
+    includeHistory: z.boolean().optional(),
   }),
   z.object({
     action: z.literal("audit"),
@@ -122,7 +125,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         "Read the vault: list memories, search memories, query the fact graph, or audit overdue items. Action-dispatched:\n\n" +
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows by default; `includeContent: true` to fetch bodies. Cursor-paginated.\n" +
         "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `hybrid`). `contains` is DS-scoped substring with server-side filters; `semantic` is workspace-wide vector ranking over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
-        "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`). Prepends a project framing block by default (`includeContext: false` to suppress).\n" +
+        "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`). Prepends a project framing block by default (`includeContext: false` to suppress). Pass `asOf: 'YYYY-MM-DD'` for a transaction-time as-of recall (what Lore knew at that date) or `includeHistory: true` to surface invalidated facts inline.\n" +
         "- `action: 'audit'` — list facts, decisions, and tasks past their review-by date.\n\n" +
         "For tracked work (open / blocked / done), use `lore-task action='list'` rather than `lore-query`.",
       inputSchema: {
@@ -240,6 +243,18 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(action='ask') Prepend a project framing block (name, description, siblings, catch-all warning) above the grouped-display sections (default true). Pass `false` when the agent's system prompt already supplies framing, to save output tokens."
+          ),
+        // ask only — issue #284 temporal recall
+        asOf: ymdDateSchema
+          .optional()
+          .describe(
+            "(action='ask') Transaction-time cutoff (YYYY-MM-DD). Returns only facts Lore had observed by this date AND had not yet invalidated by this date — what Lore believed at that point in time. Independent of `includeHistory`; either or both may be set. Distinct from domain-truth `Valid From` / `Valid Until` (when the fact was true in the world). On un-migrated vaults (rows missing `Invalidated At`), the filter approximates with `Valid Until` so a historical invalidation cannot leak past its cutoff; run `lore migrate --backfill-fact-observed-at` to seed transaction-time columns and get strict asOf semantics."
+          ),
+        includeHistory: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='ask') Include invalidated facts in the result (default false — only live facts surface). Useful for tracing how knowledge about an entity changed over time. The invalidation date renders inline on each historical row."
           ),
       },
       annotations: { readOnlyHint: true },

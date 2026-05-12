@@ -23,6 +23,7 @@ import {
 import { clearableYmdDateSchema } from "./date-schema.js"
 import { nonBlankString } from "./text-schema.js"
 import { scopeInputSchema } from "./scope-schema.js"
+import { isTransientNotionError } from "../../notion/errors.js"
 
 import type { Decision, Fact, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
@@ -159,8 +160,35 @@ function renderDecidedByLine(fact: Fact, decision: Decision, today: string): str
   return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}${trustSegment}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
 }
 
-function renderGenericTrailing(fact: Fact, today: string): string {
+function renderGenericTrailing(
+  fact: Fact,
+  today: string,
+  opts: { asOf?: string } = {}
+): string {
   const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+  // Issue #284 — transaction-time invalidation surfaces when the row was
+  // invalidated. Distinct from `Valid Until` (domain-truth end); the
+  // bitemporal axis renders inline so callers using `asOf` /
+  // `includeHistory` can read provenance directly from the response.
+  //
+  // R3 blocker fix: on an `asOf` recall, suppress the INVALIDATED
+  // segment when the invalidation date is AFTER the cutoff. The
+  // server-side filter (`asOfFilterClauses`) deliberately includes
+  // rows whose `Invalidated At > asOf` (they were live from Lore's
+  // perspective at asOf), but rendering the post-cutoff invalidation
+  // date would leak future knowledge into the as-of answer and
+  // contradict the snapshot mental model. Without this gate, an
+  // operator asking "what did Lore know at 2026-04-01?" sees facts
+  // marked `INVALIDATED on 2026-05-01` — even though those facts
+  // were live from Lore's perspective at the requested date.
+  const suppressInvalidatedAt =
+    opts.asOf !== undefined &&
+    fact.invalidatedAt != null &&
+    fact.invalidatedAt > opts.asOf
+  const invalidated =
+    fact.invalidatedAt && !suppressInvalidatedAt
+      ? ` **(INVALIDATED on ${fact.invalidatedAt})**`
+      : ""
   const review = fact.reviewBy
     ? fact.reviewBy <= today
       ? ` **(OVERDUE — review by ${fact.reviewBy})**`
@@ -177,7 +205,7 @@ function renderGenericTrailing(fact: Fact, today: string): string {
   // the pre-DEFERRED-02 byte-identical output.
   const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
   const trustSegment = trustLine !== null ? `\n${trustLine}` : ""
-  return `[${fact.confidence}]${validity}${review}${trustSegment}\n  ID: ${fact.id}`
+  return `[${fact.confidence}]${validity}${invalidated}${review}${trustSegment}\n  ID: ${fact.id}`
 }
 
 function compareSortKeyDesc(
@@ -528,7 +556,7 @@ export async function handleLearn(
 
 export async function handleInvalidate(
   services: LoreServices,
-  args: { factId: string }
+  args: { factId: string; sourceMemoryId?: string }
 ): Promise<ToolResult> {
   try {
     // Read first so we capture `sourceMemoryId` before the invalidate write —
@@ -544,7 +572,70 @@ export async function handleInvalidate(
     // inside `FactService.invalidate` itself — no `Valid Until` write lands
     // on archived rows.
     const fact = await services.facts.getById(args.factId)
-    await services.facts.invalidate(args.factId)
+    // Issue #284 — when the caller threads `sourceMemoryId`, that becomes
+    // the `Invalidated By` relation: the memory that prompted the
+    // invalidation. Distinct from the fact's existing `Source` link
+    // (`fact.sourceMemoryId`), which names the *supporting* memory at
+    // creation time. Both axes can coexist on one row.
+    //
+    // Precheck mirrors `handleLearn`'s provenance contract: the invalidating
+    // memory must resolve to a live (non-archived) Memories row, and its
+    // project scope must be compatible with the fact's. Without this
+    // gate the relation accepts any same-workspace id the token can
+    // see — including archived memories and memories scoped to an
+    // unrelated project — which pollutes the audit trail the new
+    // `Invalidated By` column exists to provide. Omit the second
+    // argument entirely when no provenance is threaded so the
+    // pre-#284 single-arg call site stays byte-stable.
+    if (args.sourceMemoryId) {
+      let invalidatingProjectIds: string[]
+      try {
+        const invalidatingMemory = await services.memories.getPropertiesById(
+          args.sourceMemoryId
+        )
+        invalidatingProjectIds = invalidatingMemory.projectIds
+      } catch (err) {
+        // R5 nit fix: distinguish "memory truly missing/inaccessible"
+        // (the user-facing `invalidation-source-unresolved` failure
+        // class — surfaced to the agent so it can pick a different
+        // sourceMemoryId or drop the argument) from transient
+        // 429 / 5xx / network errors (the operator-facing failure
+        // class — surfaced to the outer `toolError` with the raw
+        // Notion error so the agent sees the transient and can
+        // retry). The bare-catch shape pre-fix collapsed every
+        // failure into the unresolved error, degrading the
+        // operator's mental model during rate-limit blips.
+        if (isTransientNotionError(err)) {
+          throw err
+        }
+        return toolError(
+          new Error(
+            `invalidation-source-unresolved: sourceMemoryId ${args.sourceMemoryId} did not resolve to a live Memories row. ` +
+              `Pass an existing memory ID for the invalidation provenance, or omit sourceMemoryId to skip the audit link.`
+          )
+        )
+      }
+      // Compatibility is one-sided here: the fact may have no projectIds
+      // (vault-wide), in which case any source memory is compatible.
+      // Otherwise the source must share at least one project, or be
+      // vault-wide itself. Mirrors `handleLearn`'s projectsCompatible
+      // shape so the audit-link policy and the create-time provenance
+      // policy stay aligned.
+      const factProjectIds = fact?.projectIds ?? []
+      if (!projectsCompatible(factProjectIds, invalidatingProjectIds)) {
+        return toolError(
+          new Error(
+            `invalidation-source-cross-project: sourceMemoryId ${args.sourceMemoryId} is scoped to a different project than this fact. ` +
+              `Use a memory from the same project, or a vault-wide memory.`
+          )
+        )
+      }
+      await services.facts.invalidate(args.factId, {
+        sourceMemoryId: args.sourceMemoryId,
+      })
+    } else {
+      await services.facts.invalidate(args.factId)
+    }
 
     const sourceMemoryId = fact?.sourceMemoryId ?? null
     if (sourceMemoryId !== null) {
@@ -604,6 +695,18 @@ interface AskArgs {
   projectName?: string
   limit?: number
   includeContext?: boolean
+  /**
+   * Transaction-time recall cutoff (issue #284). YYYY-MM-DD form. Returns
+   * the slice of facts Lore knew about by this date and had not yet
+   * invalidated by this date.
+   */
+  asOf?: string
+  /**
+   * Include invalidated facts in the result (issue #284). Default false
+   * — only live facts surface. Useful for tracing how knowledge about an
+   * entity changed over time.
+   */
+  includeHistory?: boolean
 }
 
 export async function handleAsk(
@@ -696,7 +799,20 @@ export async function handleAsk(
     const taskListEntities =
       taskVariants.variants.length > 0 ? taskVariants.variants : [args.entity]
     const [facts, taskListing] = await Promise.all([
-      services.facts.queryByEntity(args.entity, { projectId, entityId }),
+      services.facts.queryByEntity(args.entity, {
+        projectId,
+        entityId,
+        // Issue #284 — temporal recall controls. `asOf` switches the
+        // domain-truth `Valid Until is_empty` filter for a transaction-
+        // time pair (Observed At ≤ asOf AND (Invalidated At empty OR
+        // > asOf)). `includeHistory` drops the live-only gate entirely
+        // so invalidated facts surface alongside live ones. The two are
+        // independent — combine them when you want "what Lore knew at
+        // T, including rows it had already invalidated by T" (rare;
+        // typically callers pick one).
+        asOf: args.asOf,
+        includeInvalidated: args.includeHistory,
+      }),
       services.tasks
         .list({ projectId, entities: taskListEntities, limit: 50 })
         .catch((err) => {
@@ -805,7 +921,7 @@ export async function handleAsk(
         sortKey: fact.validFrom,
         line: renderFact(fact, {
           titleMap,
-          trailing: renderGenericTrailing(fact, today),
+          trailing: renderGenericTrailing(fact, today, { asOf: args.asOf }),
         }),
         fact,
       })),
@@ -825,7 +941,7 @@ export async function handleAsk(
       fact,
       line: renderFact(fact, {
         titleMap,
-        trailing: renderGenericTrailing(fact, today),
+        trailing: renderGenericTrailing(fact, today, { asOf: args.asOf }),
       }),
       sortKey: fact.validFrom,
     }))
@@ -1219,6 +1335,12 @@ const factDispatchSchema = z
     z.object({
       action: z.literal("invalidate"),
       factId: z.string(),
+      // Issue #284 — optional invalidation provenance. The memory id
+      // recorded on the fact's `Invalidated By` relation, distinct from
+      // `Source` (creation-time provenance). Optional because operators
+      // sometimes invalidate without a memory to point at (e.g. an
+      // ad-hoc cleanup pass).
+      sourceMemoryId: z.string().optional(),
     }),
     z.object({
       action: z.literal("extend"),
@@ -1253,7 +1375,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       description:
         "Create/invalidate facts; set or clear fact review dates. Action-dispatched:\n\n" +
         "- `action: 'create'` — add a Subject —predicate→ Object triple. Auto-dedupes against existing equivalent triples and merges metadata onto the survivor.\n" +
-        "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` to today). Preserved for history.\n" +
+        "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` and `Invalidated At` to today). Preserved for history. Pass `sourceMemoryId` to record which memory prompted the invalidation in the `Invalidated By` relation. Side effect: when the fact has a `Source` memory, that memory's `Confidence Score` is halved as a contradiction signal (DEFERRED-02 / 0.8.0/#06).\n" +
         "- `action: 'extend'` — set or clear a fact's review-by date.\n\n" +
         "Every created fact MUST link back to a supporting memory via `sourceMemoryId` so `lore-query action='ask'` can retrace the reasoning. Pass a live Memories row ID directly, or pass `agent`+`session` matching an earlier `lore-memory action='save'` / `lore-decision action='create'` call in the same process and `sourceMemoryId` auto-links. If neither path produces a compatible Source memory, the create call is rejected before writing.\n\n" +
         "Decision predicates (`decided_by`, `supersedes_decision`, `informs`) and the auto-emitted `mentions` predicate are internal-only and not accepted here — `decided_by` / `supersedes_decision` / `informs` are auto-created by the decision tool family; `mentions` is auto-emitted by `lore-memory action='save'`. Use richer relationship predicates (`uses`, `depends_on`, etc.) for agent-curated edges.",
@@ -1290,7 +1412,8 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           .string()
           .optional()
           .describe(
-            "(action='create') ID of the memory that supports this fact. Required unless agent+session auto-links a compatible source memory.",
+            "(action='create') ID of the memory that supports this fact. Required unless agent+session auto-links a compatible source memory. " +
+              "(action='invalidate') Optional ID of the memory that prompted the invalidation; recorded in the fact's `Invalidated By` relation.",
           ),
         session: z
           .string()

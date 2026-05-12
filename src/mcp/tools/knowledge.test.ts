@@ -1127,6 +1127,369 @@ describe("lore-ask projectName resolution", () => {
   })
 })
 
+describe("lore-query action='ask' — issue #284 temporal recall threading", () => {
+  function mkAskServices(queryByEntity: ReturnType<typeof vi.fn>) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: { queryByEntity, queryByObject: vi.fn() },
+      decisions: { getById: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      entities: makeEntityService(),
+      context: {
+        project: {
+          id: "proj-ambient",
+          name: "Ambient",
+          path: "",
+          description: "",
+        },
+        isCatchAllFallback: false,
+      },
+      config: { vault: { pageId: "v1" }, projects: [] },
+    }
+  }
+
+  it("threads asOf and includeHistory through to facts.queryByEntity", async () => {
+    const mockServer = createMockServer()
+    const queryByEntity = vi.fn().mockResolvedValue([])
+    const services = mkAskServices(queryByEntity)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+
+    await handler({
+      entity: "AuthService",
+      asOf: "2026-04-01",
+      includeHistory: true,
+    } as never)
+
+    expect(queryByEntity).toHaveBeenCalledTimes(1)
+    const callArgs = queryByEntity.mock.calls[0]![1] as {
+      asOf?: string
+      includeInvalidated?: boolean
+    }
+    expect(callArgs.asOf).toBe("2026-04-01")
+    expect(callArgs.includeInvalidated).toBe(true)
+  })
+
+  it("omits asOf / includeInvalidated when not passed (byte-stable pre-#284 contract)", async () => {
+    const mockServer = createMockServer()
+    const queryByEntity = vi.fn().mockResolvedValue([])
+    const services = mkAskServices(queryByEntity)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+
+    await handler({ entity: "AuthService" } as never)
+
+    expect(queryByEntity).toHaveBeenCalledTimes(1)
+    const callArgs = queryByEntity.mock.calls[0]![1] as {
+      asOf?: string
+      includeInvalidated?: boolean
+    }
+    expect(callArgs.asOf).toBeUndefined()
+    expect(callArgs.includeInvalidated).toBeUndefined()
+  })
+
+  it("renders invalidated facts with the INVALIDATED date inline", async () => {
+    const mockServer = createMockServer()
+    const invalidatedFact = makeFact("fact-old", {
+      subject: "AuthService",
+      predicate: "uses",
+      object: "LegacyAuth",
+      validFrom: "2026-01-01",
+      validUntil: "2026-03-15",
+      invalidatedAt: "2026-03-15",
+    })
+    const queryByEntity = vi.fn().mockResolvedValue([invalidatedFact])
+    const services = mkAskServices(queryByEntity)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await handler({
+      entity: "AuthService",
+      includeHistory: true,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+
+    expect(text).toContain("INVALIDATED on 2026-03-15")
+  })
+
+  it("suppresses the INVALIDATED segment on an asOf recall when the invalidation date is after the cutoff (R3 blocker)", async () => {
+    // Server-side filter is "live at asOf" — facts invalidated AFTER
+    // asOf are deliberately returned because they were live from
+    // Lore's perspective at the requested date. The renderer must
+    // NOT leak the post-asOf invalidation date into the answer, or
+    // the as-of mental model breaks (an answer "what did Lore know
+    // at 2026-04-01?" cannot report invalidations that happened in
+    // May).
+    const mockServer = createMockServer()
+    const fact = makeFact("fact-late-inval", {
+      subject: "AuthService",
+      predicate: "uses",
+      object: "LegacyAuth",
+      validFrom: "2026-01-01",
+      validUntil: "2026-05-01",
+      observedAt: "2026-01-01",
+      invalidatedAt: "2026-05-01",
+    })
+    const queryByEntity = vi.fn().mockResolvedValue([fact])
+    const services = mkAskServices(queryByEntity)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await handler({
+      entity: "AuthService",
+      asOf: "2026-04-01",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+
+    // The fact surfaces (live from Lore's perspective at 2026-04-01).
+    expect(text).toContain("fact-late-inval")
+    // But its post-asOf invalidation date is hidden — the renderer
+    // suppresses the segment because invalidatedAt > asOf.
+    expect(text).not.toContain("INVALIDATED on 2026-05-01")
+  })
+
+  it("still renders INVALIDATED when the invalidation date is on or before the asOf cutoff (R3 blocker)", async () => {
+    // Boundary: an invalidation that landed before or exactly at
+    // asOf was knowable to Lore at the cutoff and should render.
+    // Combined with `includeHistory: true` the filter surfaces it.
+    const mockServer = createMockServer()
+    const fact = makeFact("fact-early-inval", {
+      subject: "AuthService",
+      predicate: "uses",
+      object: "LegacyAuth",
+      validFrom: "2026-01-01",
+      validUntil: "2026-02-15",
+      observedAt: "2026-01-01",
+      invalidatedAt: "2026-02-15",
+    })
+    const queryByEntity = vi.fn().mockResolvedValue([fact])
+    const services = mkAskServices(queryByEntity)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await handler({
+      entity: "AuthService",
+      asOf: "2026-04-01",
+      includeHistory: true,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+
+    expect(text).toContain("INVALIDATED on 2026-02-15")
+  })
+
+  it("rejects malformed asOf at the MCP boundary", async () => {
+    const mockServer = createMockServer()
+    const queryByEntity = vi.fn().mockResolvedValue([])
+    const services = mkAskServices(queryByEntity)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await handler({
+      entity: "AuthService",
+      asOf: "yesterday",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(queryByEntity).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-fact action='invalidate' — issue #284 sourceMemoryId threading", () => {
+  function mkInvalidateServices(invalidate: ReturnType<typeof vi.fn>) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        invalidate,
+        getById: vi.fn().mockResolvedValue(null),
+        createWithDedup: vi.fn(),
+        extendReview: vi.fn(),
+        queryByEntity: vi.fn(),
+        queryByObject: vi.fn(),
+      },
+      memories: {
+        getById: vi.fn(),
+        getPropertiesById: vi.fn().mockResolvedValue(null),
+        decrementConfidence: vi.fn(),
+      },
+      decisions: { getById: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
+      context: {
+        project: { id: "p1", name: "P1", path: "", description: "" },
+        isCatchAllFallback: false,
+      },
+      sessionMemories: { get: vi.fn() },
+      wakeupCache: { invalidate: vi.fn(), bumpEpoch: vi.fn() },
+      identity: { resolveAuthor: vi.fn() },
+      config: { vault: { pageId: "v1" }, projects: [] },
+    }
+  }
+
+  it("forwards sourceMemoryId to FactService.invalidate after passing the provenance precheck", async () => {
+    const mockServer = createMockServer()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+    const services = mkInvalidateServices(invalidate)
+    // Precheck reads the invalidating memory + the fact's project scope
+    // (#284 review item #3). Wire compatible scopes so the precheck passes.
+    services.memories.getPropertiesById = vi
+      .fn()
+      .mockResolvedValue({ id: "mem-contradiction", projectIds: ["proj-a"] })
+    services.facts.getById = vi
+      .fn()
+      .mockResolvedValue(makeFact("fact-1", { projectIds: ["proj-a"] }))
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    await handler({
+      factId: "fact-1",
+      sourceMemoryId: "mem-contradiction",
+    } as never)
+
+    expect(invalidate).toHaveBeenCalledWith("fact-1", {
+      sourceMemoryId: "mem-contradiction",
+    })
+  })
+
+  it("omits the options arg when sourceMemoryId is not threaded (byte-stable)", async () => {
+    const mockServer = createMockServer()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+    const services = mkInvalidateServices(invalidate)
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    await handler({ factId: "fact-1" } as never)
+
+    expect(invalidate).toHaveBeenCalledWith("fact-1")
+  })
+
+  it("rejects when sourceMemoryId does not resolve to a live memory (issue #284 review item #3)", async () => {
+    const mockServer = createMockServer()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+    const services = mkInvalidateServices(invalidate)
+    // getPropertiesById throws when the memory is missing / archived.
+    services.memories.getPropertiesById = vi
+      .fn()
+      .mockRejectedValue(new Error("not found"))
+    services.facts.getById = vi
+      .fn()
+      .mockResolvedValue(makeFact("fact-1", { projectIds: ["proj-a"] }))
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await handler({
+      factId: "fact-1",
+      sourceMemoryId: "ghost-mem",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("invalidation-source-unresolved")
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it("rejects when sourceMemoryId is in an incompatible project (issue #284 review item #3)", async () => {
+    const mockServer = createMockServer()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+    const services = mkInvalidateServices(invalidate)
+    services.memories.getPropertiesById = vi
+      .fn()
+      .mockResolvedValue({ id: "mem-x", projectIds: ["proj-b"] })
+    services.facts.getById = vi
+      .fn()
+      .mockResolvedValue(makeFact("fact-1", { projectIds: ["proj-a"] }))
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await handler({
+      factId: "fact-1",
+      sourceMemoryId: "mem-x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("invalidation-source-cross-project")
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it("surfaces transient 429 / 5xx during the precheck instead of swallowing it as invalidation-source-unresolved (R5 nit)", async () => {
+    // Pre-fix the bare `catch {}` collapsed every getPropertiesById
+    // failure (404, RestrictedResource, archived, transient
+    // 429/5xx) into the same user-facing
+    // `invalidation-source-unresolved` error. Operators triaging
+    // a real outage couldn't tell that the precheck blew up on a
+    // rate-limit blip vs a genuine missing memory. The narrowed
+    // catch reroutes transients to the outer toolError so the agent
+    // sees the actual Notion error.
+    const mockServer = createMockServer()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+    const services = mkInvalidateServices(invalidate)
+    const transient = Object.assign(new Error("Rate limited"), {
+      code: "rate_limited",
+      status: 429,
+    })
+    services.memories.getPropertiesById = vi.fn().mockRejectedValue(transient)
+    services.facts.getById = vi
+      .fn()
+      .mockResolvedValue(makeFact("fact-1", { projectIds: ["proj-a"] }))
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await handler({
+      factId: "fact-1",
+      sourceMemoryId: "mem-x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    // Surfaces the transient error verbatim — NOT the misleading
+    // `invalidation-source-unresolved` message.
+    expect(text).toContain("Rate limited")
+    expect(text).not.toContain("invalidation-source-unresolved")
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it("accepts vault-wide source memory against a scoped fact (issue #284 review item #3)", async () => {
+    const mockServer = createMockServer()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+    const services = mkInvalidateServices(invalidate)
+    services.memories.getPropertiesById = vi
+      .fn()
+      .mockResolvedValue({ id: "mem-x", projectIds: [] }) // vault-wide
+    services.facts.getById = vi
+      .fn()
+      .mockResolvedValue(makeFact("fact-1", { projectIds: ["proj-a"] }))
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await handler({
+      factId: "fact-1",
+      sourceMemoryId: "mem-x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBeFalsy()
+    expect(invalidate).toHaveBeenCalledWith("fact-1", { sourceMemoryId: "mem-x" })
+  })
+})
+
 describe("lore-fact action='create' — tracking-predicate Zod rejection", () => {
   // Acceptance criterion (#23, line 452-455): the contracted
   // `FactPredicate` union drives the Zod enum at the dispatcher

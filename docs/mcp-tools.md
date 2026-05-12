@@ -140,7 +140,7 @@ log (AC #4).
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `recall` | List recent memories with optional filters                                                                                                                                                                                                                       |
 | `search` | Memory search; `mode` accepts `contains`, `semantic`, or `hybrid` and defaults to `hybrid`. `contains` is DS-scoped substring search with server-side filters, `semantic` is workspace-wide vector ranking over titles and bodies, and `hybrid` runs both lanes. |
-| `ask`    | Query facts and tasks about an entity                                                                                                                                                                                                                            |
+| `ask`    | Query facts and tasks about an entity. Pass `asOf: 'YYYY-MM-DD'` for transaction-time as-of recall (what Lore knew at that date), or `includeHistory: true` to surface invalidated facts inline (issue #284).                                                  |
 | `audit`  | List overdue facts, decisions, and tasks past their review date                                                                                                                                                                                                  |
 
 ## `lore-fact` — knowledge graph mutations
@@ -148,7 +148,7 @@ log (AC #4).
 | Action       | Description                                                                                                                                                                       |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create`     | Add a subject-predicate-object fact triple. Requires a live, project-compatible Memories row via `sourceMemoryId` or `agent`+`session` that auto-links a compatible source memory before writing. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task action='create'` instead. Accepts the same `scope` bundle as `lore-memory` (issue #283); scope participates in dedup so a session-scoped fact does NOT merge into an existing team-scoped row of the same triple. |
-| `invalidate` | Invalidate a fact (sets Valid Until date, preserves history)                                                                                                                      |
+| `invalidate` | Invalidate a fact (sets `Valid Until` and `Invalidated At` to today, preserves history). Pass `sourceMemoryId` to record which memory prompted the invalidation in the fact's `Invalidated By` relation (issue #284 — distinct from `Source`, which names the supporting memory at creation time). |
 | `extend`     | Set, advance, or clear a fact's review-by date                                                                                                                                    |
 
 After P3-02, `lore-query action='ask'` also surfaces tasks touching the entity.
