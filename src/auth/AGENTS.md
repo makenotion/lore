@@ -81,19 +81,26 @@ Operators who want to bypass the on-disk read entirely set
 the highest-priority source.
 
 The `auth.json` shape is undocumented but stable across the `ntn`
-versions Lore supports (`MIN_NTN_VERSION` onward). The reader
-degrades gracefully on any shape mismatch — malformed JSON, wrong
-root type, and missing string-valued workspace entries all return
-null with an actionable stderr hint, never a thrown exception. Future
-shape changes are handled by bumping `MIN_NTN_VERSION` and updating
-the reader; future contributors should NOT reintroduce a "temporary"
-framing or wait on an export command that isn't coming.
+versions Lore supports (`MIN_NTN_VERSION` onward). No failure mode
+throws. The reader returns null on every failure path, but emits a
+stderr hint only on recoverable mismatches the operator can act on:
+malformed JSON, unexpected root type, unknown requested workspace,
+and ambiguous multi-workspace selection. The missing-file and
+empty-workspace paths return null silently so `resolveAuth` can fall
+through to deprecated sources without noise. Callers pass
+`quiet: true` to suppress every hint — `resolveAuth` uses this when a
+legacy fallback is available so operators see at most one consolidated
+stderr line. Future shape changes are handled by bumping
+`MIN_NTN_VERSION` and updating the reader; future contributors should
+NOT reintroduce a "temporary" framing or wait on an export command
+that isn't coming.
 
 ## ntn version policy
 
-`MIN_NTN_VERSION` is the tested-against floor. Bump only when a new
-ntn version ships an `auth.json` shape change Lore needs to handle
-(read-shape compatibility).
+`MIN_NTN_VERSION` is the tested-against floor. The policy is
+intentionally reactive: Lore does not proactively chase ntn releases.
+Bump only when a new ntn version ships an `auth.json` shape change
+Lore needs to handle (read-shape compatibility).
 
 Lore prefers the operator's existing ntn install. The CLI never
 auto-upgrades; `checkNtnVersion()` returns `"too-old"`

@@ -169,7 +169,8 @@ snapshot; the next unattributed write resolves under the new snapshot.
 | `No Notion auth configured`                        | Walk the `resolveAuth` priority chain in `src/config.ts`.                                                                                                  |
 | `lore auth --status` shows multiple ntn workspaces | Set `NOTION_WORKSPACE_ID` or `auth.workspaceId` in `.lore.yaml`.                                                                                           |
 | 401 mid-session                                    | Run `lore auth --login`; the client wrapper re-runs auth resolution after the first 401 and retries once when auth changes.                                |
-| `auth.json` malformed or absent                    | `loadNtnToken` in `src/auth/ntn.ts` returns null with a stderr hint; run `lore auth --login`.                                                              |
+| `auth.json` malformed or wrong root type           | `loadNtnToken` in `src/auth/ntn.ts` returns null with a stderr hint; run `lore auth --login`.                                                              |
+| `auth.json` absent or empty-workspace              | Silent null fallback by design — `resolveAuth` falls through to the next priority source (`LORE_NOTION_TOKEN`, then `.lore.yaml auth.token`). If you expected ntn auth to resolve, run `lore auth --login`. |
 | Direct `ntn login` used keychain mode              | Re-run `lore auth --login`, or set `NOTION_KEYRING=0` before direct ntn login.                                                                             |
 | Hook-spawned background save cannot read the vault | Check `spawnBackgroundSave` in `src/hooks/background.ts`; the child gets minimal env and discovers `.lore.yaml` by walking upward from the hook event cwd. |
 

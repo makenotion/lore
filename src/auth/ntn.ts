@@ -11,12 +11,17 @@
  * which `resolveAuth` (#01) honors as the highest-priority source.
  *
  * The file format is undocumented but has been stable across the
- * `ntn` versions Lore supports (`MIN_NTN_VERSION` onward). The reader
- * degrades gracefully when the shape changes: malformed JSON, wrong
- * root type, and missing string-valued workspace entries all return
- * null with an actionable stderr hint, never a thrown exception. A
- * future ntn shape change is handled by bumping `MIN_NTN_VERSION` and
- * teaching the reader the new shape.
+ * `ntn` versions Lore supports (`MIN_NTN_VERSION` onward). No failure
+ * mode throws. The reader returns null on every failure path, but
+ * emits a stderr hint only on recoverable mismatches the operator can
+ * act on: malformed JSON, unexpected root type, unknown requested
+ * workspace, and ambiguous multi-workspace selection. The missing-file
+ * and empty-workspace paths return null silently so `resolveAuth` can
+ * fall through to deprecated sources without noise. Callers pass
+ * `quiet: true` to suppress every hint — `resolveAuth` uses this when
+ * a legacy fallback is available so operators see at most one
+ * consolidated stderr line. A future ntn shape change is handled by
+ * bumping `MIN_NTN_VERSION` and teaching the reader the new shape.
  */
 
 import { execFileSync, spawn } from "node:child_process"
@@ -67,11 +72,10 @@ export interface LoadNtnTokenInput {
  * for resolving `NOTION_WORKSPACE_ID` env / `auth.workspaceId` config
  * into the `workspaceId` argument.
  *
- * Returns null on every "no usable token" failure mode (file missing,
- * malformed, requested workspace absent, multiple workspaces with no
- * selector). Stderr emits a single hint line on the recoverable
- * failure modes; the missing-file path is silent so callers can fall
- * through to deprecated paths without noise.
+ * Returns null on every failure path; never throws. Stderr hints
+ * fire on the four recoverable mismatches but stay silent on
+ * missing-file and empty-workspace; `input.quiet` suppresses every
+ * hint. Full failure-mode contract in the module-level docstring above.
  */
 export async function loadNtnToken(
   input: LoadNtnTokenInput = {}
