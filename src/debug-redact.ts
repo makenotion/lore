@@ -99,12 +99,17 @@ const PAGE_ID_UUID = /\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]
 
 /**
  * Bearer-token shape matcher. Notion's static-integration tokens carry
- * the `secret_` prefix; ntn-issued tokens carry `ntn_`. Both pin the
+ * the `secret_` prefix; personal tokens (ntn-issued and PAT) carry
+ * `ntn_` in prod and `development_ntn_` on the dev environment. The
+ * dev prefix is a distinct alternation, not an extension of `ntn_`,
+ * because `_` is a regex word character — a `\b` between the embedded
+ * `_` and `ntn_` does not match, so without listing the full dev prefix
+ * here a dev PAT would pass through unredacted. All three pin the
  * `[A-Za-z0-9_-]{20,}` body to keep the match precise enough that a
  * field name like `secret_field_id` isn't mistaken for a token. The
  * minimum length is conservative (real tokens are >40 characters).
  */
-const BEARER_TOKEN = /\b(?:ntn_|secret_)[A-Za-z0-9_-]{20,}\b/g
+const BEARER_TOKEN = /\b(?:development_ntn_|ntn_|secret_)[A-Za-z0-9_-]{20,}\b/g
 
 /**
  * Single source of truth for SDK field names treated as sensitive

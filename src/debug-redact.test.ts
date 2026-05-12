@@ -274,6 +274,18 @@ describe("redactDebugMessage (issue #488)", () => {
     expect(out).toBe("leaked: <redacted-token> in trace")
   })
 
+  it("redacts development_ntn_-prefixed PATs (dev-environment shape)", () => {
+    // Dev-environment PATs carry the `development_ntn_` prefix. The
+    // embedded `_` is a regex word character, so a `\b` between
+    // `development_` and `ntn_` does not match — the full prefix must
+    // appear as its own alternation in BEARER_TOKEN. Without that, dev
+    // PATs leak unredacted to `LORE_DEBUG=1` stderr.
+    const out = redactDebugMessage(
+      "leaked: development_ntn_abcdefghijklmnopqrstuvwx in trace",
+    )
+    expect(out).toBe("leaked: <redacted-token> in trace")
+  })
+
   it("does NOT redact short ntn-prefixed identifiers (≥20-char body bound)", () => {
     // The `[A-Za-z0-9_-]{20,}` body bound keeps the match narrow
     // enough that a field name like `ntn_short` or `secret_field_id`

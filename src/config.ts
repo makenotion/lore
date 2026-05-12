@@ -40,7 +40,7 @@ const namedVaultRefSchema = z.object({
   pageId: pageIdSchema(),
 })
 
-const bearerShapedAuthTokenPattern = /^(?:Bearer\s+)?(?:ntn_|secret_)/
+const bearerShapedAuthTokenPattern = /^(?:Bearer\s+)?(?:development_ntn_|ntn_|secret_)/
 
 const configAuthTokenSchema = z.string().refine(
   (token) => !bearerShapedAuthTokenPattern.test(token.trim()),

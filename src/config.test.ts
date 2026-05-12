@@ -188,7 +188,9 @@ promotionTargets:
     for (const token of [
       "secret_real_notion_integration_token",
       "ntn_real_notion_user_token",
+      "development_ntn_real_notion_dev_pat_token",
       "Bearer secret_real_notion_integration_token",
+      "Bearer development_ntn_real_notion_dev_pat_token",
     ]) {
       expect(() =>
         parseConfigAllowingInvalidHooks(`
