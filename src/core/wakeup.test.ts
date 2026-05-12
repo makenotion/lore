@@ -2244,6 +2244,56 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
     ])
   })
 
+  it("isolates a toString-throwing upstream rejection without rejecting the outer loadWakeUpData call", async () => {
+    // PR #591 review: `redactDebugError` propagates a throw when
+    // the rejected value's `toString()` throws (see its
+    // docstring). Under `Promise.all` the inner catch's
+    // `redactDebugError(err)` call would then re-throw, rejecting
+    // the whole fan-out and taking down wake-up — violating the
+    // upstream-failure-isolation contract. The fan-out uses
+    // `Promise.allSettled` + a `safeRedact` wrapper so even a
+    // pathological rejection that the redactor can't format is
+    // surfaced as a section value, never as an outer rejection.
+    const services = stubServices()
+    const evilRejection: object = {
+      toString() {
+        throw new Error("toString itself is hostile")
+      },
+    }
+    const evilBundle = {
+      label: "HostileTeam",
+      pageId: "hostile-page",
+      priority: 100,
+      lastError: null,
+      loadReaders: vi.fn(async () => ({
+        memories: {
+          list: vi.fn(async () => {
+            // `throw <non-Error with throwing toString>` is the
+            // canonical reproducer for `redactDebugError`'s
+            // re-throw branch.
+            throw evilRejection
+          }),
+        },
+        facts: {} as never,
+      })),
+    } as never
+
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [evilBundle] },
+      { projectId: "p1", now: NOW },
+    )
+
+    // Outer call resolved; section is present and carries the
+    // safe-fallback sentinel rather than failing the whole wake-up.
+    expect(data.inheritedMemories).toHaveLength(1)
+    expect(data.inheritedMemories[0]).toMatchObject({
+      label: "HostileTeam",
+      pageId: "hostile-page",
+      memories: [],
+      error: "<unrenderable upstream error>",
+    })
+  })
+
   it("skips fan-out when includeInheritedMemories is false", async () => {
     const services = stubServices()
     const upstream = buildUpstreamBundleStub({

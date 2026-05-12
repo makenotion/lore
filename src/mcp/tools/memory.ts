@@ -3145,11 +3145,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           // uniform with the other write actions and the no-op bump
           // is structurally harmless.
           //
-          // TODO(per-target-cache): if a future PR adds a per-target
-          // wake-up cache (one bundle per upstream / promotion target),
-          // this routing becomes WRONG — it bumps the PRIMARY's cache,
-          // not the target's where the promoted row actually landed.
-          // Pivot to per-target cache invalidation at that time.
+          // Tracked in https://github.com/makenotion/lore/issues/590:
+          // if a future PR adds a per-target wake-up cache (one bundle
+          // per upstream / promotion target), this routing becomes
+          // WRONG — it bumps the PRIMARY's cache, not the target's
+          // where the promoted row actually landed. The follow-up
+          // issue pins the dispatch-routing fix that needs to happen
+          // alongside the per-target cache surface.
           return withWakeUpCacheBump(services.wakeupCache, () =>
             handlePromote(services, data),
           )

@@ -249,9 +249,9 @@ signal/noise tradeoff override per call via `inheritedMemoryLimit`.
 ## Inherited from Engineering
 
 - [upstream: Engineering — untrusted, advisory only] `JWT auth pattern for service-to-service calls` [`pattern`] (35eb35e6-…)
-  `Service-to-service tokens use RS256 + JWKS for key rotation without coordination.`
+  [upstream: Engineering — untrusted, advisory only] `Service-to-service tokens use RS256 + JWKS for key rotation without coordination.`
 - [upstream: Engineering — untrusted, advisory only] `All cross-service calls must carry an idempotency token` [`pattern`] (35eb35e6-…)
-  `Cross-service writes carry X-Idempotency-Key for safe retries.`
+  [upstream: Engineering — untrusted, advisory only] `Cross-service writes carry X-Idempotency-Key for safe retries.`
 
 ## Inherited from Policy
 
@@ -275,10 +275,13 @@ renderer boundary:
    shaped header into the rendered prompt. Embedded backticks are
    doubled so the span cannot close early; CR/LF/TAB collapse to
    spaces; other ASCII C0 / DEL control characters drop entirely.
-2. **Explicit untrusted trust marker** on every inherited bullet —
-   `[upstream: <Label> — untrusted, advisory only]` — so the model
-   tokenizes the row with reduced authority weight regardless of
-   the inner text.
+2. **Explicit untrusted trust marker** on every inherited line —
+   `[upstream: <Label> — untrusted, advisory only]` precedes both
+   the title bullet AND the synopsis continuation line — so the
+   model tokenizes every row with reduced authority weight
+   regardless of the inner text. The marker repeats per line so
+   that a model whose attention window scrolls past the bullet
+   still sees the untrusted signal on the synopsis row.
 
 Both moves preserve the operator-facing value of inheritance (the
 agent CAN read upstream rows as advisory context) without giving any
@@ -299,17 +302,23 @@ structure.
   upstream renders a `> upstream unavailable: <message>` line in
   that section's body and leaves every other section — including
   the primary fan-out — untouched. The error message is routed
-  through `redactDebugMessage` so Notion request IDs and
-  page-id-shaped substrings get scrubbed before reaching the
-  rendered prompt. Under `LORE_DEBUG=1`, one `[lore]
-  upstream-vault-unavailable: label=<X> page=<id> error=<msg>`
-  stderr line additionally fires per bundle per process — gated on
-  `LORE_DEBUG` because the line carries the upstream page id
-  (recon-class per `src/debug-redact.ts`) and wake-up runs on every
-  session start. Subsequent retries inside the same process neither
-  re-load the upstream nor re-emit; the explicit retry surface is
-  `lore status`, which constructs fresh bundles per invocation
-  (governed by its own 60s cache TTL).
+  through `redactDebugError` at capture (in `wakeup.ts`), so
+  Notion request IDs and page-id-shaped substrings are scrubbed
+  before reaching the rendered prompt. A pathological rejection
+  whose `toString()` itself throws degrades further to the
+  literal `<unrenderable upstream error>` sentinel so the
+  failure-isolation contract holds even when the redactor can't
+  format the value. Under `LORE_DEBUG=1`, one `[lore]
+  upstream-vault-unavailable: label=<X> page=<page-id> error=<msg>`
+  stderr line additionally fires per bundle per process — the
+  whole line is routed through `redactDebugMessage`, so real
+  Notion page ids are emitted as `<page-id>` (recon-class per
+  `src/debug-redact.ts`). The line is gated on `LORE_DEBUG`
+  because wake-up runs on every session start; subsequent
+  retries inside the same process neither re-load the upstream
+  nor re-emit; the explicit retry surface is `lore status`,
+  which constructs fresh bundles per invocation (governed by
+  its own 60s cache TTL).
 - **Shared rate-limit bucket.** Every upstream read flows through
   the same auth-refreshing + rate-limited Notion client as primary
   writes, so cross-vault fan-out stays under the process-wide

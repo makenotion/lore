@@ -39,6 +39,7 @@ import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT, STALE_TASK_DAYS } from "../types.js
 import { taskDaysOverdue, taskDaysStale } from "./task.js"
 import { computeWakeUpCacheKey, WakeUpCache } from "./wakeup-cache.js"
 import type { UpstreamVaultBundle } from "./topology-readers.js"
+import { redactDebugError } from "../debug-redact.js"
 
 export { WakeUpCache, computeWakeUpCacheKey }
 // Re-exported so existing callers that import `MS_PER_DAY` from
@@ -264,6 +265,15 @@ export interface WakeUpServices {
    * absent / empty array suppresses the inherited section entirely
    * (byte-identical behavior to pre-#286). Production wiring
    * threads `LoreServices.upstreams` through directly.
+   *
+   * **Optional is the deliberate test-fixture compatibility
+   * choice**, not a feature toggle (PR #589 round-2 review). The
+   * downstream consumer `runWakeUpFanOut` treats `undefined` and
+   * `[]` identically — both suppress the section. New callers
+   * constructing a `WakeUpServices` standalone should thread the
+   * `LoreServices.upstreams` array directly; the optionality is
+   * for the existing test stubs in `wakeup.test.ts` that pre-date
+   * #286 and don't carry the field.
    */
   upstreams?: readonly UpstreamVaultBundle[]
 }
@@ -296,9 +306,17 @@ export interface InheritedMemorySection {
   /** Bounded slice of recently-edited memories from this upstream. */
   memories: Memory[]
   /**
-   * Underlying error message when the upstream load or query failed;
-   * `null` on success. Surfaced verbatim so the operator sees the
-   * Notion error text rather than a generic "unavailable" label.
+   * Underlying error message when the upstream load or query
+   * failed; `null` on success. **Pre-redacted at capture** via
+   * `redactDebugError` (or the safe-redact fallback when the
+   * thrown value's `toString()` throws — see
+   * `loadInheritedMemorySections`), so the field is safe to
+   * surface on any downstream consumer (MCP renderer, CLI status
+   * dumper, eval harness, debug log) without re-applying
+   * redaction at every boundary. Notion request IDs and
+   * page-id-shaped substrings are scrubbed before the value
+   * reaches this field; a pathological rejection degrades to the
+   * literal `<unrenderable upstream error>` sentinel.
    */
   error: string | null
 }
@@ -1168,9 +1186,8 @@ async function runWakeUpFanOut(
   // sections AFTER the primary sections — the issue's "Local
   // memories should outrank inherited memories by default" rule.
   // Bounded per-upstream cap keeps the prompt-noise multiplier in
-  // check; per-upstream `Promise.allSettled` posture isolates
-  // failures so one degraded upstream cannot suppress the others
-  // (issue #286, upstream-failure-isolation acceptance criterion).
+  // check; the fan-out posture (failure isolation, redaction at
+  // capture) is documented inside `loadInheritedMemorySections`.
   const includeInheritedMemories = opts.includeInheritedMemories ?? true
   const inheritedMemoryLimit =
     opts.inheritedMemoryLimit ?? DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT
@@ -1210,13 +1227,37 @@ async function loadInheritedMemorySections(
   perUpstreamLimit: number,
   includeContent: boolean,
 ): Promise<InheritedMemorySection[]> {
-  // `Promise.allSettled` per upstream: a single failure (auth, missing
-  // databases, transient 5xx) MUST NOT take down the whole inherited
-  // block. Each upstream that fails surfaces as a section carrying its
-  // own `error` message so the operator can triage which upstream is
-  // broken without losing the others. Same posture as
+  // Per-upstream `Promise.allSettled` + unwrap: a single upstream
+  // failure (auth, missing databases, transient 5xx) MUST NOT
+  // take down the whole inherited block. Each upstream that
+  // fails surfaces as a section carrying its own `error` message
+  // so the operator can triage which upstream is broken without
+  // losing the others. Same posture as
   // `loadVaultTopologyStatus`'s probe fan-out (issue #286
   // "upstream-failure-isolation").
+  //
+  // **`allSettled` is load-bearing here, not defensive.** PR #589
+  // round-2 review noted that `redactDebugError` propagates a
+  // throw when the thrown value's `toString()` throws (see the
+  // function's own docstring in `src/debug-redact.ts`). The inner
+  // try/catch calls `redactDebugError(err)` in its catch branch,
+  // so an exotic `toString`-throwing rejection from
+  // `bundle.loadReaders()` or `readers.memories.list()` would
+  // re-throw inside the mapper. Under `Promise.all` that
+  // re-throw would reject the whole fan-out and take down
+  // wake-up. `allSettled` always resolves; the post-loop unwrap
+  // maps any rejection (including a re-throw from
+  // `redactDebugError`) to a section value with `safeRedact`
+  // (which catches the re-throw itself), so the failure
+  // isolation contract holds for the full pathological-error
+  // chain.
+  //
+  // **Errors are redacted at capture**, not at the renderer
+  // boundary. `WakeUpData` is a public shape; a future caller
+  // that surfaces `inheritedMemories[].error` outside the MCP
+  // renderer (a CLI status dumper, an eval harness, a debug
+  // log) inherits the same scrubbing posture without
+  // re-applying redaction at every boundary.
   const results = await Promise.allSettled(
     upstreams.map(async (bundle): Promise<InheritedMemorySection> => {
       try {
@@ -1226,7 +1267,9 @@ async function loadInheritedMemorySections(
             label: bundle.label,
             pageId: bundle.pageId,
             memories: [],
-            error: bundle.lastError ?? "upstream vault unavailable",
+            error: safeRedact(
+              bundle.lastError ?? "upstream vault unavailable",
+            ),
           }
         }
         // Upstream taxonomies do NOT share project ids with the
@@ -1250,26 +1293,45 @@ async function loadInheritedMemorySections(
           label: bundle.label,
           pageId: bundle.pageId,
           memories: [],
-          error: err instanceof Error ? err.message : String(err),
+          error: safeRedact(err),
         }
       }
     }),
   )
-  // `allSettled` itself cannot reject under the inner try/catch above,
-  // but unwrap defensively so a future contributor who removes the
-  // inner catch sees the failure as a section rather than a thrown
-  // error that takes down wake-up.
   return results.map((result, index): InheritedMemorySection => {
     if (result.status === "fulfilled") return result.value
+    // Unwrap path. Reachable when `redactDebugError` itself
+    // re-throws on a `toString`-throwing rejection (see the
+    // surrounding rationale). `safeRedact` swallows its own
+    // throws so the failure-isolation contract holds even when
+    // the redactor can't format the rejection value at all.
     const bundle = upstreams[index]!
     return {
       label: bundle.label,
       pageId: bundle.pageId,
       memories: [],
-      error:
-        result.reason instanceof Error ? result.reason.message : String(result.reason),
+      error: safeRedact(result.reason),
     }
   })
+}
+
+/**
+ * Redact a value for surfacing on `WakeUpData.inheritedMemories[].error`
+ * without ever throwing. `redactDebugError` calls `String(error)`
+ * in its fallback path, which propagates a thrown `toString` — an
+ * unavoidable consequence of being a general-purpose formatter.
+ * For the wake-up capture site, a throwing formatter would cascade
+ * into rejecting `Promise.allSettled`'s unwrap and (in `Promise.all`
+ * shape) the whole fan-out. This wrapper traps any throw and falls
+ * back to the literal `<unrenderable upstream error>` sentinel so
+ * the section's `error` field is always a safe string.
+ */
+function safeRedact(error: unknown): string {
+  try {
+    return redactDebugError(error)
+  } catch {
+    return "<unrenderable upstream error>"
+  }
 }
 
 async function loadWakeUpTaskWindow(

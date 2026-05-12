@@ -52,7 +52,7 @@ import {
   type UpstreamVaultTopologyRef,
 } from "./topology.js"
 import type { LoreConfig, VaultDatabases } from "../types.js"
-import { redactDebugError } from "../debug-redact.js"
+import { redactDebugError, redactDebugMessage } from "../debug-redact.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 
 /**
@@ -77,17 +77,18 @@ export interface UpstreamVaultBundle {
   /** Configured page id (whatever shape `.lore.yaml` used). */
   readonly pageId: string
   /**
-   * Lazy-load the upstream vault and return its read-only memory +
-   * fact services. Caches the result across calls within one
-   * process — subsequent calls return the same bundle without
-   * re-fetching the upstream vault's child databases. Returns
-   * `null` on load failure (e.g. the upstream's page was removed,
-   * the operator's auth token can't reach it, the schema diverged
-   * past what `VaultManager` accepts); failures degrade gracefully
-   * so wake-up keeps working when an upstream is temporarily down.
+   * Lazy-load the upstream vault and return its read-only
+   * `MemoryService` (see `UpstreamReaders`). Caches the result
+   * across calls within one process — subsequent calls return the
+   * same bundle without re-fetching the upstream vault's child
+   * databases. Returns `null` on load failure (e.g. the upstream's
+   * page was removed, the operator's auth token can't reach it,
+   * the schema diverged past what `VaultManager` accepts);
+   * failures degrade gracefully so wake-up keeps working when an
+   * upstream is temporarily down.
    *
-   * The first failure per bundle emits one stderr line; subsequent
-   * calls neither retry nor re-emit.
+   * The first failure per bundle emits one stderr line (gated on
+   * `LORE_DEBUG=1`); subsequent calls neither retry nor re-emit.
    */
   loadReaders(): Promise<UpstreamReaders | null>
   /**
@@ -197,7 +198,25 @@ function createUpstreamVaultBundle(
           const scopeColumnsReady = await probeUpstreamScopeColumns(
             client,
             vault.databases
-          ).catch(() => true)
+          ).catch((probeErr) => {
+            // PR #591 round-3 nit: surface probe failures under
+            // `LORE_DEBUG=1` so an operator triaging
+            // "why does this upstream surface narrow-scope rows"
+            // can see whether the probe was bypassed via
+            // conservative fall-back. Same pattern as the
+            // upstream-load-failure emitter below. Defaults to
+            // silent because the fall-back posture is
+            // conservative (filter stays enabled) and a
+            // transient probe blip should not noise stderr on
+            // every wake-up.
+            if (process.env["LORE_DEBUG"] === "1") {
+              const rawLine =
+                `[lore] upstream-scope-probe-failed: label=${upstream.label} ` +
+                `page=${upstream.pageId} error=${redactDebugError(probeErr)}`
+              process.stderr.write(redactDebugMessage(rawLine) + "\n")
+            }
+            return true
+          })
           // Pass an empty `MemoryScopeContext{}` ONLY when the
           // upstream has the scope columns. Empty-context enables
           // the issue #283 default-scope filter with the "no
@@ -232,21 +251,30 @@ function createUpstreamVaultBundle(
           lastError = message
           if (!warningEmitted) {
             warningEmitted = true
-            // Gate on `LORE_DEBUG=1` so a wake-up running with a
-            // log-aggregator-attached stderr doesn't leak the
-            // configured upstream `pageId` (recon-class per
-            // `src/debug-redact.ts`). `lore status` surfaces page
-            // ids verbatim too, but that's an explicit
-            // operator-invoked command; wake-up runs on every
-            // session start. The PR #589 review flagged this
-            // narrower posture is the right one for a hot-path
-            // emitter. Operators triaging a degraded upstream
-            // re-run with `LORE_DEBUG=1` to see the page id.
+            // Two layers of protection on the stderr emission:
+            //
+            //   1. **`LORE_DEBUG=1` gate.** Wake-up runs on every
+            //      session start; unconditional stderr would noise
+            //      every session that touches a degraded upstream.
+            //      Operators triaging a degraded upstream re-run
+            //      with `LORE_DEBUG=1` to see the line.
+            //
+            //   2. **Whole-line redaction.** The line goes through
+            //      `redactDebugMessage` (the same scrubber the
+            //      capture-side renderer uses), so real Notion page
+            //      ids are emitted as `<page-id>` regardless of
+            //      whether the operator opted into LORE_DEBUG.
+            //      Operators who genuinely need the raw page id
+            //      look it up via `lore status` (which surfaces
+            //      labels + page ids verbatim — that's an explicit
+            //      operator-invoked command, not a hot-path
+            //      emitter). Defense-in-depth over the recon-class
+            //      page-id posture documented in `src/debug-redact.ts`.
             if (process.env["LORE_DEBUG"] === "1") {
-              process.stderr.write(
+              const rawLine =
                 `[lore] upstream-vault-unavailable: label=${upstream.label} ` +
-                  `page=${upstream.pageId} error=${redactDebugError(err)}\n`
-              )
+                `page=${upstream.pageId} error=${redactDebugError(err)}`
+              process.stderr.write(redactDebugMessage(rawLine) + "\n")
             }
           }
           return null
