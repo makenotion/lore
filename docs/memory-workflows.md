@@ -83,6 +83,7 @@ Use stable kebab-case paths grouped by kind:
 - `incident/login-redirect-502`
 - `postmortem/payment-gateway-timeout`
 - `policy/data-retention`
+- `procedure/cache-miss-investigation`
 
 If unsure, call `lore-memory action='suggest-topic-key'` with the title and
 kind. Do not use `topicKey` on `kind: 'note'` or `kind: 'task'`.
@@ -141,6 +142,71 @@ fallback autosaves stay same-session scoped. If Lore cannot read the duplicate
 candidate set, the autosave learning save fails before creating a possible
 duplicate. To force a separate row during recovery or migration, set
 `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` for that autosave run.
+
+## Procedures (Reusable Procedural Memories)
+
+Procedures are reviewed, fleet-wide operating knowledge promoted from
+resolved episodes — closed tasks, resolved incidents, postmortems,
+and high-confidence notes. Adapted from LangMem's
+episodic / semantic / procedural taxonomy: episodes stay inspectable
+history, while `kind: "procedure"` memories carry the "when this
+situation appears, this sequence worked" guidance an agent reaches
+for. Procedures always require human or authorized-agent review
+before they become fleet-wide; raw session summaries never become
+procedures silently.
+
+The lifecycle is three steps:
+
+1. **Mine candidates.** Run `lore procedures scan` (CLI) or
+   `lore-procedure action='scan-candidates'` (MCP). Both are
+   read-only. Lore walks the project's resolved
+   incidents / postmortems / runbooks plus closed tasks, clusters
+   them by entity, and surfaces ranked candidate groups (cluster
+   key, supporting source ids, score). A cluster requires at least
+   two supporting memories before it surfaces.
+2. **Propose.** Distill the resolution shape into a procedure via
+   `lore procedures propose --title ... --entity ... --activation ...
+--step ... --source <id> --source <id>` (CLI) or
+   `lore-procedure action='propose'` (MCP). The propose path creates a
+   `kind: "procedure", Status: proposed` memory with structured
+   activation conditions, ordered steps (each must be non-blank
+   after trim — a stepless or whitespace-only step is rejected at
+   the schema boundary), optional known failure modes, and `##
+   Sources` pointing back to the supporting episodes. At least two
+   `sourceMemoryIds` are required (mirrors the scan's
+   `PROCEDURE_MIN_SOURCES = 2` threshold) so the propose path can
+   never bypass the auditable evidence trail. Pass `supersedesIds`
+   when replacing an older procedure or runbook. Body sections are
+   pinned so the wake-up surface can label rows distinctly.
+3. **Approve.** Review and approve via the existing inbox surface
+   (`lore inbox approve <id>` CLI or `lore-memory action='approve'`
+   MCP). Approved procedures flip to `Status: accepted` and surface
+   in default recall / wake-up, labeled `procedure` in the meta
+   line. Reject via `lore inbox reject <id>` if the candidate
+   isn't worth shipping; both approve and reject append a
+   `## Reviewed (YYYY-MM-DD)` audit block recording the reviewer.
+
+Procedures can be deprecated via `lore procedures deprecate <id>`
+(CLI) or `lore-procedure action='deprecate'` (MCP). Deprecate
+rejects `Status: proposed` rows — those must leave the inbox via
+`lore inbox reject` so the `## Reviewed (YYYY-MM-DD)` audit block
+lands with the reviewer identity. Deprecate is idempotent on
+already-deprecated rows.
+
+**Supersession** is a two-step workflow: at propose time, pass
+`supersedesIds: [<old-procedure-id>]` so the new row's
+`Supersedes` relation records the chain. After approval, run
+`lore procedures deprecate <old-id> --reason "Superseded by
+<new-id>"` to flip the predecessor out of accepted recall. The
+propose response surfaces ready-to-paste deprecate commands when
+`supersedesIds` is set, so the workflow is explicit and
+operator-visible. The `lore-memory action='compare'` path with
+`verdict: 'supersedes'` is **decision-only**: the compare handler
+rejects non-decision kinds, so it cannot replace a procedure.
+
+Activation conditions are also replicated to the memory's
+`Keywords` field so hybrid search picks up procedures whose
+activation entity matches the user's current query.
 
 ## Task Hygiene
 

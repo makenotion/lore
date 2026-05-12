@@ -7,7 +7,22 @@ import { handleAsk, handleAudit } from "./knowledge.js"
 import { tagsSchema } from "./tag-schema.js"
 import { ymdDateSchema } from "./date-schema.js"
 
-const KINDS = ["note", "decision", "incident", "runbook", "postmortem", "policy"] as const
+// The closed set of `MemoryKind` values that `lore-query action='recall'`
+// and `action='search'` accept as the `kind` filter. `task` is excluded
+// because tracked work has its own polymorphic dispatcher
+// (`lore-task action='list'`) and `lore-query` cannot filter against the
+// `Task State` lifecycle. A new `MemoryKind` value must be added here for
+// recall/search to filter on it; the polymorphic surface tests pin the
+// drift contract.
+const KINDS = [
+  "note",
+  "decision",
+  "incident",
+  "runbook",
+  "postmortem",
+  "policy",
+  "procedure",
+] as const
 
 const STATUSES = [
   "informational",

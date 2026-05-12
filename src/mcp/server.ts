@@ -27,6 +27,7 @@ import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerDecisionTools } from "./tools/decisions.js"
 import { registerQueryTools } from "./tools/query.js"
 import { registerTaskTools } from "./tools/tasks.js"
+import { registerProcedureTools } from "./tools/procedures.js"
 
 // Re-export for consumers that already import from this module
 export type { LoreServices } from "../services.js"
@@ -46,6 +47,7 @@ const DIAGNOSTIC_TOOL_NAMES = [
   "lore-decision",
   "lore-project",
   "lore-task",
+  "lore-procedure",
 ] as const
 
 const DIAGNOSTIC_INPUT_SCHEMA = z
@@ -133,13 +135,12 @@ export async function startServer(): Promise<void> {
   }
 
   if (services) {
-    // Register all tools. The polymorphic surface is eight dispatchers:
-    // lore-context / lore-memory / lore-pinned / lore-query / lore-fact /
-    // lore-decision / lore-project / lore-task. P3-01 introduced the
-    // dispatch pattern, PF3-06 added lore-task, the 0.6.0 deprecation
-    // purge removed the legacy journal dispatcher alongside the 28
-    // single-purpose aliases, and issue #282 added lore-pinned.
-    // See src/mcp/AGENTS.md.
+    // Register every polymorphic dispatcher. Each register* call below
+    // adds exactly one `lore-*` tool name to the agent-visible surface;
+    // the polymorphic dispatch pattern multiplexes per-tool actions
+    // behind a single registration so per-session prompt overhead stays
+    // bounded. The canonical contract — names, actions, and exhaustive
+    // surface count — is enforced by the dispatcher surface tests.
     registerContextTools(server, services)
     registerMemoryTools(server, services)
     registerPinnedTools(server, services)
@@ -148,6 +149,7 @@ export async function startServer(): Promise<void> {
     registerKnowledgeTools(server, services)
     registerDecisionTools(server, services)
     registerTaskTools(server, services)
+    registerProcedureTools(server, services)
   }
 
   // Start the stdio transport

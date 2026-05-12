@@ -585,6 +585,30 @@ describe("formatMemoryListItem — includeSynopsis opt-out", () => {
   })
 })
 
+describe("formatMemoryListItem — procedure kind label", () => {
+  it("renders the procedure kind in the meta line so wake-up / recall / search surfaces visually distinguish procedures from notes", () => {
+    const procedureMemory = buildMemory({
+      id: "proc-1",
+      title: "PR-1234 latency triage",
+      kind: "procedure",
+      status: "accepted",
+      source: "manual",
+      tags: ["auth"],
+      synopsis: 'Reusable procedure for "PR-1234"; 3 steps.',
+      updatedAt: "2026-05-12T00:00:00.000Z",
+      createdAt: "2026-05-12T00:00:00.000Z",
+    })
+    const out = formatMemoryListItem(procedureMemory, { meta: defaultMemoryMetaBuilder })
+    // The meta line lands as `source | kind | status | tags | date`.
+    // `kind: procedure` shows because procedure !== note; `status: accepted`
+    // shows because accepted !== informational. This is the load-bearing
+    // visual surface that makes procedures distinguishable in wake-up
+    // alongside other memories without a dedicated section — the existing
+    // meta-builder already labels every non-note kind.
+    expect(out).toContain("*manual | procedure | accepted | auth | 2026-05-12*")
+  })
+})
+
 describe("formatMemoryListItem — heading level + meta variants", () => {
   const synopsisMemory = buildMemory({
     id: "mem-1",

@@ -10,7 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
-import { registerQueryTools } from "./query.js"
+import { queryDispatchSchema, registerQueryTools } from "./query.js"
 import { registerKnowledgeTools } from "./knowledge.js"
 
 function createMockServer() {
@@ -473,5 +473,30 @@ describe("lore-query action='ask' — touch-on-read wiring (issue 0.8.0/05)", ()
 
     const result = await ask({ entity: "AuthService" })
     expect((result as { isError?: boolean }).isError).not.toBe(true)
+  })
+})
+
+describe("lore-query KINDS enum accepts every memory kind", () => {
+  // The recall/search KINDS enum must accept every kind the write
+  // path produces. Without `procedure` in the enum, agents cannot
+  // filter retrieval by that kind through the read-path tool — the
+  // surface procedures are supposed to feed.
+
+  it("recall accepts kind: 'procedure' at the dispatch boundary", () => {
+    const result = queryDispatchSchema.safeParse({
+      action: "recall",
+      kind: "procedure",
+      limit: 5,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("search accepts kind: 'procedure' at the dispatch boundary", () => {
+    const result = queryDispatchSchema.safeParse({
+      action: "search",
+      query: "PR-1234",
+      kind: "procedure",
+    })
+    expect(result.success).toBe(true)
   })
 })

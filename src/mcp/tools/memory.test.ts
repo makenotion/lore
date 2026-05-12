@@ -6099,6 +6099,983 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     expect(text).toContain("Kind cannot change on upsert")
   })
 
+  it("rejects kind: 'procedure' on save with a redirect to lore-procedure action='propose'", async () => {
+    // The generic save path bypasses every safety property of the
+    // procedure-promotion workflow: source-memory live-row
+    // validation (`resolveProcedureSources`), the
+    // `PROCEDURE_MIN_SOURCES` threshold, the topic-key idempotency
+    // probe (`findExistingProposedProcedure`), and the
+    // `Status: proposed` inbox audit. The load-bearing safety
+    // property is that raw session summaries never become
+    // fleet-wide procedures silently. Pinned at the MCP boundary
+    // so neither `create` nor `upsertByTopicKey` fires.
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Cache miss procedure",
+      content: "## Activation Conditions\n- always\n## Steps\n1. Do thing",
+      kind: "procedure",
+      status: "accepted",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("does not accept kind: 'procedure'")
+    expect(text).toContain("lore-procedure action='propose'")
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+  })
+
+  it("rejects update with kind: 'procedure' when current row is non-procedure (no cross-kind promotion)", async () => {
+    // The update-path twin of the save-path block. Without this
+    // gate, an operator can flip a note / incident / etc. into
+    // kind=procedure (and status=accepted) without going through
+    // resolveProcedureSources, PROCEDURE_MIN_SOURCES, the body
+    // composer, or recordReview's audit block — defeating the
+    // load-bearing "procedures are reviewed governance" property
+    // (load-bearing safety property: raw session summaries never become
+    // fleet-wide procedures silently).
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "11111111111111111111111111111111",
+          kind: "note",
+          status: "informational",
+          title: "Existing note",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      kind: "procedure",
+      status: "accepted",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot promote kind='note' to kind='procedure'")
+    expect(text).toContain("lore-procedure action='propose'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update with status='accepted' on a procedure row (must use approve)", async () => {
+    // Approval is the inbox-review path — recordReview writes the
+    // `## Reviewed (YYYY-MM-DD)` audit block. A bare status flip
+    // via update would erase that audit, so reject and redirect to
+    // lore-memory action='approve'.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "22222222222222222222222222222222",
+          kind: "procedure",
+          status: "proposed",
+          title: "Proposed procedure",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "22222222222222222222222222222222",
+      status: "accepted",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot flip a procedure to status='accepted'")
+    expect(text).toContain("lore-memory action='approve'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update with status='rejected' on a proposed procedure (must use reject)", async () => {
+    // Symmetric with the proposed→accepted gate.
+    // `lore-memory action='reject'` (`recordReview`) is the path
+    // that writes the `## Reviewed (YYYY-MM-DD)` audit; a bare
+    // status flip on update would erase that audit.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "44444444444444444444444444444444",
+          kind: "procedure",
+          status: "proposed",
+          title: "Proposed procedure",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "44444444444444444444444444444444",
+      status: "rejected",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot flip a proposed procedure to status='rejected'")
+    expect(text).toContain("lore-memory action='reject'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update with status='deprecated' on a procedure (must use lore-procedure deprecate)", async () => {
+    // A bare status flip would skip the `## Deprecated (YYYY-MM-DD)`
+    // audit block AND the status-boundary gate `handleDeprecate`
+    // enforces.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "55555555555555555555555555555555",
+          kind: "procedure",
+          status: "accepted",
+          title: "Accepted procedure",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "55555555555555555555555555555555",
+      status: "deprecated",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot flip a procedure to status='deprecated'")
+    expect(text).toContain("lore-procedure action='deprecate'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update flipping a procedure to status='superseded' (must use propose + deprecate)", async () => {
+    // Symmetric with the deprecated-status gate: bare flip drops
+    // the procedure out of accepted recall without a Deprecated
+    // audit block and without guaranteeing a replacement relation.
+    // The procedure supersession workflow is propose-replacement-
+    // with-supersedesIds → approve → deprecate-predecessor.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "77777777777777777777777777777777",
+          kind: "procedure",
+          status: "accepted",
+          title: "Accepted procedure",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "77777777777777777777777777777777",
+      status: "superseded",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot flip a procedure to status='superseded'")
+    expect(text).toContain("lore-procedure action='propose'")
+    expect(text).toContain("lore-procedure action='deprecate'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update demoting a procedure to a different kind", async () => {
+    // A procedure → note/runbook/etc. demotion would orphan the
+    // `## Steps` / `## Sources` body sections and drop the row out
+    // of procedure-specific recall.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "66666666666666666666666666666666",
+          kind: "procedure",
+          status: "accepted",
+          title: "Accepted procedure",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "66666666666666666666666666666666",
+      kind: "runbook",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot demote a procedure")
+    expect(text).toContain("kind='runbook'")
+    expect(text).toContain("lore-procedure action='deprecate'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update resetting a procedure to status='proposed' from any non-proposed state", async () => {
+    // Closes the resurrection bypass: a deprecated / superseded /
+    // rejected / accepted procedure could otherwise be flipped
+    // back to `Status: proposed` via update, then resurrected as
+    // accepted through `recordReview` (which only requires
+    // `current.status === 'proposed'`). Test the deprecated start
+    // state; the gate covers every non-proposed source.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "88888888888888888888888888888888",
+          kind: "procedure",
+          status: "deprecated",
+          title: "Deprecated procedure",
+          content: "",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "88888888888888888888888888888888",
+      status: "proposed",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot reset a procedure to status='proposed'")
+    expect(text).toContain("current: deprecated")
+    expect(text).toContain("lore-procedure action='propose'")
+    expect(text).toContain("supersedesIds")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("allows content-only updates on an existing procedure row (no status / no kind change)", async () => {
+    // Procedures CAN be edited via update once approved — only the
+    // status flip and cross-kind promotion are blocked. Body
+    // tweaks, keyword adjustments, etc. flow through cleanly so
+    // long as the new content preserves the structural section
+    // headers that make the row a procedure.
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue({
+      id: "33333333333333333333333333333333",
+      kind: "procedure",
+      status: "accepted",
+      title: "Updated procedure",
+      content: "## Activation Conditions\n- updated",
+      projectIds: ["proj-a"],
+      topicId: null,
+      source: "manual",
+      confidence: "certain",
+      tags: [],
+      keywords: "",
+      synopsis: "",
+      author: "",
+      agent: "",
+      session: "",
+      createdAt: "2026-05-12T00:00:00.000Z",
+      updatedAt: "2026-05-12T00:00:00.000Z",
+      confidenceScore: null,
+      reviewBy: null,
+      doneAt: null,
+      decidedAt: null,
+      lastReferencedAt: null,
+      supersedesIds: [],
+      affectsIds: [],
+      alternatives: "",
+      consequences: "",
+      taskState: null,
+      blockedBy: "",
+      entity: "",
+      topicKey: "procedure/foo",
+      revisionCount: 1,
+      comparedWith: [],
+      compareNotes: "",
+      scope: null,
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        // Body-shape gate loads the current row to verify it's a
+        // procedure; needs to return a procedure-kind memory so
+        // the gate's section-header check runs against the new
+        // content.
+        getById: vi.fn().mockResolvedValue({
+          id: "33333333333333333333333333333333",
+          kind: "procedure",
+          status: "accepted",
+          title: "Existing procedure",
+          content:
+            "## Activation Conditions\n- always\n\n## Steps\n1. step\n\n## Sources\n- mem-A",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "33333333333333333333333333333333",
+      // Content with all three required procedure section headers
+      // — the gate enforces that a content update on a procedure
+      // row preserves the structural body shape.
+      content:
+        "## Activation Conditions\n- updated\n\n## Steps\n1. updated step\n\n## Sources\n- mem-A",
+    } as never)
+
+    // No kind / status change → no procedure-gate rejection.
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects content updates on a procedure row that drop the structural sections", async () => {
+    // The body-shape invariant. Without this gate, a content-only
+    // update could blank-overwrite `## Activation Conditions` /
+    // `## Steps` / `## Sources` on a procedure row, leaving a
+    // procedure-in-name-only with no structural body. The status
+    // gate above doesn't fire on a pure content update, so this
+    // gate is the chokepoint.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "55555555555555555555555555555555",
+          kind: "procedure",
+          status: "accepted",
+          title: "Existing procedure",
+          content:
+            "## Activation Conditions\n- always\n\n## Steps\n1. step\n\n## Sources\n- mem-A",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "55555555555555555555555555555555",
+      content: "lol just a note now",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot blank the procedure body's required sections")
+    expect(text).toContain("## Activation Conditions")
+    expect(text).toContain("## Steps")
+    expect(text).toContain("## Sources")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects content updates that keep the procedure section headers but empty their bodies", () => {
+    // The header-presence check is necessary but not sufficient.
+    // A content update like `## Activation Conditions\n\n## Steps\n\n## Sources`
+    // satisfies the three-heading invariant while wiping every
+    // step and source line — leaving a structurally-valid but
+    // meaningless procedure row. The propose-time contract
+    // requires ≥ 1 nonblank step (`steps: min(1)` + `nonBlankString`)
+    // and ≥ PROCEDURE_MIN_SOURCES source ids; this gate mirrors
+    // that minimum-content contract on the update path.
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue({
+          id: "66666666666666666666666666666666",
+          kind: "procedure",
+          status: "accepted",
+          title: "Existing procedure",
+          content:
+            "## Activation Conditions\n- always\n\n## Steps\n1. step\n\n## Sources\n- mem-A",
+          projectIds: ["proj-a"],
+          topicId: null,
+          source: "manual",
+          confidence: "certain",
+          tags: [],
+          keywords: "",
+          synopsis: "",
+          author: "",
+          agent: "",
+          session: "",
+          createdAt: "2026-05-12T00:00:00.000Z",
+          updatedAt: "2026-05-12T00:00:00.000Z",
+          confidenceScore: null,
+          reviewBy: null,
+          doneAt: null,
+          decidedAt: null,
+          lastReferencedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          taskState: null,
+          blockedBy: "",
+          entity: "",
+          topicKey: "procedure/foo",
+          revisionCount: 1,
+          comparedWith: [],
+          compareNotes: "",
+          scope: null,
+        }),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    return updateHandler({
+      memoryId: "66666666666666666666666666666666",
+      content: "## Activation Conditions\n\n## Steps\n\n## Sources\n",
+    } as never).then((result) => {
+      expect((result as { isError?: boolean }).isError).toBe(true)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("structural section")
+      expect(text).toContain("## Steps")
+      expect(text).toContain("## Sources")
+      // Activation Conditions can be empty at propose time — the
+      // composer's `(none specified)` fallback means an empty
+      // activation section is legal. So it must NOT appear in the
+      // empty-section reject list.
+      expect(text).not.toContain("## Activation Conditions, ##")
+      expect(update).not.toHaveBeenCalled()
+    })
+  })
+
+  it("coalesces handler-level getById reads across the gate, topicName fallback, and validateRekey preflight", async () => {
+    // Worst-case combined update: topicKey re-key + kind/status gate
+    // + topicName scope fallback against a memory with empty
+    // projectIds. Each of those branches needs the pre-mutation
+    // memory snapshot. Without the handler-level memo + primeCurrent
+    // wiring, this call would issue three `pages.retrieve`
+    // round-trips for the same id (validateRekey + gate + topicName
+    // fallback). The contract: exactly one Notion read.
+    const mockServer = createMockServer()
+    const currentMemory = {
+      id: "44444444444444444444444444444444",
+      kind: "procedure" as const,
+      status: "accepted" as const,
+      title: "Existing procedure",
+      content: "## Activation Conditions\n- always",
+      // Empty projectIds so the topicName branch falls through to
+      // loadCurrent to discover scope — and validateRekey would
+      // throw on a real run with empty projectIds, so we exercise
+      // the no-op short-circuit path instead by reusing the existing
+      // topicKey.
+      projectIds: [] as string[],
+      topicId: null,
+      source: "manual" as const,
+      confidence: "certain" as const,
+      tags: [],
+      keywords: "",
+      synopsis: "",
+      author: "",
+      agent: "",
+      session: "",
+      createdAt: "2026-05-12T00:00:00.000Z",
+      updatedAt: "2026-05-12T00:00:00.000Z",
+      confidenceScore: null,
+      reviewBy: null,
+      doneAt: null,
+      decidedAt: null,
+      lastReferencedAt: null,
+      supersedesIds: [],
+      affectsIds: [],
+      alternatives: "",
+      consequences: "",
+      taskState: null,
+      blockedBy: "",
+      entity: "",
+      topicKey: "procedure/cache-miss",
+      revisionCount: 1,
+      comparedWith: [],
+      compareNotes: "",
+      scope: null,
+    }
+    const getById = vi.fn().mockResolvedValue(currentMemory)
+    const update = vi.fn().mockResolvedValue({
+      ...currentMemory,
+      content: "## Steps\n1. updated",
+    })
+    const validateRekey = vi.fn().mockResolvedValue({
+      memory: currentMemory,
+      oldTopicKey: "procedure/cache-miss",
+      // No-op short-circuit so we don't trip the empty-projectIds
+      // throw inside the rekey service path.
+      willRekey: false,
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: {
+        getOrCreate: vi
+          .fn()
+          .mockResolvedValue({ id: "topic-x", name: "Cache Miss" }),
+      },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById,
+        validateRekey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    // topicKey + kind is rejected upfront by handleUpdate so the
+    // closest worst-case combination that fires all three handler
+    // pre-mutation read sites is topicKey + status + topicName.
+    // The body-shape gate also fires on a content update against a
+    // procedure row, so pass content with all three required
+    // section headers to clear that gate cleanly.
+    const result = await updateHandler({
+      memoryId: "44444444444444444444444444444444",
+      status: "accepted",
+      topicKey: "procedure/cache-miss",
+      topicName: "Cache Miss",
+      content:
+        "## Activation Conditions\n- always\n\n## Steps\n1. updated\n\n## Sources\n- mem-A",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    // The handler memo collapses every branch's pre-mutation read
+    // onto validateRekey's already-loaded memory; no separate
+    // `services.memories.getById` round-trip fires.
+    expect(getById).not.toHaveBeenCalled()
+    // `validateRekey` is the single authoritative pre-mutation read.
+    expect(validateRekey).toHaveBeenCalledTimes(1)
+  })
+
   it("rejects topicKey when kind is omitted (which would default to 'note')", async () => {
     // The contract: topic keys group recurring decision/runbook/policy-
     // style topics; the suggester returns null for `kind: 'note'` and
@@ -9550,7 +10527,14 @@ describe("lore-memory action='update' — empty string still clears (issue #467)
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
-      memories: { update, get: vi.fn().mockResolvedValue(makeMemory("mem-1")) },
+      memories: {
+        update,
+        // Body-shape gate loads the row to check kind; default
+        // `note` kind from `makeMemory` clears the procedure-only
+        // section-header invariant so the content="" string-clear
+        // semantic still applies.
+        getById: vi.fn().mockResolvedValue(makeMemory("mem-1")),
+      },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },

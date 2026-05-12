@@ -1,12 +1,11 @@
 # MCP Tools
 
-Lore exposes eight polymorphic tools, each multiplexing several actions behind
+Lore exposes nine polymorphic tools, each multiplexing several actions behind
 one MCP registration: `lore-context`, `lore-memory`, `lore-pinned`,
-`lore-query`, `lore-fact`, `lore-decision`, `lore-project`, and `lore-task`.
-The prior single-purpose tool names and task aliases were removed in the 0.6.0
-deprecation purge; see [`src/mcp/AGENTS.md`](../src/mcp/AGENTS.md) for the
-historical timeline. `lore-pinned` was added in issue #282 (pinned context
-blocks).
+`lore-query`, `lore-fact`, `lore-decision`, `lore-project`, `lore-task`, and
+`lore-procedure`. The prior single-purpose tool names and task aliases were
+removed in the 0.6.0 deprecation purge; see
+[`src/mcp/AGENTS.md`](../src/mcp/AGENTS.md) for the historical timeline.
 
 ## `lore-context` — vault context
 
@@ -208,6 +207,35 @@ into tasks.
 | `context`   | Find every decision governing an entity via the facts graph                                   |
 | `supersede` | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact         |
 | `review`    | Mark a decision as reviewed; set, advance, or clear `Review By`                               |
+
+## `lore-procedure` — reusable procedural memory
+
+Procedures are reviewed, fleet-wide operating knowledge promoted from
+resolved episodes (closed tasks, resolved incidents, postmortems, runbooks).
+Adapted from LangMem's episodic / semantic / procedural taxonomy. Always
+gated by human or authorized-agent review — raw session summaries never
+become fleet-wide procedures.
+
+| Action             | Description                                                                                                                                                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scan-candidates`  | Read-only mining over the project's incidents / postmortems / runbooks and closed tasks. Clusters supporting memories by entity, ranks by count + kind diversity + recency, returns the top candidates. `limit` and `minScore` are optional knobs.                                  |
+| `propose`          | Create a `Kind: procedure, Status: proposed` memory with structured `## Activation Conditions`, `## Steps`, optional `## Known Failure Modes`, and `## Sources`. Requires at least one non-blank step (whitespace-only steps are rejected at the schema boundary) and at least two `sourceMemoryIds` (mirrors the scan's `PROCEDURE_MIN_SOURCES` threshold so the propose path cannot bypass the auditable evidence trail). Supports `supersedesIds` for replacement chains. |
+| `deprecate`        | Status flip on an accepted procedure (`accepted` → `deprecated`). Rejects `Status: proposed` rows (those leave via `lore-memory action='reject'`). Rejects `superseded` / `rejected` rows (already left accepted recall via a different audit path). Optional `reason` (capped at 500 chars) is appended as a `## Deprecated` audit block to the body. Idempotent on already-deprecated rows. |
+
+Approval after `propose` flows through `lore-memory action='approve'` —
+the existing inbox-review path. The propose surface deliberately does NOT
+expose an `approve` action of its own so the audit contract (`recordReview`
++ `## Reviewed (YYYY-MM-DD)` audit block) has exactly one entrypoint.
+
+Supersession is a two-step workflow: pass `supersedesIds: [<old-id>]`
+at `propose` time so the new row records the chain, then run
+`lore-procedure action='deprecate'` on each predecessor after the
+replacement is approved. The propose response surfaces ready-to-paste
+deprecate commands when `supersedesIds` is set so the operator can't
+miss the second step. The compare-supersedes path
+(`lore-memory action='compare'` with `verdict: 'supersedes'`) is
+**decision-only**: the compare handler rejects non-decision kinds, so
+it cannot replace a procedure.
 
 ## `lore-project` — project read paths
 

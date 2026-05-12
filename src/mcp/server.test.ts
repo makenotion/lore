@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   registerKnowledgeTools: vi.fn(),
   registerDecisionTools: vi.fn(),
   registerTaskTools: vi.fn(),
+  registerProcedureTools: vi.fn(),
   servers: [] as MockServer[],
   transports: [] as Array<{ kind: "stdio" }>,
 }))
@@ -61,6 +62,10 @@ vi.mock("./tools/tasks.js", () => ({
   registerTaskTools: mocks.registerTaskTools,
 }))
 
+vi.mock("./tools/procedures.js", () => ({
+  registerProcedureTools: mocks.registerProcedureTools,
+}))
+
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
   McpServer: vi.fn().mockImplementation(() => {
     const server: MockServer = {
@@ -91,6 +96,7 @@ const DIAGNOSTIC_TOOL_NAMES = [
   "lore-fact",
   "lore-memory",
   "lore-pinned",
+  "lore-procedure",
   "lore-project",
   "lore-query",
   "lore-task",
@@ -107,6 +113,7 @@ afterEach(() => {
   mocks.registerKnowledgeTools.mockReset()
   mocks.registerDecisionTools.mockReset()
   mocks.registerTaskTools.mockReset()
+  mocks.registerProcedureTools.mockReset()
   mocks.servers.length = 0
   mocks.transports.length = 0
 })

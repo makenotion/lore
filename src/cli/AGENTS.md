@@ -26,6 +26,7 @@ debugging, manual search).
 | `commands/tasks.ts`     | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`)                                                                                                         |
 | `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`)                                                                                                         |
 | `commands/debt.ts`      | `lore debt` -- memory-debt audit and maintenance workflow (currently: `scan`, `create-tasks`); see [`docs/memory-debt.md`](../../docs/memory-debt.md)                       |
+| `commands/procedures.ts`| `lore procedures` -- procedural memory promotion: `scan`, `propose`, `deprecate`. Approval routes through `lore inbox approve <id>` so the audit contract stays on one entrypoint. |
 | `commands/entities.ts`  | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                         |
 | `commands/vault.ts`     | `lore vault` -- vault maintenance subcommands (currently: `ensure-entities`)                                                                                                |
 | `commands/eval.ts`      | `lore eval` -- local evaluation harness commands (currently: `run`)                                                                                                         |

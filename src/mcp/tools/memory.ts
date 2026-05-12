@@ -232,7 +232,15 @@ async function createMemoryWithResult(
   }
 }
 
-const KINDS = ["note", "decision", "incident", "runbook", "postmortem", "policy"] as const
+const KINDS = [
+  "note",
+  "decision",
+  "incident",
+  "runbook",
+  "postmortem",
+  "policy",
+  "procedure",
+] as const
 
 /**
  * Full `MemoryKind` set accepted by `lore-memory action='suggest-topic-key'`.
@@ -260,6 +268,7 @@ const SUGGEST_KIND_VALUES = [
   "postmortem",
   "policy",
   "task",
+  "procedure",
 ] as const satisfies readonly MemoryKind[]
 
 /**
@@ -294,6 +303,47 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as const
 
 const EXPAND_MAX_IDS = 20
+
+// Required Markdown section headings on a `kind: 'procedure'` row's
+// body. Mirrors the sections `composeProcedureBody` produces at
+// propose-time. A content update that drops any of these leaves the
+// row a procedure-in-name-only; the `handleUpdate` body-shape gate
+// rejects such updates so the structural contract holds across the
+// row's lifetime.
+const PROCEDURE_REQUIRED_SECTIONS = [
+  "## Activation Conditions",
+  "## Steps",
+  "## Sources",
+] as const
+
+// Sections whose body must contain at least one nonblank line.
+// Mirrors the propose-time contract: `## Steps` is `min(1)` of
+// `nonBlankString` at the schema layer and `## Sources` is
+// `min(PROCEDURE_MIN_SOURCES)` page ids — so an accepted procedure
+// always has real content under both. A content update that empties
+// either section leaves a structurally-valid-but-meaningless
+// procedure row; the gate rejects so update parity with propose
+// holds end-to-end.
+const PROCEDURE_NONEMPTY_SECTIONS = ["## Steps", "## Sources"] as const
+
+/**
+ * Return the body of a procedure section — every line after the
+ * matching `## <heading>` line until the next `## ` heading or end
+ * of body. Returned text retains intra-section newlines but is
+ * trimmed at both ends so a section containing only whitespace
+ * returns the empty string.
+ */
+function extractProcedureSectionBody(body: string, heading: string): string {
+  const headingPattern = new RegExp(`^${heading}\\s*$`, "m")
+  const headingMatch = headingPattern.exec(body)
+  if (!headingMatch) return ""
+  const afterHeadingIdx = headingMatch.index + headingMatch[0].length
+  const remainder = body.slice(afterHeadingIdx)
+  const nextHeadingMatch = /^## /m.exec(remainder)
+  const section =
+    nextHeadingMatch !== null ? remainder.slice(0, nextHeadingMatch.index) : remainder
+  return section.trim()
+}
 
 // -------------------------------------------------------------------------
 // Handlers — one per `lore-memory` action (save | update | archive |
@@ -364,7 +414,29 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           `recurring decision/runbook/policy-style topics; ${reason} and ` +
           "do not form a recurring topic. " +
           "Either omit topicKey, or set kind to one of: decision, " +
-          "runbook, incident, postmortem, policy."
+          "runbook, incident, postmortem, policy. " +
+          "Procedures are not written through lore-memory action='save' — " +
+          "use lore-procedure action='propose' instead."
+      )
+    }
+    // Procedure writes route through `lore-procedure action='propose'`
+    // exclusively. The propose path enforces source-memory live-row
+    // validation (`resolveProcedureSources`), the
+    // `PROCEDURE_MIN_SOURCES` threshold, the
+    // `(topicKey, project-set)` idempotency probe
+    // (`findExistingProposedProcedure`), and lands the row at
+    // `Status: proposed` for inbox review. The generic save path
+    // bypasses every one of those gates, defeating the load-bearing
+    // safety property that raw session summaries never become
+    // fleet-wide procedures silently.
+    if (resolvedKind === "procedure") {
+      throw new Error(
+        "lore-memory action='save' does not accept kind: 'procedure'. " +
+          "Procedures must route through lore-procedure action='propose', " +
+          "which validates supporting source memories, enforces the " +
+          "minimum-sources gate, probes the topic-key slot for idempotency, " +
+          "and lands the row at Status: proposed for inbox review. " +
+          "Use lore-procedure action='propose' instead."
       )
     }
 
@@ -932,6 +1004,26 @@ async function handleUpdate(
     let projectIds: string[] | undefined
     const warnings: string[] = []
 
+    // Lazy memo for the pre-mutation memory snapshot. Three handler
+    // branches need it on the worst-case path: the procedure-kind
+    // update gate (pre-mutation kind/status check), the topicName
+    // scope fallback (pre-mutation projectIds), and the empty-args
+    // return shape. Without this, the worst-case update issued three
+    // `pages.retrieve` round-trips against Notion for the same id.
+    // The re-key preflight below seeds the memo when it runs, so a
+    // combined topicKey + kind/status update collapses to a single
+    // Notion read. Storing the in-flight promise (not the resolved
+    // value) also collapses concurrent reads if a future branch
+    // awaits it from multiple call sites.
+    let currentMemo: Promise<Memory> | undefined
+    const loadCurrent = (): Promise<Memory> => {
+      if (!currentMemo) currentMemo = services.memories.getById(args.memoryId)
+      return currentMemo
+    }
+    const primeCurrent = (memory: Memory): void => {
+      if (!currentMemo) currentMemo = Promise.resolve(memory)
+    }
+
     // Explicit project scope is strict even on update. Resolve it before
     // re-key preflight because `validateRekey` reads the target Memory and
     // collision candidates; an invalid explicit project must win the
@@ -970,11 +1062,221 @@ async function handleUpdate(
         oldTopicKey: result.oldTopicKey,
         willRekey: result.willRekey,
       }
+      // `validateRekey` already loaded the pre-mutation memory to
+      // check the old key, project-set, and collision candidates.
+      // Seed the handler-level memo so the procedure-kind gate and
+      // the topicName scope fallback don't re-issue a second Notion
+      // read for the same id.
+      primeCurrent(result.memory)
     }
 
     let topicId: string | undefined
     let topicLabel: string | undefined
     let updated: Memory | undefined
+
+    // Procedure-kind update gate. The procedure lifecycle has audit
+    // blocks on every transition, and the generic update path would
+    // erase them. Seven failure modes the propose-path / approve /
+    // reject / deprecate contracts exist to prevent:
+    //
+    // 1. Cross-kind promotion to `procedure` via update — bypasses
+    //    `resolveProcedureSources`, `PROCEDURE_MIN_SOURCES`, the
+    //    body composer, and `recordReview`'s audit block. Same
+    //    failure mode as the `kind: procedure` save-path block.
+    //
+    // 2. proposed → accepted on a procedure row via update —
+    //    `lore-memory action='approve'` (`recordReview`) is the
+    //    only path that writes the `## Reviewed (YYYY-MM-DD)`
+    //    audit with the reviewer identity. A bare status flip
+    //    erases that audit.
+    //
+    // 3. proposed → rejected on a procedure row via update —
+    //    `lore-memory action='reject'` (`recordReview`) is the
+    //    symmetric path; same audit-erasure concern.
+    //
+    // 4. accepted → deprecated on a procedure row via update —
+    //    `lore-procedure action='deprecate'` composes the
+    //    `## Deprecated (YYYY-MM-DD)` audit block AND enforces the
+    //    status-boundary gate (rejects proposed/superseded/rejected
+    //    rows so they don't accidentally hit deprecated). A bare
+    //    update would skip both.
+    //
+    // 5. procedure → other-kind demotion via update — the row
+    //    keeps its `## Steps` / `## Sources` body but loses its
+    //    Kind classification, dropping out of procedure-specific
+    //    recall / wake-up rendering. Reject any kind change on an
+    //    existing procedure row.
+    //
+    // 6. accepted → superseded on a procedure row via update —
+    //    same audit-bypass class as deprecated: drops the row out
+    //    of accepted recall without a `## Deprecated` audit and
+    //    without guaranteeing a replacement relation.
+    //
+    // 7. terminal/accepted → proposed reset via update — would
+    //    let an operator flip a deprecated / superseded / rejected
+    //    procedure back into the inbox and re-approve it via
+    //    `recordReview`, bypassing every audit block that
+    //    documented the terminal transition.
+    //
+    // Only fire the gate when the request actually touches kind or
+    // status; content-only updates on existing procedure rows
+    // (body edits, keyword adjustments) flow through unchanged.
+    //
+    // `hasContentDelta` is implied — `contentDelta` strips only
+    // `action`/`memoryId`/`topicKey`, so any `args.kind` or
+    // `args.status` value automatically flips `hasContentDelta` to
+    // true. Gating purely on the guarded fields is equivalent and
+    // reads more directly.
+    if (args.kind !== undefined || args.status !== undefined) {
+      const current = await loadCurrent()
+      // (1) Cross-kind promotion to procedure.
+      if (args.kind === "procedure" && current.kind !== "procedure") {
+        throw new Error(
+          `lore-memory action='update' cannot promote kind='${current.kind}' to kind='procedure'. ` +
+            "Procedures must be created via lore-procedure action='propose', which validates " +
+            "supporting source memories, enforces the minimum-sources gate, probes the topic-key " +
+            "slot for idempotency, and lands the row at Status: proposed for inbox review. " +
+            "Cross-kind promotion via update would bypass every one of those gates."
+        )
+      }
+      if (current.kind === "procedure") {
+        // (5) Demotion away from procedure.
+        if (args.kind !== undefined && args.kind !== "procedure") {
+          throw new Error(
+            `lore-memory action='update' cannot demote a procedure to kind='${args.kind}'. ` +
+              "The row's body carries procedure-specific `## Activation Conditions` / " +
+              "`## Steps` / `## Sources` sections that would be orphaned by a kind change; " +
+              "the row would also drop out of procedure-specific recall and wake-up rendering. " +
+              `If the procedure is no longer current, use lore-procedure action='deprecate' ` +
+              `with memoryId='${args.memoryId}' instead.`
+          )
+        }
+        // (2) proposed → accepted.
+        if (args.status === "accepted" && current.status !== "accepted") {
+          throw new Error(
+            `lore-memory action='update' cannot flip a procedure to status='accepted'. ` +
+              "Approval is the inbox-review path — use lore-memory action='approve' " +
+              `with memoryId='${args.memoryId}' so the \`## Reviewed (YYYY-MM-DD)\` audit ` +
+              "block lands with the reviewer's identity. Bare status flips erase that audit."
+          )
+        }
+        // (3) proposed → rejected. The `current.status === "proposed"`
+        // check implies `current.status !== "rejected"`; a separate
+        // clause would be dead code.
+        if (args.status === "rejected" && current.status === "proposed") {
+          throw new Error(
+            `lore-memory action='update' cannot flip a proposed procedure to status='rejected'. ` +
+              "Rejection is the inbox-review path — use lore-memory action='reject' " +
+              `with memoryId='${args.memoryId}' so the \`## Reviewed (YYYY-MM-DD)\` audit ` +
+              "block lands with the reviewer's identity."
+          )
+        }
+        // (7) terminal/accepted → proposed reset. An operator could
+        // otherwise flip a deprecated / superseded / rejected /
+        // accepted procedure back to `Status: proposed` via update,
+        // then run `lore-memory action='approve'` and resurrect the
+        // row as accepted — bypassing both `## Deprecated` and
+        // `## Reviewed` audit history on the resurrection path
+        // (`recordReview` only requires `current.status === 'proposed'`).
+        // No legitimate workflow needs a procedure to go backwards
+        // in the lifecycle; revisions ship as fresh proposals with
+        // `supersedesIds` instead.
+        if (args.status === "proposed" && current.status !== "proposed") {
+          throw new Error(
+            `lore-memory action='update' cannot reset a procedure to status='proposed' (current: ${current.status}). ` +
+              "Procedures don't go backwards in the lifecycle — a deprecate / supersede / reject / accept transition " +
+              "is terminal for that row. Ship a revision as a fresh proposal via " +
+              `lore-procedure action='propose' with \`supersedesIds: [${args.memoryId}]\` so the audit chain stays intact.`
+          )
+        }
+        // (4) accepted/informational → deprecated.
+        if (args.status === "deprecated" && current.status !== "deprecated") {
+          throw new Error(
+            `lore-memory action='update' cannot flip a procedure to status='deprecated'. ` +
+              "Procedure deprecation has its own audit surface — use " +
+              `lore-procedure action='deprecate' memoryId='${args.memoryId}' so the ` +
+              "`## Deprecated (YYYY-MM-DD)` audit block lands and the status-boundary " +
+              "gate (rejects proposed / superseded / rejected rows) enforces correctness."
+          )
+        }
+        // (6) accepted/informational → superseded. Same audit-bypass
+        // class as the deprecated path: drops the procedure out of
+        // accepted recall without a `## Deprecated` audit block AND
+        // without guaranteeing a replacement relation. The procedure
+        // supersession workflow is propose-replacement-with-
+        // `supersedesIds` → approve → deprecate-predecessor; a bare
+        // status flip skips every step.
+        if (args.status === "superseded" && current.status !== "superseded") {
+          throw new Error(
+            `lore-memory action='update' cannot flip a procedure to status='superseded'. ` +
+              "Procedure replacement is a two-step workflow: propose the replacement via " +
+              "lore-procedure action='propose' with `supersedesIds: [" +
+              args.memoryId +
+              "]`, approve it through the inbox, then deprecate this row via " +
+              `lore-procedure action='deprecate' memoryId='${args.memoryId}'. ` +
+              "A bare status flip drops this row out of accepted recall without a " +
+              "`## Deprecated` audit block and without guaranteeing a replacement relation."
+          )
+        }
+      }
+    }
+
+    // Body-shape invariant on procedure rows. A content update on a
+    // kind='procedure' row replaces the full body, and the structured
+    // `## Activation Conditions` / `## Steps` / `## Sources` sections
+    // are what makes the row a procedure (not just a note tagged
+    // `procedure`). Without this check, an agent calling
+    // `lore-memory action='update'` with `{ memoryId, content: "lol" }`
+    // would silently blank those sections and leave the row a
+    // procedure-in-name-only. The kind/status gate above doesn't fire
+    // on a pure content update, so this is the chokepoint.
+    //
+    // The check fires only when `args.content` is being written; other
+    // content fields (`title`, `keywords`, `synopsis`) don't touch the
+    // body, and a content-untouched update leaves the body's existing
+    // sections intact.
+    if (args.content !== undefined) {
+      const current = await loadCurrent()
+      if (current?.kind === "procedure") {
+        const newContent = args.content
+        const missingHeaders = PROCEDURE_REQUIRED_SECTIONS.filter(
+          (heading) => !new RegExp(`^${heading}\\s*$`, "m").test(newContent)
+        )
+        if (missingHeaders.length > 0) {
+          throw new Error(
+            `lore-memory action='update' cannot blank the procedure body's required sections. ` +
+              `The new content is missing: ${missingHeaders.join(", ")}. ` +
+              "Procedures render under structured sections; an update that drops them leaves " +
+              "a procedure-in-name-only row. Pass content that retains the three section headers " +
+              "(`## Activation Conditions`, `## Steps`, `## Sources`), or deprecate the procedure " +
+              `via lore-procedure action='deprecate' memoryId='${args.memoryId}' if it's no longer current.`
+          )
+        }
+        // Headers alone aren't enough — a body like `## Activation
+        // Conditions\n## Steps\n## Sources` would pass the
+        // presence check while wiping every step and source line.
+        // Mirror the propose-time minimum-content contract: at
+        // least one nonblank line under `## Steps` and at least
+        // one nonblank line under `## Sources`.
+        const emptySections = PROCEDURE_NONEMPTY_SECTIONS.filter(
+          (heading) => extractProcedureSectionBody(newContent, heading).length === 0
+        )
+        if (emptySections.length > 0) {
+          throw new Error(
+            `lore-memory action='update' cannot leave a procedure's structural section${
+              emptySections.length === 1 ? "" : "s"
+            } empty. ` +
+              `The new content has the header${
+                emptySections.length === 1 ? "" : "s"
+              } but no body under: ${emptySections.join(", ")}. ` +
+              "Procedures require at least one nonblank step under `## Steps` and at least one " +
+              "nonblank source line under `## Sources` (same contract `lore-procedure action='propose'` " +
+              "enforces at create time). Pass content with usable body under each required section, " +
+              `or deprecate the procedure via lore-procedure action='deprecate' memoryId='${args.memoryId}'.`
+          )
+        }
+      }
+    }
 
     // Apply content delta FIRST. Re-key (when present) runs AFTER so
     // the audit-block append is the LAST write to the body —
@@ -986,7 +1288,7 @@ async function handleUpdate(
       if (args.topicName) {
         let topicScope = projectIds
         if (!topicScope || topicScope.length === 0) {
-          const current = await services.memories.getById(args.memoryId)
+          const current = await loadCurrent()
           if (current.projectIds.length > 0) {
             topicScope = current.projectIds
           } else if (services.context.project) {
@@ -1135,8 +1437,10 @@ async function handleUpdate(
       // state so the tool returns a sensible shape rather than
       // throwing. Both content-update and re-key branches assign
       // `updated` when they run, so this path only fires for the
-      // empty-args case.
-      updated = await services.memories.getById(args.memoryId)
+      // empty-args case. Reuse `loadCurrent`'s cached snapshot so
+      // a caller passing `{ memoryId, kind, status }` plus a no-op
+      // gate doesn't pay a second round-trip here.
+      updated = await loadCurrent()
     }
 
     // Diff-driven re-emission of `mentions` facts (DEFERRED-03,

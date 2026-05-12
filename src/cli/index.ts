@@ -12,6 +12,7 @@ import { digestCommand } from "./commands/digest.js"
 import { tasksCommand } from "./commands/tasks.js"
 import { conflictsCommand } from "./commands/conflicts.js"
 import { debtCommand } from "./commands/debt.js"
+import { proceduresCommand } from "./commands/procedures.js"
 import { entitiesCommand } from "./commands/entities.js"
 import { vaultCommand } from "./commands/vault.js"
 import { evalCommand } from "./commands/eval.js"
@@ -36,6 +37,7 @@ program.addCommand(digestCommand)
 program.addCommand(tasksCommand)
 program.addCommand(conflictsCommand)
 program.addCommand(debtCommand)
+program.addCommand(proceduresCommand)
 program.addCommand(entitiesCommand)
 program.addCommand(vaultCommand)
 program.addCommand(evalCommand)

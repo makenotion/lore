@@ -6,18 +6,17 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes eight polymorphic tools — `lore-context`, `lore-memory`,
+exposes nine polymorphic tools — `lore-context`, `lore-memory`,
 `lore-pinned`, `lore-query`, `lore-fact`, `lore-decision`, `lore-project`,
-`lore-task`. The 24 P3-01 single-purpose tool names and the four PF3-06
-task aliases — redundant names for actions already reachable under the
-polymorphic dispatchers — were preserved as deprecated registrations through
-the `0.5.0` line and were removed in the `0.6.0` deprecation purge.
-`lore-journal` was a polymorphic tool in its own right (not an alias) whose
-actions migrated to `lore-memory action='save'` with `kind: 'note'` and
-`lore-decision action='create'`; it carried a deprecation banner across the
-same window and came out in the same purge. `lore-pinned` was added in
-issue #282 for pinned context blocks — see "Tool Reference" below. See
-"Deprecation timeline" for the alias-purge history.
+`lore-task`, `lore-procedure`. The 24 P3-01 single-purpose tool names and
+the four PF3-06 task aliases — redundant names for actions already reachable
+under the polymorphic dispatchers — were preserved as deprecated
+registrations through the `0.5.0` line and were removed in the `0.6.0`
+deprecation purge. `lore-journal` was a polymorphic tool in its own right
+(not an alias) whose actions migrated to `lore-memory action='save'` with
+`kind: 'note'` and `lore-decision action='create'`; it carried a deprecation
+banner across the same window and came out in the same purge. See
+"Deprecation timeline" below.
 
 ## Files
 
@@ -33,14 +32,15 @@ issue #282 for pinned context blocks — see "Tool Reference" below. See
 | `tools/knowledge.ts`   | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `audit` handlers exported for `lore-query` |
 | `tools/decisions.ts`   | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`)                               |
 | `tools/tasks.ts`       | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list` / `reconcile`) (P3-02 + PF3-06)                            |
+| `tools/procedures.ts`  | `lore-procedure` polymorphic dispatcher (`scan-candidates` / `propose` / `deprecate`) — procedural memory promotion. Approval routes through `lore-memory action='approve'` so the audit contract stays on one entrypoint. |
 | `tools/date-schema.ts` | Shared `YYYY-MM-DD` and clearable date Zod schemas for MCP tool boundaries                                                            |
 | `tools/text-schema.ts` | Shared `nonBlankString` Zod schema for create-required user-facing text fields (rejects empty / whitespace-only)                      |
 
 ## Polymorphic dispatch pattern (P3-01 + PF3-06)
 
-The eight `lore-*` tools above multiplex multiple actions behind one MCP
-registration to keep per-session prompt overhead low. Each tool follows the
-same shape:
+The polymorphic `lore-*` tools above multiplex multiple actions behind one
+MCP registration to keep per-session prompt overhead low. Each tool follows
+the same shape:
 
 1. **Flat MCP-level `inputSchema`.** A top-level `action` enum field plus
    every action's parameters as optional fields. Each parameter description
@@ -120,9 +120,9 @@ the `0.6.0` deprecation purge.** Diary-style memories now go through
 `lore-memory action='save'` with `kind: 'note'`, architectural
 decisions through `lore-decision action='create'`, and historical
 `agent_diary` memories remain readable via `lore-query action='recall'`
-with `source: "agent_diary"`. The seven remaining polymorphic
-dispatchers are the only registered MCP tool surface;
-`polymorphic.test.ts` pins the surface at exactly 8 names (issue #282 added `lore-pinned`) and fails
+with `source: "agent_diary"`. The polymorphic dispatchers listed in the
+Files table above are the only registered MCP tool surface;
+`polymorphic.test.ts` pins the surface to that exact set and fails
 loudly if a new alias re-enters the registration list.
 
 The deprecation window existed because every alias's schema was
@@ -246,7 +246,7 @@ export function registerFooTools(server: McpServer, services: LoreServices): voi
 
 > Each polymorphic tool is documented as a single row with its action set.
 > If service initialization fails, `server.ts` still starts stdio in
-> diagnostic mode and registers stubs for all eight `lore-*` dispatchers.
+> diagnostic mode and registers stubs for every registered `lore-*` dispatcher.
 > Every diagnostic tool call must return the initialization error plus setup
 > recovery steps.
 
@@ -944,8 +944,8 @@ Historical bumps and what they signalled:
 4. Connects to a `StdioServerTransport`.
 
 If `initServices()` fails (no config, bad token, etc.), interactive MCP hosts
-still get a stdio server with diagnostic stubs for all eight `lore-*`
-dispatchers. Any action or arguments return the initialization error and
+still get a stdio server with diagnostic stubs for every registered
+`lore-*` dispatcher. Any action or arguments return the initialization error and
 recovery steps, so agents that reflexively call `wake-up`, `digest`, `save`, or
 another dispatcher still see actionable setup guidance instead of a schema or
 method-not-found error. Non-init failures such as tool registration or

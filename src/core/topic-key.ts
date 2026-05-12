@@ -37,6 +37,7 @@ const KIND_TO_FAMILY: Record<MemoryKind, string | null> = {
   postmortem: "postmortem",
   policy: "policy",
   task: null,
+  procedure: "procedure",
 }
 
 /**
@@ -162,7 +163,7 @@ const DATE_PATTERN = /\b\d{4}-\d{2}-\d{2}\b/g
  * "regex + stoplist" scope; an agent that needs a CJK key passes one
  * explicitly.
  */
-const COMBINING_MARK_PATTERN = /[\u0300-\u036f]/g
+export const COMBINING_MARK_PATTERN = /[\u0300-\u036f]/g
 
 export interface TopicKeySuggestion {
   /** Suggested key, or `null` when no key is appropriate for this kind/title. */

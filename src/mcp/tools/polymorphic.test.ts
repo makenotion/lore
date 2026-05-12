@@ -1,24 +1,20 @@
 /**
- * Polymorphic dispatcher tests for the eight `lore-*` tools — six
- * introduced in P3-01 (`lore-context`, `lore-memory`, `lore-query`,
- * `lore-fact`, `lore-decision`, `lore-project`), `lore-task` added
- * in PF3-06 to subsume the standalone task tools landed by P3-02,
- * and `lore-pinned` added in issue #282 for pinned context blocks.
- * `lore-journal` was removed in the 0.6.0 deprecation purge alongside
- * the single-purpose aliases.
+ * Polymorphic dispatcher tests for the registered `lore-*` tools.
+ * The exact set is enumerated in the `polymorphic` array in each
+ * test below and is the load-bearing contract — when a tool family
+ * is added or removed the list updates in lockstep, and the tests
+ * fail loudly if registration falls out of sync.
  *
  * These tests verify the contract:
  * 1. Each polymorphic tool is registered.
  * 2. Each declared `action` value reaches the right underlying handler.
  * 3. Invalid `action` values produce a clean discriminated-union error.
  * 4. Missing required-per-action params produce a clean error.
- * 5. The MCP tool surface is exactly the 8 polymorphic dispatchers — no
- *    deprecated aliases remain after the 0.6.0 deprecation purge.
+ * 5. The MCP tool surface is exactly the declared polymorphic set — no
+ *    deprecated aliases remain.
  *
- * Per-handler behavior is exercised by the existing per-file test suites
- * (`memory.test.ts`, `decisions.test.ts`, `knowledge.test.ts`,
- * `context.test.ts`, `tasks.test.ts`, `pinned.test.ts`). This file
- * specifically covers the dispatcher.
+ * Per-handler behavior is exercised by the existing per-file test
+ * suites; this file specifically covers the dispatcher.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -31,6 +27,7 @@ import { registerKnowledgeTools } from "./knowledge.js"
 import { registerDecisionTools } from "./decisions.js"
 import { registerProjectTools } from "./project.js"
 import { registerTaskTools } from "./tasks.js"
+import { registerProcedureTools } from "./procedures.js"
 
 type Handler = (...args: never[]) => Promise<unknown>
 
@@ -640,14 +637,14 @@ describe("lore-memory polymorphic dispatcher", () => {
   })
 
   // -----------------------------------------------------------------------
-  // lore-memory action='suggest-topic-key' (issue 0.9.0/07)
+  // lore-memory action='suggest-topic-key'
   //
   // Pure heuristic over (title, kind). No I/O, no service touch — the
-  // handler routes directly through `suggestTopicKey` from
-  // `src/core/topic-key.ts`. These dispatch tests pin: the action
-  // reaches the renderer, the response distinguishes suggestion vs.
-  // no-suggestion cleanly, and the discriminated union enforces both
-  // required fields against the broader 7-kind enum.
+  // handler routes directly through `suggestTopicKey`. These dispatch
+  // tests pin: the action reaches the renderer, the response
+  // distinguishes suggestion vs. no-suggestion cleanly, and the
+  // discriminated union enforces both required fields against the
+  // full memory-kind enum.
   // -----------------------------------------------------------------------
 
   it("dispatches action='suggest-topic-key' and renders the suggested key + reason", async () => {
@@ -1618,27 +1615,16 @@ describe("lore-task polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("MCP tool surface", () => {
-  it("registers exactly the 8 polymorphic tools — zero aliases", () => {
+  it("registers exactly the declared polymorphic tools — zero aliases", () => {
     // The 0.6.0 deprecation purge removed the 28 single-purpose aliases
     // (24 from P3-01 + 4 from PF3-06) and the `lore-journal` polymorphic
     // tool itself. This assertion is the load-bearing guard against
-    // re-introduction. The rationale lives in `src/mcp/AGENTS.md`
-    // "Deprecation timeline (historical)": every alias's schema rendered
-    // into the agent-visible MCP capabilities config on every reconnecting
-    // session, so adding a new alias under any cover (e.g. "just for one
-    // transition") would re-introduce the prompt-budget drift this purge
-    // corrected. A legitimate new tool family should update the expected
+    // re-introduction. Every registered tool name's schema is rendered
+    // into the agent-visible MCP capabilities config on every
+    // reconnecting session, so adding a new alias under any cover
+    // (e.g. "just for one transition") re-introduces prompt-budget
+    // drift. A legitimate new tool family should update the expected
     // list here rather than route around the assertion.
-    //
-    // The surface moved 7 → 8 in issue #282: `lore-pinned` adds a coherent
-    // four-action sub-surface for pinned context blocks. The actions
-    // would also have fit on `lore-memory`, but the per-tool description
-    // budget below was already at the high-water mark and absorbing the
-    // four new bullets would have pushed `lore-memory` ~80% past its
-    // ceiling — exactly the lopsided-growth failure mode this per-tool
-    // gate exists to catch. Splitting it onto its own family keeps
-    // `lore-memory` lean AND surfaces "pinned blocks" as a first-class
-    // concept in the tool surface.
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -1649,6 +1635,7 @@ describe("MCP tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
+    registerProcedureTools(mock.server, services)
 
     const polymorphic = [
       "lore-context",
@@ -1659,6 +1646,7 @@ describe("MCP tool surface", () => {
       "lore-decision",
       "lore-project",
       "lore-task",
+      "lore-procedure",
     ]
     expect(mock.names().sort()).toEqual([...polymorphic].sort())
   })
@@ -1666,8 +1654,8 @@ describe("MCP tool surface", () => {
   // -----------------------------------------------------------------------
   // Polymorphic-tool prompt-economy budgets.
   //
-  // The eight polymorphic tools are now the only registered surface, so
-  // these ceilings guard against a future PR quietly appending an
+  // The registered polymorphic dispatchers are the only MCP tool surface,
+  // so these ceilings guard against a future PR quietly appending an
   // action's worth of bullets to a description and re-inflating every
   // reconnecting session's prompt — the same pressure that motivated
   // the alias purge in the first place.
@@ -1688,6 +1676,7 @@ describe("MCP tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
+    registerProcedureTools(mock.server, services)
 
     // Per-tool description ceiling. Generous to current values — a real
     // new action can land within this budget. The intent is to catch
@@ -1721,6 +1710,7 @@ describe("MCP tool surface", () => {
       "lore-decision",
       "lore-project",
       "lore-task",
+      "lore-procedure",
     ]
     for (const name of polymorphic) {
       const desc = mock.description(name)
@@ -1731,7 +1721,7 @@ describe("MCP tool surface", () => {
     }
   })
 
-  it("the eight polymorphic tools' descriptions sum stays within the combined budget", () => {
+  it("the polymorphic tools' descriptions sum stays within the combined budget", () => {
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -1742,65 +1732,19 @@ describe("MCP tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
+    registerProcedureTools(mock.server, services)
 
-    // Combined ceiling. The surface has moved 7 → 8 → 7 → 8 across P3-01,
-    // PF3-06, the 0.6.0 purge, and issue #282; the budget covers the
-    // high-water mark plus comfortable headroom so a future action lands
-    // without inviting a surface-doubling regression. Five recent bumps
-    // stack: (a) 7000 → 7100 in #265 to accommodate the `lore-task
-    // action='create'` reuse note — agent-observable behavior change
-    // that warranted a one-line schema signal alongside the
-    // response-text vocabulary; (b) 7100 → 7200 in issue #281 Phase 1
-    // to absorb the proposed-memory inbox count line in
-    // `lore-context action='status'`'s description (now also names
-    // the `Kind != decision` exclusion so an agent reading the schema
-    // knows proposed-state decisions surface via `lore-decision`
-    // instead); (c) 7200 → 7500 in issue #281 Phase 4 to absorb
-    // the `lore-memory action='approve' / 'reject'` inbox-review
-    // actions and their `reviewer` parameter (+300 chars);
-    // (d) 7500 → 7900 in PR #550 / 0.13.1 to absorb the
-    // `lore-task` `CRITICAL SCOPE RULE` block (parallel to the
-    // existing `CRITICAL CLOSURE RULE`) and the matching tighten
-    // on the `create` bullet so live agents tokenize the
-    // tangential/out-of-scope rule with the same early-token
-    // weight the autosave subagent reads in `prompts.ts`;
-    // (e) 7900 → 8000 in the issue #286 read-inheritance +
-    // promote PR to absorb the `lore-memory action='promote'`
-    // bullet (+~150 chars, kept terse with a
-    // docs/topology.md link); (f) 8000 → 9400 in issue #282
-    // to absorb the new `lore-pinned` family (four actions:
-    // pin/unpin/update/list) for pinned context blocks.
-    // Putting pinned-block actions on `lore-memory` would
-    // have busted the per-tool ceiling below (lopsided
-    // growth — the principal failure mode the per-tool
-    // ceiling guards against), so the +1400 chars land as a
-    // dedicated family description with its own per-tool
-    // budget AND load-bearing security framing on `lore-pinned`
-    // (`force: true` is a stop-sign visible in the audit
-    // trail, NOT an access-control gate; `audience` is render
-    // metadata, not authorization); (g) 9400 → 9700 for issue
-    // #284 to absorb temporal-provenance signal across
-    // `lore-query action='ask'` (asOf / includeHistory bullet
-    // + parameter descriptions) and `lore-fact
-    // action='invalidate'` (the `Invalidated At` /
-    // `Invalidated By` mention on the existing description
-    // bullet plus the new `sourceMemoryId` describe clause);
-    // and (h) 9700 → 9800 for issue #284 R3 nit —
-    // `lore-fact action='invalidate'` description now names
-    // the DEFERRED-02 / 0.8.0/#06 confidence-decrement side
-    // effect on the fact's `Source` memory so an agent
-    // reading the schema in isolation knows the invalidate
-    // call has a downstream signal. Each delta stays within
-    // a "≤ ~300 chars per single-action-add" envelope
-    // (deltas (d) and (f) exceed it — (d) is a structural
-    // critical-rule block, (f) is four actions plus a new
-    // family header plus load-bearing security framing —
-    // and are explicitly documented as such); doc-string
-    // clauses dominate, not the action-name additions
-    // themselves. Future description adds should continue
-    // to stack the budget explicitly rather than burning
-    // headroom silently.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 9900
+    // Combined ceiling across every registered polymorphic tool's
+    // description string. The budget exists so a contributor cannot
+    // quietly grow per-tool descriptions enough to re-inflate every
+    // reconnecting session's prompt — the same pressure the alias
+    // purge originally addressed. The ceiling holds ~25% headroom
+    // above current registered usage; an action-sized add (≤ ~300
+    // chars) lands without a bump, while a family-add (a new
+    // dispatcher with multiple actions) or a critical-rule block
+    // pushed onto an existing description must bump this ceiling
+    // explicitly and document why in the same change.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 11050
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1810,6 +1754,7 @@ describe("MCP tool surface", () => {
       "lore-decision",
       "lore-project",
       "lore-task",
+      "lore-procedure",
     ]
     const total = polymorphic.reduce(
       (sum, name) => sum + mock.description(name).length,
@@ -1825,13 +1770,11 @@ describe("MCP tool surface", () => {
     // Per-tool description ceiling — the mechanical enforcement of
     // the "≤ ~200 chars per single-action-add" envelope documented
     // in the combined-budget comment above. The combined ceiling
-    // catches "nobody noticed all 7 descriptions grew slightly";
-    // this per-tool ceiling catches "this one tool got a paragraph
-    // of unstructured commentary added to one bullet." Without it,
-    // a future Phase 5/6 of #281 could add 300+ chars to a single
-    // tool's description with the combined budget still passing —
-    // the per-tool ceiling makes that growth mechanically loud
-    // instead of an aspirational rule.
+    // catches across-the-board creep where every description grew
+    // slightly; this per-tool ceiling catches one tool absorbing a
+    // paragraph of unstructured commentary on a single bullet.
+    // Without the per-tool gate, a single 300+ char addition could
+    // land under the combined budget and never trip a check.
     //
     // Ceilings are current observed length + ~150 char headroom per
     // tool. A contributor who hits a ceiling must (a) bump the
@@ -1853,6 +1796,7 @@ describe("MCP tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
+    registerProcedureTools(mock.server, services)
 
     // Current observed lengths (post-#550 / 0.13.1 SCOPE RULE block
     // + issue #282 lore-pinned family):
@@ -1864,8 +1808,14 @@ describe("MCP tool surface", () => {
     // forces the contributor to bump the entry here AND the combined
     // ceiling above.
     //
-    // Sum of per-tool ceilings (~9900) deliberately exceeds the
-    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (8800) so the
+    // `lore-procedure` carries the propose/scan-candidates/deprecate
+    // actions with a paragraph framing the propose-then-approve safety
+    // gate so agents see the contract alongside the action list. The
+    // per-tool ceiling is set to match the per-tool envelope discipline
+    // with comfortable headroom.
+    //
+    // Sum of per-tool ceilings deliberately exceeds the combined
+    // `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` so the
     // combined ceiling stays the real envelope; per-tool ceilings
     // exist to catch lopsided growth (one tool absorbs all the
     // additions while the others stay quiet — hides the growth from
@@ -1916,6 +1866,12 @@ describe("MCP tool surface", () => {
       "lore-decision": 1000,
       "lore-project": 480,
       "lore-task": 1850,
+      // Carries the propose / scan-candidates / deprecate action
+      // bullets plus a propose-then-approve safety-gate paragraph
+      // so agents see the contract alongside the action list. The
+      // envelope sits ~150 chars above current registered length,
+      // matching the per-tool headroom discipline.
+      "lore-procedure": 1300,
     }
     for (const [name, limit] of Object.entries(PER_TOOL_DESCRIPTION_LIMITS)) {
       const length = mock.description(name).length
@@ -1945,6 +1901,7 @@ describe("MCP tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
+    registerProcedureTools(mock.server, services)
 
     // Per-tool full-config ceiling. `lore-memory` is the current
     // largest at ~5000 chars rendered (its 6 actions plus the 0.9.0
@@ -1992,6 +1949,7 @@ describe("MCP tool surface", () => {
       "lore-decision",
       "lore-project",
       "lore-task",
+      "lore-procedure",
     ]
     for (const name of polymorphic) {
       const size = mock.renderedSize(name)

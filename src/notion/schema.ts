@@ -208,6 +208,7 @@ export function memoriesProperties(
           { name: "postmortem", color: "orange" },
           { name: "policy", color: "purple" },
           { name: "task", color: "yellow" },
+          { name: "procedure", color: "pink" },
         ],
       },
     },

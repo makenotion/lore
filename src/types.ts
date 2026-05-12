@@ -199,6 +199,21 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
  * What kind of memory this is. Used as a server-side discriminator so
  * tools like `lore-decision action='list'` can filter without post-processing.
  *
+ * `procedure` memories are reviewed, fleet-wide operating knowledge
+ * promoted from resolved episodes (closed tasks, resolved incidents,
+ * postmortems, high-confidence notes). Adapted from the LangMem
+ * episodic / semantic / procedural taxonomy — episodes remain
+ * inspectable history; procedures become the "when this situation
+ * appears, this sequence worked" surface agents reach for. The page
+ * body carries structured `## Activation Conditions / ## Steps /
+ * ## Known Failure Modes / ## Sources` sections; the supporting
+ * source memory ids render under `## Sources` (body, not relation).
+ * `Supersedes` is reserved for replacement chains — a procedure that
+ * retires an older procedure or runbook writes that predecessor id
+ * onto the relation; sources stay in the body. Always reviewed before
+ * promotion (`Status = proposed` → `accepted`); never written
+ * silently by autosave or background jobs.
+ *
  * `task` memories carry tracking-style state (open / blocked / done) and
  * are the canonical surface for tracked work. The Memories DB hosts them
  * so the title is a structured subject and the body holds the full
@@ -213,6 +228,7 @@ export type MemoryKind =
   | "postmortem"
   | "policy"
   | "task"
+  | "procedure"
 
 /**
  * Lifecycle state for `Kind = task` memories.
