@@ -13,6 +13,7 @@ import { conflictsCommand } from "./commands/conflicts.js"
 import { entitiesCommand } from "./commands/entities.js"
 import { vaultCommand } from "./commands/vault.js"
 import { evalCommand } from "./commands/eval.js"
+import { promoteCommand } from "./commands/promote.js"
 import { mcpCommand } from "./commands/mcp.js"
 import { hooksCommand } from "./commands/hooks.js"
 
@@ -34,6 +35,7 @@ program.addCommand(conflictsCommand)
 program.addCommand(entitiesCommand)
 program.addCommand(vaultCommand)
 program.addCommand(evalCommand)
+program.addCommand(promoteCommand)
 program.addCommand(mcpCommand)
 program.addCommand(hooksCommand)
 

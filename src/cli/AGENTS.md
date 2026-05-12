@@ -27,6 +27,7 @@ debugging, manual search).
 | `commands/entities.ts`  | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                         |
 | `commands/vault.ts`     | `lore vault` -- vault maintenance subcommands (currently: `ensure-entities`)                                                                                                |
 | `commands/eval.ts`      | `lore eval` -- local evaluation harness commands (currently: `run`)                                                                                                         |
+| `commands/promote.ts`   | `lore promote <memoryId> --to <name>` -- copy a primary-vault memory into a configured `promotionTargets` entry, with origin audit block (issue #286)                       |
 | `commands/mcp.ts`       | `lore mcp` -- start the MCP stdio server for host assistant integrations                                                                                                    |
 | `commands/hooks.ts`     | `lore hooks` -- dispatch host-assistant hook events (`wakeup`, `autosave`, `session-end`)                                                                                   |
 
