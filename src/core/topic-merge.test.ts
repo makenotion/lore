@@ -1321,6 +1321,106 @@ describe("findSimilarTopicGroups", () => {
     const groups = await findSimilarTopicGroups(client, TOPICS_DB)
     expect(groups.map((g) => g.normalizedKey)).toEqual(["alpha", "zebra"])
   })
+
+  // Issue #585 round-5 review: filter post-grouping, not at the
+  // server-side query. A `Project relation contains X` filter applied
+  // BEFORE grouping would drop sibling rows in OTHER projects, which
+  // would cause cross-project sprawl involving the requested project
+  // to fall below the `length >= 2` group check and silently
+  // disappear. The fix walks vault-wide, groups by normalized key,
+  // then keeps only groups where at least one member's `Project`
+  // relation contains the requested id.
+  describe("projectId filter (post-group)", () => {
+    it("returns a cross-project group when one sibling carries the requested project", async () => {
+      const client = createMockClient({
+        queryResponses: [
+          {
+            results: [
+              topicPage("t1", {
+                name: "Evals & Testing",
+                projectIds: ["mail"],
+                createdAt: "2026-04-20T10:00:00.000Z",
+              }),
+              topicPage("t2", {
+                name: "Eval & Testing",
+                projectIds: ["calendar"],
+                createdAt: "2026-04-21T10:00:00.000Z",
+              }),
+            ],
+          },
+        ],
+      })
+
+      // Mail-scoped scan: Mail's "Evals & Testing" and Calendar's
+      // "Eval & Testing" normalize to the same key. The Mail member
+      // carries the project, so the cross-project group surfaces.
+      const groups = await findSimilarTopicGroups(client, TOPICS_DB, {
+        projectId: "mail",
+      })
+      expect(groups).toHaveLength(1)
+      expect(groups[0].canonicalId).toBe("t1")
+      expect(groups[0].siblingIds).toEqual(["t2"])
+    })
+
+    it("drops a group whose members are all in OTHER projects", async () => {
+      const client = createMockClient({
+        queryResponses: [
+          {
+            results: [
+              topicPage("t1", {
+                name: "Triage & Routing",
+                projectIds: ["calendar"],
+                createdAt: "2026-04-20T10:00:00.000Z",
+              }),
+              topicPage("t2", {
+                name: "Triage and Routing",
+                projectIds: ["calendar"],
+                createdAt: "2026-04-21T10:00:00.000Z",
+              }),
+            ],
+          },
+        ],
+      })
+      // Mail-scoped scan: Calendar-only group does NOT surface.
+      const groups = await findSimilarTopicGroups(client, TOPICS_DB, {
+        projectId: "mail",
+      })
+      expect(groups).toEqual([])
+    })
+
+    it("walks vault-wide and reports every group when projectId is omitted", async () => {
+      const client = createMockClient({
+        queryResponses: [
+          {
+            results: [
+              topicPage("t1", {
+                name: "Evals & Testing",
+                projectIds: ["mail"],
+                createdAt: "2026-04-20T10:00:00.000Z",
+              }),
+              topicPage("t2", {
+                name: "Eval & Testing",
+                projectIds: ["calendar"],
+                createdAt: "2026-04-21T10:00:00.000Z",
+              }),
+              topicPage("t3", {
+                name: "Triage & Routing",
+                projectIds: ["calendar"],
+                createdAt: "2026-04-22T10:00:00.000Z",
+              }),
+              topicPage("t4", {
+                name: "Triage and Routing",
+                projectIds: ["calendar"],
+                createdAt: "2026-04-23T10:00:00.000Z",
+              }),
+            ],
+          },
+        ],
+      })
+      const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+      expect(groups).toHaveLength(2)
+    })
+  })
 })
 
 describe("mergeSimilarTopics", () => {

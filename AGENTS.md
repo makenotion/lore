@@ -23,6 +23,7 @@
 | [`docs/authentication.md`](docs/authentication.md) | Auth priority chain, ntn behavior, rate limits, auth troubleshooting |
 | [`docs/memory-workflows.md`](docs/memory-workflows.md) | Lore memory/fact/decision/task workflow, confidence, topic keys, digest |
 | [`docs/conflict-detection.md`](docs/conflict-detection.md) | `lore conflicts scan` workflow and compare-verdict contract |
+| [`docs/memory-debt.md`](docs/memory-debt.md) | `lore debt scan` / `create-tasks` audit categories, scoring, recommended maintenance cadence, idempotency contract |
 | [`docs/topology.md`](docs/topology.md) | `lore status` topology section, health states, recovery workflow |
 | [`docs/hooks.md`](docs/hooks.md) | Installed hook behavior and auth forwarding |
 | [`docs/team-rollout.md`](docs/team-rollout.md) | Operator-facing ntn-first rollout runbook |

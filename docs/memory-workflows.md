@@ -24,6 +24,13 @@ When a fact becomes stale, invalidate it with `lore-fact action='invalidate'`.
 That action also halves the originating memory's numeric `Confidence Score`, so
 use it for real contradictions rather than soft uncertainty.
 
+For recurring corpus hygiene — low-trust memories, orphan facts, overdue
+governance, duplicate clusters, topic sprawl, ownerless rows, and scope
+anomalies — run [`lore debt scan`](./memory-debt.md) periodically. The
+scanner is read-only by default; `docs/memory-debt.md` describes the seven
+categories, scoring, recommended monthly cadence, and the opt-in
+`lore debt create-tasks` Phase-2 surface.
+
 ## Confidence
 
 The Memories database carries two confidence columns:

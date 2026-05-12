@@ -2285,11 +2285,22 @@ export class FactService {
 
   /**
    * Return facts whose `Source` relation is empty (no supporting memory) and
-   * which are still valid. Used by `lore migrate --backfill-fact-sources` to
-   * surface orphan facts for remediation. Excludes internal decision-graph
-   * predicates that are auto-sourced elsewhere and should never be orphans.
+   * which are still valid. Used by `lore migrate --backfill-fact-sources`
+   * (full walk) and `lore debt scan` (bounded audit). Excludes internal
+   * decision-graph predicates that are auto-sourced elsewhere and should
+   * never be orphans.
+   *
+   * `limit` is an opt-in upper bound on the number of orphan rows
+   * returned. The migration omits it and walks the full Facts data
+   * source; the debt scanner threads its per-category budget so a
+   * bounded audit pass against a large vault doesn't pay for
+   * thousands of orphan rows when the report will only surface the
+   * first N.
    */
-  async queryOrphans(opts?: { projectId?: string }): Promise<Fact[]> {
+  async queryOrphans(opts?: {
+    projectId?: string
+    limit?: number
+  }): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
       { property: FACT_PROPS.SOURCE, relation: { is_empty: true } },
       { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
@@ -2299,19 +2310,24 @@ export class FactService {
       filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
+    const limit = opts?.limit
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     do {
+      const pageSize =
+        limit !== undefined ? Math.min(100, Math.max(1, limit - results.length)) : 100
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: { and: filters } as QueryDataSourceParameters["filter"],
         sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: 100,
+        page_size: pageSize,
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
         results.push(page)
+        if (limit !== undefined && results.length >= limit) break
       }
+      if (limit !== undefined && results.length >= limit) break
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 

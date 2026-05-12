@@ -10,6 +10,7 @@ import { migrateCommand } from "./commands/migrate.js"
 import { digestCommand } from "./commands/digest.js"
 import { tasksCommand } from "./commands/tasks.js"
 import { conflictsCommand } from "./commands/conflicts.js"
+import { debtCommand } from "./commands/debt.js"
 import { entitiesCommand } from "./commands/entities.js"
 import { vaultCommand } from "./commands/vault.js"
 import { evalCommand } from "./commands/eval.js"
@@ -32,6 +33,7 @@ program.addCommand(migrateCommand)
 program.addCommand(digestCommand)
 program.addCommand(tasksCommand)
 program.addCommand(conflictsCommand)
+program.addCommand(debtCommand)
 program.addCommand(entitiesCommand)
 program.addCommand(vaultCommand)
 program.addCommand(evalCommand)

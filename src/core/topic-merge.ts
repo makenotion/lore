@@ -431,7 +431,32 @@ export interface SimilarTopicMergeResult {
  */
 export async function findSimilarTopicGroups(
   client: Client,
-  topicsDb: DatabaseRef
+  topicsDb: DatabaseRef,
+  opts: {
+    /**
+     * Restrict surfaced groups to those involving the named project.
+     *
+     * Walk semantics are deliberately vault-wide regardless of this
+     * flag — the helper queries every topic, groups by normalized
+     * key, and ONLY THEN filters groups to those containing at
+     * least one topic whose `Project` relation contains
+     * `projectId`. Server-side filtering on the query would drop
+     * sibling rows in OTHER projects before grouping, which would
+     * cause cross-project sprawl involving the requested project
+     * to fail the `length >= 2` group check and silently disappear
+     * (e.g. Mail's `Evals & Testing` and Calendar's
+     * `Eval & Testing` would collapse to a one-row Mail-only group
+     * and never surface as sprawl).
+     *
+     * The "filter post-group" shape costs one paginated walk of
+     * the Topics DS regardless of project — Notion already returns
+     * relation cells server-side, so the filter is a cheap JS pass
+     * over `extractRelationIds(page.properties[Project])`.
+     *
+     * Default: vault-wide (no project filter).
+     */
+    projectId?: string
+  } = {}
 ): Promise<SimilarTopicGroup[]> {
   const allTopics: PageObjectResponse[] = []
   let cursor: string | undefined
@@ -465,6 +490,18 @@ export async function findSimilarTopicGroups(
     // Pure exact-name duplicates surface via `findDuplicateTopicNames`;
     // here we want only groups where stored names actually differ.
     if (distinctNames.size < 2) continue
+
+    // Project filter applied AFTER grouping (see options docstring
+    // above for the rationale). A group surfaces when any member's
+    // `Project` relation contains the requested id; cross-project
+    // sprawl involving the project still surfaces, single-project
+    // sprawl in unrelated projects does not.
+    if (opts.projectId !== undefined) {
+      const groupTouchesProject = pages.some((p) =>
+        extractRelationIds(p.properties[TOPIC_PROPS.PROJECT]).includes(opts.projectId!)
+      )
+      if (!groupTouchesProject) continue
+    }
 
     const sorted = [...pages].sort((a, b) => {
       const timeCompare = a.created_time.localeCompare(b.created_time)

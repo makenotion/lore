@@ -24,6 +24,7 @@ debugging, manual search).
 | `commands/digest.ts`    | `lore digest` -- gather digest data + spawn background synthesizer                                                                                                          |
 | `commands/tasks.ts`     | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`)                                                                                                         |
 | `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`)                                                                                                         |
+| `commands/debt.ts`      | `lore debt` -- memory-debt audit and maintenance workflow (currently: `scan`, `create-tasks`); see [`docs/memory-debt.md`](../../docs/memory-debt.md)                       |
 | `commands/entities.ts`  | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                         |
 | `commands/vault.ts`     | `lore vault` -- vault maintenance subcommands (currently: `ensure-entities`)                                                                                                |
 | `commands/eval.ts`      | `lore eval` -- local evaluation harness commands (currently: `run`)                                                                                                         |
