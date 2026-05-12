@@ -103,6 +103,23 @@ permission from the human lead first.
 - Fix broken things immediately; do not paper over symptoms.
 - Names describe what code does, not implementation history or mechanism.
 - Comments explain what or why, never obvious how.
+- Comments must stand on their own. A reader landing on a comment with no
+  outside context — no PR, no chat log, no calendar — must still understand
+  it. Do not write:
+  - Temporal comments — "new", "recently added", "as of <date>", "no longer
+    does X", "previously this was Y", "TODO once the migration lands". Code
+    is always the current state; phrasing that implies a before/after rots
+    the moment the next change ships.
+  - Comments that reference local files or paths — "see `docs/foo.md`",
+    "mirrors logic in `src/core/bar.ts`", "per `AGENTS.md`". Files get
+    renamed and moved; the reference goes stale silently. If two pieces of
+    code must agree, encode it in types or tests, not in prose pointers.
+  - Comments that reference specific review feedback, PRs, issues, or
+    reviewers — "addresses #123", "per reviewer comment", "fix from PR
+    #582". That context belongs in the commit message and PR description,
+    which are the durable record. Once the PR squash-merges, the reference
+    points at a collapsed unit of history that no longer maps cleanly to
+    the line of code.
 - Update the right AGENTS/doc file when you discover a missing convention,
   workflow, or gotcha. Structural rule changes need human lead approval.
 
