@@ -120,6 +120,13 @@ permission from the human lead first.
     which are the durable record. Once the PR squash-merges, the reference
     points at a collapsed unit of history that no longer maps cleanly to
     the line of code.
+  - Comments that reference phase plans, work-tracking artifacts, or any
+    document that lives outside the repo — "P3-01", "Phase 2 of the
+    migration", "per the rollout plan", "pre-P3-03 behavior". These
+    artifacts typically exist on one developer's machine, in a Linear
+    ticket, or in a private Notion page; a future reader has no way to
+    resolve them. State the invariant the comment is trying to anchor in
+    plain language instead.
 - Update the right AGENTS/doc file when you discover a missing convention,
   workflow, or gotcha. Structural rule changes need human lead approval.
 
