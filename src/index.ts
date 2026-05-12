@@ -103,13 +103,48 @@ export type {
   UpstreamVaultTopologyRef,
   VaultTopology,
 } from "./core/topology.js"
-export type { OAuthCredentials, OAuthConfig, VaultAccessResult } from "./auth/oauth.js"
-export {
-  runOAuthFlow,
-  loadCredentials,
-  getAuthorizationUrl,
-  verifyVaultAccess,
-} from "./auth/oauth.js"
+export type { VaultAccessResult } from "./auth/oauth.js"
+
+// Individual deprecation-tagged re-exports. The `@deprecated` JSDoc on
+// each `export` statement propagates through TypeScript's deprecation
+// analysis to the consumer's import site, so an IDE hover on
+// `import { runOAuthFlow } from "@makenotion/lore"` shows the
+// strikethrough — the JSDoc at the original definition site only
+// propagates through goto-definition.
+//
+// Removal target: 0.14.0, aligning with `LORE_NOTION_TOKEN` /
+// `auth.token` hard-removal. See `docs/authentication.md` for the
+// public-API removal contract.
+
+/**
+ * @deprecated Removal targeted for 0.14.0. PATs (issued at
+ * https://www.notion.so/developers/tokens) replace the BYO-integration
+ * OAuth path; new code MUST NOT use this export. See
+ * `docs/authentication.md` for the PAT operator flow.
+ */
+export { runOAuthFlow } from "./auth/oauth.js"
+
+/**
+ * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
+ */
+export { loadCredentials } from "./auth/oauth.js"
+
+/**
+ * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
+ */
+export { getAuthorizationUrl } from "./auth/oauth.js"
+
+/**
+ * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
+ */
+export type { OAuthCredentials } from "./auth/oauth.js"
+
+/**
+ * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
+ */
+export type { OAuthConfig } from "./auth/oauth.js"
+
+export { verifyVaultAccess } from "./auth/oauth.js"
 export type {
   NtnTokenRecord,
   LoadNtnTokenInput,

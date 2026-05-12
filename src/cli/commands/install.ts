@@ -7,7 +7,12 @@ import { fileURLToPath } from "node:url"
 import { createInterface } from "node:readline/promises"
 import { findConfigFile, loadConfig, resolveAuth, type AuthSource, type ResolvedAuth } from "../../config.js"
 import type { LoreConfig } from "../../types.js"
-import { ntnEnvFromBaseUrl, verifyVaultAccess } from "../../auth/oauth.js"
+import {
+  ntnEnvBaseUrl,
+  ntnEnvFromBaseUrl,
+  resolveOperatorBaseUrl,
+  verifyVaultAccess,
+} from "../../auth/oauth.js"
 import { findBackgroundBinary } from "../../hooks/background.js"
 import {
   ALLOWED_TOOLS_PLACEHOLDER,
@@ -104,9 +109,12 @@ export interface McpEnvBuild {
    * Which runtime-forwarded keys were detected in the install-time
    * env. Used by the install action to print a one-line note when a
    * legacy forwarder (`LORE_NOTION_TOKEN`) was picked up so the
-   * operator sees a deprecation reminder. The exact wording stays
-   * command-agnostic until `lore auth --migrate` (issue #07) ships;
-   * see the call site for the active phrasing.
+   * operator sees a deprecation reminder. `runInstall` consumes this
+   * via `formatLegacyForwardedNoteLines` (multi-line stdout for the
+   * file-write path); `runPrintConfig` consumes it via the compact
+   * stderr mirror (single-line, pipeline-clean). Both surfaces name
+   * `lore auth --migrate` (PAT default) and `lore auth --migrate --ntn`
+   * (internal-engineer ntn opt-in) and the 0.14.0 hard-removal target.
    */
   forwarded: RuntimeForwardedKey[]
 }
@@ -146,6 +154,25 @@ export interface BuildMcpEnvOptions {
    * to consult.
    */
   authSource?: AuthSource
+  /**
+   * When set, write `NOTION_BASE_URL` to the MCP env as a LITERAL
+   * value (not a `${VAR}` placeholder), and suppress the conditional
+   * forwarding of the same key. Used by `lore install --dev` so the
+   * spawned MCP child targets the configured Notion API regardless
+   * of whether the operator's shell carries `NOTION_BASE_URL` /
+   * `NOTION_ENV` at MCP-spawn time. Without this, `--dev` would be
+   * effective at install-time preflight (process.env mutation
+   * survives the install lifetime) but would silently degrade to
+   * prod at runtime when the operator's shell rc doesn't export the
+   * dev signals.
+   *
+   * Literal-value MCP env entries are the same shape Codex's
+   * `bash -lc` prefix uses for `LORE_CONFIG_ROOT` and
+   * `LORE_SUPPRESS_DEPRECATIONS`; this is the recognized pattern for
+   * "the install knows the right value, don't depend on operator
+   * shell."
+   */
+  notionBaseUrlLiteral?: string
 }
 
 /**
@@ -201,8 +228,27 @@ export function buildMcpEnv(
     RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
   )
 
+  // When `notionBaseUrlLiteral` is set, suppress ALL four base-URL
+  // selector placeholders that influence `resolveOperatorBaseUrl`'s
+  // priority chain — not just `NOTION_BASE_URL`. The chain is
+  // `LORE_NOTION_BASE_URL || NOTION_BASE_URL || NOTION_API_BASE_URL
+  // || ntnEnvBaseUrl(NOTION_ENV)`, so `LORE_NOTION_BASE_URL`
+  // OUTRANKS the literal `NOTION_BASE_URL` we write into `staticEnv`.
+  // Forwarding any of the four placeholders would let the operator's
+  // shell at MCP-spawn time override the install-time `--dev` choice
+  // — e.g. `LORE_NOTION_BASE_URL=https://api.notion.so` set later
+  // routes the child to prod despite the dev literal. Suppressing
+  // all four keeps the literal load-bearing.
+  const literalBaseUrl = options.notionBaseUrlLiteral
+  const baseUrlSelectorKeys: ReadonlySet<RuntimeForwardedKey> = new Set([
+    "LORE_NOTION_BASE_URL",
+    "NOTION_BASE_URL",
+    "NOTION_API_BASE_URL",
+    "NOTION_ENV",
+  ])
   for (const key of RUNTIME_FORWARDED_KEYS) {
     if (skipAuthTokens && authTokenKeys.has(key)) continue
+    if (literalBaseUrl && baseUrlSelectorKeys.has(key)) continue
     const value = envSource[key]
     if (typeof value === "string" && value.length > 0) {
       env[key] = `\${${key}}`
@@ -221,6 +267,14 @@ export function buildMcpEnv(
     staticEnv["LORE_CONFIG_ROOT"] = configRoot
   }
   staticEnv["LORE_SUPPRESS_DEPRECATIONS"] = "1"
+  if (literalBaseUrl) {
+    // Literal NOTION_BASE_URL — set when --dev is passed (or when
+    // any future flag wants a known dev/staging target). The MCP
+    // child reads NOTION_BASE_URL via `resolveOperatorBaseUrl`
+    // priority 2; literal placement here means the spawned server
+    // hits the right host regardless of operator shell state.
+    staticEnv["NOTION_BASE_URL"] = literalBaseUrl
+  }
 
   return { env, staticEnv, forwarded }
 }
@@ -311,6 +365,7 @@ export function buildClaudeMcpEntry(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
+  notionBaseUrlLiteral?: string,
 ): ClaudeMcpEntry {
   const build = buildMcpEnv(configRoot, envSource, {
     // PnP entries are committed to the workspace root and shared
@@ -321,6 +376,7 @@ export function buildClaudeMcpEntry(
     // `.lore.yaml` without help.
     omitConfigRoot: shape === "yarn",
     authSource,
+    notionBaseUrlLiteral,
   })
   const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
@@ -345,8 +401,12 @@ export function buildLegacyClaudeMcpEntry(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
+  notionBaseUrlLiteral?: string,
 ): ClaudeMcpEntry {
-  const build = buildMcpEnv(configRoot, envSource, { authSource })
+  const build = buildMcpEnv(configRoot, envSource, {
+    authSource,
+    notionBaseUrlLiteral,
+  })
   return {
     command: "node",
     args: [mcpJsPath],
@@ -431,6 +491,15 @@ export interface BuildCursorMcpEntryOptions {
    * for the rationale.
    */
   authSource?: AuthSource
+  /**
+   * Pass-through to `buildMcpEnv`'s `notionBaseUrlLiteral` option.
+   * See `BuildMcpEnvOptions.notionBaseUrlLiteral` for the rationale —
+   * `lore install --dev` populates this so the spawned MCP child
+   * targets the dev base URL via a literal env entry rather than a
+   * `${VAR}` placeholder that would silently degrade to prod on
+   * operator shells without the matching signal.
+   */
+  notionBaseUrlLiteral?: string
 }
 
 export function buildCursorMcpEntry(
@@ -447,6 +516,7 @@ export function buildCursorMcpEntry(
   const build = buildMcpEnv(configRoot, envSource, {
     omitConfigRoot,
     authSource: options.authSource,
+    notionBaseUrlLiteral: options.notionBaseUrlLiteral,
   })
   const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
@@ -474,8 +544,12 @@ export function buildLegacyCursorMcpEntry(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
+  notionBaseUrlLiteral?: string,
 ): CursorMcpEntry {
-  const build = buildMcpEnv(configRoot, envSource, { authSource })
+  const build = buildMcpEnv(configRoot, envSource, {
+    authSource,
+    notionBaseUrlLiteral,
+  })
   return {
     command: "node",
     args: [mcpJsPath],
@@ -622,10 +696,12 @@ export function buildCodexMcpSection(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
+  notionBaseUrlLiteral?: string,
 ): string {
   const build = buildMcpEnv(configRoot, envSource, {
     omitConfigRoot: shape === "yarn",
     authSource,
+    notionBaseUrlLiteral,
   })
   const baseCommand = shape === "yarn" ? "yarn run -T lore mcp" : "lore mcp"
   const launchCommand = codexLaunchCommand(build.staticEnv, baseCommand)
@@ -642,9 +718,13 @@ export function buildLegacyCodexMcpSection(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
+  notionBaseUrlLiteral?: string,
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
-  const build = buildMcpEnv(configRoot, envSource, { authSource })
+  const build = buildMcpEnv(configRoot, envSource, {
+    authSource,
+    notionBaseUrlLiteral,
+  })
   // The mcp.js path is interpolated INTO the `bash -lc` arg string,
   // so it must be quoted to inhibit shell re-interpretation — but
   // with the wrinkle that `toPortablePath` may have rewritten the
@@ -1524,6 +1604,20 @@ export interface InstallContext {
    * behavior so legacy operators never lose access by upgrading.
    */
   authSource?: AuthSource
+  /**
+   * Literal `NOTION_BASE_URL` value to inject into the spawned MCP
+   * env when set. Populated by `runInstall` when `--dev` is passed,
+   * making `--dev` runtime-effective for the spawned MCP child
+   * regardless of whether the operator's shell carries the matching
+   * env signal. Threaded through to `buildMcpEnv`'s
+   * `notionBaseUrlLiteral` option.
+   *
+   * Mutually exclusive with `${NOTION_BASE_URL}` placeholder
+   * forwarding inside the same install: when this is set,
+   * `buildMcpEnv` suppresses the placeholder so the static literal
+   * is the single source of truth for that env entry.
+   */
+  notionBaseUrlLiteral?: string
 }
 
 /**
@@ -1722,6 +1816,32 @@ async function confirmPrompt(message: string): Promise<boolean> {
 
 interface EnsurePrerequisitesOptions {
   yes?: boolean
+  /**
+   * Explicit opt-in to the internal-engineer `ntn` path. When true,
+   * `ensurePrerequisites` auto-installs `ntn` (if missing) and runs
+   * `ntn login`. When false (the default), Lore takes the
+   * external-operator path: expect `NOTION_API_TOKEN` to be set
+   * (PAT pasted from `notion.so/developers/tokens`) and skip `ntn`
+   * entirely. Backed by the `--ntn` flag on the install command.
+   *
+   * When `--ntn` is NOT set AND `NOTION_API_TOKEN` is NOT set AND
+   * `ntn` is already installed, the install path treats that as
+   * "looks like an internal engineer" and proceeds with the ntn
+   * flow without auto-installing. This preserves backward
+   * compatibility for engineers who upgraded Lore without changing
+   * their habits. The auto-install branch ONLY fires when `--ntn`
+   * is explicitly set.
+   */
+  ntn?: boolean
+  /**
+   * Target the Notion dev environment. Composes with `ntn: true`
+   * (forwards `NOTION_ENV=dev` to the `ntn login` spawn) and with
+   * the PAT path (the external operator is expected to have pasted
+   * a `development_ntn_…` token; the install surfaces dev-PAT
+   * guidance and routes vault preflight through the dev base URL).
+   * Backed by the `--dev` flag on the install command.
+   */
+  dev?: boolean
 }
 
 interface NtnLoginRecovery {
@@ -1998,22 +2118,273 @@ function describeAuthBaseUrlConfigMismatch(
  * without the env var hit ntn's keychain default — the runbook
  * (#05) documents this gotcha.
  */
+/**
+ * Name the specific shell variable that conflicts with `--dev` so the
+ * fail-fast error tells the operator exactly which one to unset.
+ * Walks `resolveOperatorBaseUrl`'s priority chain — first match wins —
+ * so the message matches the variable Lore would actually have used
+ * for auth resolution.
+ */
+function describeConflictingDevSignal(env: NodeJS.ProcessEnv): string {
+  if (env["LORE_NOTION_BASE_URL"]) {
+    return `LORE_NOTION_BASE_URL=${env["LORE_NOTION_BASE_URL"]}`
+  }
+  if (env["NOTION_BASE_URL"]) {
+    return `NOTION_BASE_URL=${env["NOTION_BASE_URL"]}`
+  }
+  if (env["NOTION_API_BASE_URL"]) {
+    return `NOTION_API_BASE_URL=${env["NOTION_API_BASE_URL"]}`
+  }
+  if (env["NOTION_ENV"]) {
+    return `NOTION_ENV=${env["NOTION_ENV"]}`
+  }
+  // Defensive — caller gates on `resolveOperatorBaseUrl(env) !== undefined`
+  // so one of the four MUST be set when this helper is called.
+  return "an operator-set base URL signal"
+}
+
+/**
+ * External-operator (PAT) install path. Loads config, runs
+ * `resolveAuth` (which picks up `NOTION_API_TOKEN` since the caller
+ * already verified the env var is set), surfaces the describe lines
+ * the ntn path also emits, and runs `preflightAndReport`.
+ *
+ * On auth-resolution failure (e.g., `.lore.yaml`'s `auth.token`
+ * shadowing the env var, or a Zod validation error elsewhere in the
+ * config), prints PAT-specific recovery guidance. The most common
+ * cause of `auth.token` blocking the env PAT is a leftover legacy
+ * field; `lore auth --migrate` walks operators through removing it.
+ *
+ * Does NOT call `installNtn()` or `runNtnLogin()` — the PAT path
+ * intentionally never touches `ntn`.
+ */
+async function resolveAndPreflight(
+  context: InstallContext,
+  opts: EnsurePrerequisitesOptions,
+): Promise<{ ready: boolean; authSource?: AuthSource }> {
+  const found = await findConfigFile(context.projectDir)
+  let config: LoreConfig | undefined
+  if (found) {
+    config = await loadConfig(found.path)
+  }
+
+  // `--dev` install-time effectiveness for the PAT path: when no
+  // base-URL signal is present in the operator's shell, plant
+  // `NOTION_BASE_URL` so `resolveAuth` + `verifyVaultAccess` target
+  // dev. This mutation survives the install lifetime (so subsequent
+  // `buildMcpEnv` calls also see it) but only fills the gap when no
+  // explicit signal is already present — we never override an
+  // operator's existing choice.
+  if (opts.dev && !resolveOperatorBaseUrl(process.env)) {
+    process.env["NOTION_BASE_URL"] = ntnEnvBaseUrl("dev")
+  }
+
+  let auth: ResolvedAuth | undefined
+  try {
+    auth = await resolveAuth(config, found?.root ?? context.configRoot)
+  } catch (err) {
+    console.error("")
+    console.error(
+      `    Auth resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    console.error("")
+    console.error("    NOTION_API_TOKEN is set in your environment but Lore could not")
+    console.error("    resolve it. The most common cause is an `auth.token` field in")
+    console.error("    .lore.yaml that fails the bearer-shape guard; remove it and")
+    console.error("    re-run `lore install`.")
+    return { ready: false }
+  }
+
+  if (!auth) {
+    console.error("")
+    console.error("    NOTION_API_TOKEN is set but did not resolve to a usable auth.")
+    console.error("    Confirm the value is a Notion bearer token, then re-run.")
+    return { ready: false }
+  }
+
+  console.log(`  Notion environment:   ${describeNtnEnvSelectors(auth)}`)
+  const mismatch = describeAuthBaseUrlConfigMismatch(auth, config)
+  if (mismatch) {
+    console.log(`                        ! ${mismatch}`)
+  }
+  console.log(`  Auth source:          ✓ ${describeAuthSource(auth.source)}`)
+
+  // PAT-shape sanity hint. The PAT path accepts any bearer Notion
+  // recognizes, but pasting a `secret_…` integration token from
+  // `notion.so/profile/integrations` re-collapses the team into a
+  // shared rate-limit bucket — exactly the failure mode the
+  // 2026-05-13 PAT announcement asks Lore to surface clearly. The
+  // hint is informational, not blocking; `verifyVaultAccess` runs
+  // either way.
+  if (auth.token.startsWith("secret_")) {
+    console.log(
+      "                          ! Token shape is `secret_…` (integration token from notion.so/profile/integrations).",
+    )
+    console.log(
+      "                          Integration tokens are integration-level rate-limited, which",
+    )
+    console.log(
+      "                          re-collapses Lore into one shared bucket. Rotate to a PAT",
+    )
+    console.log("                          from https://www.notion.so/developers/tokens.")
+  }
+
+  // No `--dev` mismatch advisory here: the fail-fast at the top of
+  // `ensurePrerequisites` already aborts when `--dev` conflicts with
+  // a shell-set base-URL signal. By the time we reach this point,
+  // either no operator signal exists (planting above filled in dev)
+  // or the operator's signal resolves to dev — both consistent with
+  // `--dev`. A second advisory would be unreachable noise.
+
+  return await preflightAndReport(auth, found, config)
+}
+
 export async function ensurePrerequisites(
   context: InstallContext,
   opts: EnsurePrerequisitesOptions = {},
 ): Promise<{ ready: boolean; authSource?: AuthSource }> {
   console.log("Checking prerequisites...")
 
+  // `--dev` ↔ shell-signal conflict guard.
+  //
+  // When `--dev` is passed AND the operator's shell already carries
+  // a base-URL signal that does NOT resolve to dev, abort before
+  // preflight. The alternative — letting one signal win silently —
+  // breaks the install contract: `resolveAndPreflight` plants
+  // `NOTION_BASE_URL=dev` only when no shell signal exists, but
+  // `runInstall` always writes a literal dev `NOTION_BASE_URL` into
+  // MCP env when `--dev` is set, so preflight could verify prod
+  // while the install lands dev MCP config. Worse, the
+  // `${LORE_NOTION_BASE_URL}` placeholder forwarded into MCP env
+  // outranks the literal `NOTION_BASE_URL` in
+  // `resolveOperatorBaseUrl`'s priority chain — so an operator with
+  // `LORE_NOTION_BASE_URL=prod` in their shell would silently keep
+  // hitting prod at MCP-spawn time despite the `--dev` install.
+  //
+  // The fail-fast posture matches the principle Lore uses
+  // elsewhere: when explicit signals conflict, the operator picks
+  // which one is real, not Lore. Two clean recoveries: unset the
+  // shell signal, or drop `--dev`.
+  if (opts.dev) {
+    const operatorBaseUrl = resolveOperatorBaseUrl(process.env)
+    if (
+      operatorBaseUrl !== undefined &&
+      ntnEnvFromBaseUrl(operatorBaseUrl) !== "dev"
+    ) {
+      const conflicting = describeConflictingDevSignal(process.env)
+      console.log(`  --dev:                ✗ conflicts with operator-set base URL`)
+      console.error("")
+      console.error(
+        `    --dev was passed but ${conflicting} routes auth to ${operatorBaseUrl}`,
+      )
+      console.error(
+        "    (not the dev base URL). Lore cannot install a coherent --dev MCP",
+      )
+      console.error(
+        "    config while the shell carries a conflicting signal — preflight would",
+      )
+      console.error(
+        "    verify one base URL and the MCP child would read another.",
+      )
+      console.error("")
+      console.error("    Recovery (pick one):")
+      console.error("      1. Unset the conflicting shell variable, then re-run `lore install --dev`.")
+      console.error("      2. Drop --dev and re-run `lore install` to target prod.")
+      return { ready: false }
+    }
+  }
+
+  // Persona routing. The PAT announcement (2026-05-13) makes external
+  // operators first-class: `lore install` no longer auto-installs `ntn`
+  // by default. Three branches:
+  //
+  //   - `--ntn` explicitly set: internal-engineer path; auto-install
+  //     `ntn` on miss, run `ntn login`.
+  //   - `NOTION_API_TOKEN` is set: external-operator path; skip `ntn`
+  //     entirely, resolve auth from env, verify and proceed.
+  //   - Neither flag nor env: if `ntn` is already installed, fall
+  //     through to the ntn path (backward compat for internal engineers
+  //     who upgraded Lore without changing their habits). If `ntn` is
+  //     NOT installed, surface persona-aware guidance and bail.
+  //
+  // `--dev` overlays on either branch:
+  //   - With `--ntn`: forwarded to `ntn login` as `NOTION_ENV=dev`.
+  //   - With the PAT path: surfaces `development_ntn_` guidance and
+  //     resolves the dev base URL via the existing `NOTION_ENV` /
+  //     `auth.baseUrl` chain in `resolveOperatorBaseUrl`.
+  const ntnInstalled = isNtnInstalled()
+  const patEnv = process.env["NOTION_API_TOKEN"]
+  const personaIsExternal =
+    !opts.ntn && (patEnv !== undefined || !ntnInstalled)
+
+  if (personaIsExternal && !patEnv && !opts.ntn) {
+    // No PAT, no `--ntn`, and `ntn` is not installed. The operator
+    // either intended internal but forgot `--ntn`, or intended
+    // external but hasn't pasted a PAT yet. Show both paths and
+    // exit; the next invocation carries enough state to dispatch.
+    console.log(`  ntn installed:        ✗`)
+    console.log(`  NOTION_API_TOKEN:     ✗ not set`)
+    console.log("")
+    console.log("    Lore needs a Notion bearer token. Two supported paths:")
+    console.log("")
+    console.log("    Internal Notion engineer? Re-run with --ntn:")
+    console.log(`        lore install --ntn${opts.dev ? " --dev" : ""}`)
+    console.log("      Lore will install `ntn`, run `ntn login`, and write MCP config.")
+    console.log("")
+    console.log("    External operator? Create a Personal Access Token at")
+    console.log("      https://www.notion.so/developers/tokens")
+    console.log("      then export it and re-run `lore install`:")
+    console.log("")
+    console.log(`        export NOTION_API_TOKEN="${opts.dev ? "development_ntn_" : "ntn_"}..."`)
+    console.log(`        lore install${opts.dev ? " --dev" : ""}`)
+    console.log("")
+    console.log("    Do NOT paste an integration token from notion.so/profile/integrations —")
+    console.log("    those are integration-level rate-limited and re-collapse Lore into one")
+    console.log("    shared bucket. See docs/authentication.md for the full contract.")
+    return { ready: false }
+  }
+
+  if (personaIsExternal) {
+    // PAT path — `NOTION_API_TOKEN` is set. Skip `ntn` install /
+    // version probes entirely; `resolveAuth` will pick up the env
+    // token and `preflightAndReport` runs the vault probe. The PAT
+    // path doesn't need `ntn` at all.
+    console.log(`  Auth path:            ✓ Personal Access Token (NOTION_API_TOKEN)`)
+    return await resolveAndPreflight(context, opts)
+  }
+
+  // `--ntn` shadow advisory. When the operator explicitly requests
+  // the ntn path AND `NOTION_API_TOKEN` is set in their shell, the
+  // resolver chain (`NOTION_API_TOKEN > ntn`) means the spawned MCP
+  // child will use the PAT — not the freshly-minted ntn token —
+  // for every Lore call after the install. Name the outcome
+  // concretely so the operator can spot the silent shadow without
+  // reading the docs. Symmetric to `formatUnsetInstructions`'s
+  // `notionApiTokenActive` reassurance footer.
+  if (opts.ntn && patEnv !== undefined) {
+    console.log(`  NOTION_API_TOKEN:     ! set in shell — outranks ntn`)
+    console.log("")
+    console.log("    Per the resolver chain (NOTION_API_TOKEN > ntn-auth-json), the spawned")
+    console.log("    MCP child will use NOTION_API_TOKEN even though --ntn just ran `ntn login`.")
+    console.log("    If you intended ntn to be active, also run:")
+    console.log("")
+    console.log("        unset NOTION_API_TOKEN")
+    console.log("")
+    console.log("    and remove the export from your shell rc. If NOTION_API_TOKEN is the")
+    console.log("    PAT you want Lore to use, drop --ntn instead — `lore install` will")
+    console.log("    skip ntn entirely.")
+    console.log("")
+  }
+
   // 1. ntn install state. Offer auto-install on miss. The local
   // does not need to be reassigned post-install — the version check
   // below calls `getNtnVersion` directly (which probes via the same
   // memoized `execFileSync` and reflects the freshly installed
   // binary after `installNtn` clears the cache on success).
-  const ntnInstalled = isNtnInstalled()
   console.log(`  ntn installed:        ${ntnInstalled ? "✓" : "✗"}`)
   if (!ntnInstalled) {
     console.log("")
-    console.log("    ntn is required for Lore 0.10.x.")
+    console.log("    ntn is required for the --ntn install path.")
     console.log("    Lore can install it via the canonical command:")
     console.log(`      ${NTN_INSTALL_COMMAND}`)
     console.log("")
@@ -2087,29 +2458,46 @@ export async function ensurePrerequisites(
       auth.source === "env-lore-notion-token" ||
       auth.source === "config-auth-token"
     ) {
-      // `lore auth --migrate` lands in #07. Until then, point operators
-      // at the manual ntn flow so the prompt names a working command.
-      console.log("                          (soft-deprecated; switch to ntn via `NOTION_KEYRING=0 ntn login`)")
+      // The legacy-source annotation must name BOTH migrate
+      // branches under the post-2026-05-13 contract: PAT default
+      // (`lore auth --migrate`) and the internal-engineer ntn
+      // opt-in (`lore auth --migrate --ntn`). The pre-announcement
+      // "switch to ntn" wording silently routed legacy operators
+      // to the wrong contract.
+      console.log(
+        "                          (soft-deprecated; migrate via `lore auth --migrate` (PAT default)",
+      )
+      console.log(
+        "                          or `lore auth --migrate --ntn` for ntn-issued auth)",
+      )
     }
     return await preflightAndReport(auth, found, config)
   }
 
   // No auth resolved — derive the ntn-login env target before
-  // offering. Priority: operator's `NOTION_ENV` env var (if set in
-  // shell) wins; otherwise infer from `.lore.yaml`'s
-  // `auth.baseUrl`. A non-canonical `auth.baseUrl` (e.g., a corporate
-  // proxy) without an explicit `NOTION_ENV` means we can't safely
-  // pick an ntn env — refuse auto-login with a recovery message
-  // rather than mint a prod token for what's almost certainly NOT a
-  // prod project. Without this gate, `lore install -y` against a
-  // project whose `auth.baseUrl: https://api-dev.notion.com` would
-  // mint a prod token and fall into the generic vault-not-accessible
-  // path — exactly the dev-onboarding footgun an early review flagged.
+  // offering. Priority: explicit `--dev` flag wins; otherwise
+  // operator's `NOTION_ENV` env var (if set in shell); otherwise
+  // infer from `.lore.yaml`'s `auth.baseUrl`. A non-canonical
+  // `auth.baseUrl` (e.g., a corporate proxy) without `--dev` or an
+  // explicit `NOTION_ENV` means we can't safely pick an ntn env —
+  // refuse auto-login with a recovery message rather than mint a
+  // prod token for what's almost certainly NOT a prod project.
+  // Without this gate, `lore install -y` against a project whose
+  // `auth.baseUrl: https://api-dev.notion.com` would mint a prod
+  // token and fall into the generic vault-not-accessible path —
+  // exactly the dev-onboarding footgun an early review flagged.
   const operatorEnv = process.env["NOTION_ENV"]
   const operatorEnvParsed = parseNtnEnv(operatorEnv)
   let resolvedNtnEnv: NtnEnv | undefined
-  let resolvedNtnEnvSource: "operator-env" | "config-baseurl" | "default" = "default"
-  if (operatorEnv) {
+  let resolvedNtnEnvSource: "cli-flag" | "operator-env" | "config-baseurl" | "default" = "default"
+  if (opts.dev) {
+    // `--dev` is the most explicit signal — wins over both env vars
+    // and `.lore.yaml`'s `auth.baseUrl`. The operator typed it just
+    // now, so honoring it preserves the principle that the most
+    // recent explicit operator intent wins.
+    resolvedNtnEnv = "dev"
+    resolvedNtnEnvSource = "cli-flag"
+  } else if (operatorEnv) {
     if (operatorEnvParsed === null) {
       // Operator's shell carries `NOTION_ENV=<garbage>`. Refuse to
       // forward it to ntn — bare ntn would also reject, but Lore can
@@ -2153,7 +2541,13 @@ export async function ensurePrerequisites(
 
   console.log("  Auth source:          ✗ no token resolved")
   console.log("")
-  if (resolvedNtnEnvSource === "config-baseurl") {
+  if (resolvedNtnEnvSource === "cli-flag") {
+    console.log(
+      `    --dev was passed — Lore will pass NOTION_ENV=${resolvedNtnEnv} to ntn login so the`,
+    )
+    console.log("    resulting token authorizes against the dev deployment.")
+    console.log("")
+  } else if (resolvedNtnEnvSource === "config-baseurl") {
     console.log(
       `    .lore.yaml's auth.baseUrl maps to ntn env "${resolvedNtnEnv}" — Lore will`,
     )
@@ -2276,57 +2670,96 @@ async function preflightAndReport(
     return { ready: true, authSource: auth.source }
   }
 
+  // PAT-source (`env-notion-api-token`) vs ntn-source recovery copy
+  // diverges. ntn-source operators recover via `ntn login`;
+  // PAT-source operators recover by rotating their token at
+  // `notion.so/developers/tokens`, sharing pages with their Notion
+  // identity, or checking workspace membership. Telling a PAT
+  // operator to "re-run ntn login" would be the wrong remediation
+  // for the external-operator default path.
+  const isPatSource = auth.source === "env-notion-api-token"
+
   if (result.kind === "not-found") {
-    // Recovery copy is env-aware: a project whose `.lore.yaml` says
-    // dev (or whose operator has `NOTION_ENV=dev` exported) gets a
-    // paste-ready `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`
-    // command. Bare `ntn login` would default to prod and write to
-    // the macOS keychain (which Lore can't read) — the exact
-    // misrecovery that produces "I logged in, why doesn't Lore see
-    // my token?" loops.
-    const recovery = ntnLoginRecovery(config)
     console.error(`  Vault page:           ✗ not accessible (${config.vault.pageId})`)
     console.error("")
-    console.error("    Most likely causes:")
-    console.error("      1. You authenticated against the wrong workspace during ntn login,")
-    console.error("         OR the auth.json on disk carries a token for the wrong env")
-    console.error("         (e.g., a prod token while this project's auth.baseUrl is dev).")
-    console.error("         Re-auth with the right env selector:")
-    console.error("")
-    console.error(`           ${recovery.command}`)
-    if (recovery.manualEnvNote) {
-      console.error(`           ${recovery.manualEnvNote}`)
+    if (isPatSource) {
+      console.error("    Most likely causes for a PAT install:")
+      console.error("      1. The PAT was created against a different workspace than the vault.")
+      console.error("         Go to https://www.notion.so/developers/tokens, create a new PAT")
+      console.error(`         in the workspace that contains ${config.vault.pageId}, then`)
+      console.error("         export it as NOTION_API_TOKEN and re-run `lore install`.")
+      console.error("      2. The vault page isn't shared with the PAT's owning Notion identity.")
+      console.error("         PATs inherit the operator's personal permissions; if you can't")
+      console.error("         open the page in Notion's UI, the PAT can't read it either.")
+      console.error("         Ask whoever owns the vault to share it with you, or check")
+      console.error("         workspace membership.")
+      if (auth.token.startsWith("secret_")) {
+        console.error("      3. The token shape is `secret_…` — an integration token from")
+        console.error("         notion.so/profile/integrations, NOT a PAT. Integration tokens")
+        console.error("         are integration-level rate-limited and need the page explicitly")
+        console.error("         shared with the integration. Rotate to a PAT for per-user")
+        console.error("         isolation and personal-permission inheritance.")
+      }
+    } else {
+      // ntn-source: env-aware ntn-login recovery. A project whose
+      // `.lore.yaml` says dev (or whose operator has `NOTION_ENV=dev`
+      // exported) gets a paste-ready
+      // `NOTION_KEYRING=0 NOTION_ENV=dev ntn login` command.
+      const recovery = ntnLoginRecovery(config)
+      console.error("    Most likely causes:")
+      console.error("      1. You authenticated against the wrong workspace during ntn login,")
+      console.error("         OR the auth.json on disk carries a token for the wrong env")
+      console.error("         (e.g., a prod token while this project's auth.baseUrl is dev).")
+      console.error("         Re-auth with the right env selector:")
+      console.error("")
+      console.error(`           ${recovery.command}`)
+      if (recovery.manualEnvNote) {
+        console.error(`           ${recovery.manualEnvNote}`)
+      }
+      console.error("")
+      console.error(`         then pick the workspace containing ${config.vault.pageId}.`)
+      console.error("      2. The vault page isn't shared with you (your Notion identity)")
+      console.error("         in this workspace. ntn-issued tokens inherit your personal")
+      console.error("         Notion permissions; if you can't open the page in Notion's UI,")
+      console.error("         the token can't read it either. Ask whoever owns the vault to")
+      console.error("         share it with you, or check that you're a member of the")
+      console.error("         workspace.")
     }
-    console.error("")
-    console.error(`         then pick the workspace containing ${config.vault.pageId}.`)
-    console.error("      2. The vault page isn't shared with you (your Notion identity)")
-    console.error("         in this workspace. ntn-issued tokens inherit your personal")
-    console.error("         Notion permissions; if you can't open the page in Notion's UI,")
-    console.error("         the token can't read it either. Ask whoever owns the vault to")
-    console.error("         share it with you, or check that you're a member of the")
-    console.error("         workspace.")
     console.error("")
     console.error("    Refusing to write MCP config — fix vault access and re-run `lore install`.")
     return { ready: false }
   }
 
   if (result.kind === "unauthorized") {
-    // Same env-aware recovery as `not-found`: 401/403 means the
-    // resolved token is wrong (invalid, expired, or for the wrong
-    // env). Bare `ntn login` would re-make the same mistake when
-    // the project is non-prod.
-    const recovery = ntnLoginRecovery(config)
     console.error(`  Vault page:           ✗ unauthorized (${config.vault.pageId})`)
     console.error("")
-    console.error("    The resolved token is invalid, expired, or for the wrong Notion")
-    console.error("    environment. Re-auth with the right env selector:")
-    console.error("")
-    console.error(`      ${recovery.command}`)
-    if (recovery.manualEnvNote) {
-      console.error(`      ${recovery.manualEnvNote}`)
+    if (isPatSource) {
+      console.error("    The PAT is invalid, expired, revoked, or lacks permission for this page.")
+      console.error("    Recovery:")
+      console.error("      - Rotate the PAT at https://www.notion.so/developers/tokens (the")
+      console.error("        existing PAT may have been revoked; a fresh one is the cleanest fix).")
+      console.error("      - Confirm the vault page is shared with the PAT's owning Notion")
+      console.error("        identity; PATs cannot read pages you can't open in Notion's UI.")
+      console.error("      - Export the new PAT as NOTION_API_TOKEN, then re-run `lore install`.")
+      if (auth.token.startsWith("secret_")) {
+        console.error("      - The token shape is `secret_…` — an integration token. Rotate to")
+        console.error("        a PAT from notion.so/developers/tokens for per-user isolation.")
+      }
+    } else {
+      // ntn-source: env-aware ntn-login recovery. 401/403 means the
+      // resolved token is wrong (invalid, expired, or for the wrong
+      // env).
+      const recovery = ntnLoginRecovery(config)
+      console.error("    The resolved token is invalid, expired, or for the wrong Notion")
+      console.error("    environment. Re-auth with the right env selector:")
+      console.error("")
+      console.error(`      ${recovery.command}`)
+      if (recovery.manualEnvNote) {
+        console.error(`      ${recovery.manualEnvNote}`)
+      }
+      console.error("")
+      console.error("    then re-run `lore install`.")
     }
-    console.error("")
-    console.error("    then re-run `lore install`.")
     console.error("")
     console.error("    Refusing to write MCP config — fix auth and re-run `lore install`.")
     return { ready: false }
@@ -2412,13 +2845,20 @@ async function runClaudeInstall(
   const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const binMcpEntry = buildClaudeMcpEntry(binShape, configRoot, process.env, context.authSource)
+  const binMcpEntry = buildClaudeMcpEntry(
+    binShape,
+    configRoot,
+    process.env,
+    context.authSource,
+    context.notionBaseUrlLiteral,
+  )
   const legacyMcpEntry = buildLegacyClaudeMcpEntry(
     portableMcpJsPath,
     portablePkgRoot,
     configRoot,
     process.env,
     context.authSource,
+    context.notionBaseUrlLiteral,
   )
   // Desired entry for the WRITE path (driven by --legacy-paths and
   // --yarn-pnp). Detection below recognizes the canonical-for-this-mode
@@ -2857,12 +3297,14 @@ export async function runCodexInstall(
     context.configRoot,
     process.env,
     context.authSource,
+    context.notionBaseUrlLiteral,
   )
   const legacyMcpSection = buildLegacyCodexMcpSection(
     context.mcpJsPath,
     context.configRoot,
     process.env,
     context.authSource,
+    context.notionBaseUrlLiteral,
   )
   const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
@@ -3086,6 +3528,7 @@ export async function runCursorInstall(
     useGlobalScope,
     launchCwd: context.projectDir,
     authSource: context.authSource,
+    notionBaseUrlLiteral: context.notionBaseUrlLiteral,
   })
   const legacyMcpEntry = buildLegacyCursorMcpEntry(
     portableMcpJsPath,
@@ -3093,6 +3536,7 @@ export async function runCursorInstall(
     context.configRoot,
     process.env,
     context.authSource,
+    context.notionBaseUrlLiteral,
   )
   const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
@@ -3244,6 +3688,48 @@ export async function dispatchInstall(
   return errors
 }
 
+/**
+ * Build the legacy-forwarded shell-rc-cleanup note that the install
+ * summary prints when `LORE_NOTION_TOKEN` is still set in the
+ * operator's install-time env. Returns the lines verbatim (each
+ * including its leading two-space indent for the install-summary
+ * indent level) when `legacyForwarded` is true; empty array
+ * otherwise.
+ *
+ * Extracted from `runInstall` so the wording is testable directly
+ * without driving a full install flow. The reviewer's regression
+ * guard for the post-2026-05-13 migrate contract pins this helper's
+ * output: it must name BOTH `lore auth --migrate` (PAT default) and
+ * `lore auth --migrate --ntn` (ntn opt-in), and must not contain the
+ * pre-announcement "switching to ntn-issued workspace tokens" or
+ * "until `lore auth --migrate` ships" wording.
+ *
+ * Probes the **unfiltered** legacy-forwarded shape (no `authSource`)
+ * upstream: a mid-migration operator on `ntn-auth-json` OR
+ * `env-notion-api-token` (PAT) whose shell rc still exports
+ * `LORE_NOTION_TOKEN` still sees the cleanup nudge — the note's job
+ * is "your shell carries a stale legacy var; clean it up," not
+ * "this install just baked one in." Under ntn-source or PAT-source
+ * the install does NOT forward the token (runners pass
+ * `context.authSource` into the build helpers), so the note advises
+ * shell-rc cleanup independent of whether the committed `.mcp.json`
+ * carries the placeholder.
+ */
+export function formatLegacyForwardedNoteLines(
+  legacyForwarded: boolean,
+): string[] {
+  if (!legacyForwarded) return []
+  return [
+    "",
+    "  Note: LORE_NOTION_TOKEN is forwarded into the MCP entry. The legacy",
+    "  env-var path still works in 0.13.x, but it's soft-deprecated (removal",
+    "  targeted for 0.14.0). To migrate, run `lore auth --migrate` (PAT default,",
+    "  pastes a Personal Access Token into `NOTION_API_TOKEN`) or `lore auth",
+    "  --migrate --ntn` for ntn-issued auth, then unset LORE_NOTION_TOKEN from",
+    "  your shell rc. Both branches give per-user rate limits.",
+  ]
+}
+
 export async function runInstall(
   opts: {
     client: InstallClient
@@ -3252,6 +3738,8 @@ export async function runInstall(
     cursorGlobal?: boolean
     legacyPaths?: boolean
     yarnPnp?: boolean
+    ntn?: boolean
+    dev?: boolean
   },
   runners: InstallRunners = defaultInstallRunners,
 ): Promise<void> {
@@ -3272,7 +3760,11 @@ export async function runInstall(
   console.log(`Project: ${context.projectDir}`)
   console.log()
 
-  const prereqs = await ensurePrerequisites(context, { yes: opts.yes })
+  const prereqs = await ensurePrerequisites(context, {
+    yes: opts.yes,
+    ntn: opts.ntn,
+    dev: opts.dev,
+  })
   if (!prereqs.ready) {
     process.exit(1)
   }
@@ -3284,36 +3776,30 @@ export async function runInstall(
   // function) populates it.
   context.authSource = prereqs.authSource
 
+  // `--dev` runtime effectiveness: stash the literal dev base URL on
+  // the context so each runner can pass it to `buildMcpEnv`'s
+  // `notionBaseUrlLiteral` option. The MCP child then targets
+  // `https://api-dev.notion.com` regardless of whether the operator's
+  // shell carries the matching env signal at MCP-spawn time —
+  // closing the gap where `--dev` was effective at install-time
+  // preflight but silently degraded to prod at runtime. The literal
+  // URL is sourced from the same canonical map (`ntnEnvBaseUrl`) the
+  // ntn login path uses, so the dev URL is byte-equal to what
+  // `NOTION_ENV=dev ntn login` would write into `auth.json`.
+  if (opts.dev) {
+    context.notionBaseUrlLiteral = ntnEnvBaseUrl("dev")
+  }
+
   // Detect legacy-forwarded env vars so the install summary can
   // surface a deprecation reminder. Read here (not inside the
   // runners) so the note prints once per install command, not once
-  // per host. Probes the **unfiltered** shape (no `authSource`) so a
-  // mid-migration operator on `ntn-auth-json` whose shell rc still
-  // exports `LORE_NOTION_TOKEN` still sees the cleanup nudge — the
-  // note's job is "your shell carries a stale legacy var; clean it up
-  // to drop the shared 1Password coupling," not "this install just
-  // baked one in." Under ntn-source the install does NOT forward the
-  // token (the runners pass `context.authSource` into the build
-  // helpers), so the note advises shell-rc cleanup independent of
-  // whether the committed `.mcp.json` carries the placeholder.
-  // Phrasing is command-agnostic until `lore auth --migrate`
-  // (issue #07) ships — naming a non-existent command would be a
-  // confidence-eroding way for new engineers to start.
+  // per host. See `formatLegacyForwardedNoteLines` for the
+  // wording rationale and shell-rc-cleanup framing.
   const legacyForwarded = buildMcpEnv(context.configRoot).forwarded.filter(
     (key): key is "LORE_NOTION_TOKEN" => key === "LORE_NOTION_TOKEN",
   )
-  if (legacyForwarded.length > 0) {
-    console.log("")
-    console.log(
-      "  Note: LORE_NOTION_TOKEN is forwarded into the MCP entry. The legacy",
-    )
-    console.log(
-      "  env-var path still works in 0.10.x; switching to ntn-issued workspace",
-    )
-    console.log(
-      "  tokens (`NOTION_KEYRING=0 ntn login`, then unset LORE_NOTION_TOKEN) gets",
-    )
-    console.log("  you per-engineer rate limits and removes the shared 1Password coupling.")
+  for (const line of formatLegacyForwardedNoteLines(legacyForwarded.length > 0)) {
+    console.log(line)
   }
   console.log()
 
@@ -3430,6 +3916,7 @@ export function buildPrintConfigOutput(
   binShape: BinDispatchShape = "bare",
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
+  notionBaseUrlLiteral?: string,
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const portablePkgRoot = toPortablePath(pkgRoot)
@@ -3442,14 +3929,33 @@ export function buildPrintConfigOutput(
           configRoot,
           envSource,
           authSource,
+          notionBaseUrlLiteral,
         )
-      : buildClaudeMcpEntry(binShape, configRoot, envSource, authSource)
+      : buildClaudeMcpEntry(
+          binShape,
+          configRoot,
+          envSource,
+          authSource,
+          notionBaseUrlLiteral,
+        )
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
 
   const section = legacyPaths
-    ? buildLegacyCodexMcpSection(portableMcpJsPath, configRoot, envSource, authSource)
-    : buildCodexMcpSection(binShape, configRoot, envSource, authSource)
+    ? buildLegacyCodexMcpSection(
+        portableMcpJsPath,
+        configRoot,
+        envSource,
+        authSource,
+        notionBaseUrlLiteral,
+      )
+    : buildCodexMcpSection(
+        binShape,
+        configRoot,
+        envSource,
+        authSource,
+        notionBaseUrlLiteral,
+      )
   return section + "\n"
 }
 
@@ -3465,14 +3971,23 @@ export function buildPrintConfigOutput(
  * On a legacy-forwarded source (operator has `LORE_NOTION_TOKEN` set),
  * a one-line stderr note surfaces a deprecation reminder so the
  * print-config path stays in lockstep with the file-write path's
- * messaging. The phrasing is command-agnostic until
- * `lore auth --migrate` (issue #07) ships.
+ * messaging. The note intentionally stays compact (single stderr
+ * line) so a pipeline like `lore install --print-config json | jq`
+ * sees clean stdout — operator advice belongs on stderr, snippet
+ * content on stdout. The note names both `lore auth --migrate`
+ * branches (PAT default + `--ntn` opt-in) and the 0.14.0 removal
+ * target, matching the post-2026-05-13 migrate contract every
+ * other operator-facing migrate-recommendation surface ships.
+ * `runInstall`'s install-summary mirror at
+ * `formatLegacyForwardedNoteLines` covers the same surface for the
+ * file-write path with the multi-line stdout-friendly shape.
  */
 async function runPrintConfig(
   format: PrintConfigFormat,
   legacyPaths: boolean,
   binShape: BinDispatchShape,
   projectDir?: string,
+  dev?: boolean,
 ): Promise<void> {
   const pkgRoot = resolvePkgRoot()
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
@@ -3481,6 +3996,55 @@ async function runPrintConfig(
     throw new Error(
       `dist/mcp.js not found at ${mcpJsPath}. Run 'npm run build' first.`,
     )
+  }
+
+  // `--dev` ↔ shell-signal conflict guard. Symmetric to the
+  // fail-fast at the top of `ensurePrerequisites`: when `--dev` is
+  // set AND the operator's shell carries a base-URL signal that
+  // does NOT resolve to dev, abort. The print-config path is itself
+  // an MCP-config generation path — under this PR's contract,
+  // `lore install --dev` makes dev runtime-effective; without the
+  // same guard here, `--print-config --dev` would emit a snippet
+  // whose runtime MCP child silently routes to prod via the
+  // operator's stale shell signal (and `LORE_NOTION_BASE_URL`
+  // outranks the literal `NOTION_BASE_URL` we'd write into the
+  // printed entry's `env` block, so even when we plant the literal
+  // the operator's shell would still win at MCP-spawn time).
+  if (dev) {
+    const operatorBaseUrl = resolveOperatorBaseUrl(process.env)
+    if (
+      operatorBaseUrl !== undefined &&
+      ntnEnvFromBaseUrl(operatorBaseUrl) !== "dev"
+    ) {
+      const conflicting = describeConflictingDevSignal(process.env)
+      console.error(
+        `--dev was passed but ${conflicting} routes auth to ${operatorBaseUrl}`,
+      )
+      console.error(
+        "(not the dev base URL). Lore cannot print a coherent --dev snippet while",
+      )
+      console.error(
+        "the shell carries a conflicting signal — the printed env would be",
+      )
+      console.error(
+        "overridden by the operator's existing shell variable at MCP-spawn time.",
+      )
+      console.error("")
+      console.error("Recovery (pick one):")
+      console.error("  1. Unset the conflicting shell variable, then re-run.")
+      console.error("  2. Drop --dev and re-run to print the prod snippet.")
+      // `process.exit(1)` + defensive `return` matches the standing
+      // pattern documented in `src/cli/AGENTS.md`'s "Testing exit
+      // paths" subsection, AND avoids the double-print that a
+      // thrown error would produce: the action handler's outer
+      // try/catch renders `Install failed: <msg>` on any thrown
+      // Error, which would re-emit a trailing line after the four
+      // diagnostic lines we already wrote. The install-time guard
+      // at line 2274 uses `return { ready: false }` for the same
+      // reason; this exit-1 path is the print-config analog.
+      process.exit(1)
+      return
+    }
   }
 
   const projectRoot = resolve(projectDir ?? process.cwd())
@@ -3521,6 +4085,14 @@ async function runPrintConfig(
     }
   }
 
+  // When `--dev` is set, plant the literal dev URL into the printed
+  // snippet's `staticEnv` so unsupported-host operators get the same
+  // runtime base-URL contract that `--client {claude,codex,cursor}`
+  // already ships: spawned MCP child targets dev regardless of
+  // operator shell state. The fail-fast guard above ensures no
+  // conflicting shell signal is present at this point.
+  const notionBaseUrlLiteral = dev ? ntnEnvBaseUrl("dev") : undefined
+
   process.stdout.write(
     buildPrintConfigOutput(
       format,
@@ -3531,23 +4103,35 @@ async function runPrintConfig(
       binShape,
       process.env,
       printConfigAuthSource,
+      notionBaseUrlLiteral,
     ),
   )
 
   // Mirror the file-write path's legacy-forwarded note so operators of
   // unsupported hosts see the same shell-rc-cleanup recommendation.
   // Probes the unfiltered shape (no `authSource`) for the same reason
-  // `runInstall` does: an ntn-source operator with a stray
-  // `LORE_NOTION_TOKEN` still in their shell rc gets the cleanup nudge,
-  // even though the printed snippet itself no longer forwards the
-  // token. The advice — drop the shared 1Password coupling and switch
-  // to per-engineer ntn tokens — is independent of whether *this*
-  // snippet bakes the placeholder in.
+  // `runInstall` does: an ntn-source OR PAT-source operator with a
+  // stray `LORE_NOTION_TOKEN` in their shell rc gets the cleanup
+  // nudge, even though the printed snippet itself no longer forwards
+  // the token.
+  //
+  // Print-config writes the note to **stderr** (not stdout) so a
+  // pipeline like `lore install --print-config json --dev | jq …`
+  // sees clean JSON on stdout — the note is operator advice, not
+  // structural output. The wording is compact (single line) for the
+  // same reason: stderr in a pipe context is best kept short, while
+  // the multi-line stdout-friendly variant in `runInstall` has room
+  // for the full elaboration. Both surfaces name BOTH `lore auth
+  // --migrate` branches under the post-2026-05-13 contract — the
+  // PAT default and the `--ntn` opt-in — and avoid the pre-
+  // announcement "switch via NOTION_KEYRING=0 ntn login" wording
+  // that silently routed legacy operators to the wrong contract.
   const build = buildMcpEnv(configRoot)
   if (build.forwarded.includes("LORE_NOTION_TOKEN")) {
     process.stderr.write(
-      "Note: LORE_NOTION_TOKEN forwarded — soft-deprecated. Switch via " +
-        "`NOTION_KEYRING=0 ntn login`, then unset LORE_NOTION_TOKEN.\n",
+      "Note: LORE_NOTION_TOKEN forwarded — soft-deprecated (removal targeted for 0.14.0). " +
+        "Migrate via `lore auth --migrate` (PAT default) or `lore auth --migrate --ntn` " +
+        "(ntn-issued auth), then unset LORE_NOTION_TOKEN.\n",
     )
   }
 }
@@ -3579,6 +4163,14 @@ export const installCommand = new Command("install")
     "--no-yarn-pnp",
     "force the bare bin-dispatch shape ('lore mcp', 'lore hooks <event>'), overriding .pnp.cjs auto-detection. Use when your PnP project shims node_modules/.bin out-of-band",
   )
+  .option(
+    "--ntn",
+    "internal-engineer path: auto-install `ntn` (if missing) and run `ntn login`. Without this flag, Lore takes the external-operator path and expects NOTION_API_TOKEN (a PAT from notion.so/developers/tokens) to be set.",
+  )
+  .option(
+    "--dev",
+    "target the Notion dev environment. With --ntn, forwards NOTION_ENV=dev to ntn login. With the PAT path, expects a `development_ntn_…` token in NOTION_API_TOKEN and configures the dev base URL itself (plants NOTION_BASE_URL=https://api-dev.notion.com into both install-time preflight and the spawned MCP env as a literal). Fails fast when a conflicting shell selector (LORE_NOTION_BASE_URL / NOTION_BASE_URL / NOTION_API_BASE_URL / NOTION_ENV) routes auth to a non-dev URL.",
+  )
   .option("-y, --yes", "skip confirmation prompts")
   .action(
     async (opts: {
@@ -3589,6 +4181,8 @@ export const installCommand = new Command("install")
       cursorGlobal?: boolean
       legacyPaths?: boolean
       yarnPnp?: boolean
+      ntn?: boolean
+      dev?: boolean
     }) => {
       try {
         if (opts.printConfig != null) {
@@ -3603,17 +4197,18 @@ export const installCommand = new Command("install")
             )
             process.exit(1)
           }
-          // --client, --project, and --cursor-global are accepted but ignored
+          // --client, --cursor-global, and --ntn are accepted but ignored
           // when --print-config is set. The escape-hatch flag prints to stdout
           // regardless of which assistant the operator nominally targeted;
-          // --project would have controlled the on-disk write directory but
-          // no file is written. --legacy-paths and --yarn-pnp / --no-yarn-pnp
-          // ARE honored — they control the shape of the printed snippet so
-          // operators can copy-paste the right form for their consumer
-          // (bin-dispatch shape default; yarn-wrapped under --yarn-pnp; legacy
-          // absolute-path under --legacy-paths). Auto-detection from
-          // `.pnp.cjs` is skipped on this path because no project dir is
-          // resolved.
+          // `--ntn` is an internal-engineer install-flow opt-in (auto-install
+          // ntn + ntn login), neither of which the print-config path performs.
+          // --legacy-paths, --yarn-pnp / --no-yarn-pnp, --project, AND --dev
+          // ARE honored — they control the shape and contents of the printed
+          // snippet so operators can copy-paste the right form for their
+          // consumer (bin-dispatch shape default; yarn-wrapped under
+          // --yarn-pnp; legacy absolute-path under --legacy-paths; dev-base-URL
+          // literal under --dev). Auto-detection from `.pnp.cjs` is skipped on
+          // this path because no project dir is resolved.
           const printBinShape: BinDispatchShape =
             opts.yarnPnp === true ? "yarn" : "bare"
           // --project resolves the configRoot embedded in the
@@ -3628,6 +4223,7 @@ export const installCommand = new Command("install")
             !!opts.legacyPaths,
             printBinShape,
             opts.project,
+            !!opts.dev,
           )
           return
         }
@@ -3663,6 +4259,8 @@ export const installCommand = new Command("install")
           cursorGlobal: opts.cursorGlobal,
           legacyPaths: opts.legacyPaths,
           yarnPnp: opts.yarnPnp,
+          ntn: opts.ntn,
+          dev: opts.dev,
         })
       } catch (err) {
         console.error("Install failed:", err instanceof Error ? err.message : err)

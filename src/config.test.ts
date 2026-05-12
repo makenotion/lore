@@ -578,11 +578,29 @@ describe("resolveAuth", () => {
       source: "env-lore-notion-token",
     })
     expect(stderrText()).toContain("LORE_NOTION_TOKEN is soft-deprecated")
-    // Recommended migration command is `lore auth --migrate` (the
-    // canonical Phase-2 wrapper for env-source migration); the
-    // unset-and-rerun path is the manual fallback inside the same line.
-    expect(stderrText()).toContain("lore auth --migrate")
+    // Sibling parity with the config-auth-token warning: the
+    // post-2026-05-13 migrate contract names BOTH branches AND the
+    // 0.14.0 hard-removal target. The pre-PR wording recommended
+    // bare `lore auth --migrate` (silently the PAT branch by
+    // default) with a `lore auth --login` fallback — that routed
+    // internal engineers to the PAT branch when their persona is
+    // ntn. Surfacing both variants by name lets each persona
+    // self-select. Regression guards below pin out the stale
+    // `lore auth --login` shortcut so the two deprecation
+    // surfaces can't drift independently again.
+    expect(stderrText()).toContain("`lore auth --migrate`")
+    expect(stderrText()).toContain("PAT in NOTION_API_TOKEN")
+    expect(stderrText()).toContain("`lore auth --migrate --ntn`")
+    expect(stderrText()).toContain("unset LORE_NOTION_TOKEN")
+    expect(stderrText()).toContain("0.14.0")
     expect(stderrText()).toContain("LORE_SUPPRESS_DEPRECATIONS=1")
+    // Regression guards for the stale wording. The pre-PR message
+    // embedded a `lore auth --login` fallback that's now wrong
+    // (it routes operators to ntn-only re-auth instead of the
+    // PAT-default migrate flow). A future refactor that reverts
+    // any piece of the stale contract fails loudly here.
+    expect(stderrText()).not.toMatch(/run `lore auth --login`/)
+    expect(stderrText()).not.toMatch(/unset LORE_NOTION_TOKEN and run/)
   })
 
   it("returns source: config-auth-token AND emits deprecation warning when only auth.token is set", async () => {
@@ -600,14 +618,29 @@ describe("resolveAuth", () => {
       source: "config-auth-token",
     })
     expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
-    // Pin the branch-specific recommendation so a copy-paste swap of
-    // the env-vs-config message bodies is caught. The config branch
-    // recommends `lore auth --login` (re-auth via ntn) plus a
-    // remove-auth.token instruction; the env branch recommends
-    // `lore auth --migrate` instead.
-    expect(stderrText()).toContain("lore auth --login")
+    // Pin the branch-specific recommendation for the post-2026-05-13
+    // migrate contract: `lore auth --migrate` (PAT default) and
+    // `lore auth --migrate --ntn` (internal-engineer ntn opt-in).
+    // The pre-announcement wording was "re-auth via ntn via
+    // `lore auth --login`", which silently routed every legacy
+    // operator (including external PAT operators just cleaning up
+    // .lore.yaml) to the ntn-only path; the new wording lets them
+    // pick their persona. Regression guards below pin that the
+    // stale ntn-only recommendation does NOT return.
+    expect(stderrText()).toContain("`lore auth --migrate`")
+    expect(stderrText()).toContain("PAT in NOTION_API_TOKEN")
+    expect(stderrText()).toContain("`lore auth --migrate --ntn`")
     expect(stderrText()).toContain("remove the auth.token field")
-    expect(stderrText()).not.toContain("lore auth --migrate")
+    // Regression guards for the stale ntn-only contract. A future
+    // refactor that reverts to "re-auth via ntn" + `lore auth
+    // --login` as the only recommendation fails loudly.
+    expect(stderrText()).not.toMatch(/re-auth via ntn/)
+    expect(stderrText()).not.toMatch(/Migrate: run `lore auth --login`/)
+    // Aligned with the other migrate-recommendation surfaces — the
+    // warning names the 0.14.0 hard-removal target so external PAT
+    // operators cleaning up committed `.lore.yaml` know when the
+    // soft-deprecation actually becomes a build break.
+    expect(stderrText()).toContain("0.14.0")
     // The config-auth-token warning copy must NOT advertise
     // `LORE_SUPPRESS_DEPRECATIONS=1` as a silencer — the env var is
     // explicitly NOT honored on this path (#484), so pointing

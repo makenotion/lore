@@ -13,7 +13,7 @@
 | Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics              |
 | CLI              | [`src/cli/AGENTS.md`](src/cli/AGENTS.md)       | Commander patterns, command reference, output formatting               |
 | Hook runner      | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md)   | Stop autosave, auto-digest, background spawn, lockfiles                |
-| Auth layer       | [`src/auth/AGENTS.md`](src/auth/AGENTS.md)     | ntn-first auth, `auth.json` coupling, vault preflight, OAuth fallback  |
+| Auth layer       | [`src/auth/AGENTS.md`](src/auth/AGENTS.md)     | ntn / PAT auth, `auth.json` contract, vault preflight, token classification |
 
 ## Detailed Guides
 
@@ -125,12 +125,30 @@ Use Lore for cross-session knowledge when the tools are available:
 
 ## Authentication
 
-Auth resolves in this priority order:
+Two operator personas, two recommended paths:
 
-1. `NOTION_API_TOKEN`
-2. ntn-resolved token from `~/.config/notion/auth.json`
-3. `LORE_NOTION_TOKEN` soft-deprecated fallback
-4. `auth.token` in `.lore.yaml` soft-deprecated fallback
+- **Internal Notion engineers** run `lore install --ntn`. `--ntn`
+  auto-installs `ntn` (if missing), runs `ntn login` with
+  `NOTION_KEYRING=0` forced in the spawn, and Lore reads the resulting
+  bearer token from `~/.config/notion/auth.json`. Compose with `--dev`
+  (`lore install --ntn --dev`) to forward `NOTION_ENV=dev` for
+  dev-environment vaults.
+- **External operators** create a Personal Access Token at
+  <https://www.notion.so/developers/tokens> and paste it into
+  `NOTION_API_TOKEN`, then run `lore install` (no flags). **Do not use
+  integration tokens from `notion.so/profile/integrations`** — those
+  carry `secret_…` shapes and are integration-level rate-limited, which
+  re-collapses Lore into one shared bucket across the team. PATs are
+  per-user. The PAT prefix is `ntn_` on prod and `development_ntn_` on
+  the dev environment (use `lore install --dev` for the latter).
+
+The four-source priority chain (highest first) backs both personas:
+
+1. `NOTION_API_TOKEN` — PATs land here (and internal engineers may also
+   set this explicitly).
+2. `ntn`-resolved token from `~/.config/notion/auth.json`.
+3. `LORE_NOTION_TOKEN` (soft-deprecated; hard-removal targeted for 0.14.0).
+4. `auth.token` in `.lore.yaml` (soft-deprecated; same removal target).
 
 `.lore.yaml` is local-only — keep it out of version control. Copy
 `.lore.example.yaml` to `.lore.yaml` per clone, and distribute shared team
@@ -146,10 +164,10 @@ git is still the right default so external clones don't auto-target an
 unrelated vault. Accidental maintainer-local or personal scratch page IDs that
 land in history need explicit owner review.
 
-ntn-issued tokens inherit the engineer's personal Notion permissions and have
-per-token rate limits. Lore-managed ntn spawns force `NOTION_KEYRING=0`; direct
-`ntn login` outside Lore may need the recovery path in
-[`docs/authentication.md`](docs/authentication.md).
+Both `ntn`-issued tokens and PATs inherit the operator's personal Notion
+permissions and carry per-user rate limits. Lore-managed `ntn` spawns force
+`NOTION_KEYRING=0`; direct `ntn login` outside Lore may need the recovery
+path in [`docs/authentication.md`](docs/authentication.md).
 
 See [`docs/authentication.md`](docs/authentication.md) and
 [`src/auth/AGENTS.md`](src/auth/AGENTS.md) for the full auth contract.

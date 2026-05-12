@@ -552,13 +552,19 @@ async function emitLoreNotionTokenDeprecationWarningOnce(configRoot: string): Pr
     // Marker missing — proceed to emit.
   }
 
-  // `lore auth --migrate` (Phase 2 issue 0.10.0/07) walks operators with
-  // `LORE_NOTION_TOKEN` set through ntn login with the legacy unset step
-  // layered on top — recommend it by name even when #07 hasn't merged
-  // yet, so the warning stays consistent across PR-merge order.
+  // Post-2026-05-13: `lore auth --migrate` defaults to the PAT
+  // three-step flow (verify legacy → walk operator through creating
+  // a Personal Access Token at notion.so/developers/tokens →
+  // verify the PAT reaches the same vault), and `--migrate --ntn`
+  // is the internal-engineer ntn-login opt-in. The warning names
+  // both branches so external PAT operators and internal-engineer
+  // ntn operators each see their own path. Sibling parity with
+  // `emitConfigAuthTokenWarning` — both surfaces ship the same
+  // contract (both branches + 0.14.0 hard-removal target).
   const message =
-    "[lore] LORE_NOTION_TOKEN is soft-deprecated in 0.10.0.\n" +
-    "[lore] Migrate: run `lore auth --migrate` (or unset LORE_NOTION_TOKEN and run `lore auth --login`).\n" +
+    "[lore] LORE_NOTION_TOKEN is soft-deprecated in 0.10.0 (hard-removal targeted for 0.14.0).\n" +
+    "[lore] Migrate: run `lore auth --migrate` to migrate to a PAT in NOTION_API_TOKEN,\n" +
+    "[lore] or `lore auth --migrate --ntn` to migrate to ntn-issued auth instead, then unset LORE_NOTION_TOKEN.\n" +
     "[lore] Set LORE_SUPPRESS_DEPRECATIONS=1 to silence this warning."
 
   process.stderr.write(message + "\n")
@@ -629,8 +635,9 @@ function emitConfigAuthTokenWarning(): void {
   configAuthTokenWarningEmittedThisProcess = true
 
   const message =
-    "[lore] auth.token in .lore.yaml is soft-deprecated in 0.10.0.\n" +
-    "[lore] Migrate: run `lore auth --login` to re-auth via ntn, then remove the auth.token field.\n" +
+    "[lore] auth.token in .lore.yaml is soft-deprecated in 0.10.0 (hard-removal targeted for 0.14.0).\n" +
+    "[lore] Migrate: run `lore auth --migrate` to migrate to a PAT in NOTION_API_TOKEN,\n" +
+    "[lore] or `lore auth --migrate --ntn` to migrate to ntn-issued auth instead, then remove the auth.token field.\n" +
     "[lore] This warning is not silenceable; remove auth.token from .lore.yaml to clear it."
 
   process.stderr.write(message + "\n")

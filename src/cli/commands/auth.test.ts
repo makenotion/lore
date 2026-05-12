@@ -117,9 +117,11 @@ import {
   runLogin,
   runLogout,
   runMigrate,
+  runPatMigrate,
   runStatus,
   runWhoami,
   type MigrateDeps,
+  type PatMigrateDeps,
 } from "./auth.js"
 import { MIN_NTN_VERSION } from "../../auth/ntn.js"
 import type { ResolvedAuth } from "../../config.js"
@@ -1841,28 +1843,44 @@ describe("printAuthSourceLines", () => {
     expect(stdoutText()).toContain("Status: ✓ active")
   })
 
-  it("prints LORE_NOTION_TOKEN soft-deprecation + migrate recommendation", () => {
+  it("prints LORE_NOTION_TOKEN soft-deprecation + migrate recommendation (PAT default, --ntn opt-in)", () => {
+    // Post-2026-05-13: `lore auth --migrate` defaults to PAT
+    // migration; `--ntn` opts into the internal-engineer flow.
+    // The legacy-source status copy must name BOTH paths, not the
+    // pre-announcement "upgrade to ntn" wording — a legacy-token
+    // operator who runs `--migrate` based on this status line
+    // would otherwise expect ntn and get the PAT flow.
     const auth: ResolvedAuth = {
       token: "tok",
       source: "env-lore-notion-token",
     }
     printAuthSourceLines(auth)
-    expect(stdoutText()).toContain(
-      "Source: LORE_NOTION_TOKEN (env, soft-deprecated)",
-    )
-    expect(stdoutText()).toContain("lore auth --migrate")
+    const out = stdoutText()
+    expect(out).toContain("Source: LORE_NOTION_TOKEN (env, soft-deprecated)")
+    expect(out).toContain("`lore auth --migrate`")
+    expect(out).toContain("PAT in NOTION_API_TOKEN")
+    expect(out).toContain("`lore auth --migrate --ntn`")
+    // Regression guard: the pre-announcement "upgrade to ntn"
+    // wording must not return. The migrate default changed; a
+    // future refactor that puts the stale string back fails here.
+    expect(out).not.toMatch(/upgrade to ntn(?:-issued)? auth/i)
+    expect(out).not.toMatch(/upgrade to ntn\./i)
   })
 
-  it("prints config-auth-token soft-deprecation copy", () => {
+  it("prints config-auth-token soft-deprecation copy (PAT default, --ntn opt-in)", () => {
     const auth: ResolvedAuth = {
       token: "tok",
       source: "config-auth-token",
     }
     printAuthSourceLines(auth)
-    expect(stdoutText()).toContain(
-      "Source: auth.token in .lore.yaml (soft-deprecated)",
-    )
-    expect(stdoutText()).toContain("then remove auth.token from .lore.yaml")
+    const out = stdoutText()
+    expect(out).toContain("Source: auth.token in .lore.yaml (soft-deprecated)")
+    expect(out).toContain("then remove auth.token from .lore.yaml")
+    expect(out).toContain("`lore auth --migrate`")
+    expect(out).toContain("PAT in NOTION_API_TOKEN")
+    expect(out).toContain("`lore auth --migrate --ntn`")
+    // Same regression guard for the config-source branch.
+    expect(out).not.toMatch(/upgrade to ntn(?:-issued)? auth/i)
   })
 
   it("surfaces a Shadow line when LORE_NOTION_TOKEN is set but not active", () => {
@@ -2816,6 +2834,88 @@ describe("runWhoami / renderWhoamiIdentity", () => {
     expect(stdoutText()).toBe("<bot in Notion HQ>\n")
   })
 
+  it("runWhoami appends `(personal token — ntn_)` for prod PAT / ntn-issued tokens", async () => {
+    // The PAT-prefix label lets an operator confirm token shape from
+    // --whoami alone — the headline value-add of the 2026-05-13 PAT
+    // announcement's UX work. Prefix labels are display-only; they
+    // don't change AuthSource or any on-wire behavior.
+    setupVaultProject()
+    process.env["NOTION_API_TOKEN"] = "ntn_prod-token-bearer"
+    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        bot: {
+          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+        },
+      })
+    await runWhoami()
+    expect(stdoutText()).toBe("Hesham  (personal token — ntn_)\n")
+  })
+
+  it("runWhoami appends `(personal token — development_ntn_)` for dev-environment tokens", async () => {
+    setupVaultProject()
+    process.env["NOTION_API_TOKEN"] = "development_ntn_dev-bearer"
+    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        bot: {
+          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+        },
+      })
+    await runWhoami()
+    expect(stdoutText()).toBe("Hesham  (personal token — development_ntn_)\n")
+  })
+
+  it("runWhoami flags an integration-token shape with stdout label + stderr advisory", async () => {
+    // The "I pasted an integration token from notion.so/profile/integrations
+    // instead of a PAT from notion.so/developers/tokens" failure mode is
+    // exactly what the prefix label surfaces — operators can spot it
+    // straight from --whoami output instead of reading the docs.
+    //
+    // The split between stdout (identity + paren-free prefix label)
+    // and stderr (rate-limit advisory) keeps the stdout line
+    // script-friendly: a downstream consumer parsing `lore auth
+    // --whoami` output gets one identity line, no nested parens.
+    setupVaultProject()
+    process.env["NOTION_API_TOKEN"] = "secret_integration-bearer"
+    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        bot: {
+          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+        },
+      })
+    await runWhoami()
+    const out = stdoutText()
+    expect(out).toContain("Hesham")
+    expect(out).toContain("integration token — secret_")
+    // Negative-paren regression guard: a future refactor that folds
+    // the rate-limit advisory back into the prefix label (or that
+    // wraps the label in something that already carries parens)
+    // would land nested parens like `Hesham  ((integration token …))`.
+    // Pin the absence of double-open-paren so the script-friendly
+    // identity contract survives refactors.
+    expect(out).not.toMatch(/\(\(/)
+    // Advisory lands on stderr, not stdout.
+    const err = stderrText()
+    expect(err.toLowerCase()).toContain("rate-limited")
+    expect(err.toLowerCase()).toContain("pat")
+    expect(err).toContain("notion.so/developers/tokens")
+  })
+
+  it("runWhoami emits no stderr advisory for personal-token prefixes", async () => {
+    // Negative coverage for the advisory — only `integration`-classified
+    // tokens trigger the stderr write; `ntn_…` and `development_ntn_…`
+    // stdout output stays clean.
+    setupVaultProject()
+    process.env["NOTION_API_TOKEN"] = "ntn_prod-bearer"
+    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({
+        bot: {
+          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+        },
+      })
+    await runWhoami()
+    expect(stderrText()).toBe("")
+  })
+
   it("runWhoami carries resolveAuth's diagnostic into stderr alongside the redirect", async () => {
     setupVaultProject()
     ntnMocks.listNtnWorkspaces.mockResolvedValue(["ws-1", "ws-2"])
@@ -2862,21 +2962,37 @@ describe("runLogout", () => {
     expect(stdoutText()).toContain("Lore reads but doesn't write auth.json")
   })
 
-  it("points at unset LORE_NOTION_TOKEN for the env-lore-notion-token source", async () => {
+  it("points at unset LORE_NOTION_TOKEN for the env-lore-notion-token source (names both migrate branches)", async () => {
+    // The migrate recommendation copy must name BOTH the PAT
+    // default and the `--ntn` opt-in — the pre-announcement
+    // "Consider migrating to ntn" wording was misleading for the
+    // PAT-default flow this PR ships.
     setupVaultProject()
     process.env["LORE_NOTION_TOKEN"] = "tok"
     process.env["LORE_SUPPRESS_DEPRECATIONS"] = "1"
     await runLogout()
-    expect(stdoutText()).toContain("unset LORE_NOTION_TOKEN")
-    expect(stdoutText()).toContain("lore auth --migrate")
+    const out = stdoutText()
+    expect(out).toContain("unset LORE_NOTION_TOKEN")
+    expect(out).toContain("`lore auth --migrate`")
+    expect(out).toContain("PAT default")
+    expect(out).toContain("`lore auth --migrate --ntn`")
+    // Regression guard for the stale "Consider migrating to ntn"
+    // wording — that line silently routed legacy operators to the
+    // pre-announcement contract.
+    expect(out).not.toContain("Consider migrating to ntn:")
   })
 
-  it("names the .lore.yaml path for the config-auth-token source", async () => {
+  it("names the .lore.yaml path for the config-auth-token source (names both migrate branches)", async () => {
     const dir = setupVaultProject({ authToken: "tok-cfg" })
     process.env["LORE_SUPPRESS_DEPRECATIONS"] = "1"
     await runLogout()
-    expect(stdoutText()).toContain("auth.token field")
-    expect(stdoutText()).toContain(dir)
+    const out = stdoutText()
+    expect(out).toContain("auth.token field")
+    expect(out).toContain(dir)
+    expect(out).toContain("`lore auth --migrate`")
+    expect(out).toContain("PAT default")
+    expect(out).toContain("`lore auth --migrate --ntn`")
+    expect(out).not.toContain("Consider migrating to ntn:")
   })
 })
 
@@ -2996,5 +3112,259 @@ describe("authCommand action handler", () => {
     verifyVaultAccessMock.mockResolvedValue({ kind: "ok", pageTitle: "V" })
     await authCommand.parseAsync(["node", "lore-auth"])
     expect(stdoutText()).toContain("Lore auth status for")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// runPatMigrate (default migrate branch — 2026-05-13 onward)
+// ---------------------------------------------------------------------------
+
+interface PatMigrateScenarioOverrides {
+  envLegacyToken?: string
+  configToken?: string
+  configBaseUrl?: string
+  notionApiTokenEnv?: string
+  vaultPageId?: string
+  legacyVerify?: Awaited<ReturnType<PatMigrateDeps["verifyVaultAccess"]>>
+  patVerify?: Awaited<ReturnType<PatMigrateDeps["verifyVaultAccess"]>>
+  shellRcMatch?: string | null
+  yes?: boolean
+}
+
+function makePatScenario(over: PatMigrateScenarioOverrides = {}): {
+  deps: PatMigrateDeps
+  run: CapturedRun
+  spies: {
+    legacyVerify: ReturnType<typeof vi.fn>
+    patVerify: ReturnType<typeof vi.fn>
+    findShellRc: ReturnType<typeof vi.fn>
+    makeClient: ReturnType<typeof vi.fn>
+  }
+} {
+  const stdout: string[] = []
+  const stderr: string[] = []
+  const vaultPageId = over.vaultPageId ?? "vault-page-xyz"
+  const configPath = join("/fake-cwd", ".lore.yaml")
+  const configRoot = "/fake-cwd"
+
+  const env: NodeJS.ProcessEnv = {}
+  if (over.envLegacyToken !== undefined) env["LORE_NOTION_TOKEN"] = over.envLegacyToken
+  if (over.notionApiTokenEnv !== undefined) env["NOTION_API_TOKEN"] = over.notionApiTokenEnv
+
+  const config: LoreConfig = {
+    vault: { pageId: vaultPageId },
+    auth: {
+      ...(over.configToken !== undefined ? { token: over.configToken } : {}),
+      ...(over.configBaseUrl !== undefined ? { baseUrl: over.configBaseUrl } : {}),
+    },
+  }
+
+  const fakeClient = {} as Client
+  const makeClient = vi.fn(() => fakeClient)
+  const legacyVerify = vi.fn(
+    async (_c: Client, _id: string) =>
+      over.legacyVerify ?? { kind: "ok" as const, pageTitle: "Vault" },
+  )
+  const patVerify = vi.fn(
+    async (_c: Client, _id: string) =>
+      over.patVerify ?? { kind: "ok" as const, pageTitle: "PAT Vault" },
+  )
+  // Route by call order: 1st → legacy, 2nd → PAT. Tests with no
+  // legacy source skip the legacy call entirely and the first
+  // verifyVaultAccess call is the PAT one; route by tracking calls
+  // and using the appropriate spy.
+  const hasLegacy = over.envLegacyToken !== undefined || over.configToken !== undefined
+  const calls = { count: 0 }
+  const verifyVaultAccess = vi.fn(async (c: Client, id: string) => {
+    calls.count++
+    if (hasLegacy && calls.count === 1) return await legacyVerify(c, id)
+    return await patVerify(c, id)
+  })
+  const findShellRc = vi.fn(async () => over.shellRcMatch ?? null)
+
+  const deps: PatMigrateDeps = {
+    cwd: () => "/fake-cwd",
+    env: () => env,
+    log: (line) => stdout.push(line),
+    error: (line) => stderr.push(line),
+    findConfigFile: vi.fn(async () => ({
+      path: configPath,
+      root: configRoot,
+    })) as unknown as PatMigrateDeps["findConfigFile"],
+    loadConfig: vi.fn(async () => config) as unknown as PatMigrateDeps["loadConfig"],
+    makeClient,
+    verifyVaultAccess,
+    findShellRc,
+  }
+  return {
+    deps,
+    run: { stdout, stderr },
+    spies: { legacyVerify, patVerify, findShellRc, makeClient },
+  }
+}
+
+describe("runPatMigrate", () => {
+  it("returns 1 when no .lore.yaml is found", async () => {
+    // PAT-migrate requires a vault context for the verify steps — the
+    // legacy token, the PAT, and the unset instructions all key off
+    // `.lore.yaml`'s `vault.pageId` and path. Mirrors `runMigrate`'s
+    // posture.
+    const { deps, run } = makePatScenario()
+    ;(deps.findConfigFile as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 1 })
+    expect(run.stderr.join("\n")).toContain("No .lore.yaml found")
+  })
+
+  it("prints PAT-creation instructions and exits 0 when NOTION_API_TOKEN is unset", async () => {
+    // Operator has a legacy token but hasn't pasted a PAT yet. The
+    // command verifies the legacy token reaches the vault, then
+    // walks the operator through creating a PAT and re-running.
+    // Exits 0 — nothing is broken, just incomplete.
+    const { deps, run, spies } = makePatScenario({
+      envLegacyToken: "lore-legacy-token",
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 0 })
+    expect(spies.legacyVerify).toHaveBeenCalledTimes(1)
+    expect(spies.patVerify).not.toHaveBeenCalled()
+    const out = run.stdout.join("\n")
+    expect(out).toMatch(/Step 1\/3 — Verify legacy LORE_NOTION_TOKEN/)
+    expect(out).toMatch(/Step 2\/3 — Create a Personal Access Token/)
+    expect(out).toMatch(/notion\.so\/developers\/tokens/)
+    expect(out).toMatch(/export NOTION_API_TOKEN/)
+    expect(out).toMatch(/Do NOT paste an integration token/)
+  })
+
+  it("aborts at Step 1 when the legacy token cannot reach the vault", async () => {
+    const { deps, run, spies } = makePatScenario({
+      envLegacyToken: "lore-legacy-token",
+      legacyVerify: {
+        kind: "not-found",
+        pageId: "vault-page-xyz",
+        message: "...",
+      },
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 1 })
+    expect(spies.patVerify).not.toHaveBeenCalled()
+    expect(run.stderr.join("\n")).toMatch(
+      /Legacy LORE_NOTION_TOKEN cannot reach vault-page-xyz \(not-found\)/,
+    )
+    expect(run.stderr.join("\n")).toMatch(/Migration aborted/)
+  })
+
+  it("verifies the PAT reaches the vault and prints unset instructions on the happy path", async () => {
+    // Legacy env token + PAT both reach the vault. Full success
+    // flow: legacy verify ✓, PAT verify ✓, unset instructions, shell-rc
+    // hint. Honest about which token is active post-migrate.
+    const { deps, run, spies } = makePatScenario({
+      envLegacyToken: "lore-legacy-token",
+      notionApiTokenEnv: "ntn_pat-bearer",
+      shellRcMatch: "/Users/test/.zshrc",
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 0 })
+    expect(spies.legacyVerify).toHaveBeenCalledTimes(1)
+    expect(spies.patVerify).toHaveBeenCalledTimes(1)
+    const out = run.stdout.join("\n")
+    expect(out).toMatch(/✓ NOTION_API_TOKEN reaches/)
+    expect(out).toMatch(/Migration verified/)
+    expect(out).toMatch(/unset LORE_NOTION_TOKEN/)
+    // PAT-target unset-instructions copy (target: "pat" passed to
+    // formatUnsetInstructions): the legacy-unset preamble says "To
+    // activate the PAT in NOTION_API_TOKEN" (not the pre-PAT
+    // "activate ntn-first auth" wording), and the reassurance
+    // footer names the PAT as the active token by construction —
+    // no reference to ntn / Step 4 / "ntn-first auth" / "ntn-issued
+    // one Step 4 verified". The PAT flow never runs `ntn login` and
+    // has no Step 4, so any of those phrases on this surface is a
+    // copy-paste leak from the ntn formatter branch.
+    expect(out).toMatch(/To activate the PAT in NOTION_API_TOKEN/)
+    expect(out).toMatch(/Your PAT in NOTION_API_TOKEN is the active token/)
+    expect(out).not.toMatch(/ntn-first auth/)
+    expect(out).not.toMatch(/Step 4/)
+    expect(out).not.toMatch(/ntn-issued/)
+    expect(out).not.toMatch(/NOTION_API_TOKEN is in your environment and outranks ntn/)
+    // Shell-rc hint
+    expect(out).toMatch(/Found LORE_NOTION_TOKEN reference in \/Users\/test\/\.zshrc/)
+  })
+
+  it("works without a legacy source — verifies PAT, prints success, skips unset block", async () => {
+    // Operator has no legacy token. `lore auth --migrate` is still a
+    // useful command: it verifies their PAT reaches the vault and
+    // confirms there's nothing to clean up. Exits 0.
+    const { deps, run, spies } = makePatScenario({
+      notionApiTokenEnv: "ntn_pat-bearer",
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 0 })
+    expect(spies.legacyVerify).not.toHaveBeenCalled()
+    expect(spies.patVerify).toHaveBeenCalledTimes(1)
+    const out = run.stdout.join("\n")
+    expect(out).toMatch(/Verify NOTION_API_TOKEN reaches the configured vault/)
+    expect(out).toMatch(/✓ NOTION_API_TOKEN reaches/)
+    expect(out).toMatch(/No legacy LORE_NOTION_TOKEN \/ auth\.token found/)
+    expect(out).not.toMatch(/unset LORE_NOTION_TOKEN/)
+  })
+
+  it("aborts on Step 3 when the PAT cannot reach the vault and preserves the legacy token", async () => {
+    const { deps, run } = makePatScenario({
+      envLegacyToken: "lore-legacy-token",
+      notionApiTokenEnv: "ntn_wrong-workspace-pat",
+      patVerify: {
+        kind: "not-found",
+        pageId: "vault-page-xyz",
+        message: "...",
+      },
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 1 })
+    const err = run.stderr.join("\n")
+    expect(err).toMatch(/NOTION_API_TOKEN cannot reach vault-page-xyz/)
+    expect(err).toMatch(/different workspace/)
+    // Legacy unchanged reassurance — the operator's existing setup
+    // still works while they fix the PAT.
+    expect(err).toMatch(/Legacy auth is unchanged/)
+  })
+
+  it("flags `secret_…` integration token on the PAT path with rate-limit guidance", async () => {
+    // The operator pasted an integration token from
+    // notion.so/profile/integrations instead of a PAT from
+    // notion.so/developers/tokens. The token still works (verify
+    // succeeds) but the rate-limit-collapse risk is named so they
+    // can rotate.
+    const { deps, run } = makePatScenario({
+      notionApiTokenEnv: "secret_integration-bearer",
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 0 })
+    const out = run.stdout.join("\n")
+    expect(out).toMatch(/integration token/)
+    expect(out).toMatch(/rate-limited/)
+    expect(out).toMatch(/notion\.so\/developers\/tokens/)
+  })
+
+  it("handles a config-source legacy token (auth.token in .lore.yaml) with PAT-target unset copy", async () => {
+    // Symmetric coverage with `runMigrate`'s legacy-source branch.
+    // Also pins that the config-source legacy variant ships the
+    // PAT-target unset-instructions copy (not the ntn-target's
+    // "activate ntn-first auth" / Step 4 leak).
+    const { deps, run, spies } = makePatScenario({
+      configToken: "lore-config-token",
+      notionApiTokenEnv: "ntn_pat-bearer",
+    })
+    const result = await runPatMigrate({}, deps)
+    expect(result).toEqual({ exitCode: 0 })
+    expect(spies.legacyVerify).toHaveBeenCalledTimes(1)
+    expect(spies.patVerify).toHaveBeenCalledTimes(1)
+    const out = run.stdout.join("\n")
+    expect(out).toMatch(/Step 1\/3 — Verify legacy auth\.token/)
+    expect(out).toMatch(/remove the auth\.token field/)
+    // PAT-target unset copy regression guards (config-source variant).
+    expect(out).toMatch(/To activate the PAT in NOTION_API_TOKEN/)
+    expect(out).toMatch(/Your PAT in NOTION_API_TOKEN is the active token/)
+    expect(out).not.toMatch(/ntn-first auth/)
+    expect(out).not.toMatch(/Step 4/)
   })
 })

@@ -24,6 +24,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
   }
 })
+import { trapProcessExit } from "../test-helpers.js"
 import {
   buildClaudeHookCommand,
   buildClaudeMcpEntry,
@@ -39,6 +40,7 @@ import {
   buildPrintConfigOutput,
   containsTomlArrayOfTables,
   detectYarnPnp,
+  formatLegacyForwardedNoteLines,
   ntnLoginRecovery,
   prepareInstallContext,
   shellQuotePortablePath,
@@ -2047,6 +2049,90 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
     )
     expect(second).toBe(first)
   })
+
+  it("writes literal NOTION_BASE_URL=dev to JSON snippet when notionBaseUrlLiteral is set", () => {
+    // The print-config path must match the supported-host install paths
+    // (Claude / Codex / Cursor) on the `--dev` contract: spawned MCP
+    // child targets the dev base URL via a `staticEnv` literal, not a
+    // `${VAR}` placeholder. Without this, `lore install --print-config
+    // json --dev` would emit a snippet whose runtime silently degrades
+    // to prod on operator shells without the matching env signal — the
+    // exact failure mode `--client` paths already address.
+    const output = buildPrintConfigOutput(
+      "json",
+      "/lore/dist/mcp.js",
+      "/lore",
+      TEST_CONFIG_ROOT,
+      false,
+      "bare",
+      ENV_NONE,
+      undefined,
+      "https://api-dev.notion.com",
+    )
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { env: Record<string, string> } }
+    }
+    expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).toBe(
+      "https://api-dev.notion.com",
+    )
+    expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).not.toBe(
+      "${NOTION_BASE_URL}",
+    )
+  })
+
+  it("writes literal NOTION_BASE_URL=dev to TOML snippet when notionBaseUrlLiteral is set", () => {
+    // Codex variant of the same contract. The `bash -lc` prefix
+    // carries the literal value as a `NAME='value'` env-prefix
+    // entry; the `${VAR}` placeholder shape isn't even part of the
+    // Codex output (env vars there are inlined into the bash
+    // launch command), so the literal landing is the only way the
+    // dev base URL reaches the spawned child reliably.
+    const output = buildPrintConfigOutput(
+      "toml",
+      "/lore/dist/mcp.js",
+      "/lore",
+      TEST_CONFIG_ROOT,
+      false,
+      "bare",
+      ENV_NONE,
+      undefined,
+      "https://api-dev.notion.com",
+    )
+    expect(output).toContain("NOTION_BASE_URL='https://api-dev.notion.com'")
+  })
+
+  it("suppresses ${NOTION_BASE_URL} placeholder when notionBaseUrlLiteral wins (JSON)", () => {
+    // The literal must win even when the operator's install-time
+    // shell carries `NOTION_BASE_URL` set to some other value. The
+    // print-config path mirrors `--client claude` in this respect:
+    // the static literal lands and the conditional `${NOTION_BASE_URL}`
+    // placeholder is suppressed so the spawned child reads only the
+    // literal (not the operator's stale shell value at MCP-spawn
+    // time).
+    const env: NodeJS.ProcessEnv = { NOTION_BASE_URL: "https://api.notion.so" }
+    const output = buildPrintConfigOutput(
+      "json",
+      "/lore/dist/mcp.js",
+      "/lore",
+      TEST_CONFIG_ROOT,
+      false,
+      "bare",
+      env,
+      undefined,
+      "https://api-dev.notion.com",
+    )
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { env: Record<string, string> } }
+    }
+    expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).toBe(
+      "https://api-dev.notion.com",
+    )
+    // The placeholder MUST NOT be in the env block — that's the
+    // entire point of the literal-and-suppress posture.
+    expect(Object.values(parsed.mcpServers.lore.env)).not.toContain(
+      "${NOTION_BASE_URL}",
+    )
+  })
 })
 
 describe("install command runtime — --print-config short-circuits other flags", () => {
@@ -2143,6 +2229,318 @@ describe("install command runtime — --print-config short-circuits other flags"
     // No file write side-effect: the install banner never landed on
     // stdout (the print-config short-circuit fires first).
     expect(output).not.toContain("Checking prerequisites")
+  })
+
+  it("--print-config json --dev emits the literal dev base URL (action-handler entry)", async () => {
+    // C1 from the strict re-review: pin the print-config `--dev`
+    // contract at the action-handler level (not just the
+    // buildPrintConfigOutput unit), so a future refactor that
+    // drops the `dev` thread between the action handler and
+    // `runPrintConfig` fails loudly.
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const priorEnv = {
+      NOTION_ENV: process.env["NOTION_ENV"],
+      NOTION_BASE_URL: process.env["NOTION_BASE_URL"],
+      NOTION_API_BASE_URL: process.env["NOTION_API_BASE_URL"],
+      LORE_NOTION_BASE_URL: process.env["LORE_NOTION_BASE_URL"],
+    }
+    delete process.env["NOTION_ENV"]
+    delete process.env["NOTION_BASE_URL"]
+    delete process.env["NOTION_API_BASE_URL"]
+    delete process.env["LORE_NOTION_BASE_URL"]
+
+    try {
+      await installCommand.parseAsync(
+        ["--print-config", "json", "--dev"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      for (const [k, v] of Object.entries(priorEnv)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+
+    const output = writes.join("")
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { env: Record<string, string> } }
+    }
+    expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).toBe(
+      "https://api-dev.notion.com",
+    )
+    // None of the four base-URL selector placeholders should be in
+    // the emitted env block (C-blocker fix: literal dominates ALL
+    // selector placeholders, not just NOTION_BASE_URL).
+    const envValues = Object.values(parsed.mcpServers.lore.env)
+    expect(envValues).not.toContain("${NOTION_BASE_URL}")
+    expect(envValues).not.toContain("${LORE_NOTION_BASE_URL}")
+    expect(envValues).not.toContain("${NOTION_API_BASE_URL}")
+    expect(envValues).not.toContain("${NOTION_ENV}")
+  })
+
+  it("--print-config json --dev fail-fasts when LORE_NOTION_BASE_URL conflicts (action-handler entry)", async () => {
+    // The load-bearing case from the strict re-review's blocker:
+    // an install-time `LORE_NOTION_BASE_URL=prod` would silently
+    // override the dev literal at MCP-spawn time (LORE_NOTION_BASE_URL
+    // outranks NOTION_BASE_URL in resolveOperatorBaseUrl's chain).
+    // The fail-fast guard must catch this BEFORE any output lands
+    // on stdout.
+    //
+    // Uses `trapProcessExit` from `src/cli/test-helpers.ts` (the
+    // standing no-throw pattern in `src/cli/AGENTS.md`'s "Testing
+    // exit paths" subsection) rather than a throw-sentinel mock.
+    // The no-throw pattern lets the action's `process.exit(1) +
+    // defensive return` cleanly exit without triggering the outer
+    // try/catch's `Install failed: …` re-render — pinning the
+    // production behavior the C2 fix targets (no double-print
+    // tail after the diagnostic block).
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const errors: string[] = []
+    const stderrSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map(String).join(" "))
+      })
+    const exitTrap = trapProcessExit()
+    const priorLoreBaseUrl = process.env["LORE_NOTION_BASE_URL"]
+    process.env["LORE_NOTION_BASE_URL"] = "https://api.notion.so"
+
+    try {
+      await installCommand.parseAsync(
+        ["--print-config", "json", "--dev"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      stderrSpy.mockRestore()
+      vi.restoreAllMocks()
+      if (priorLoreBaseUrl === undefined) {
+        delete process.env["LORE_NOTION_BASE_URL"]
+      } else {
+        process.env["LORE_NOTION_BASE_URL"] = priorLoreBaseUrl
+      }
+    }
+
+    // No snippet emitted — fail-fast aborts before any stdout write.
+    expect(writes.join("")).toBe("")
+    // Exit code recorded by the trap. `toEqual([1])` (not
+    // `toContain(1)`) catches a doubled-emission regression if a
+    // future refactor drops the defensive `return` after
+    // `process.exit(1)` and execution falls through to the outer
+    // try/catch.
+    expect(exitTrap.exitCodes).toEqual([1])
+    // Diagnostic copy names the specific shell variable + the
+    // numbered recovery options. The exit-1 path (not throw) means
+    // no `Install failed: …` double-print appended to the
+    // diagnostic block — this assertion is the C2-blocker
+    // regression guard.
+    const err = errors.join("\n")
+    expect(err).toMatch(/LORE_NOTION_BASE_URL=https:\/\/api\.notion\.so/)
+    expect(err).toMatch(/Recovery \(pick one\):/)
+    expect(err).toMatch(/Unset the conflicting shell variable/)
+    expect(err).not.toMatch(/Install failed:/)
+  })
+
+  it("--print-config toml --dev emits the literal dev base URL in the bash-lc prefix", async () => {
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const priorEnv = {
+      NOTION_ENV: process.env["NOTION_ENV"],
+      NOTION_BASE_URL: process.env["NOTION_BASE_URL"],
+      NOTION_API_BASE_URL: process.env["NOTION_API_BASE_URL"],
+      LORE_NOTION_BASE_URL: process.env["LORE_NOTION_BASE_URL"],
+    }
+    delete process.env["NOTION_ENV"]
+    delete process.env["NOTION_BASE_URL"]
+    delete process.env["NOTION_API_BASE_URL"]
+    delete process.env["LORE_NOTION_BASE_URL"]
+
+    try {
+      await installCommand.parseAsync(
+        ["--print-config", "toml", "--dev"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      for (const [k, v] of Object.entries(priorEnv)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+
+    const output = writes.join("")
+    expect(output).toContain("NOTION_BASE_URL='https://api-dev.notion.com'")
+    // The selector placeholders must NOT appear in the bash-lc
+    // prefix or the env_vars list — same dominance contract as the
+    // JSON path.
+    expect(output).not.toContain("$LORE_NOTION_BASE_URL")
+    expect(output).not.toContain("$NOTION_API_BASE_URL")
+    expect(output).not.toContain('"LORE_NOTION_BASE_URL"')
+    expect(output).not.toContain('"NOTION_API_BASE_URL"')
+  })
+
+  it("--print-config json emits the PAT-default-plus-ntn legacy-forwarded note to stderr when LORE_NOTION_TOKEN is set", async () => {
+    // The reviewer's specific regression-coverage ask: the
+    // `--print-config` legacy-forwarded mirror must name BOTH
+    // migrate branches under the post-2026-05-13 contract, AND
+    // must keep the pre-announcement ntn-only wording out. The
+    // note goes to stderr (not stdout) so a pipeline like
+    // `lore install --print-config json | jq` stays clean.
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const stderrWrites: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const priorLoreToken = process.env["LORE_NOTION_TOKEN"]
+    process.env["LORE_NOTION_TOKEN"] = "stale-legacy-tok"
+
+    try {
+      await installCommand.parseAsync(
+        ["--print-config", "json"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      stderrSpy.mockRestore()
+      if (priorLoreToken === undefined) {
+        delete process.env["LORE_NOTION_TOKEN"]
+      } else {
+        process.env["LORE_NOTION_TOKEN"] = priorLoreToken
+      }
+    }
+
+    // Stdout stays clean — the snippet JSON only.
+    const stdout = writes.join("")
+    expect(stdout.startsWith('{\n  "mcpServers":')).toBe(true)
+    // Stderr carries the note. Both migrate branches named, 0.14.0
+    // removal target named.
+    const stderr = stderrWrites.join("")
+    expect(stderr).toContain("LORE_NOTION_TOKEN forwarded")
+    expect(stderr).toContain("soft-deprecated")
+    expect(stderr).toContain("0.14.0")
+    expect(stderr).toContain("`lore auth --migrate`")
+    expect(stderr).toContain("PAT default")
+    expect(stderr).toContain("`lore auth --migrate --ntn`")
+    // Regression guards: the reviewer's specifically-named stale
+    // strings must not return through a future refactor.
+    expect(stderr).not.toMatch(/Switch via/)
+    expect(stderr).not.toMatch(/NOTION_KEYRING=0 ntn login/)
+    expect(stderr).not.toMatch(/until.*lore auth --migrate.*ships/)
+  })
+
+  it("--print-config toml emits the same stderr note shape (mirror parity)", async () => {
+    // Format-axis is orthogonal to the stderr note — both JSON and
+    // TOML print-config paths share the same legacy-forwarded
+    // mirror. Pin parity so a future refactor that splits the
+    // mirror by format keeps both branches consistent.
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const stderrWrites: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const priorLoreToken = process.env["LORE_NOTION_TOKEN"]
+    process.env["LORE_NOTION_TOKEN"] = "stale-legacy-tok"
+
+    try {
+      await installCommand.parseAsync(
+        ["--print-config", "toml"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      stderrSpy.mockRestore()
+      if (priorLoreToken === undefined) {
+        delete process.env["LORE_NOTION_TOKEN"]
+      } else {
+        process.env["LORE_NOTION_TOKEN"] = priorLoreToken
+      }
+    }
+
+    expect(writes.join("").startsWith("[mcp_servers.lore]\n")).toBe(true)
+    const stderr = stderrWrites.join("")
+    expect(stderr).toContain("PAT default")
+    expect(stderr).toContain("`lore auth --migrate --ntn`")
+    expect(stderr).not.toMatch(/NOTION_KEYRING=0 ntn login/)
+  })
+
+  it("--print-config json with NO LORE_NOTION_TOKEN does NOT emit a legacy-forwarded note", async () => {
+    // The note is conditional on the legacy var being in the
+    // install-time env. Operators without it should not see any
+    // stderr line — the note exists specifically to nudge
+    // shell-rc cleanup, not as background noise.
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const stderrWrites: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const priorLoreToken = process.env["LORE_NOTION_TOKEN"]
+    delete process.env["LORE_NOTION_TOKEN"]
+
+    try {
+      await installCommand.parseAsync(
+        ["--print-config", "json"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      stderrSpy.mockRestore()
+      if (priorLoreToken === undefined) {
+        delete process.env["LORE_NOTION_TOKEN"]
+      } else {
+        process.env["LORE_NOTION_TOKEN"] = priorLoreToken
+      }
+    }
+
+    // No stderr writes about the legacy note. (Other stderr —
+    // e.g. resolveAuth deprecation warnings under config-auth-token
+    // — could still land, but none of the test scaffolding here
+    // sets up that branch, so stderr should be entirely empty.)
+    expect(stderrWrites.join("")).toBe("")
   })
 })
 
@@ -2671,6 +3069,87 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env["NOTION_BASE_URL"]).toBe("${NOTION_BASE_URL}")
     expect(build.forwarded).toContain("NOTION_BASE_URL")
+  })
+
+  it("writes NOTION_BASE_URL as a literal staticEnv entry when notionBaseUrlLiteral is set (--dev)", () => {
+    // Closes the reviewer-flagged gap: --dev was previously advisory-
+    // only. With `notionBaseUrlLiteral` set, the literal dev URL lands
+    // in `staticEnv` and the `${NOTION_BASE_URL}` placeholder is
+    // suppressed — the MCP child reads the dev URL from its own
+    // env-merge without depending on the operator's shell having
+    // NOTION_BASE_URL exported at MCP-spawn time.
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, ENV_NONE, {
+      notionBaseUrlLiteral: "https://api-dev.notion.com",
+    })
+    expect(build.staticEnv["NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
+    expect(build.env["NOTION_BASE_URL"]).toBeUndefined()
+    expect(build.forwarded).not.toContain("NOTION_BASE_URL")
+  })
+
+  it("notionBaseUrlLiteral overrides a shell-set NOTION_BASE_URL — install-time choice wins runtime", () => {
+    // An operator who set NOTION_BASE_URL=prod in their shell but passed
+    // --dev (or vice versa) — the install-time flag wins because it's
+    // the most recent explicit operator intent. Without this override,
+    // the `${NOTION_BASE_URL}` placeholder would silently resolve to the
+    // operator's shell value at MCP-spawn time and defeat the flag.
+    const env: NodeJS.ProcessEnv = { NOTION_BASE_URL: "https://api.notion.so" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, {
+      notionBaseUrlLiteral: "https://api-dev.notion.com",
+    })
+    expect(build.staticEnv["NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
+    expect(build.env["NOTION_BASE_URL"]).toBeUndefined()
+    expect(build.forwarded).not.toContain("NOTION_BASE_URL")
+  })
+
+  it("notionBaseUrlLiteral suppresses ALL base-URL selector placeholders (LORE_NOTION_BASE_URL, NOTION_BASE_URL, NOTION_API_BASE_URL, NOTION_ENV)", () => {
+    // The blocker the reviewer caught: `LORE_NOTION_BASE_URL` outranks
+    // the literal `NOTION_BASE_URL` in `resolveOperatorBaseUrl`'s
+    // priority chain. If we forward `${LORE_NOTION_BASE_URL}` alongside
+    // the literal `NOTION_BASE_URL=dev`, the MCP child reads
+    // `LORE_NOTION_BASE_URL` first and the literal is dead. Same
+    // failure mode for `NOTION_API_BASE_URL` (lower-priority but still
+    // sets the URL when NOTION_BASE_URL is unset at MCP-spawn) and
+    // `NOTION_ENV` (mapped via the canonical table). Suppress all four
+    // when `notionBaseUrlLiteral` is set so the literal stays
+    // load-bearing.
+    const env: NodeJS.ProcessEnv = {
+      LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
+      NOTION_BASE_URL: "https://api.notion.so",
+      NOTION_API_BASE_URL: "https://api.notion.so",
+      NOTION_ENV: "dev",
+    }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, {
+      notionBaseUrlLiteral: "https://api-dev.notion.com",
+    })
+    // Static literal lands.
+    expect(build.staticEnv["NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
+    // None of the four selector placeholders is forwarded.
+    expect(build.env["LORE_NOTION_BASE_URL"]).toBeUndefined()
+    expect(build.env["NOTION_BASE_URL"]).toBeUndefined()
+    expect(build.env["NOTION_API_BASE_URL"]).toBeUndefined()
+    expect(build.env["NOTION_ENV"]).toBeUndefined()
+    expect(build.forwarded).not.toContain("LORE_NOTION_BASE_URL")
+    expect(build.forwarded).not.toContain("NOTION_BASE_URL")
+    expect(build.forwarded).not.toContain("NOTION_API_BASE_URL")
+    expect(build.forwarded).not.toContain("NOTION_ENV")
+  })
+
+  it("notionBaseUrlLiteral does NOT suppress non-base-URL keys (auth tokens, workspace id, user name)", () => {
+    // The suppression is base-URL-selector-specific. Auth-token
+    // placeholders and other operator-set runtime keys must keep
+    // forwarding under `--dev` — the literal-injection contract is
+    // about the URL, not about everything else.
+    const env: NodeJS.ProcessEnv = {
+      NOTION_API_TOKEN: "tok",
+      NOTION_WORKSPACE_ID: "ws",
+      LORE_USER_NAME: "Hesham",
+    }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, {
+      notionBaseUrlLiteral: "https://api-dev.notion.com",
+    })
+    expect(build.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
+    expect(build.env["NOTION_WORKSPACE_ID"]).toBe("${NOTION_WORKSPACE_ID}")
+    expect(build.env["LORE_USER_NAME"]).toBe("${LORE_USER_NAME}")
   })
 
   it("forwards ntn-native NOTION_API_BASE_URL when the operator has it set", () => {
@@ -3917,5 +4396,51 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
       { NOTION_ENV: "stg" },
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=stg ntn login")
+  })
+})
+
+describe("formatLegacyForwardedNoteLines (PAT-default migrate contract)", () => {
+  // The install-summary legacy-forwarded note must:
+  //   1. Print exactly the shell-rc-cleanup nudge when
+  //      LORE_NOTION_TOKEN is in the operator's install-time env.
+  //   2. Name BOTH `lore auth --migrate` branches under the
+  //      post-2026-05-13 contract — PAT default + `--ntn` opt-in.
+  //   3. NOT contain the pre-announcement "switching to ntn-issued
+  //      workspace tokens" / "until `lore auth --migrate` ships"
+  //      wording. The reviewer flagged this as the regression
+  //      surface that future refactors must protect against; the
+  //      `not.toMatch` guards below pin the stale strings out.
+  //   4. Return empty for the no-legacy-forwarded case so the caller
+  //      can iterate without an empty-guard `if`.
+
+  it("returns empty array when no LORE_NOTION_TOKEN is forwarded", () => {
+    expect(formatLegacyForwardedNoteLines(false)).toEqual([])
+  })
+
+  it("names both migrate branches and the 0.14.0 removal target when LORE_NOTION_TOKEN is forwarded", () => {
+    const lines = formatLegacyForwardedNoteLines(true)
+    const joined = lines.join("\n")
+    expect(joined).toContain("LORE_NOTION_TOKEN is forwarded into the MCP entry")
+    expect(joined).toContain("soft-deprecated")
+    expect(joined).toContain("0.14.0")
+    expect(joined).toContain("`lore auth --migrate`")
+    expect(joined).toContain("PAT default")
+    expect(joined).toContain("`lore auth")
+    expect(joined).toContain("--migrate --ntn`")
+    expect(joined).toContain("unset LORE_NOTION_TOKEN from")
+  })
+
+  it("does NOT contain the pre-announcement ntn-only wording (regression guard)", () => {
+    // The reviewer's specific ask: the stale "switching to
+    // ntn-issued workspace tokens" / "until `lore auth --migrate`
+    // ships" wording must not return through a future refactor.
+    // The migrate-default flip is the load-bearing contract;
+    // backsliding here would silently route legacy operators to
+    // ntn-only when this PR ships PAT-default.
+    const joined = formatLegacyForwardedNoteLines(true).join("\n")
+    expect(joined).not.toMatch(/switching to ntn-issued workspace tokens/)
+    expect(joined).not.toMatch(/until `lore auth --migrate` ships/)
+    expect(joined).not.toMatch(/until lore auth --migrate ships/)
+    expect(joined).not.toMatch(/NOTION_KEYRING=0 ntn login/)
   })
 })

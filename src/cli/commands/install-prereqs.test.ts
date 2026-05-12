@@ -131,7 +131,15 @@ describe("ensurePrerequisites — happy path", () => {
     expect(out).toMatch(/Vault page:\s+✓ My Vault/)
   })
 
-  it("annotates legacy auth sources with the migration recommendation", async () => {
+  it("annotates legacy auth sources with the PAT-default-plus-ntn migration recommendation", async () => {
+    // Post-2026-05-13: the install-time legacy-source annotation
+    // must name BOTH migrate branches — PAT default
+    // (`lore auth --migrate`) and the `--ntn` opt-in
+    // (`lore auth --migrate --ntn`). The pre-announcement
+    // "switch to ntn via `NOTION_KEYRING=0 ntn login`" wording
+    // silently routed legacy operators to the wrong contract;
+    // this test pins the post-announcement wording AND keeps the
+    // stale string from sneaking back.
     vi.mocked(resolveAuth).mockResolvedValue({
       token: "tok",
       source: "env-lore-notion-token",
@@ -140,7 +148,13 @@ describe("ensurePrerequisites — happy path", () => {
     expect(result.ready).toBe(true)
     const out = captured(consoleLogSpy)
     expect(out).toMatch(/Auth source:\s+✓ LORE_NOTION_TOKEN \(env, legacy\)/)
-    expect(out).toMatch(/soft-deprecated; switch to ntn via `NOTION_KEYRING=0 ntn login`/)
+    expect(out).toMatch(/soft-deprecated; migrate via `lore auth --migrate` \(PAT default\)/)
+    expect(out).toMatch(/`lore auth --migrate --ntn` for ntn-issued auth/)
+    // Regression guard for the stale ntn-only wording. A future
+    // refactor that reverts the install-time annotation to "switch
+    // to ntn via `NOTION_KEYRING=0 ntn login`" fails loudly.
+    expect(out).not.toMatch(/switch to ntn via/)
+    expect(out).not.toMatch(/NOTION_KEYRING=0 ntn login\)/)
   })
 })
 
@@ -213,13 +227,19 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
     consoleErrorSpy.mockClear()
   })
 
-  it("auto-installs ntn under --yes and proceeds", async () => {
+  it("auto-installs ntn under --ntn --yes and proceeds", async () => {
+    // The auto-install branch is `--ntn`-only since the
+    // 2026-05-13 PAT announcement. Default `lore install` does NOT
+    // curl-pipe-bash; only the explicit internal-engineer opt-in does.
     vi.mocked(isNtnInstalled).mockReturnValue(false)
     vi.mocked(installNtn).mockResolvedValue({ kind: "success" })
     vi.mocked(checkNtnVersion).mockReturnValue("ok")
     vi.mocked(getNtnVersion).mockReturnValue("0.12.0")
 
-    const result = await ensurePrerequisites(makeContext(), { yes: true })
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+    })
 
     expect(installNtn).toHaveBeenCalled()
     expect(result.ready).toBe(true)
@@ -228,20 +248,23 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
     expect(out).toMatch(/ntn installed/)
   })
 
-  it("returns ready=false when installNtn fails non-zero", async () => {
+  it("returns ready=false when installNtn fails non-zero (--ntn path)", async () => {
     vi.mocked(isNtnInstalled).mockReturnValue(false)
     vi.mocked(installNtn).mockResolvedValue({ kind: "exit-non-zero", code: 1 })
 
-    const result = await ensurePrerequisites(makeContext(), { yes: true })
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+    })
 
     expect(result.ready).toBe(false)
     expect(captured(consoleErrorSpy)).toMatch(/ntn install failed/)
   })
 
-  it("returns ready=false when installNtn spawn-errors (e.g., laptop offline during curl-pipe-bash)", async () => {
+  it("returns ready=false when installNtn spawn-errors under --ntn (laptop offline during curl-pipe-bash)", async () => {
     // The most likely real-world failure mode for the install path —
     // the auto-install spawn fails before the script can run. The
-    // `kind: "spawn-error"` branch is what `auth/ntn.ts:485` returns
+    // `kind: "spawn-error"` branch is what `auth/ntn.ts` returns
     // on `child_process.spawn` throwing or emitting `error`.
     vi.mocked(isNtnInstalled).mockReturnValue(false)
     vi.mocked(installNtn).mockResolvedValue({
@@ -249,13 +272,16 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
       error: new Error("ENETUNREACH"),
     })
 
-    const result = await ensurePrerequisites(makeContext(), { yes: true })
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+    })
 
     expect(result.ready).toBe(false)
     expect(captured(consoleErrorSpy)).toMatch(/ntn install failed/)
   })
 
-  it("returns ready=false in non-TTY when ntn is missing and --yes is not passed", async () => {
+  it("returns ready=false in non-TTY when ntn is missing and --yes is not passed (--ntn path)", async () => {
     vi.mocked(isNtnInstalled).mockReturnValue(false)
     // confirmPrompt detects non-TTY and returns false; we simulate
     // that by stubbing process.stdin.isTTY for the duration of this
@@ -263,7 +289,7 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
     const originalIsTTY = process.stdin.isTTY
     Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true })
     try {
-      const result = await ensurePrerequisites(makeContext(), {})
+      const result = await ensurePrerequisites(makeContext(), { ntn: true })
       expect(result.ready).toBe(false)
       expect(installNtn).not.toHaveBeenCalled()
     } finally {
@@ -272,6 +298,447 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
         configurable: true,
       })
     }
+  })
+})
+
+describe("ensurePrerequisites — persona routing (PAT vs ntn vs neither)", () => {
+  // Default `lore install` (no `--ntn`) routes by persona signal:
+  //
+  //   - `NOTION_API_TOKEN` set → external (PAT) path; skip `ntn`.
+  //   - `ntn` installed → internal path; preserve backward compat for
+  //     engineers who upgraded Lore without changing their habits.
+  //   - Neither → persona prompt; bail with both-paths guidance.
+  //
+  // `--ntn` forces the internal path regardless of env state.
+
+  const PRIOR_NOTION_API_TOKEN = process.env["NOTION_API_TOKEN"]
+
+  beforeEach(() => {
+    delete process.env["NOTION_API_TOKEN"]
+    vi.mocked(findConfigFile).mockResolvedValue({
+      path: "/tmp/prereqs-fake-project/.lore.yaml",
+      root: "/tmp/prereqs-fake-project",
+    })
+    vi.mocked(loadConfig).mockResolvedValue({ vault: { pageId: "page-123" } } as never)
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: "PAT Vault" })
+    vi.mocked(checkNtnVersion).mockReturnValue("ok")
+    vi.mocked(getNtnVersion).mockReturnValue("0.12.0")
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    consoleLogSpy.mockClear()
+    consoleWarnSpy.mockClear()
+    consoleErrorSpy.mockClear()
+    if (PRIOR_NOTION_API_TOKEN === undefined) {
+      delete process.env["NOTION_API_TOKEN"]
+    } else {
+      process.env["NOTION_API_TOKEN"] = PRIOR_NOTION_API_TOKEN
+    }
+  })
+
+  it("takes the PAT path when NOTION_API_TOKEN is set (skips ntn install + version probes)", async () => {
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer"
+    vi.mocked(isNtnInstalled).mockReturnValue(false)
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "ntn_pat-bearer",
+      source: "env-notion-api-token",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(true)
+    // The PAT path must NOT touch `ntn` — neither install nor version
+    // probes should fire when an operator pasted a PAT. Routing
+    // through them would be both pointless and a noisy onboarding.
+    expect(installNtn).not.toHaveBeenCalled()
+    expect(runNtnLogin).not.toHaveBeenCalled()
+    const out = captured(consoleLogSpy)
+    expect(out).toMatch(/Auth path:\s+✓ Personal Access Token \(NOTION_API_TOKEN\)/)
+    expect(out).toMatch(/Auth source:\s+✓ NOTION_API_TOKEN/)
+    expect(out).toMatch(/Vault page:\s+✓ PAT Vault/)
+  })
+
+  it("flags an integration token (`secret_…`) shape on the PAT path with rate-limit guidance", async () => {
+    process.env["NOTION_API_TOKEN"] = "secret_oops-integration-token"
+    vi.mocked(isNtnInstalled).mockReturnValue(false)
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "secret_oops-integration-token",
+      source: "env-notion-api-token",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    // Informational, not blocking — verifyVaultAccess still runs and
+    // returns `ok`, so the install proceeds. The hint exists so the
+    // operator can self-diagnose the rate-limit-collapse risk.
+    expect(result.ready).toBe(true)
+    const out = captured(consoleLogSpy)
+    expect(out).toMatch(/integration token from notion\.so\/profile\/integrations/)
+    expect(out).toMatch(/PAT/)
+    expect(out).toMatch(/notion\.so\/developers\/tokens/)
+  })
+
+  it("surfaces persona prompt when ntn is NOT installed AND NOTION_API_TOKEN is unset", async () => {
+    // The new "I don't know your persona yet" branch. Print both
+    // paths and bail so the operator's next invocation carries
+    // enough state to dispatch.
+    vi.mocked(isNtnInstalled).mockReturnValue(false)
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(false)
+    expect(installNtn).not.toHaveBeenCalled()
+    expect(runNtnLogin).not.toHaveBeenCalled()
+    const out = captured(consoleLogSpy)
+    expect(out).toMatch(/Internal Notion engineer\?/)
+    expect(out).toMatch(/lore install --ntn/)
+    expect(out).toMatch(/External operator\?/)
+    expect(out).toMatch(/notion\.so\/developers\/tokens/)
+    expect(out).toMatch(/Do NOT paste an integration token/)
+  })
+
+  it("persona prompt mentions --dev when --dev was passed alone", async () => {
+    vi.mocked(isNtnInstalled).mockReturnValue(false)
+
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      dev: true,
+    })
+
+    expect(result.ready).toBe(false)
+    const out = captured(consoleLogSpy)
+    // The recovery `--ntn` invocation should preserve the operator's
+    // `--dev` choice; the PAT example should use the dev prefix.
+    expect(out).toMatch(/lore install --ntn --dev/)
+    expect(out).toMatch(/development_ntn_/)
+    expect(out).toMatch(/lore install --dev/)
+  })
+
+  it("falls back to the ntn path when ntn is installed but no PAT is set (backward compat)", async () => {
+    // Internal engineers who upgraded Lore without changing their
+    // habits keep their existing flow: ntn-resolved auth.json, no
+    // `--ntn` flag required. Matches the install behavior before the
+    // PAT announcement so the upgrade isn't a surprise.
+    vi.mocked(isNtnInstalled).mockReturnValue(true)
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "ntn_resolved-from-auth-json",
+      source: "ntn-auth-json",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(true)
+    const out = captured(consoleLogSpy)
+    expect(out).toMatch(/ntn installed:\s+✓/)
+    expect(out).toMatch(/Auth source:\s+✓ ntn-issued/)
+  })
+})
+
+describe("ensurePrerequisites — --dev flag propagation", () => {
+  // `--dev` explicit wins over both `NOTION_ENV` shell var and
+  // `.lore.yaml`'s `auth.baseUrl`. The flag is the most recent
+  // explicit operator intent — honoring it preserves the principle
+  // that "what the operator just typed" beats stored signals.
+
+  const PRIOR_NOTION_ENV = process.env["NOTION_ENV"]
+
+  beforeEach(() => {
+    delete process.env["NOTION_ENV"]
+    vi.mocked(isNtnInstalled).mockReturnValue(true)
+    vi.mocked(checkNtnVersion).mockReturnValue("ok")
+    vi.mocked(getNtnVersion).mockReturnValue("0.12.0")
+    vi.mocked(findConfigFile).mockResolvedValue({
+      path: "/tmp/dev-flag-test/.lore.yaml",
+      root: "/tmp/dev-flag-test",
+    })
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+    vi.mocked(runNtnLogin).mockResolvedValue({ kind: "success" })
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    consoleLogSpy.mockClear()
+    consoleWarnSpy.mockClear()
+    consoleErrorSpy.mockClear()
+    if (PRIOR_NOTION_ENV === undefined) {
+      delete process.env["NOTION_ENV"]
+    } else {
+      process.env["NOTION_ENV"] = PRIOR_NOTION_ENV
+    }
+  })
+
+  it("forwards NOTION_ENV=dev to ntn login under --ntn --dev when no other env signal is present", async () => {
+    // No NOTION_ENV in shell, no auth.baseUrl in config — only the
+    // `--dev` flag. The auto-login flow must respect it.
+    vi.mocked(loadConfig).mockResolvedValue({ vault: { pageId: "page" } } as never)
+    vi.mocked(resolveAuth)
+      .mockRejectedValueOnce(new Error("No Notion auth configured."))
+      .mockResolvedValueOnce({ token: "tok", source: "ntn-auth-json" })
+
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+      dev: true,
+    })
+
+    expect(result.ready).toBe(true)
+    expect(runNtnLogin).toHaveBeenCalledWith({ env: "dev" })
+    const out = captured(consoleLogSpy)
+    expect(out).toMatch(/--dev was passed/)
+  })
+
+  it("--dev overrides a stale auth.baseUrl pointing at prod", async () => {
+    // An operator who explicitly types `--dev` against a project
+    // whose `.lore.yaml` carries `auth.baseUrl: https://api.notion.so`
+    // is saying "ignore that, I want dev today." Honor it.
+    vi.mocked(loadConfig).mockResolvedValue({
+      vault: { pageId: "page" },
+      auth: { baseUrl: "https://api.notion.so" },
+    } as never)
+    vi.mocked(resolveAuth)
+      .mockRejectedValueOnce(new Error("No Notion auth configured."))
+      .mockResolvedValueOnce({ token: "tok", source: "ntn-auth-json" })
+
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+      dev: true,
+    })
+
+    expect(result.ready).toBe(true)
+    expect(runNtnLogin).toHaveBeenCalledWith({ env: "dev" })
+  })
+})
+
+describe("ensurePrerequisites — --dev / shell-signal conflict guard", () => {
+  // Reviewer call-out: under the previous behavior, `--dev` planted
+  // `NOTION_BASE_URL=dev` only when no shell signal existed, but
+  // `runInstall` always wrote a literal dev `NOTION_BASE_URL` into
+  // MCP env. So `--dev` + `NOTION_ENV=prod` (or `NOTION_BASE_URL=prod`,
+  // or `LORE_NOTION_BASE_URL=prod`) preflighted prod and installed
+  // dev MCP config. Worse, `LORE_NOTION_BASE_URL` outranks
+  // `NOTION_BASE_URL` in `resolveOperatorBaseUrl`'s chain, so the
+  // literal would silently lose to the operator's stale signal at
+  // MCP-spawn time.
+  //
+  // Fix: fail-fast at install when `--dev` conflicts with a shell
+  // signal. Operator picks which one is real — Lore won't guess.
+
+  const PRIOR = {
+    NOTION_ENV: process.env["NOTION_ENV"],
+    NOTION_BASE_URL: process.env["NOTION_BASE_URL"],
+    NOTION_API_BASE_URL: process.env["NOTION_API_BASE_URL"],
+    LORE_NOTION_BASE_URL: process.env["LORE_NOTION_BASE_URL"],
+    NOTION_API_TOKEN: process.env["NOTION_API_TOKEN"],
+  }
+
+  beforeEach(() => {
+    delete process.env["NOTION_ENV"]
+    delete process.env["NOTION_BASE_URL"]
+    delete process.env["NOTION_API_BASE_URL"]
+    delete process.env["LORE_NOTION_BASE_URL"]
+    delete process.env["NOTION_API_TOKEN"]
+    vi.mocked(findConfigFile).mockResolvedValue({
+      path: "/tmp/conflict-test/.lore.yaml",
+      root: "/tmp/conflict-test",
+    })
+    vi.mocked(loadConfig).mockResolvedValue({ vault: { pageId: "page" } } as never)
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+    vi.mocked(isNtnInstalled).mockReturnValue(true)
+    vi.mocked(checkNtnVersion).mockReturnValue("ok")
+    vi.mocked(getNtnVersion).mockReturnValue("0.12.0")
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    consoleLogSpy.mockClear()
+    consoleWarnSpy.mockClear()
+    consoleErrorSpy.mockClear()
+    for (const [k, v] of Object.entries(PRIOR)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+
+  it("aborts when --dev conflicts with shell NOTION_ENV=prod", async () => {
+    process.env["NOTION_ENV"] = "prod"
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer"
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(false)
+    // verifyVaultAccess must NOT run — install aborts before
+    // preflight so we can't validate a target the MCP child won't
+    // use.
+    expect(verifyVaultAccess).not.toHaveBeenCalled()
+    const err = captured(consoleErrorSpy)
+    expect(err).toMatch(/--dev was passed but NOTION_ENV=prod routes auth/)
+    expect(err).toMatch(/Unset the conflicting shell variable/)
+    expect(err).toMatch(/Drop --dev/)
+  })
+
+  it("aborts when --dev conflicts with shell NOTION_BASE_URL=prod", async () => {
+    process.env["NOTION_BASE_URL"] = "https://api.notion.so"
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer"
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(false)
+    expect(verifyVaultAccess).not.toHaveBeenCalled()
+    expect(captured(consoleErrorSpy)).toMatch(
+      /NOTION_BASE_URL=https:\/\/api\.notion\.so routes auth/,
+    )
+  })
+
+  it("aborts when --dev conflicts with shell LORE_NOTION_BASE_URL=prod (the placeholder-outranks-literal case)", async () => {
+    // The trickiest case from the reviewer's analysis:
+    // `LORE_NOTION_BASE_URL` outranks the literal `NOTION_BASE_URL`
+    // in the resolver chain. Even if Lore wrote dev as a literal,
+    // the operator's shell would re-route runtime to prod via
+    // the higher-priority placeholder. Fail-fast catches it before
+    // either side lands.
+    process.env["LORE_NOTION_BASE_URL"] = "https://api.notion.so"
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer"
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(false)
+    expect(verifyVaultAccess).not.toHaveBeenCalled()
+    expect(captured(consoleErrorSpy)).toMatch(
+      /LORE_NOTION_BASE_URL=https:\/\/api\.notion\.so routes auth/,
+    )
+  })
+
+  it("aborts when --dev conflicts with shell NOTION_API_BASE_URL=prod", async () => {
+    process.env["NOTION_API_BASE_URL"] = "https://api.notion.so"
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer"
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(false)
+    expect(captured(consoleErrorSpy)).toMatch(
+      /NOTION_API_BASE_URL=https:\/\/api\.notion\.so routes auth/,
+    )
+  })
+
+  it("aborts when --dev conflicts with a non-canonical shell base URL (corporate proxy)", async () => {
+    // `ntnEnvFromBaseUrl` returns undefined for a corporate proxy
+    // or any URL Lore doesn't recognize. The safe default is to
+    // refuse rather than guess — the operator's signal might mean
+    // dev, prod, or something else entirely.
+    process.env["NOTION_BASE_URL"] = "https://corporate-proxy.example/notion"
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer"
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(false)
+    expect(captured(consoleErrorSpy)).toMatch(/corporate-proxy/)
+  })
+
+  it("proceeds when --dev matches the shell signal (NOTION_ENV=dev)", async () => {
+    // The operator's shell already says dev — no conflict.
+    process.env["NOTION_ENV"] = "dev"
+    process.env["NOTION_API_TOKEN"] = "development_ntn_pat-bearer"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "development_ntn_pat-bearer",
+      source: "env-notion-api-token",
+      baseUrl: "https://api-dev.notion.com",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(true)
+    expect(verifyVaultAccess).toHaveBeenCalled()
+  })
+
+  it("proceeds when --dev is passed with no shell base-URL signal (planting fills in dev)", async () => {
+    // No conflicting signal; the existing plant-NOTION_BASE_URL
+    // logic in `resolveAndPreflight` handles install-time dev.
+    process.env["NOTION_API_TOKEN"] = "development_ntn_pat-bearer"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "development_ntn_pat-bearer",
+      source: "env-notion-api-token",
+      baseUrl: "https://api-dev.notion.com",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true, dev: true })
+
+    expect(result.ready).toBe(true)
+    expect(verifyVaultAccess).toHaveBeenCalled()
+  })
+})
+
+describe("ensurePrerequisites — --ntn shadow advisory when NOTION_API_TOKEN is set", () => {
+  // Reviewer concern: under the resolver chain (`NOTION_API_TOKEN >
+  // ntn-auth-json`), an operator who runs `lore install --ntn` with
+  // a PAT set in their shell silently uses the PAT for the spawned
+  // MCP child — not the ntn token they just minted. The describe
+  // line was the only signal. Add an explicit advisory naming the
+  // shadow + the `unset NOTION_API_TOKEN` remediation.
+
+  const PRIOR = process.env["NOTION_API_TOKEN"]
+
+  beforeEach(() => {
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer-token"
+    vi.mocked(isNtnInstalled).mockReturnValue(true)
+    vi.mocked(checkNtnVersion).mockReturnValue("ok")
+    vi.mocked(getNtnVersion).mockReturnValue("0.12.0")
+    vi.mocked(findConfigFile).mockResolvedValue({
+      path: "/tmp/shadow-test/.lore.yaml",
+      root: "/tmp/shadow-test",
+    })
+    vi.mocked(loadConfig).mockResolvedValue({ vault: { pageId: "page" } } as never)
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    consoleLogSpy.mockClear()
+    consoleWarnSpy.mockClear()
+    consoleErrorSpy.mockClear()
+    if (PRIOR === undefined) delete process.env["NOTION_API_TOKEN"]
+    else process.env["NOTION_API_TOKEN"] = PRIOR
+  })
+
+  it("prints the shadow advisory when --ntn is explicit and NOTION_API_TOKEN is set", async () => {
+    // PAT outranks ntn-auth-json — the MCP child will use the PAT
+    // even though --ntn just ran ntn login. Make that visible.
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "ntn_pat-bearer-token",
+      source: "env-notion-api-token",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+    })
+
+    expect(result.ready).toBe(true)
+    const out = captured(consoleLogSpy)
+    expect(out).toMatch(/NOTION_API_TOKEN:\s+!\s+set in shell — outranks ntn/)
+    expect(out).toMatch(/resolver chain \(NOTION_API_TOKEN > ntn-auth-json\)/)
+    expect(out).toMatch(/unset NOTION_API_TOKEN/)
+  })
+
+  it("does NOT print the shadow advisory when --ntn is set but NOTION_API_TOKEN is unset", async () => {
+    // Regression guard: the advisory only fires on the specific
+    // shadow case, not as background noise on every --ntn install.
+    delete process.env["NOTION_API_TOKEN"]
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "tok",
+      source: "ntn-auth-json",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), {
+      yes: true,
+      ntn: true,
+    })
+
+    expect(result.ready).toBe(true)
+    const out = captured(consoleLogSpy)
+    expect(out).not.toMatch(/NOTION_API_TOKEN:\s+!\s+set in shell/)
+    expect(out).not.toMatch(/outranks ntn/)
   })
 })
 
@@ -673,6 +1140,137 @@ describe("ensurePrerequisites — vault preflight", () => {
 
     expect(result.ready).toBe(true)
     expect(verifyVaultAccess).not.toHaveBeenCalled()
+  })
+})
+
+describe("ensurePrerequisites — PAT-source preflight-failure recovery", () => {
+  // Reviewer call-out: PAT installs were routing through ntn-specific
+  // recovery copy on `not-found` / `unauthorized` — telling external
+  // operators to "re-run `NOTION_KEYRING=0 ntn login`" when the right
+  // remediation is "rotate the PAT at notion.so/developers/tokens".
+  // These tests pin the source-aware split.
+
+  const PRIOR_NOTION_API_TOKEN = process.env["NOTION_API_TOKEN"]
+
+  beforeEach(() => {
+    delete process.env["NOTION_API_TOKEN"]
+    process.env["NOTION_API_TOKEN"] = "ntn_pat-bearer-token"
+    vi.mocked(isNtnInstalled).mockReturnValue(false)
+    vi.mocked(findConfigFile).mockResolvedValue({
+      path: "/tmp/prereqs-fake-project/.lore.yaml",
+      root: "/tmp/prereqs-fake-project",
+    })
+    vi.mocked(loadConfig).mockResolvedValue({ vault: { pageId: "page-123" } } as never)
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "ntn_pat-bearer-token",
+      source: "env-notion-api-token",
+    })
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    consoleLogSpy.mockClear()
+    consoleWarnSpy.mockClear()
+    consoleErrorSpy.mockClear()
+    if (PRIOR_NOTION_API_TOKEN === undefined) {
+      delete process.env["NOTION_API_TOKEN"]
+    } else {
+      process.env["NOTION_API_TOKEN"] = PRIOR_NOTION_API_TOKEN
+    }
+  })
+
+  it("PAT-source `not-found` routes to PAT-specific recovery (no ntn login mention)", async () => {
+    vi.mocked(verifyVaultAccess).mockResolvedValue({
+      kind: "not-found",
+      pageId: "page-123",
+      message: "...",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(false)
+    const err = captured(consoleErrorSpy)
+    // PAT-specific recovery: rotate at developers/tokens, share with
+    // the PAT's Notion identity.
+    expect(err).toMatch(/PAT install/)
+    expect(err).toMatch(/notion\.so\/developers\/tokens/)
+    expect(err).toMatch(/personal permissions|share/)
+    expect(err).toMatch(/Refusing to write MCP config/)
+    // MUST NOT route a PAT operator through `ntn login` — that was
+    // the reviewer's blocker. The PAT branch never mentions it.
+    expect(err).not.toMatch(/ntn login/)
+    expect(err).not.toMatch(/NOTION_KEYRING=0/)
+    expect(err).not.toMatch(/auth\.json/)
+  })
+
+  it("PAT-source `unauthorized` routes to PAT-rotate recovery (no ntn login mention)", async () => {
+    vi.mocked(verifyVaultAccess).mockResolvedValue({
+      kind: "unauthorized",
+      pageId: "page-123",
+      message: "Notion rejected the bearer token.",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(false)
+    const err = captured(consoleErrorSpy)
+    expect(err).toMatch(/Vault page:\s+✗ unauthorized/)
+    expect(err).toMatch(/Rotate the PAT/)
+    expect(err).toMatch(/notion\.so\/developers\/tokens/)
+    expect(err).toMatch(/Refusing to write MCP config/)
+    expect(err).not.toMatch(/ntn login/)
+    expect(err).not.toMatch(/NOTION_KEYRING=0/)
+  })
+
+  it("PAT-source `not-found` flags `secret_` token shape with the rate-limit-collapse warning", async () => {
+    // An integration token operator who hits `not-found` should hear
+    // "your token shape is wrong" as a third remediation, not just
+    // workspace/permissions. The shape mismatch is the load-bearing
+    // signal for the headline failure mode.
+    process.env["NOTION_API_TOKEN"] = "secret_integration-bearer"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "secret_integration-bearer",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(verifyVaultAccess).mockResolvedValue({
+      kind: "not-found",
+      pageId: "page-123",
+      message: "...",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(false)
+    const err = captured(consoleErrorSpy)
+    // The integration-token clause spans two console.error lines —
+    // `integration token from` ends one line, `notion.so/profile/integrations`
+    // starts the next. Match across the wrap.
+    expect(err).toMatch(/integration token from[\s\S]*notion\.so\/profile\/integrations/)
+    expect(err).toMatch(/Rotate to a PAT/)
+  })
+
+  it("ntn-source preflight failures still get ntn-specific recovery (regression guard)", async () => {
+    // The split must NOT change behavior for ntn operators — they
+    // still get `ntn login` recovery + auth.json mention + env-aware
+    // command suggestion.
+    delete process.env["NOTION_API_TOKEN"]
+    vi.mocked(isNtnInstalled).mockReturnValue(true)
+    vi.mocked(checkNtnVersion).mockReturnValue("ok")
+    vi.mocked(getNtnVersion).mockReturnValue("0.12.0")
+    vi.mocked(resolveAuth).mockResolvedValue({ token: "tok", source: "ntn-auth-json" })
+    vi.mocked(verifyVaultAccess).mockResolvedValue({
+      kind: "not-found",
+      pageId: "page-123",
+      message: "...",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(false)
+    const err = captured(consoleErrorSpy)
+    expect(err).toMatch(/ntn login/)
+    expect(err).toMatch(/NOTION_KEYRING=0/)
+    expect(err).toMatch(/auth\.json|wrong env/)
   })
 })
 

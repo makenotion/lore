@@ -1,18 +1,26 @@
 /**
- * OAuth 2.0 authentication flow for Notion.
+ * Notion API base-URL resolution, vault preflight, and (deprecated)
+ * OAuth 2.0 flow helpers.
  *
- * Implements the standard Authorization Code flow:
- * 1. Spin up a temporary localhost server
- * 2. Open browser to Notion's OAuth consent page
- * 3. Catch the redirect with the authorization code
- * 4. Exchange code for access token
- * 5. Persist token to ~/.lore/credentials.json
+ * The deprecated public OAuth surface — `runOAuthFlow`,
+ * `loadCredentials`, `getAuthorizationUrl`, `OAuthCredentials`,
+ * `OAuthConfig` — is marked `@deprecated` and remains exported for
+ * downstream compatibility until the 0.14.0 hard-removal release.
+ * (`exchangeCode` is a private internal helper used only by
+ * `runOAuthFlow`; it has never been exported and is removed at the
+ * same release.) The BYO-integration rollback path they served is
+ * obsolete now that public PAT support (issued at
+ * `notion.so/developers/tokens`) gives external operators a supported
+ * path. New code MUST NOT use these symbols.
  *
- * Also exports `verifyVaultAccess`, the post-auth-resolution preflight
- * that confirms a freshly-resolved token can read the configured vault
- * page. The helper is auth-mode-agnostic — works against any
- * `Client`, regardless of whether the token came from OAuth, ntn, or
- * the legacy `LORE_NOTION_TOKEN` path.
+ * What stays first-class:
+ *   - `ntnEnvBaseUrl` / `ntnEnvFromBaseUrl` / `resolveOperatorBaseUrl`
+ *     / `getBaseUrl` — env-name ↔ Notion API URL mapping consumed by
+ *     every Lore-managed login surface.
+ *   - `verifyVaultAccess` / `extractPageTitle` — post-auth-resolution
+ *     vault preflight. Auth-mode-agnostic: works against any `Client`
+ *     regardless of whether the token came from a PAT, `ntn`, or one
+ *     of the legacy sources.
  */
 
 import type { Client } from "@notionhq/client"
@@ -152,6 +160,14 @@ export function getBaseUrl(): string {
   return resolveOperatorBaseUrl() ?? "https://api.notion.so"
 }
 
+/**
+ * @deprecated Removal targeted for 0.14.0. The BYO-integration OAuth
+ * flow is obsolete now that public PATs (issued at
+ * `notion.so/developers/tokens` and pasted into `NOTION_API_TOKEN`)
+ * give external operators a supported path. New code MUST NOT
+ * construct or persist `OAuthCredentials`. See
+ * `docs/authentication.md` for the recommended PAT flow.
+ */
 export interface OAuthCredentials {
   access_token: string
   workspace_id: string
@@ -162,6 +178,9 @@ export interface OAuthCredentials {
   created_at: string
 }
 
+/**
+ * @deprecated Removal targeted for 0.14.0. See `OAuthCredentials`.
+ */
 export interface OAuthConfig {
   /** Drives both the browser authorization URL and token exchange. */
   clientId: string
@@ -173,6 +192,11 @@ export interface OAuthConfig {
 /**
  * Run the interactive OAuth flow. Opens a browser, waits for the callback,
  * exchanges the code, and persists credentials.
+ *
+ * @deprecated Removal targeted for 0.14.0. Use a Personal Access Token
+ * issued at `notion.so/developers/tokens` and pasted into
+ * `NOTION_API_TOKEN` instead. See `docs/authentication.md` for the
+ * PAT operator flow.
  */
 export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredentials> {
   const port = config.redirectPort ?? 0 // 0 = OS picks a free port
@@ -197,6 +221,8 @@ export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredential
 
 /**
  * Get the OAuth authorization URL that the user should open in their browser.
+ *
+ * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
  */
 export function getAuthorizationUrl(
   clientId: string,
@@ -219,6 +245,8 @@ export function getAuthorizationUrl(
 /**
  * Load saved OAuth credentials from disk.
  * Returns null if no credentials are saved.
+ *
+ * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
  */
 export async function loadCredentials(): Promise<OAuthCredentials | null> {
   try {

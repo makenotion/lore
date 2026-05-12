@@ -269,10 +269,33 @@ The other subcommands:
 - `--logout` directs operators at `ntn logout` (Lore doesn't manage
   ntn's storage; printing the right command is more useful than
   pretending Lore can revoke the token).
-- `--migrate` walks operators with `LORE_NOTION_TOKEN` set through
-  running `ntn login`, verifies the new token reaches the same
-  vault, and prints the unset instruction with shell-rc location
-  detection.
+- `--migrate` walks operators with `LORE_NOTION_TOKEN` or
+  `auth.token` set through migrating to a Personal Access Token
+  (PAT) pasted into `NOTION_API_TOKEN` (default, 2026-05-13
+  onward). When `NOTION_API_TOKEN` isn't yet set, the command prints
+  PAT-creation instructions and exits 0 — the operator re-runs after
+  exporting the token. With `NOTION_API_TOKEN` set, it verifies the
+  legacy token reaches the vault, verifies the PAT reaches the same
+  vault, prints unset instructions with shell-rc location detection,
+  and flags `secret_…` integration-token paste as a rate-limit-collapse
+  risk. Pass `--ntn` to select the internal-engineer flow instead
+  (walks the operator through `ntn login` + auth.json).
+
+  **Exit-code asymmetry between branches** (script-consumer
+  contract). `--migrate --ntn` returns `1` on every non-success step
+  — install ntn, `ntn login`, verify — because every step is
+  Lore-controlled. `--migrate` (PAT branch, default) returns `0`
+  when Step 2 detects `NOTION_API_TOKEN` is not yet exported,
+  because creating the PAT is irreducibly operator-controlled work
+  (browser → `notion.so/developers/tokens` → `export
+  NOTION_API_TOKEN`) and the "re-run after pasting" copy IS the
+  success path for that phase. Step 1 (legacy verify) and Step 3
+  (PAT verify) still return `1` on failure. Script consumers
+  writing `if ! lore auth --migrate; then ...` should know this is
+  a two-phase flow: a `0` exit with `NOTION_API_TOKEN` unset means
+  "waiting on operator paste", not "done". The asymmetry is the
+  contract — `runMigrate`'s ntn flow is entirely automatable; the
+  PAT flow has a human-in-the-loop step.
 
 `-y, --yes` skips confirmation prompts on `--login` /
 `--migrate` so non-interactive automation can pass through. The
@@ -692,6 +715,36 @@ obvious from the rendered output:
    command belongs in the quick-start list.
 
 ## The install Command
+
+### Persona routing (`--ntn` / `--dev`, 2026-05-13 onward)
+
+Default `lore install` is PAT-first: it expects `NOTION_API_TOKEN`
+(a Personal Access Token from `notion.so/developers/tokens`) and
+skips `ntn` install / version probes entirely. `--ntn` opts back
+into the internal-engineer path (auto-install `ntn` if missing, run
+`ntn login`). `--dev` composes with both: under `--ntn` it forwards
+`NOTION_ENV=dev` into the `ntn login` spawn; under the PAT path it
+plants `NOTION_BASE_URL=https://api-dev.notion.com` into the
+spawned MCP env as a LITERAL static-env entry (not a `${VAR}`
+placeholder), so the MCP child targets dev regardless of operator
+shell state at MCP-spawn time.
+
+Backward compat: when neither `--ntn` nor `NOTION_API_TOKEN` is set
+but `ntn` is already installed, `ensurePrerequisites` falls through
+to the ntn path so engineers who upgraded Lore without changing
+their habits don't see a surprise persona prompt. The auto-install
+branch ONLY fires when `--ntn` is explicit. When neither flag nor
+PAT is set AND `ntn` is not installed, the persona prompt fires:
+print both paths (internal: re-run with `--ntn`; external: create a
+PAT at `notion.so/developers/tokens`) and bail with `ready: false`.
+
+`preflightAndReport` routes recovery copy by `auth.source`:
+`env-notion-api-token` failures get PAT-specific guidance (rotate
+at `developers/tokens`, share with the PAT's Notion identity, flag
+`secret_…` token shape as the rate-limit-collapse risk), while
+ntn-source failures keep the env-aware `ntn login` recovery. Telling
+a PAT operator to "re-run `ntn login`" would be the wrong
+remediation for the external-operator default.
 
 ### 0.10.0 ntn detection and MCP env forwarding
 
