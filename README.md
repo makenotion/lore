@@ -87,7 +87,7 @@ Lore needs a Notion bearer token. Two parallel options:
   ```
 
   Lore reads the resulting `auth.json` automatically. See
-  [`docs/team-setup.md#known-gotcha-direct-ntn-login-outside-lore`](docs/team-setup.md#known-gotcha-direct-ntn-login-outside-lore)
+  [`docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore`](docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore)
   for the persistent shell-rc setup if you use `ntn` for other tooling too.
 
 Token resolution order is `NOTION_API_TOKEN` → ntn-resolved `auth.json` →
@@ -287,7 +287,7 @@ they need a one-time legacy migration via `lore vault ensure-entities` to
 create the Entities database and add the `SubjectEntity` / `ObjectEntity`
 relation columns to Facts, followed by `lore migrate --build-entities --yes`
 to re-point historical rows. See
-[`docs/team-setup.md#entities-database-cutover`](docs/team-setup.md#entities-database-cutover).
+[`docs/team-rollout.md#entities-database-cutover`](docs/team-rollout.md#entities-database-cutover).
 
 **Predicate values accepted by `lore-fact action='create'`**: `is_a`, `has_a`,
 `uses`, `depends_on`, `related_to`, `created_by`, `owned_by`, `replaces`,

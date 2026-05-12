@@ -15,7 +15,7 @@ Notion's internal monorepo and the `ntn` CLI, you're internal. Otherwise
 you're external.
 
 New operators adopting Lore on a team should start at
-[`docs/team-setup.md`](team-setup.md), which covers per-engineer onboarding,
+[`docs/team-rollout.md`](team-rollout.md), which covers per-engineer onboarding,
 the Entities-database cutover, the direct-`ntn login` keychain gotcha and
 its recovery, and shared-vault hook configuration. This document is the
 reference for the auth contract itself.
