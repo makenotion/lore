@@ -2066,6 +2066,232 @@ describe("dateBucket", () => {
   })
 })
 
+describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
+  function buildUpstreamBundleStub(options: {
+    label: string
+    pageId?: string
+    priority?: number
+    memories?: Memory[]
+    error?: string | null
+  }) {
+    const memories = options.memories ?? []
+    // Type the list mock with its actual signature so
+    // `.mock.calls[0][0]` is `{ limit: number; … }` rather than the
+    // empty-tuple TypeScript infers when no args are typed.
+    const listMock = vi.fn(
+      async (_args: { limit?: number; includeContent?: boolean }) => ({
+        items: memories,
+      }),
+    )
+    const loadReadersMock = vi.fn(async () => {
+      if (options.error !== undefined && options.error !== null) return null
+      return {
+        memories: { list: listMock },
+        facts: {} as never,
+      } as never
+    })
+    return {
+      label: options.label,
+      pageId: options.pageId ?? `${options.label}-page`,
+      priority: options.priority ?? 100,
+      loadReaders: loadReadersMock,
+      get lastError() {
+        return options.error ?? null
+      },
+      // Test-only accessors so assertions can inspect mock state
+      __listMock: listMock,
+      __loadReadersMock: loadReadersMock,
+    }
+  }
+
+  it("returns [] when services.upstreams is undefined (single-vault config)", async () => {
+    const services = stubServices()
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+    expect(data.inheritedMemories).toEqual([])
+  })
+
+  it("returns [] when services.upstreams is an empty array", async () => {
+    const services = stubServices()
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [] },
+      { projectId: "p1", now: NOW },
+    )
+    expect(data.inheritedMemories).toEqual([])
+  })
+
+  it("populates one labeled section per configured upstream, capped at the per-upstream limit", async () => {
+    const services = stubServices()
+    const upstreamMem1 = buildMemory({
+      id: "u1-mem-1",
+      title: "Upstream memory 1",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const upstreamMem2 = buildMemory({
+      id: "u1-mem-2",
+      title: "Upstream memory 2",
+      createdAt: "2026-04-18T00:00:00Z",
+    })
+
+    const teamBundle = buildUpstreamBundleStub({
+      label: "Team",
+      memories: [upstreamMem1, upstreamMem2],
+    })
+
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [teamBundle as never] },
+      { projectId: "p1", now: NOW, inheritedMemoryLimit: 5 },
+    )
+
+    expect(data.inheritedMemories).toHaveLength(1)
+    expect(data.inheritedMemories[0]).toMatchObject({
+      label: "Team",
+      memories: [upstreamMem1, upstreamMem2],
+      error: null,
+    })
+    // The bundle's `list` should have been called with the
+    // configured cap, NOT the primary's `memoryLimit` (which would
+    // multiply prompt noise — the issue's "sparse and labeled"
+    // posture).
+    expect(teamBundle.__listMock).toHaveBeenCalledTimes(1)
+    expect(teamBundle.__listMock.mock.calls[0]?.[0]).toMatchObject({ limit: 5 })
+  })
+
+  it("isolates upstream failure to its own section without suppressing surviving upstreams", async () => {
+    // Acceptance criterion (issue #286): "Upstream access failure
+    // produces a warning while preserving primary-vault results."
+    // Pin that BOTH the primary fan-out AND the surviving upstream
+    // render normally when one upstream's loadReaders returns null.
+    const services = stubServices({
+      rawMemories: [
+        buildMemory({
+          id: "primary-mem",
+          title: "Primary memory",
+          createdAt: "2026-04-20T00:00:00Z",
+        }),
+      ],
+    })
+    const upstreamMem = buildMemory({
+      id: "ok-mem",
+      title: "Surviving upstream memory",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+
+    const brokenBundle = buildUpstreamBundleStub({
+      label: "BrokenTeam",
+      priority: 10,
+      error: "upstream page not accessible",
+    })
+    const okBundle = buildUpstreamBundleStub({
+      label: "OkTeam",
+      priority: 20,
+      memories: [upstreamMem],
+    })
+
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [brokenBundle as never, okBundle as never] },
+      { projectId: "p1", now: NOW },
+    )
+
+    // Primary fan-out preserved despite broken upstream.
+    expect(data.memories.map((m) => m.id)).toEqual(["primary-mem"])
+
+    // Both sections render; broken one carries the error message.
+    expect(data.inheritedMemories).toHaveLength(2)
+    expect(data.inheritedMemories[0]).toMatchObject({
+      label: "BrokenTeam",
+      memories: [],
+      error: "upstream page not accessible",
+    })
+    expect(data.inheritedMemories[1]).toMatchObject({
+      label: "OkTeam",
+      memories: [upstreamMem],
+      error: null,
+    })
+  })
+
+  it("captures a thrown error from the upstream's memories.list call", async () => {
+    // Inner try/catch wraps both the readers load AND the list
+    // query — a transient 429 mid-list must surface as a section
+    // error, not propagate out and take down wake-up.
+    const services = stubServices()
+    const throwingBundle = {
+      label: "FlakyTeam",
+      pageId: "flaky-page",
+      priority: 100,
+      lastError: null,
+      loadReaders: vi.fn(async () => ({
+        memories: {
+          list: vi.fn(async () => {
+            throw new Error("notion 429 rate limit")
+          }),
+        },
+        facts: {} as never,
+      })),
+    } as never
+
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [throwingBundle] },
+      { projectId: "p1", now: NOW },
+    )
+
+    expect(data.inheritedMemories).toEqual([
+      {
+        label: "FlakyTeam",
+        pageId: "flaky-page",
+        memories: [],
+        error: "notion 429 rate limit",
+      },
+    ])
+  })
+
+  it("skips fan-out when includeInheritedMemories is false", async () => {
+    const services = stubServices()
+    const upstream = buildUpstreamBundleStub({
+      label: "Team",
+      memories: [
+        buildMemory({
+          id: "u",
+          title: "u",
+          createdAt: "2026-04-19T00:00:00Z",
+        }),
+      ],
+    })
+
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [upstream as never] },
+      { projectId: "p1", now: NOW, includeInheritedMemories: false },
+    )
+
+    expect(data.inheritedMemories).toEqual([])
+    // The bundle must not have been touched — no upstream Notion
+    // calls when the flag is off.
+    expect(upstream.__loadReadersMock).not.toHaveBeenCalled()
+    expect(upstream.__listMock).not.toHaveBeenCalled()
+  })
+
+  it("skips fan-out when inheritedMemoryLimit is 0", async () => {
+    const services = stubServices()
+    const upstream = buildUpstreamBundleStub({
+      label: "Team",
+      memories: [
+        buildMemory({
+          id: "u",
+          title: "u",
+          createdAt: "2026-04-19T00:00:00Z",
+        }),
+      ],
+    })
+
+    const data = await loadWakeUpData(
+      { ...services, upstreams: [upstream as never] },
+      { projectId: "p1", now: NOW, inheritedMemoryLimit: 0 },
+    )
+
+    expect(data.inheritedMemories).toEqual([])
+    expect(upstream.__loadReadersMock).not.toHaveBeenCalled()
+  })
+})
+
 describe("loadWakeUpData with WakeUpCache", () => {
   // The acceptance contract from issue #495:
   //   1. two back-to-back wake-ups within TTL: the second issues zero

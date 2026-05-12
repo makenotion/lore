@@ -332,6 +332,16 @@ const KEY_OPTION_FIELDS = [
   "proposedMemoryLimit",
   "includeCoverage",
   "todayDate",
+  // Issue #286 — both inherited-memory options change the
+  // `inheritedMemories` array on `WakeUpData`. Without these
+  // fields, a wake-up with `includeInheritedMemories: false` (hook
+  // posture) and a wake-up with the default (MCP posture) compute
+  // the same key and cross-serve — the second caller sees the
+  // first caller's `inheritedMemories` regardless of their own
+  // opt-out. Pinned by the inherited-options coverage in
+  // `wakeup-cache.test.ts`.
+  "includeInheritedMemories",
+  "inheritedMemoryLimit",
 ] as const satisfies readonly (keyof WakeUpOptions)[]
 
 /**

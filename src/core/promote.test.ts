@@ -305,7 +305,16 @@ describe("promoteMemory", () => {
   })
 
   it("preserves source status when target.requireReview is false", async () => {
-    const source = makeSourceMemory({ status: "proposed" })
+    // Use a non-proposed source status here. The `requireReview:
+    // true` test above resolves to "proposed" regardless of source,
+    // so a "preserve source status" test that ALSO uses
+    // "proposed" leaves the two cases visually indistinguishable —
+    // both pass and fail outcomes read identically. `informational`
+    // is a status the `requireReview: true` branch will NEVER
+    // produce (that branch always lands `proposed`), so a passing
+    // assertion here means the source pass-through is actually
+    // wired up and not a happy accident.
+    const source = makeSourceMemory({ status: "informational" })
     const { client, createSpy, memories } = makePromotionHarness(source)
 
     const result = await promoteMemory(
@@ -318,12 +327,12 @@ describe("promoteMemory", () => {
       },
     )
 
-    expect(result.status).toBe("proposed")
+    expect(result.status).toBe("informational")
     const createProps = createSpy.mock.calls[0]![0].properties as Record<
       string,
       { select?: { name: string } }
     >
-    expect(createProps.Status?.select?.name).toBe("proposed")
+    expect(createProps.Status?.select?.name).toBe("informational")
   })
 
   it("rejects promotion targeting the primary vault page id", async () => {

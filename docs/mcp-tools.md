@@ -11,7 +11,7 @@ names and task aliases were removed in the 0.6.0 deprecation purge; see
 | Action    | Description                                                                                                                                                              |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`  | Show vault status, topology health when configured, database counts, active project, task summary, proposed-memory inbox count, wake-up coverage counters, configured projects, and background hook failure markers |
-| `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, and memories related to active tasks |
+| `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, memories related to active tasks, and inherited upstream memories per configured `upstreamVaults` entry (issue #286 — sparse and labeled per upstream, bounded per `inheritedMemoryLimit` default 3; failed upstreams render as `> upstream unavailable: <message>` without suppressing surviving sections) |
 | `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                            |
 
 `lore-context action='status'` includes a `Background hooks` JSON block. The
@@ -67,6 +67,7 @@ facts, memory bodies, or the raw `userQuery`.
 | `compare`           | Record a conflict/compatibility verdict on a pair of memories                                                                                                                                                                              |
 | `approve`           | Promote a `Status: proposed` memory to `accepted` and append a `## Reviewed (date)` audit block (issue #281). Inbox-only — non-proposed rows reject. Optional `reviewer` defaults to the engineer-identity resolver; optional `reason` recorded in audit body. |
 | `reject`            | Flip a `Status: proposed` memory to `rejected` and append the same audit block. Same inbox-only state guard as `approve`. Rejected rows are excluded from default `lore-query action='recall'` / `'search'`; surface them via explicit `status: "rejected"`.  |
+| `promote`           | Copy a memory into a configured promotion target (`promotionTargets` in `.lore.yaml`) with a `## Promoted from <vault>` audit block carrying source vault label, source memory id + URL, kind/status/confidence/synopsis, promoter, timestamp, and optional `reason` (issue #286). `requireReview: true` targets land the promoted row as `Status: proposed`; otherwise the source's status passes through. Project relations, tags, and agent/session attribution do NOT cross the vault boundary. See [`topology.md`](topology.md#promotion). |
 
 ### Scope and lifetime (`scope` parameter, issue #283)
 

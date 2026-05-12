@@ -22,6 +22,7 @@ function makeData(): WakeUpData {
     proposedMemoriesTotal: 0,
     staleConfidence: [],
     coverage: null,
+    inheritedMemories: [],
   }
 }
 
@@ -267,6 +268,11 @@ describe("computeWakeUpCacheKey", () => {
       "taskLimit",
       "taskMemoryLimit",
       "proposedMemoryLimit",
+      // Issue #286 — `inheritedMemoryLimit` changes the
+      // `inheritedMemories` array on `WakeUpData`; without
+      // including it the MCP path (default 3) and a hook path
+      // (would-be 0) would collide on key.
+      "inheritedMemoryLimit",
     ]
     const baseline = computeWakeUpCacheKey(base)
     for (const field of fields) {
@@ -279,6 +285,12 @@ describe("computeWakeUpCacheKey", () => {
       "includeStaleConfidence",
       "includeProposedMemories",
       "includeCoverage",
+      // Issue #286 — toggling `includeInheritedMemories` swings
+      // the upstream fan-out on/off; without including it a
+      // hook-style caller (opt-out) and an MCP-style caller
+      // (default on) collide on key and silently cross-serve
+      // each other's `inheritedMemories` array.
+      "includeInheritedMemories",
     ] as const) {
       const variant = computeWakeUpCacheKey({ ...base, [field]: false })
       expect(variant).not.toBe(baseline)

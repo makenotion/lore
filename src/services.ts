@@ -41,6 +41,10 @@ import { EntityService } from "./core/entity.js"
 import { resolveProject } from "./core/context.js"
 import { WakeUpCache } from "./core/wakeup-cache.js"
 import {
+  buildUpstreamVaultBundles,
+  type UpstreamVaultBundle,
+} from "./core/topology-readers.js"
+import {
   createAuthorIdentityResolver,
   type AuthorIdentityResolver,
 } from "./auth/identity.js"
@@ -353,6 +357,37 @@ export interface LoreServices {
    * are set.
    */
   scopeContext: MemoryScopeContext
+  /**
+   * Per-upstream read-only service bundles (issue #286, "Read
+   * inheritance"). One entry per configured `upstreamVaults` row in
+   * `.lore.yaml`, sorted by priority ascending. `[]` on single-vault
+   * configs — single-vault behavior is byte-identical to pre-#286
+   * because no fan-out branch reaches this surface when the list is
+   * empty.
+   *
+   * Each bundle lazy-loads the upstream on first access via
+   * `loadReaders()`, returning `{ memories }` for read paths to fan
+   * out across. (A future fact-side inheritance surface would
+   * extend the readers shape — `UpstreamReaders` in
+   * `src/core/topology-readers.ts` is the canonical type today.)
+   * The shared primary client is reused so the process-wide
+   * rate-limit bucket governs the combined fan-out.
+   * Load failures degrade gracefully: `loadReaders()` returns `null`
+   * and `bundle.lastError` carries the error; wake-up renders only
+   * the surviving upstreams.
+   *
+   * Promotion targets are NOT exposed here. Promotion is a deliberate
+   * write surface (`lore promote`, `lore-memory action='promote'`),
+   * not a read-orchestration surface. Including promotion targets in
+   * `upstreams` would let read paths silently fan out to vaults the
+   * operator designated for review-gated writes only.
+   *
+   * `readonly` on the array is defense-in-depth — callers that
+   * mutate the upstream list at runtime would silently re-shape
+   * inheritance for every subsequent `loadWakeUpData` call (PR
+   * #589 review).
+   */
+  upstreams: readonly UpstreamVaultBundle[]
 }
 
 export const AUTH_REFRESH_UNAVAILABLE_CACHE_MS = 1_000
@@ -505,6 +540,7 @@ export async function initServicesFromConfig(
     authSource: auth.source,
     wakeupCache: new WakeUpCache(),
     scopeContext: scopeCtx,
+    upstreams: Object.freeze(buildUpstreamVaultBundles(client, config)),
   }
 }
 

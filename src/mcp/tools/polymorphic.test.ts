@@ -1742,15 +1742,18 @@ describe("MCP tool surface", () => {
     // existing `CRITICAL CLOSURE RULE`) and the matching tighten
     // on the `create` bullet so live agents tokenize the
     // tangential/out-of-scope rule with the same early-token
-    // weight the autosave subagent reads in `prompts.ts`. Each
-    // delta stays within a "≤ ~300 chars per single-action-add"
+    // weight the autosave subagent reads in `prompts.ts`. (e) 7900
+    // → 8000 in the issue #286 read-inheritance + promote PR to
+    // absorb the `lore-memory action='promote'` bullet (+~150
+    // chars, kept terse with a docs/topology.md link). Each delta
+    // stays within a "≤ ~300 chars per single-action-add"
     // envelope (delta (d) is +400 — a structural critical-rule
     // block, larger than the per-action envelope and explicitly
     // documented as such); doc-string clauses dominate, not the
     // action-name additions themselves. Future description adds
     // should continue to stack the budget explicitly rather than
     // burning headroom silently.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7900
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 8000
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1821,7 +1824,11 @@ describe("MCP tool surface", () => {
     // individual entries alongside).
     const PER_TOOL_DESCRIPTION_LIMITS: Record<string, number> = {
       "lore-context": 1240,
-      "lore-memory": 1520,
+      // 1520 → 1720 to absorb the `lore-memory action='promote'`
+      // bullet (issue #286). Kept terse with a docs/topology.md
+      // link rather than expanding the cross-vault rationale
+      // inline.
+      "lore-memory": 1720,
       "lore-query": 1190,
       "lore-fact": 1390,
       "lore-decision": 1000,
@@ -1874,8 +1881,19 @@ describe("MCP tool surface", () => {
     // agents can pick a value without consulting docs. The +300
     // headroom absorbs the rendered Zod object schema (per-property
     // type strings + nullable/optional decorations) without leaking
-    // elsewhere.
-    const PER_TOOL_CONFIG_LIMIT = 6000
+    // elsewhere. Issue #286 bumped 6000 → 6400 for the
+    // `action='promote'` branch — one new discriminated-union member
+    // (`memoryId` / `targetName` / `reason` / `promoter`) plus two
+    // new input-schema fields (`targetName`, `promoter`) and the
+    // matching `action` enum entry. PR #589 review bumped
+    // 6400 → 6600 to absorb the audit-forgery defense (the
+    // `promoter` field was dropped from the schema, but the
+    // `dryRun` parameter description carries ~250 chars of
+    // rationale for why the MCP equivalent of `--dry-run` exists)
+    // plus the longer `targetName` describe text covering the
+    // configured-list error contract. Future actions should
+    // continue stacking the budget explicitly.
+    const PER_TOOL_CONFIG_LIMIT = 6600
     const polymorphic = [
       "lore-context",
       "lore-memory",

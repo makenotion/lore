@@ -103,6 +103,27 @@ export type {
   UpstreamVaultTopologyRef,
   VaultTopology,
 } from "./core/topology.js"
+export {
+  PROMOTION_REASON_MAX_LEN,
+  buildPromotionAuditBlock,
+  preparePromotion,
+  promoteMemory,
+} from "./core/promote.js"
+export type {
+  PromoteMemoryInput,
+  PromoteMemoryResult,
+  PromoteMemoryServices,
+  PromotionPreview,
+} from "./core/promote.js"
+export { buildUpstreamVaultBundles } from "./core/topology-readers.js"
+// `UpstreamReaders` is intentionally NOT re-exported as a public
+// type. Today it carries only `memories: MemoryService` for the
+// wake-up inheritance fan-out; a future fact-side inheritance
+// surface would extend it, but external consumers building against
+// the current shape would have to migrate. Keep the public surface
+// to the bundle interface (which is the actually-stable shape) and
+// the builder function. (PR #589 review.)
+export type { UpstreamVaultBundle } from "./core/topology-readers.js"
 export type { VaultAccessResult } from "./auth/oauth.js"
 
 // Individual deprecation-tagged re-exports. The `@deprecated` JSDoc on

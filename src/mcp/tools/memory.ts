@@ -65,6 +65,9 @@ import { scopesMatchForMerge } from "../../core/fact.js"
 import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
 import type { TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
+import { buildVaultTopology } from "../../core/topology.js"
+import { preparePromotion, promoteMemory } from "../../core/promote.js"
+import { notionPageUrl } from "../../notion/url.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -2409,6 +2412,139 @@ async function handleReview(
   }
 }
 
+interface PromoteArgs {
+  memoryId: string
+  targetName: string
+  reason?: string
+  dryRun?: boolean
+}
+
+/**
+ * MCP equivalent of `lore promote` (issue #286). Resolves the named
+ * promotion target from `config.promotionTargets`, resolves the
+ * promoter identity via the standard `LORE_USER_NAME` → `users.me`
+ * chain (NO client-supplied override on this surface — see below),
+ * and delegates to the shared `promoteMemory` service helper.
+ *
+ * **No client-supplied promoter.** The MCP surface is agent-driven;
+ * a client-supplied `promoter` string would let any caller forge
+ * the `**Promoter:**` line of the cross-vault audit block,
+ * defeating the audit gap the topology design exists to close
+ * (issue #286 / PR #589 review). The promoter is the server-
+ * resolved identity exclusively; operators wanting an override use
+ * the CLI's `--promoter` flag instead.
+ *
+ * **`dryRun: true`** mirrors the CLI's `--dry-run` flag. Returns a
+ * preview of the audit block + resolved status without paying any
+ * target-vault round-trip. Mis-resolved targets, missing identity,
+ * and same-vault rejection all surface BEFORE the source read so a
+ * runaway loop cannot burn target-vault quota before discovering
+ * its inputs are wrong.
+ *
+ * Defaults mirror the CLI for surface parity: targets with
+ * `requireReview: true` land the promoted row as `Status: proposed`,
+ * the source's status passes through otherwise. The MCP action is
+ * the agent-facing equivalent of the CLI; both call into the same
+ * helper so the audit-block format, source live-page validation,
+ * same-vault rejection, and tags/projectIds drop are byte-stable
+ * across surfaces.
+ */
+async function handlePromote(
+  services: LoreServices,
+  args: PromoteArgs
+): Promise<ToolResult> {
+  try {
+    const topology = buildVaultTopology(services.config)
+    const target = topology.promotionTargets.find(
+      (entry) => entry.label === args.targetName,
+    )
+    if (!target) {
+      const configured =
+        topology.promotionTargets.length === 0
+          ? "no promotion targets are configured — add a `promotionTargets:` block to .lore.yaml"
+          : `configured targets: ${topology.promotionTargets
+              .map((entry) => `"${entry.label}"`)
+              .join(", ")}`
+      return toolError(
+        new Error(
+          `No promotion target named "${args.targetName}" — ${configured}.`,
+        ),
+      )
+    }
+
+    // Server-resolved identity ONLY. See the function docstring for
+    // the rationale — agent-supplied promoter strings would let any
+    // caller forge the cross-vault audit block's promoter line.
+    const resolved = (await services.identity.resolveAuthor())?.trim()
+    if (!resolved || resolved.length === 0) {
+      return toolError(
+        new Error(
+          `Cannot promote memory ${args.memoryId}: no promoter identity ` +
+            `available. Set \`LORE_USER_NAME\` so the origin audit block ` +
+            `can record who promoted the row, or use the CLI's ` +
+            `\`lore promote --promoter <name>\` for operator-driven ` +
+            `attribution.`,
+        ),
+      )
+    }
+    const promoter = resolved
+
+    const helperServices = {
+      client: services.client,
+      memories: services.memories,
+      primaryVaultPageId: services.config.vault.pageId,
+      primaryVaultLabel: topology.primary.label,
+    }
+    const helperInput = {
+      sourceMemoryId: args.memoryId,
+      target,
+      reason: args.reason,
+      promoter,
+      sourceMemoryUrl: notionPageUrl(args.memoryId),
+    }
+
+    if (args.dryRun === true) {
+      // Mirrors the CLI's `--dry-run`: one source read, no target-
+      // vault round-trips. Returns the audit-block preview + resolved
+      // status so an agent can preview a cross-vault write before
+      // committing.
+      const preview = await preparePromotion(helperServices, helperInput)
+      const reviewSuffix = target.requireReview ? " (awaiting review)" : ""
+      const lines = [
+        `[dry-run] Would promote memory ${args.memoryId} to ${target.label}${reviewSuffix}.`,
+        `[dry-run] Source title: ${preview.source.title || "(untitled)"}`,
+        `[dry-run] Resolved status: ${preview.status}`,
+        `[dry-run] Promoter: ${promoter}`,
+        "[dry-run] Audit block preview:",
+        ...preview.auditBlock.split("\n").map((line) => `  ${line}`),
+        "[dry-run] No target-vault write was issued. Re-run without dryRun to apply.",
+      ]
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+      }
+    }
+
+    const result = await promoteMemory(helperServices, helperInput)
+
+    const reviewSuffix = target.requireReview ? " (awaiting review)" : ""
+    const lines = [
+      `Promoted memory ${args.memoryId} to ${result.targetVaultLabel}${reviewSuffix}.`,
+      `Target memory: ${result.promoted.title || "(untitled)"} (${result.promoted.id})`,
+      `Status: ${result.status}`,
+      `Promoter: ${promoter}`,
+    ]
+    if (args.reason && args.reason.trim().length > 0) {
+      lines.push(`Reason: ${args.reason.trim()}`)
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
 interface SearchArgs {
   query: string
   projectName?: string
@@ -2685,6 +2821,28 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     reviewer: z.string().optional(),
     reason: z.string().max(500).optional(),
   }),
+  z.object({
+    action: z.literal("promote"),
+    memoryId: z.string(),
+    // Target name lookup is intentionally a string match against
+    // `config.promotionTargets[].name`, not a `z.enum(...)` of the
+    // resolved labels — the topology is config-driven and a Zod
+    // enum would force a server restart to register a new target.
+    // Out-of-vocab names land at `handlePromote`'s configured-list
+    // hint instead. Capped at 200 to match the adjacent
+    // `reviewer` / `reason` posture and bound prompt-budget on
+    // malformed input.
+    targetName: z.string().max(200),
+    reason: z.string().max(500).optional(),
+    // `promoter` is intentionally NOT accepted at the MCP boundary.
+    // The MCP surface is agent-driven; an agent-supplied promoter
+    // string would let any caller forge the `**Promoter:**` line
+    // of the cross-vault audit block — exactly the audit gap the
+    // topology design exists to close. The CLI's `--promoter` flag
+    // remains operator-driven; the MCP equivalent uses the
+    // server-resolved identity exclusively.
+    dryRun: z.boolean().optional(),
+  }),
 ])
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
@@ -2703,7 +2861,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
         "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Notes and tasks return null.\n" +
         "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n" +
-        "- `action: 'approve'` / `'reject'` — inbox-review a `Status: proposed` memory (#281); flips Status and appends a Reviewed audit block.\n\n" +
+        "- `action: 'approve'` / `'reject'` — inbox-review a `Status: proposed` memory (#281); flips Status and appends a Reviewed audit block.\n" +
+        "- `action: 'promote'` — copy a memory into a configured `promotionTargets` entry with origin audit block; `requireReview` targets land as `Status: proposed`. See docs/topology.md#promotion.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {
@@ -2717,9 +2876,10 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
             "compare",
             "approve",
             "reject",
+            "promote",
           ])
           .describe(
-            "Operation: save | update | archive | expand | suggest-topic-key | compare | approve | reject."
+            "Operation: save | update | archive | expand | suggest-topic-key | compare | approve | reject | promote."
           ),
         // save
         title: z
@@ -2923,6 +3083,19 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .describe(
             "(action='approve'/'reject') Optional reviewer name. Defaults to the engineer identity resolver (LORE_USER_NAME → users.me)."
           ),
+        // promote
+        targetName: z
+          .string()
+          .optional()
+          .describe(
+            "(action='promote') Name of the promotion target as configured in `.lore.yaml`'s `promotionTargets`."
+          ),
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='promote') Preview the audit block + resolved status without writing to the target vault. Mirrors `lore promote --dry-run`. Mis-resolved targets / missing identity / same-vault rejection all surface before the source read so a misconfigured call cannot burn target-vault quota."
+          ),
         scope: scopeInputSchema,
       },
     },
@@ -2960,6 +3133,25 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         case "reject":
           return withWakeUpCacheBump(services.wakeupCache, () =>
             handleReview(services, data, "reject"),
+          )
+        case "promote":
+          // Promotion writes to a different vault entirely; bumping the
+          // primary's wake-up cache epoch isn't load-bearing for the
+          // promoted row (it lives in the target vault), but the
+          // primary read paths see no state change from the promote
+          // either — same posture as `archive` which DOES bump because
+          // the archive flag changes primary recall results. Routing
+          // through `withWakeUpCacheBump` keeps the dispatch shape
+          // uniform with the other write actions and the no-op bump
+          // is structurally harmless.
+          //
+          // TODO(per-target-cache): if a future PR adds a per-target
+          // wake-up cache (one bundle per upstream / promotion target),
+          // this routing becomes WRONG — it bumps the PRIMARY's cache,
+          // not the target's where the promoted row actually landed.
+          // Pivot to per-target cache invalidation at that time.
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handlePromote(services, data),
           )
       }
     }

@@ -97,15 +97,11 @@ export function terminalLink(text: string, url: string): string {
 }
 
 /**
- * Build the canonical Notion deep-link for a page id. The hyphenated UUID
- * format Notion returns is collapsed to the no-dash form Notion emits in
- * its share URLs — matching the canonical form keeps OSC 8 link targets
- * consistent with what an operator would copy from a Notion browser tab.
- *
- * Single production-code source of Notion deep-links. Every CLI surface
- * that links to a page routes through this helper rather than building
- * the string inline.
+ * Re-export `notionPageUrl` for CLI callers that historically imported
+ * it from `src/cli/output.ts`. The canonical implementation lives in
+ * `src/notion/url.ts` so non-CLI surfaces (MCP, core service helpers,
+ * the promotion audit-block builder) can import the helper without
+ * crossing the `src/mcp/` → `src/cli/` import boundary documented in
+ * `src/mcp/AGENTS.md` (PR #589 review nit).
  */
-export function notionPageUrl(pageId: string): string {
-  return `https://notion.so/${pageId.replace(/-/g, "")}`
-}
+export { notionPageUrl } from "../notion/url.js"

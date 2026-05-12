@@ -890,6 +890,15 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       // `includeDecisions: false` and `includeStaleConfidence:
       // false` above.
       includeProposedMemories: false,
+      // Hook never renders the Inherited Memories section (issue
+      // #286) — skip the per-upstream Notion fan-out so the
+      // session-start hot path doesn't pay one
+      // `dataSources.query` per configured upstream on every
+      // launch. Same posture as `includeDecisions: false` etc. PR
+      // #589 review flagged the previous default (`true`) as a
+      // performance regression and a privacy posture change
+      // operators hadn't opted into.
+      includeInheritedMemories: false,
       includeCoverage: debug,
       userQuery,
       cache: services.wakeupCache,

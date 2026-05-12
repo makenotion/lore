@@ -57,7 +57,7 @@
  * read but skips both `targetVault.load` and `targetMemories.create`,
  * returning the audit block + the resolved status for the operator to
  * preview. The wrapper renders the block to stdout; this helper has a
- * sibling `previewPromotion` function that returns the same shape
+ * sibling `preparePromotion` function that returns the same shape
  * without performing the target write.
  */
 
@@ -245,8 +245,12 @@ export async function promoteMemory(
     // value is `rich_text` so there's no taxonomy collision to
     // avoid; the load-bearing reason is that promotion is a
     // human-curated copy, not an agent-attributed write.
-    // Skip the autosave-learning dedup gate — promotion is a
-    // deliberate cross-vault write, not a session-scoped reuse.
+
+    // Skip the autosave-learning dedup gate. Promotion is a
+    // deliberate cross-vault write, not a session-scoped reuse —
+    // unrelated concern to the agent/session omission above, split
+    // out so a future contributor doesn't read the two as part of
+    // the same rationale.
     autosaveLearningDedupScope: "off",
   })
 

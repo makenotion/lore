@@ -38,6 +38,7 @@ import type {
 import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT, STALE_TASK_DAYS } from "../types.js"
 import { taskDaysOverdue, taskDaysStale } from "./task.js"
 import { computeWakeUpCacheKey, WakeUpCache } from "./wakeup-cache.js"
+import type { UpstreamVaultBundle } from "./topology-readers.js"
 
 export { WakeUpCache, computeWakeUpCacheKey }
 // Re-exported so existing callers that import `MS_PER_DAY` from
@@ -87,6 +88,16 @@ export const DEFAULT_WAKEUP_TASK_MEMORY_LIMIT = 3
  * to keep the prompt budget bounded.
  */
 export const DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT = 20
+
+/**
+ * Per-upstream cap for the inherited-memory section
+ * (issue #286, "Read inheritance"). Three rows is the sparse
+ * default the issue calls out: "a team/org vault is useful only
+ * if inherited memory is sparse, labeled, and intentionally
+ * capped." Operators with a different signal/noise tradeoff can
+ * override per call via `WakeUpOptions.inheritedMemoryLimit`.
+ */
+export const DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT = 3
 /**
  * Per-section caps applied when the caller passes a non-empty `userQuery`
  * and hasn't overridden the section explicitly. Tighter than the
@@ -245,6 +256,51 @@ export interface WakeUpServices {
       opts?: ListTasksOpts
     ): Promise<{ items: TaskSummary[]; nextCursor?: string; capped?: boolean }>
   }
+  /**
+   * Per-upstream read-only service bundles for inherited-memory
+   * fan-out (issue #286, "Read inheritance"). Optional so the
+   * structural type stays source-compatible with single-vault
+   * fixtures and the shell hook's lightweight wake-up wiring;
+   * absent / empty array suppresses the inherited section entirely
+   * (byte-identical behavior to pre-#286). Production wiring
+   * threads `LoreServices.upstreams` through directly.
+   */
+  upstreams?: readonly UpstreamVaultBundle[]
+}
+
+/**
+ * One labeled section of inherited upstream memories on wake-up
+ * (issue #286). Sections render in upstream-priority order
+ * (ascending; lower fires first); local memories always outrank
+ * inherited ones structurally because the inherited block renders
+ * AFTER the primary sections.
+ *
+ * Per-upstream caps (default 3 via
+ * `DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT`) keep the section sparse
+ * and labeled — see the issue's design rule: "a team/org vault is
+ * useful only if inherited memory is sparse, labeled, and
+ * intentionally capped."
+ *
+ * `error` is the failure-isolation signal: when an upstream's load
+ * fails (auth, missing databases, transient 5xx, …), the section
+ * still renders with `memories: []` and `error: <message>` so the
+ * operator sees "Inherited from X (unavailable: <message>)" instead
+ * of losing the upstream silently. The primary wake-up output is
+ * preserved regardless.
+ */
+export interface InheritedMemorySection {
+  /** Configured upstream label (display name from `.lore.yaml`). */
+  label: string
+  /** Configured upstream page id. */
+  pageId: string
+  /** Bounded slice of recently-edited memories from this upstream. */
+  memories: Memory[]
+  /**
+   * Underlying error message when the upstream load or query failed;
+   * `null` on success. Surfaced verbatim so the operator sees the
+   * Notion error text rather than a generic "unavailable" label.
+   */
+  error: string | null
 }
 
 export interface WakeUpTaskBucketCoverage {
@@ -476,6 +532,27 @@ export interface WakeUpOptions {
    * docstring for the full surface picture.
    */
   cache?: WakeUpCache
+  /**
+   * When false, skip the upstream-vault fan-out entirely (issue
+   * #286). Same posture as `includeDecisions` /
+   * `includeStaleConfidence` / `includeProposedMemories`: the shell
+   * hook currently renders no inherited section, so it has no reason
+   * to pay per-upstream Notion round-trips. Defaults to true so MCP
+   * callers (which DO render the section) keep working. Vaults
+   * without any configured upstreams skip the fan-out regardless of
+   * this flag.
+   */
+  includeInheritedMemories?: boolean
+  /**
+   * Per-upstream cap for the inherited-memory section. Defaults to
+   * `DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT` (3). Pass `0` to skip
+   * the fan-out without touching `includeInheritedMemories`. The
+   * issue calls out a sparse-and-labeled posture deliberately — a
+   * cap above ~5 is almost always wrong (multiplies prompt noise
+   * across upstreams). The constant is exported so tests and
+   * diagnostic surfaces can reference the same value.
+   */
+  inheritedMemoryLimit?: number
 }
 
 export interface WakeUpData {
@@ -568,6 +645,16 @@ export interface WakeUpData {
    * counts before logging or rendering debug output.
    */
   coverage: WakeUpCoverageMetrics | null
+  /**
+   * Per-upstream inherited-memory sections (issue #286). Empty array
+   * when no upstreams are configured OR `includeInheritedMemories`
+   * was disabled. Order matches the upstream priority order from
+   * `buildVaultTopology` (ascending). Each section carries its own
+   * `error` field so upstream failures degrade gracefully without
+   * suppressing the others — the upstream-failure-isolation
+   * acceptance criterion of issue #286.
+   */
+  inheritedMemories: InheritedMemorySection[]
 }
 
 export function buildEmptyWakeUpCoverage(
@@ -1077,6 +1164,28 @@ async function runWakeUpFanOut(
       })
     : null
 
+  // Upstream fan-out runs AFTER the primary fan-out and renders
+  // sections AFTER the primary sections — the issue's "Local
+  // memories should outrank inherited memories by default" rule.
+  // Bounded per-upstream cap keeps the prompt-noise multiplier in
+  // check; per-upstream `Promise.allSettled` posture isolates
+  // failures so one degraded upstream cannot suppress the others
+  // (issue #286, upstream-failure-isolation acceptance criterion).
+  const includeInheritedMemories = opts.includeInheritedMemories ?? true
+  const inheritedMemoryLimit =
+    opts.inheritedMemoryLimit ?? DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT
+  const inheritedMemories: InheritedMemorySection[] =
+    includeInheritedMemories &&
+    inheritedMemoryLimit > 0 &&
+    services.upstreams &&
+    services.upstreams.length > 0
+      ? await loadInheritedMemorySections(
+          services.upstreams,
+          inheritedMemoryLimit,
+          includeContent,
+        )
+      : []
+
   return {
     digest,
     memories,
@@ -1092,7 +1201,75 @@ async function runWakeUpFanOut(
     proposedMemoriesTotal,
     staleConfidence,
     coverage,
+    inheritedMemories,
   }
+}
+
+async function loadInheritedMemorySections(
+  upstreams: readonly UpstreamVaultBundle[],
+  perUpstreamLimit: number,
+  includeContent: boolean,
+): Promise<InheritedMemorySection[]> {
+  // `Promise.allSettled` per upstream: a single failure (auth, missing
+  // databases, transient 5xx) MUST NOT take down the whole inherited
+  // block. Each upstream that fails surfaces as a section carrying its
+  // own `error` message so the operator can triage which upstream is
+  // broken without losing the others. Same posture as
+  // `loadVaultTopologyStatus`'s probe fan-out (issue #286
+  // "upstream-failure-isolation").
+  const results = await Promise.allSettled(
+    upstreams.map(async (bundle): Promise<InheritedMemorySection> => {
+      try {
+        const readers = await bundle.loadReaders()
+        if (readers === null) {
+          return {
+            label: bundle.label,
+            pageId: bundle.pageId,
+            memories: [],
+            error: bundle.lastError ?? "upstream vault unavailable",
+          }
+        }
+        // Upstream taxonomies do NOT share project ids with the
+        // primary — a `projectId` filter would reject every row. The
+        // fan-out is vault-wide on the upstream, capped at
+        // `perUpstreamLimit` rows by recency, sorted via the default
+        // `last_edited_time desc`. The narrow cap is what keeps the
+        // prompt-noise multiplier in check.
+        const result = await readers.memories.list({
+          limit: perUpstreamLimit,
+          includeContent,
+        })
+        return {
+          label: bundle.label,
+          pageId: bundle.pageId,
+          memories: result.items,
+          error: null,
+        }
+      } catch (err) {
+        return {
+          label: bundle.label,
+          pageId: bundle.pageId,
+          memories: [],
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    }),
+  )
+  // `allSettled` itself cannot reject under the inner try/catch above,
+  // but unwrap defensively so a future contributor who removes the
+  // inner catch sees the failure as a section rather than a thrown
+  // error that takes down wake-up.
+  return results.map((result, index): InheritedMemorySection => {
+    if (result.status === "fulfilled") return result.value
+    const bundle = upstreams[index]!
+    return {
+      label: bundle.label,
+      pageId: bundle.pageId,
+      memories: [],
+      error:
+        result.reason instanceof Error ? result.reason.message : String(result.reason),
+    }
+  })
 }
 
 async function loadWakeUpTaskWindow(

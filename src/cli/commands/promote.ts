@@ -42,7 +42,9 @@ import { notionPageUrl, terminalLink } from "../output.js"
 
 export const promoteCommand = new Command("promote")
   .description(
-    "Copy a memory from the primary vault into a configured promotion target",
+    "Copy a memory from the primary vault into a configured promotion target. " +
+      "Skips schema drift checks on init (same posture as `lore mine`); " +
+      "run `lore status` first to confirm target reachability.",
   )
   .argument("<memoryId>", "Notion page ID of the memory to promote")
   .requiredOption(
