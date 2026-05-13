@@ -42,6 +42,7 @@ import { STALE_TASK_DAYS, type LoreConfig, type TaskSummary } from "../types.js"
 import { resolveProjectPathFromCwd } from "../core/context.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
+import { indentUntrustedText, UNTRUSTED_VAULT_PREAMBLE } from "./untrusted-text.js"
 import {
   DEFAULT_WAKEUP_TASK_LIMIT,
   RANKED_WAKEUP_LIMITS,
@@ -52,8 +53,9 @@ import {
 } from "../core/wakeup.js"
 import {
   composeProjectContext,
-  renderProjectContextLines,
+  type ProjectContext,
 } from "../core/project-context.js"
+import { formatCatchAllScopeSummary } from "../core/context.js"
 import { taskDaysOverdue, taskDaysStale } from "../core/task.js"
 import { spawnBackgroundSave, type SpawnResult } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
@@ -783,6 +785,51 @@ export function parseWakeupEventMetadata(raw: string | undefined): {
   }
 }
 
+/**
+ * Hook-local project-framing renderer.
+ *
+ * Diverges from the shared `renderProjectContextLines` by routing every
+ * Notion-derived field — project name, path, description, sibling list,
+ * and the catch-all warning's name/sibling splice — through
+ * `indentUntrustedText`. The shell wake-up output renders into a host
+ * LLM's session-start prompt, so a writable-vault editor must not be
+ * able to land an unindented directive line through the framing block.
+ *
+ * Hook-generated structural labels (`Project:`, `Siblings:`, the
+ * blockquote `>` marker, and the catch-all warning's surrounding wording)
+ * stay inside the indented line by design: the entire visual block is
+ * the quoted region. The MCP surfaces (`lore-context action='wake-up'`,
+ * `lore-query action='ask'`) keep using the shared renderer because
+ * their callers consume the framing as structured tool output, not as
+ * a session-start LLM prompt.
+ */
+function renderHookProjectContextLines(context: ProjectContext | null): string[] {
+  if (!context) return []
+  const lines: string[] = []
+
+  if (context.isCatchAllFallback && context.siblings.length > 0) {
+    lines.push(
+      indentUntrustedText(
+        `> ${formatCatchAllScopeSummary(context.name, context.siblings)} ` +
+          `Pass projectName to scope to a specific sub-project.`
+      )
+    )
+  }
+
+  const pathSuffix = context.path ? ` (${context.path})` : ""
+  lines.push(indentUntrustedText(`Project: ${context.name}${pathSuffix}`))
+
+  if (context.description) {
+    lines.push(indentUntrustedText(context.description))
+  }
+
+  if (context.siblings.length > 0) {
+    lines.push(indentUntrustedText(`Siblings: ${context.siblings.join(", ")}.`))
+  }
+
+  return lines
+}
+
 export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   const rawEvent = opts.event ?? process.env["LORE_WAKEUP_EVENT"]
   const eventMeta = parseWakeupEventMetadata(rawEvent)
@@ -947,22 +994,34 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
 
   const sections: string[] = []
 
-  // Prepend the same project framing block as the MCP
-  // `lore-context action='wake-up'` surface. The shell hook always reads
-  // `services.context.project` and `services.context.isCatchAllFallback`
-  // — there is no explicit-projectName override on this path.
-  const projectContextLines = renderProjectContextLines(
+  // The shell hook always reads `services.context.project` and
+  // `services.context.isCatchAllFallback` — there is no
+  // explicit-projectName override on this path. The hook-local render
+  // path mirrors the MCP framing block but routes every Notion-derived
+  // field through `indentUntrustedText`, so a hostile project name,
+  // path, description, or sibling string lands in a 4-space code-quoted
+  // block instead of as session-start markdown.
+  const projectContextLines = renderHookProjectContextLines(
     composeProjectContext(project, hookState.config, services.context.isCatchAllFallback)
   )
   if (projectContextLines.length > 0) {
     sections.push(projectContextLines.join("\n"))
   }
 
+  // Vault-sourced lines below this point inherit the writability of the
+  // configured Notion vault — anyone with edit rights can land arbitrary
+  // strings into a memory title, digest body, task title, or fact triple.
+  // Mirror the autosave/digest writer-side framing: emit an explicit
+  // trust-boundary preamble once, then route every Notion-sourced field
+  // through `indentUntrustedText` so the host LLM reads the lines as
+  // quoted data rather than as session-start instructions.
+  const dataSections: string[] = []
+
   if (digest) {
-    sections.push(`\n## Latest Digest — ${digest.createdAt.split("T")[0]}`)
-    sections.push(`**${digest.title}**`)
+    dataSections.push(`\n## Latest Digest — ${digest.createdAt.split("T")[0]}`)
+    dataSections.push(indentUntrustedText(`**${digest.title}**`))
     if (digest.content) {
-      sections.push("", digest.content.trim())
+      dataSections.push("", indentUntrustedText(digest.content.trim()))
     }
   }
 
@@ -973,15 +1032,20 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // omitted entirely when no userQuery was available so the output
   // stays free of an empty section header on the fallback path.
   if (taskMemories && taskMemories.length > 0) {
-    sections.push("\n## For Your Current Task")
+    dataSections.push("\n## For Your Current Task")
     for (const mem of taskMemories) {
-      sections.push(`- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`)
+      dataSections.push(
+        indentUntrustedText(
+          `- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`
+        )
+      )
     }
   }
 
   if (memories.length > 0) {
-    sections.push(digest ? "\n## Recent Memories (since digest)" : "\n## Recent Memories")
-    // Group by date bucket
+    dataSections.push(
+      digest ? "\n## Recent Memories (since digest)" : "\n## Recent Memories"
+    )
     const buckets = new Map<string, typeof memories>()
     for (const mem of memories) {
       const bucket = dateBucket(mem.createdAt)
@@ -991,17 +1055,19 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     for (const label of ["Today", "Yesterday", "Earlier"] as const) {
       const mems = buckets.get(label)
       if (!mems) continue
-      sections.push(`### ${label}`)
+      dataSections.push(`### ${label}`)
       for (const mem of mems) {
-        sections.push(
-          `- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`
+        dataSections.push(
+          indentUntrustedText(
+            `- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`
+          )
         )
       }
     }
   }
 
   if (tasks.length > 0) {
-    sections.push("\n## Tasks")
+    dataSections.push("\n## Tasks")
     for (const task of visibleTasks) {
       const stateLabel = task.taskState ?? "open"
       const blocker = task.blockedBy ? `, blocked by ${task.blockedBy}` : ""
@@ -1010,27 +1076,45 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
           ? `, review by ${task.reviewBy} OVERDUE`
           : `, review by ${task.reviewBy}`
         : ""
-      sections.push(`- ${task.title} [${stateLabel}${blocker}${due}]`)
-    }
-  }
-
-  if (relatedMemories.length > 0) {
-    sections.push("\n## Related to Active Tasks")
-    for (const mem of relatedMemories) {
-      sections.push(`- **${mem.title}** (${mem.source}, ${mem.updatedAt.split("T")[0]})`)
-    }
-  }
-
-  if (knowledgeFacts.length > 0) {
-    sections.push("\n## Active Facts")
-    for (const fact of knowledgeFacts) {
-      sections.push(
-        `- ${fact.subject} ${fact.predicate.replace(/_/g, " ")} ${fact.object}`
+      dataSections.push(
+        indentUntrustedText(`- ${task.title} [${stateLabel}${blocker}${due}]`)
       )
     }
   }
 
+  if (relatedMemories.length > 0) {
+    dataSections.push("\n## Related to Active Tasks")
+    for (const mem of relatedMemories) {
+      dataSections.push(
+        indentUntrustedText(
+          `- **${mem.title}** (${mem.source}, ${mem.updatedAt.split("T")[0]})`
+        )
+      )
+    }
+  }
+
+  if (knowledgeFacts.length > 0) {
+    dataSections.push("\n## Active Facts")
+    for (const fact of knowledgeFacts) {
+      dataSections.push(
+        indentUntrustedText(
+          `- ${fact.subject} ${fact.predicate.replace(/_/g, " ")} ${fact.object}`
+        )
+      )
+    }
+  }
+
+  if (dataSections.length > 0) {
+    sections.push(...dataSections)
+  }
+
   if (sections.length > 0) {
+    // The project-framing block carries a Notion-sourced project
+    // description, so the trust-boundary header must precede everything
+    // including the framing — not just the data sections. Mirrors the
+    // autosave/digest writer-side framing: one preamble per surface,
+    // applied once at the top, never re-emitted per section.
+    sections.unshift(UNTRUSTED_VAULT_PREAMBLE)
     sections.unshift("# Lore Context")
     console.log(sections.join("\n"))
   }

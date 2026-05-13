@@ -7,6 +7,7 @@
  */
 
 import { safeFilenameSegment } from "./marker-key.js"
+import { indentUntrustedText } from "./untrusted-text.js"
 
 /**
  * Shared project-selection guidance used by every save-style prompt. When
@@ -164,13 +165,6 @@ function buildToolGuidance(): string {
 ${buildSourceLinkGuidance()}
 
 Fill every field you can confidently populate — empty fields hurt recall later. Leave a field empty only when you'd be guessing.`
-}
-
-function indentUntrustedText(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => `    ${line}`)
-    .join("\n")
 }
 
 /**
