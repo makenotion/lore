@@ -432,11 +432,11 @@ strict-resolve gate is load-bearing safety. Omit `--project` for vault-wide
 scope.
 
 **Concurrent execution**: writes dispatch in chunked `Promise.all`
-batches sized to `notion.rateLimit.concurrency`
-(`DEFAULT_NOTION_CONCURRENCY = 3`). Rate-limit middleware is a
-`p-limit` gate, NOT a retry layer — a 429 surfaces as a thrown error
-and the migration aborts. Re-run is idempotent: surviving rows from
-prior batches are skipped via the `Confidence Score !== null` rule;
+batches sized to `notion.rateLimit.concurrency` (default
+`DEFAULT_NOTION_CONCURRENCY`). Rate-limit middleware is a `p-limit`
+gate, NOT a retry layer — a 429 surfaces as a thrown error and the
+migration aborts. Re-run is idempotent: surviving rows from prior
+batches are skipped via the `Confidence Score !== null` rule;
 unwritten rows finish.
 
 **Last Referenced At = created_time is a fiction.** The memory wasn't
@@ -1204,7 +1204,7 @@ content-replication, not metadata-curation.
 
 `runMineUpsert` chunks files into batches sized to
 `config.notion.rateLimit.concurrency` (default
-`DEFAULT_NOTION_CONCURRENCY = 3`) and dispatches each batch via
+`DEFAULT_NOTION_CONCURRENCY`) and dispatches each batch via
 `Promise.all`. Per-file failures resolve as `kind: "failed"`
 outcomes via `processOneFile`'s outer try/catch — a single 429 or
 read error does NOT abort the batch. Sequential `for await` would

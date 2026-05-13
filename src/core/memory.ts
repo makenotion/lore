@@ -480,10 +480,11 @@ export async function hydrateMemoryRelationPropertiesForPages(
  * ≈ 500ms) ≈ **2.5s** maximum wall-clock for the pathological case.
  * Acceptable for a search surface that is not on session-start hot
  * paths (`loadWakeUpData` uses `list()`, not `client.search`).
- * - **Rate-limit budget.** Per-token `client.search` bucket runs ~3
- * rps; 5 sequential calls ≈ 1.7s of budget. Saturation cuts this
- * in the common case — operators only pay the full cost on
- * pathological queries.
+ * - **Rate-limit budget.** Five sequential `client.search` calls
+ * pace through the shared outbound bucket; the bucket's
+ * `DEFAULT_NOTION_REQUESTS_PER_SECOND` and `_BURST_SIZE` set the
+ * actual wall-clock floor. Saturation cuts this in the common case
+ * — operators only pay the full cost on pathological queries.
  *
  * Loop exits early once enough filtered Lore rows are accumulated for
  * the requested `limit`, or once Notion signals `has_more: false`. The
@@ -3397,10 +3398,10 @@ export class MemoryService {
     // a full PageObjectResponse with `archived: true`). Every other
     // error class re-throws and is treated as transient. Without
     // this, every wake-up over a stable id-set would re-issue
-    // `pages.retrieve` for every dead id, paced by the 3 rps token
-    // bucket — silently violating the "25-UUID wake-up twice → zero
-    // retrieve calls on the second run" contract this class
-    // advertises.
+    // `pages.retrieve` for every dead id, paced by the outbound
+    // rate-limit bucket — silently violating the "25-UUID wake-up
+    // twice → zero retrieve calls on the second run" contract this
+    // class advertises.
     //
     // `Unauthorized` (401) is deliberately NOT tombstoned: the
     // auth-refreshing SDK wrapper already attempts one auth refresh
@@ -5317,10 +5318,16 @@ export class MemoryService {
     since?: string
     until?: string
     /**
-     * When false, skip the per-page markdown fetch and return memories with
-     * `content: ""`. Use for index-tier listings (decisions, wake-up
-     * summaries) and list views that render only title/date/tags — avoids
-     * N+1 `retrieveMarkdown` calls.
+     * Opt in to fetching each page's markdown body. Default behavior
+     * (omitted or `false`) returns rows with `content: ""` and issues
+     * zero `pages.retrieveMarkdown` calls. Setting `true` fans out
+     * one `pages.retrieveMarkdown` per row, paced by the shared
+     * outbound rate-limit bucket — list views that render only title /
+     * project / date / tags should leave the flag unset and pay
+     * nothing. Callers that genuinely need bodies (the digest
+     * synthesizer's recent-memory preview, the wake-up renderer's
+     * stored-digest body, the autosave-learning duplicate probe)
+     * pass `true` explicitly.
      */
     includeContent?: boolean
     /**
@@ -5545,7 +5552,13 @@ export class MemoryService {
       extraFilter: applyExtraFilter,
     })
 
-    if (opts?.includeContent === false) {
+    if (opts?.includeContent !== true) {
+      // `pageToMemory` is still async on the body-skipped branch —
+      // the wrap pays only the relation-hydration cost (per-row
+      // `pages.properties.retrieve` for truncated relation columns
+      // when `has_more: true`), not a body fetch. The N-way
+      // `pages.retrieveMarkdown` fan-out lives in the explicit-true
+      // branch below.
       return {
         items: await Promise.all(result.pages.map((page) => this.pageToMemory(page, ""))),
         nextCursor: result.nextCursor,
@@ -6294,18 +6307,20 @@ export class MemoryService {
     // Hydrate hits to full `PageObjectResponse` shapes. We iterate
     // sequentially with a per-hit signal check at the top of each
     // iteration. `Promise.all`'s parallel dispatch would queue all
-    // 25 retrieves through `createLimitedClient`'s 3-rps gate
+    // 25 retrieves through `createLimitedClient`'s outbound bucket
     // before observing a mid-flight abort, defeating the point of
     // cooperative cancellation. Sequential trades a small wall-
-    // clock cost (the rate-limit proxy already serializes to ~3
-    // concurrent anyway) for proper bounded residual cost.
+    // clock cost (the rate-limit proxy paces dispatch anyway) for
+    // proper bounded residual cost.
     //
     // **N+1 cost.** Each hit spawns one `pages.retrieve` round-
     // trip, vs REST `client.search` which returns full
     // `PageObjectResponse[]` from one call. Worst case is 25
-    // retrieves at ~3 rps ≈ 8s, vs REST's single round-trip. This
-    // is the cost of opting in to the RunTool search path; tests
-    // pin it but operators reading the rollout runbook should know.
+    // retrieves paced by `DEFAULT_NOTION_REQUESTS_PER_SECOND` (plus
+    // the burst, minus the first cohort), vs REST's single round-
+    // trip. This is the cost of opting in to the RunTool search
+    // path; tests pin it but operators reading the rollout runbook
+    // should know.
     //
     // **Hydrate via `hit.url`, not `hit.id`.** The pinned RunTool
     // schema documents "url is page id for Notion results" —

@@ -1946,25 +1946,28 @@ export interface LoreConfig {
   notion?: {
     rateLimit?: {
       /**
-       * Max outbound Notion API calls in flight at once. Shared across every
-       * tool call and hook spawned by this process. Defaults to 3 to match
-       * Notion's public rate-limit guidance.
+       * Max outbound Notion API calls in flight at once. Shared across
+       * every tool call and hook spawned by this process. Defaults to
+       * `DEFAULT_NOTION_CONCURRENCY`; the constant carries the rationale.
        */
       concurrency?: number
       /**
        * Sustained outbound request rate, in calls/second. Token-bucket
-       * refill rate enforced by `createLimitedClient`. Defaults to 3 to
-       * match Notion's per-token public rate-limit guidance. Distinct
-       * from `concurrency`: the latter caps fan-out memory; this caps
-       * throughput.
+       * refill rate enforced by `createLimitedClient`. Defaults to
+       * `DEFAULT_NOTION_REQUESTS_PER_SECOND`. Distinct from
+       * `concurrency`: the latter caps fan-out memory; this caps
+       * throughput. The default is sized per-process; operators running
+       * multiple concurrent Lore processes on one Notion token (MCP
+       * server + CLI + hooks) compose additively and may need to tune
+       * down here to stay under the per-token server-side ceiling.
        */
       requestsPerSecond?: number
       /**
        * Token-bucket capacity — how many calls may fire instantly after
-       * a quiet period. Defaults to 3. A larger burst lets short
-       * fan-outs (decision-graph walks, render-layer title lookups) run
-       * without paying refill latency; the sustained ceiling is still
-       * `requestsPerSecond`.
+       * a quiet period. Defaults to `DEFAULT_NOTION_BURST_SIZE`. A larger
+       * burst lets short fan-outs (decision-graph walks, render-layer
+       * title lookups) run without paying refill latency; the sustained
+       * ceiling is still `requestsPerSecond`.
        */
       burstSize?: number
     }

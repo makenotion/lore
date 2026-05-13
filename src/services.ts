@@ -397,10 +397,10 @@ export async function initServicesFromConfig(
   // Every downstream service shares the same rate-limited Proxy so fan-out
   // stays under Notion's per-token rps ceiling without per-call-site work.
   // The wrapper governs concurrency (fan-out memory), request rate (token
-  // bucket), and 429 shared backoff; defaults match Notion's ~3 rps
-  // public guidance. The RunTool wrapper
-  // dispatches through `client.request()`, which IS proxied here, so
-  // RunTool calls automatically share this gate.
+  // bucket), and 429 shared backoff; defaults live on the `DEFAULT_NOTION_*`
+  // constants and are tunable via the `notion.rateLimit` config block.
+  // The RunTool wrapper dispatches through `client.request()`, which IS
+  // proxied here, so RunTool calls automatically share this gate.
   const client = authRefresh
     ? createAuthRefreshingClient(authSnapshotRef.current, authRefresh, {
         createClient: (token, baseUrl) =>

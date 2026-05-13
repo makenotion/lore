@@ -75,11 +75,12 @@ function makeObservableClient(callDurationMs = 20): {
 
 /**
  * Effectively-bypass options bag used by the concurrency-only tests
- * below. The default 3 rps would dominate the assertions: a burst of
- * 10 short calls under default pacing finishes serially and shows
- * `maxInFlight = 1` because each call is done before the next token
- * arrives. Setting rps + burst high effectively disables the rate
- * gate so the assertions observe pure `p-limit` behavior.
+ * below. `DEFAULT_NOTION_REQUESTS_PER_SECOND` would dominate the
+ * assertions: a burst of 10 short calls under default pacing finishes
+ * serially and shows `maxInFlight = 1` because each call is done
+ * before the next token arrives. Setting rps + burst high effectively
+ * disables the rate gate so the assertions observe pure `p-limit`
+ * behavior.
  *
  * Named for the *intent* — "no pacing" — rather than the surface
  * shape ("fast rate"). A future test that wants to assert pacing
@@ -277,10 +278,12 @@ describe("createLimitedClient — concurrency gate", () => {
     // services.ts dropped the explicit fallback after createLimitedClient
     // started defaulting internally; the constants remain part of the
     // public surface for future call sites that want to override on a
-    // per-flow basis.
-    expect(DEFAULT_NOTION_CONCURRENCY).toBe(3)
-    expect(DEFAULT_NOTION_REQUESTS_PER_SECOND).toBe(3)
-    expect(DEFAULT_NOTION_BURST_SIZE).toBe(3)
+    // per-flow basis. The literal-pin below is the guard that catches
+    // an accidental drift away from the values the rate-limit
+    // docstring is justifying — the rationale lives there.
+    expect(DEFAULT_NOTION_CONCURRENCY).toBe(10)
+    expect(DEFAULT_NOTION_REQUESTS_PER_SECOND).toBe(20)
+    expect(DEFAULT_NOTION_BURST_SIZE).toBe(10)
   })
 })
 

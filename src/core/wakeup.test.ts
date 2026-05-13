@@ -842,9 +842,12 @@ describe("loadWakeUpData", () => {
 
     const rawListCall = services.memoriesCalls.find((c) => c.source === undefined && c.status !== "proposed")
     expect(rawListCall?.includeContent).toBe(false)
-    // Digest call always keeps content — that's what renders.
+    // Digest call opts in to content explicitly — that's what the
+    // renderer prints. `MemoryService.list` defaults
+    // `includeContent: false`, so the wake-up digest fetch must
+    // pass `includeContent: true` or the digest body renders empty.
     const digestCall = services.memoriesCalls.find((c) => c.source === "digest")
-    expect(digestCall?.includeContent).toBeUndefined()
+    expect(digestCall?.includeContent).toBe(true)
   })
 
   it("returns recent facts as knowledge facts", async () => {
@@ -1117,6 +1120,12 @@ describe("loadWakeUpData", () => {
     // the count — heading-vs-slice drift the single-source-of-truth
     // helper exists to prevent.
     expect(proposedCall?.excludeKinds).toEqual(["decision"])
+    // Body-fetch waste guard. The proposed-memories renderer
+    // (`formatMemoryListItem`) reads title / synopsis /
+    // confidenceScore / meta and never `memory.content`. Fetching
+    // bodies here would burn one N-way `retrieveMarkdown` fan-out
+    // per `expand: true` wake-up for output the renderer drops.
+    expect(proposedCall?.includeContent).toBe(false)
   })
 
   it("excludes Kind = decision from the inbox slice so heading and body agree", async () => {

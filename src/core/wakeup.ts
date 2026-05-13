@@ -1085,7 +1085,14 @@ async function runWakeUpFanOut(
         // memory inbox.
         excludeKinds: ["decision"],
         limit: proposedMemoryLimit,
-        includeContent,
+        // Hardcoded `false`: the proposed-memories renderer
+        // (`formatMemoryListItem`) reads title / synopsis /
+        // confidenceScore / meta and never `memory.content`.
+        // Threading the caller's `includeContent` here paid an
+        // N-way `retrieveMarkdown` fan-out per `expand: true`
+        // wake-up for bodies that were fetched, deserialized, and
+        // dropped on the floor.
+        includeContent: false,
         sortBy: "created_time",
         direction: "ascending",
       })
@@ -1151,6 +1158,8 @@ async function runWakeUpFanOut(
           limit: 1,
           includeUnscoped: false,
           sortBy: "created_time",
+          // The wake-up renderer prints the stored digest body verbatim.
+          includeContent: true,
         })
       : Promise.resolve({ items: [] as Memory[] }),
     projectId && knowledgeLimit > 0

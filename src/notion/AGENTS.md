@@ -326,16 +326,28 @@ outside strict service initialization.
 `rate-limit.ts` exports `createLimitedClient(client, options)`. It returns
 a `Proxy` over the real client that routes every outbound method call
 through three composed gates so fan-out (decision-graph walks, batch
-fact fetches, render-layer title lookups) stays under Notion's ~3 rps
-per-token public guidance:
+fact fetches, render-layer title lookups) stays under the measured
+server-side ceiling for `pages.retrieveMarkdown`. Notion's original
+public "~3 rps" guidance is the serial-latency floor
+(`1 / per-call-latency ≈ 3 rps`), not the real server ceiling — the
+operator-rerunnable probe shipped alongside this module is the
+direct-SDK measurement of `retrieveMarkdown` against a real vault.
+That probe measured one endpoint only; broader endpoint coverage
+(writes, RunTool, tighter workspaces) is a follow-up; the per-vault
+`notion.rateLimit.*` config knobs are the operator-side override.
 
 1. **Token bucket** (request rate) — paces sustained throughput.
-   Capacity = `burstSize` (default 3); refill = `requestsPerSecond`
-   (default 3). Short fan-outs that fit under the burst (≤3 calls)
-   fire instantly; longer fan-outs pace at the refill rate.
+   Capacity = `burstSize` (`DEFAULT_NOTION_BURST_SIZE`); refill =
+   `requestsPerSecond` (`DEFAULT_NOTION_REQUESTS_PER_SECOND`). Short
+   fan-outs that fit under the burst fire instantly; longer fan-outs
+   pace at the refill rate. The constant's own docstring carries the
+   probe-derived sizing rationale and the per-process vs
+   multi-process composition math.
 2. **`p-limit` slot** (concurrency) — bounds simultaneous in-flight
    requests so a slow Notion call can't fan out memory under heavy
-   load. Capacity = `concurrency` (default 3).
+   load. Capacity = `concurrency` (`DEFAULT_NOTION_CONCURRENCY`). At
+   the probed p50 latency the bucket binds before the slot cap;
+   concurrency matters under tail-latency spikes.
 3. **Shared 429 backoff** — when a 429 escapes the SDK's internal
    retry budget (the v5 SDK retries 429s twice with `Retry-After`
    parsing), the wrapper pauses the bucket for the surfaced
@@ -372,12 +384,11 @@ transparently.
 
 **One-time setup flows pay the rps tax too.** `lore init`,
 `lore install`, and `lore auth --status` previously had only the
-concurrency cap; under the new defaults they're paced at 3 rps. These
-flows run once-per-vault each and are not on the hot path, so the
-added latency (a few seconds for setup-shaped operations that fire >3
-calls/sec) is acceptable. Operators who measure their workload and
-want to tune up should set `notion.rateLimit.requestsPerSecond` in
-`.lore.yaml`.
+concurrency cap; under the current defaults they're paced at 20 rps
+with a 10-token burst. These flows run once-per-vault each and are
+not on the hot path. Operators who measure their workload and want
+to tune up or down should set `notion.rateLimit.requestsPerSecond`
+in `.lore.yaml`.
 
 **Bucket lifecycle.** The bucket only schedules a refill timer when
 its waiter queue is non-empty; the timer is NOT `unref`'d. An
@@ -423,15 +434,17 @@ test that exercises the bucket. See "paces a burst of calls beyond
 the bucket capacity" for the shape.
 
 **Per-token, not per-integration.** Notion enforces rate limits per
-access token (confirmed with the public-connections team
-2026-05-01). Under the 0.10.0 ntn-first deployment, every
-operator's ntn-issued token has its own ~3-rps bucket. The
-`p-limit` gate in `rate-limit.ts` keeps a single Lore process
-under that ceiling; cross-process contention within one operator's
-token is bounded by `DEFAULT_NOTION_CONCURRENCY` × number of
-concurrent processes. A "lore proxy token" that aggregated requests
-across operators would re-collapse the per-token isolation —
-don't.
+access token. Under the ntn-first deployment, every operator's
+ntn-issued token has its own server-side bucket sized to the
+per-token public-API contract. The `p-limit` gate in
+`rate-limit.ts` keeps a single Lore process under the wrapper's
+own configured ceiling (see the `DEFAULT_NOTION_*` constants);
+cross-process contention within one operator's token is bounded
+by `DEFAULT_NOTION_CONCURRENCY` × number of concurrent processes
+and ultimately governed by the 429 shared-backoff path when the
+union exceeds the server bucket. A "lore proxy token" that
+aggregated requests across operators would re-collapse the
+per-token isolation — don't.
 
 ## Filter Type Casting
 

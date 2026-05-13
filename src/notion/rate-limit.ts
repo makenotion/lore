@@ -19,11 +19,14 @@
  *
  * 1. **Token bucket** (request-rate): each call awaits a token before
  *    it may proceed. Bucket capacity controls the burst tolerance;
- *    refill rate controls sustained throughput. Defaults match
- *    Notion's ~3 rps guidance with a 3-token burst.
+ *    refill rate controls sustained throughput. Defaults to 20 rps
+ *    refill with a 10-token burst, sized at 1.5× headroom below the
+ *    measured server-side ceiling for `pages.retrieveMarkdown` (see
+ *    `DEFAULT_NOTION_REQUESTS_PER_SECOND` for the probe citation).
  * 2. **`p-limit` slot** (concurrency): bounds simultaneous in-flight
  *    requests so a slow Notion call can't fan out memory under heavy
- *    load. Same default of 3.
+ *    load. Default of 10 keeps the bucket from idling under tail-
+ *    latency spikes; at p50 the bucket (20 rps) binds first.
  * 3. **Shared 429 backoff**: when a 429 escapes the SDK's internal
  *    retry budget (the Notion v5 SDK retries 429s automatically with
  *    `Retry-After` parsing, so this is the surfacing-after-exhaustion
@@ -39,18 +42,55 @@
 import type { Client } from "@notionhq/client"
 import pLimit from "p-limit"
 
-/** Matches Notion's public-API guidance of ~3 requests per second. */
-export const DEFAULT_NOTION_CONCURRENCY = 3
-
-/** Sustained refill rate for the token bucket; mirrors the rps guidance. */
-export const DEFAULT_NOTION_REQUESTS_PER_SECOND = 3
+/**
+ * Maximum in-flight outbound Notion calls. Matches the bucket refill
+ * rate at the observed p50 call latency (~270 ms) — ten slots keep
+ * the token bucket from idling under tail-latency spikes (p95 > 1 s)
+ * while still bounding fan-out memory. At p50, the bucket binds first
+ * (10 slots could sustain ~37 rps; the 20 rps bucket caps before that).
+ */
+export const DEFAULT_NOTION_CONCURRENCY = 10
 
 /**
- * Initial bucket capacity. A 3-token burst lets short fan-outs (a
- * decision-graph walk over 3 ancestors, a render-layer title lookup
- * across 3 facts) fire instantly without waiting for the refill clock.
+ * Sustained refill rate for the token bucket. The "~3 rps" Notion
+ * called out as public-API guidance is the serial-latency floor
+ * (`1 / per-call-latency ≈ 3 rps`), not the server-side ceiling. A
+ * direct-SDK probe of `pages.retrieveMarkdown` against a real vault
+ * at concurrency 1 / 3 / 5 / 10 / 20 sustained ~28–30 rps at
+ * concurrency 10 with zero 429s; the 20 rps default sits at ~1.5×
+ * headroom below that conservative steady-state.
+ *
+ * Per-process budget — NOT multi-process. The 1.5× headroom claim
+ * is single-process: one Lore process at 20 rps still sits below the
+ * probed 28–30 rps. Multiple Lore processes on one Notion token
+ * (MCP server + CLI + hooks running concurrently) compose
+ * additively at the server-side bucket — two processes can offer
+ * ~40 rps, three can offer ~60 rps, both of which exceed the probed
+ * ceiling. The shared 429 backoff path inside this wrapper (see
+ * `MAX_RATE_LIMIT_BACKOFF_MS`) is what self-throttles when that
+ * happens; operators running heavy concurrent workloads should tune
+ * `notion.rateLimit.requestsPerSecond` down per process or
+ * coordinate so the union stays under the per-token ceiling.
+ *
+ * Scope caveat: the probe covered `pages.retrieveMarkdown` only.
+ * Write endpoints, RunTool dispatches, and per-workspace caps
+ * tighter than the probed vault were not measured. If a write-heavy
+ * or non-markdown surface starts surfacing 429s under this default,
+ * the shared backoff path absorbs the throttling and a per-vault
+ * `notion.rateLimit.requestsPerSecond: 3` override restores the
+ * pre-retune posture.
  */
-export const DEFAULT_NOTION_BURST_SIZE = 3
+export const DEFAULT_NOTION_REQUESTS_PER_SECOND = 20
+
+/**
+ * Initial token-bucket capacity. A 10-token burst absorbs typical
+ * hot-path fan-outs — the wake-up renderer's parallel `Promise.all`
+ * over memories + facts + decisions + tasks + pinned blocks, a
+ * decision-graph walk over a small ancestor set, the render-layer
+ * batch resolution of titles for a recently-cited row set — without
+ * waiting for the refill clock.
+ */
+export const DEFAULT_NOTION_BURST_SIZE = 10
 
 /**
  * Default fallback pause when a 429 surfaces without a parseable

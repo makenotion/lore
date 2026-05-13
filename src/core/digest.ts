@@ -42,6 +42,7 @@ export interface DigestServices {
       until?: string
       limit?: number
       sortBy?: "created_time" | "last_edited_time"
+      includeContent?: boolean
     }): Promise<{ items: Memory[] }>
   }
   tasks: {
@@ -140,6 +141,8 @@ export async function gatherDigestData(
       since: windowStart,
       until: windowEnd,
       limit: MAX_RECENT_MEMORIES,
+      // The synthesizer prompt renders a content preview per memory.
+      includeContent: true,
     }),
     // Sort by creation so freshness aligns with "latest created digest":
     // an edit to an older digest must not mask a newer one. Mirrors the

@@ -86,6 +86,7 @@ interface ListedCall {
   until?: string
   limit?: number
   sortBy?: "created_time" | "last_edited_time"
+  includeContent?: boolean
 }
 
 interface ListTasksCall {
@@ -234,6 +235,17 @@ describe("gatherDigestData", () => {
     const result = await gatherDigestData(services, { projectLabel: "Widget" })
     expect(result.raw).toContain("## Open Work (1)")
     expect(result.raw).toContain("OVERDUE")
+  })
+
+  it("requests memory bodies for the recent-memories window", async () => {
+    // The synthesizer prompt renders a content preview for every
+    // recent memory. `MemoryService.list` defaults `includeContent`
+    // to `false`, so the digest call site must opt in explicitly or
+    // every preview silently degrades to an empty string.
+    const services = stubServices({})
+    await gatherDigestData(services, { projectLabel: "Widget" })
+    const recentCall = services.calls.find((c) => c.source !== "digest")
+    expect(recentCall?.includeContent).toBe(true)
   })
 
   it("applies a day window when period is 'day'", async () => {

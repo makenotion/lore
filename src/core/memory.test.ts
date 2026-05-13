@@ -10081,7 +10081,7 @@ describe("MemoryService.list — archived filter", () => {
     expect(items[0].id).toBe("mem-live")
   })
 
-  it("excludes archived rows in default content-hydrating mode and skips their markdown fetch", async () => {
+  it("excludes archived rows BEFORE per-page markdown fan-out when includeContent: true", async () => {
     // Filtering BEFORE the per-page `retrieveMarkdown` fan-out matters:
     // a soft-deleted vault should not pay N+1 round-trips for rows the
     // caller will never see.
@@ -10093,7 +10093,7 @@ describe("MemoryService.list — archived filter", () => {
     })
     const service = new MemoryService(client, db)
 
-    const { items } = await service.list()
+    const { items } = await service.list({ includeContent: true })
 
     expect(items).toHaveLength(1)
     expect(items[0].id).toBe("mem-live")
@@ -10262,6 +10262,98 @@ describe("MemoryService.list — archived filter", () => {
         process.env["LORE_DEBUG"] = original
       }
     }
+  })
+})
+
+describe("MemoryService.list — includeContent default", () => {
+  // Pins the body-fan-out contract: `list()` defaults to
+  // `includeContent: false` so list-style callers (which render
+  // title / project / date / tags) never trigger the N-way
+  // `pages.retrieveMarkdown` fan-out. Callers that genuinely need
+  // bodies (digest synthesizer, wake-up digest renderer) opt in
+  // with `includeContent: true`.
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildListPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      { id } as Partial<PageObjectResponse>
+    )
+  }
+
+  function createClient(pageCount: number) {
+    const results = Array.from({ length: pageCount }, (_, i) =>
+      buildListPage(`mem-${i + 1}`, `memory ${i + 1}`)
+    )
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      results,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const retrieveMarkdownSpy = vi.fn(async (args: { page_id: string }) => ({
+      markdown: `body for ${args.page_id}`,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    return { client, querySpy, retrieveMarkdownSpy }
+  }
+
+  it("issues zero pages.retrieveMarkdown calls when includeContent is omitted (default behavior)", async () => {
+    const { client, retrieveMarkdownSpy } = createClient(25)
+    const service = new MemoryService(client, db)
+
+    const { items } = await service.list({ limit: 25 })
+
+    expect(items).toHaveLength(25)
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+    for (const item of items) {
+      expect(item.content).toBe("")
+    }
+  })
+
+  it("issues zero pages.retrieveMarkdown calls when includeContent is explicitly false", async () => {
+    const { client, retrieveMarkdownSpy } = createClient(25)
+    const service = new MemoryService(client, db)
+
+    await service.list({ limit: 25, includeContent: false })
+
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("issues one pages.retrieveMarkdown call per row when includeContent is true", async () => {
+    const { client, retrieveMarkdownSpy } = createClient(25)
+    const service = new MemoryService(client, db)
+
+    const { items } = await service.list({ limit: 25, includeContent: true })
+
+    expect(items).toHaveLength(25)
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(25)
+    for (const item of items) {
+      expect(item.content).toBe(`body for ${item.id}`)
+    }
+  })
+
+  it("returns memories with empty content under the default so list-style consumers must opt in to bodies", async () => {
+    // The digest synthesizer and the wake-up digest renderer are the
+    // two body-reading consumers in the tree; both pass
+    // `includeContent: true` explicitly. Any new consumer that reads
+    // `memory.content` without setting the flag will see an empty
+    // string — a loud "did I forget to set the flag?" signal rather
+    // than a silent wasted-fetch cost on the hot path.
+    const { client } = createClient(3)
+    const service = new MemoryService(client, db)
+
+    const { items } = await service.list()
+
+    expect(items.map((m) => m.content)).toEqual(["", "", ""])
   })
 })
 
@@ -10672,15 +10764,15 @@ describe("MemoryService.getTitleById — title cache", () => {
   })
 
   it("caches a null tombstone when retrieve throws object_not_found", async () => {
-    // The acceptance criterion for issue #478. A genuinely-deleted id
-    // (the SDK throws `APIResponseError` with `code: object_not_found`)
-    // must install a tombstone so the next wake-up over the same id
-    // set issues zero retrieves on the dead id.
-    //
-    // The pre-fix bare `catch` collapsed 404 / 401 / 403 / 429 / 5xx
-    // into a single uncached-null return; every wake-up then re-issued
-    // `pages.retrieve` for every dead id, paced by the 3 rps token
-    // bucket.
+    // A genuinely-deleted id (the SDK throws `APIResponseError` with
+    // `code: object_not_found`) must install a tombstone so the next
+    // wake-up over the same id set issues zero retrieves on the dead
+    // id. Without the tombstone, a bare `catch` that collapses
+    // 404 / 401 / 403 / 429 / 5xx into one uncached-null return forces
+    // every wake-up to re-issue `pages.retrieve` for every dead id,
+    // paced by the outbound rate-limit bucket — the contract this
+    // test pins is that the dead id is fetched at most once per cache
+    // TTL.
     const retrieveSpy = vi.fn(async () => {
       throw buildApiError(APIErrorCode.ObjectNotFound, 404)
     })

@@ -427,13 +427,13 @@ RunTool calls go through **two rate-limit checks**:
 
 ### How this composes with the existing REST/SDK bucket
 
-The existing `src/notion/rate-limit.ts` token bucket targets Notion's
-**~3 rps per-token guidance for the standard REST API**
-(`DEFAULT_NOTION_REQUESTS_PER_SECOND = 3`,
-`DEFAULT_NOTION_BURST_SIZE = 3`). RunTool's bucket is separate — but
-**both buckets count requests that traverse the same `Authorization`
-header**. The cleanest approach is to keep RunTool calls under the same
-token bucket as REST calls so:
+The existing `src/notion/rate-limit.ts` token bucket targets the
+measured `pages.retrieveMarkdown` ceiling for the standard REST API
+(`DEFAULT_NOTION_REQUESTS_PER_SECOND` and `DEFAULT_NOTION_BURST_SIZE`
+control the refill and burst respectively). RunTool's bucket is
+separate — but **both buckets count requests that traverse the same
+`Authorization` header**. The cleanest approach is to keep RunTool
+calls under the same token bucket as REST calls so:
 
 - A single Lore process never exceeds the lower of the two ceilings.
 - Cross-tool fan-out (a memory search that issues a RunTool `search`
@@ -473,13 +473,14 @@ shared dispatcher out of the wrap.
 **Multi-process pacing.** `src/notion/AGENTS.md` already documents
 that Notion enforces rate limits per access token, so a Lore process
 running concurrently with the MCP server, with a hook spawn, or
-across worktrees each pace independently at 3 rps locally — the
-RunTool server bucket sees the union, bounded by
+across worktrees each pace independently at the per-process bucket
+refill rate. The RunTool server bucket sees the union, bounded by
 `DEFAULT_NOTION_CONCURRENCY × number of concurrent processes`. The
-RunTool per-tool, per-actor server bucket adds a second
-ceiling on top of this, but does not change the multi-process
-arithmetic on Lore's side. Phase 1's wrapper does not need a new
-mechanism for this; it inherits `createLimitedClient`'s posture.
+RunTool per-tool, per-actor server bucket adds a second ceiling on
+top of this, but does not change the multi-process arithmetic on
+Lore's side. Phase 1's wrapper does not need a new mechanism for
+this; it inherits `createLimitedClient`'s posture and the 429
+shared-backoff path absorbs union-rate throttling when it surfaces.
 
 ### Error model
 
