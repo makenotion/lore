@@ -31,11 +31,7 @@ import {
 } from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join, isAbsolute } from "node:path"
-import {
-  RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
-  RUNTIME_FORWARDED_KEYS,
-  type RuntimeForwardedKey,
-} from "../auth/forwarded-env.js"
+import { buildSafeEnv } from "../auth/forwarded-env.js"
 import type { AuthSource } from "../config.js"
 import { redactDebugError } from "../debug-redact.js"
 import {
@@ -364,42 +360,13 @@ export function spawnBackgroundSave(
   const args = renderAgentArgs(agentConfig.args, allowedTools)
 
   // Minimal env — only what the background process needs. Auth /
-  // workspace / environment selectors flow through the shared
-  // `RUNTIME_FORWARDED_KEYS` list (see `src/auth/forwarded-env.ts`)
-  // so the spawned `claude -p` and the MCP child it in turn launches
-  // both reach the same Notion workspace and environment the
-  // foreground CLI / MCP host resolves. Empty-string values are
-  // skipped for parity with the `lore install` placeholder shape —
-  // a declared-but-empty var would otherwise short-circuit
-  // `resolveAuth`'s priority chain in the spawned child.
-  //
-  // Under `authSource: "ntn-auth-json"` the auth-token subset
-  // (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) is dropped from the
-  // forward — the spawned child re-reads `~/.config/notion/auth.json`
-  // directly via `loadNtnToken` (resolveAuth priority 2) and lands
-  // on the same token without ever crossing the fork boundary in env.
-  // Workspace + base-URL + attribution selectors still forward so
-  // multi-workspace `auth.json` resolution agrees with the foreground.
-  // See `SpawnBackgroundSaveOptions.authSource` for the threat model
-  // and `cli/commands/install.ts:buildMcpEnv`'s `skipAuthTokens`
-  // partition this mirrors. (Issue #475.)
-  const skipAuthTokens = options.authSource === "ntn-auth-json"
-  const authTokenKeys: ReadonlySet<RuntimeForwardedKey> = new Set(
-    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
-  )
-  const safeEnv: Record<string, string> = {
-    PATH: process.env["PATH"] ?? "",
-    HOME: process.env["HOME"] ?? "",
-    LORE_AUTOSAVE: "false",
-    LORE_BACKGROUND_AGENT: "true",
-  }
-  for (const key of RUNTIME_FORWARDED_KEYS) {
-    if (skipAuthTokens && authTokenKeys.has(key)) continue
-    const value = process.env[key]
-    if (typeof value === "string" && value.length > 0) {
-      safeEnv[key] = value
-    }
-  }
+  // workspace / environment selectors flow through `buildSafeEnv`,
+  // the single source of truth shared by every Lore-spawned-child
+  // path. Under `authSource: "ntn-auth-json"` the auth-token subset
+  // is dropped because the child re-reads `auth.json` directly;
+  // workspace + base-URL + attribution selectors still forward so
+  // multi-workspace resolution agrees with the foreground.
+  const safeEnv = buildSafeEnv(options.authSource)
 
   // Redirect stderr to a per-key log so crashes are recoverable without
   // someone actively watching stderr. Truncate per save: each spawn is

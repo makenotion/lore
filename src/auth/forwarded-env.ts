@@ -146,3 +146,69 @@ export const RUNTIME_FORWARDED_AUTH_TOKEN_KEYS = [
 
 export type RuntimeForwardedAuthTokenKey =
   (typeof RUNTIME_FORWARDED_AUTH_TOKEN_KEYS)[number]
+
+import type { AuthSource } from "../config.js"
+
+/**
+ * Build the env block a Lore-spawned child inherits when the parent
+ * wants the child's `resolveAuth` to land on the same Notion
+ * workspace and environment as the foreground process.
+ *
+ * Always sets the four child-policy keys regardless of `parentEnv`:
+ * - `PATH` / `HOME` — minimum POSIX baseline so the child can find
+ *   its binary and `os.homedir()` resolves.
+ * - `LORE_AUTOSAVE = "false"` — prevents recursive autosave from
+ *   the child's own Stop hook firing in turn.
+ * - `LORE_BACKGROUND_AGENT = "true"` — opts the child's MCP server
+ *   into the fail-fast init mode rather than the diagnostic-stay-up
+ *   mode the foreground host wants.
+ *
+ * Conditionally forwards every key in `RUNTIME_FORWARDED_KEYS` whose
+ * value in `parentEnv` is a non-empty string. Empty-string values are
+ * dropped to mirror `resolveAuth`'s priority-chain semantics — a
+ * declared-but-empty `NOTION_API_TOKEN` would otherwise short-circuit
+ * the child's priority walk.
+ *
+ * Under `authSource === "ntn-auth-json"`, the auth-token subset
+ * (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) is partitioned out of the
+ * forward. The spawned child re-reads `~/.config/notion/auth.json`
+ * directly via `loadNtnToken` (resolveAuth priority 2) and lands on
+ * the same token without the bearer crossing the fork boundary in
+ * env. Workspace and base-URL selectors still forward — the child
+ * needs them to select the same workspace as the foreground. The
+ * partition tightens blast radius for the dual-shell-rc operator
+ * class (`LORE_NOTION_TOKEN` set in shell while ntn login also
+ * present); under any other source the partition is a no-op because
+ * the auth-token forward is the only resolution path.
+ *
+ * Single source of truth shared by every Lore-spawned-child path:
+ * detached fire-and-forget save spawn, synchronous awaitable mining
+ * seam, future bench-runner-spawned MCP children. A future addition
+ * to `RUNTIME_FORWARDED_KEYS` propagates to every caller through
+ * this helper rather than requiring lockstep edits at multiple
+ * sites.
+ */
+export function buildSafeEnv(
+  authSource: AuthSource | undefined,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const skipAuthTokens = authSource === "ntn-auth-json"
+  const authTokenKeys: ReadonlySet<RuntimeForwardedKey> = new Set(
+    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
+  )
+  const env: Record<string, string> = {
+    PATH: parentEnv["PATH"] ?? "",
+    HOME: parentEnv["HOME"] ?? "",
+    LORE_AUTOSAVE: "false",
+    LORE_BACKGROUND_AGENT: "true",
+  }
+  for (const key of RUNTIME_FORWARDED_KEYS) {
+    if (skipAuthTokens && authTokenKeys.has(key)) continue
+    const value = parentEnv[key]
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = value
+    }
+  }
+  return env
+}
+

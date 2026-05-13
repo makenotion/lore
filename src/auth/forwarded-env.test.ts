@@ -2,32 +2,19 @@ import { describe, expect, it } from "vitest"
 import {
   RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
   RUNTIME_FORWARDED_KEYS,
+  buildSafeEnv,
   type RuntimeForwardedAuthTokenKey,
   type RuntimeForwardedKey,
 } from "./forwarded-env.js"
 
 // `forwarded-env.ts` is a contract module: a single source-of-truth
-// allowlist consumed by `lore install` (committed `.mcp.json` /
-// `config.toml` placeholders) and `spawnBackgroundSave` (detached
-// `claude -p` env passthrough). The module's own JSDoc warns that drift
-// between the two surfaces produces silent auth/workspace divergence
-// (#188), so these tests pin the invariants that drift would violate.
-//
-// Consumer-side tests already iterate this constant to verify emit
-// behavior:
-// - `src/cli/commands/install.test.ts:3319` walks `RUNTIME_FORWARDED_KEYS`
-//   and asserts every per-host MCP entry emits `${VAR}` placeholders.
-// - `src/cli/commands/install.test.ts:2799` opens the
-//   `ntn-auth-json` block, where `RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`
-//   suppression is exhaustively pinned per token key.
-// - `src/hooks/background.test.ts:137` (and 149, 262, 301) walks
-//   the same array against `safeEnv` to pin spawn-side parity.
-//
-// This file pins the array's *own* shape — independent of either
-// consumer — so a refactor that broke the allowlist's shape would
-// surface here even if both consumer tests were temporarily
-// disabled, AND so the consumer files don't need to grow ambient
-// shape probes alongside their per-host emit assertions.
+// allowlist consumed by every Lore surface that needs to thread the
+// operator's auth-relevant env into a spawned child (committed MCP
+// host config placeholders + the detached background-save spawn).
+// Drift between consumers produces silent auth/workspace divergence;
+// this file pins the array's *own* shape so the contract holds
+// independently of consumer tests, and so consumer files don't need
+// ambient shape probes alongside their per-host emit assertions.
 
 // Module-scope exhaustiveness gates. The mere presence of these
 // switches in the source file is the type-test: if a key is added to
@@ -179,6 +166,84 @@ describe("RUNTIME_FORWARDED_AUTH_TOKEN_KEYS — subset partition", () => {
     // would be redundant once this passes.
     const prefix = RUNTIME_FORWARDED_KEYS.slice(0, RUNTIME_FORWARDED_AUTH_TOKEN_KEYS.length)
     expect(prefix).toEqual([...RUNTIME_FORWARDED_AUTH_TOKEN_KEYS])
+  })
+})
+
+describe("buildSafeEnv — env partition shared by every Lore child spawn", () => {
+  const parent: NodeJS.ProcessEnv = {
+    PATH: "/usr/local/bin:/usr/bin",
+    HOME: "/home/test",
+    NOTION_API_TOKEN: "tok-canonical",
+    LORE_NOTION_TOKEN: "tok-legacy",
+    NOTION_WORKSPACE_ID: "ws-abc",
+    LORE_USER_NAME: "Test Operator",
+    NOTION_ENV: "prod",
+    UNRELATED_VAR: "should-not-leak",
+  }
+
+  it("forwards every key in RUNTIME_FORWARDED_KEYS when set in parent env", () => {
+    const env = buildSafeEnv(undefined, parent)
+    for (const key of RUNTIME_FORWARDED_KEYS) {
+      if (parent[key]) {
+        expect(env[key]).toBe(parent[key])
+      }
+    }
+  })
+
+  it("attaches LORE_AUTOSAVE=false and LORE_BACKGROUND_AGENT=true unconditionally", () => {
+    const env = buildSafeEnv(undefined, parent)
+    expect(env["LORE_AUTOSAVE"]).toBe("false")
+    expect(env["LORE_BACKGROUND_AGENT"]).toBe("true")
+  })
+
+  it("does not leak env vars outside the allowlist", () => {
+    const env = buildSafeEnv(undefined, parent)
+    expect(env["UNRELATED_VAR"]).toBeUndefined()
+  })
+
+  it("skips empty-string values to match resolveAuth priority semantics", () => {
+    // A declared-but-empty var would short-circuit `resolveAuth`'s
+    // priority chain in the spawned child — the partition strips
+    // empties so the child falls through to the next source.
+    const env = buildSafeEnv(undefined, {
+      ...parent,
+      NOTION_WORKSPACE_ID: "",
+    })
+    expect(env["NOTION_WORKSPACE_ID"]).toBeUndefined()
+  })
+
+  it("drops only the auth-token subset under authSource='ntn-auth-json'", () => {
+    const env = buildSafeEnv("ntn-auth-json", parent)
+    // Auth tokens drop: the spawned child re-reads auth.json directly
+    // and the bearer never crosses the fork boundary in env.
+    expect(env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(env["LORE_NOTION_TOKEN"]).toBeUndefined()
+    // Workspace + base-URL + attribution selectors still forward —
+    // the spawned MCP child re-reads auth.json directly but still
+    // needs to land on the same workspace as the foreground.
+    expect(env["NOTION_WORKSPACE_ID"]).toBe("ws-abc")
+    expect(env["NOTION_ENV"]).toBe("prod")
+    expect(env["LORE_USER_NAME"]).toBe("Test Operator")
+  })
+
+  it("forwards the auth-token subset under non-ntn auth sources", () => {
+    const env = buildSafeEnv("env-notion-api-token", parent)
+    expect(env["NOTION_API_TOKEN"]).toBe("tok-canonical")
+    expect(env["LORE_NOTION_TOKEN"]).toBe("tok-legacy")
+  })
+
+  it("defaults PATH and HOME to empty string when missing from parent env", () => {
+    const env = buildSafeEnv(undefined, {})
+    expect(env["PATH"]).toBe("")
+    expect(env["HOME"]).toBe("")
+  })
+
+  it("returns a fresh object on each call so callers may mutate without cross-talk", () => {
+    const env1 = buildSafeEnv(undefined, parent)
+    const env2 = buildSafeEnv(undefined, parent)
+    expect(env1).not.toBe(env2)
+    env1["MUTATED"] = "true"
+    expect(env2["MUTATED"]).toBeUndefined()
   })
 })
 

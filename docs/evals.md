@@ -30,6 +30,39 @@ npm run build
 node dist/cli.js eval run evals/suites/lore-core.yaml
 ```
 
+## LongMemEval bench: temporal-fidelity caveat
+
+The LongMemEval bench published number on the `temporal-reasoning`
+and `knowledge-update` categories is **not apples-to-apples** with
+agent-memory systems that rank by session event time. Two facts about
+Lore's schema explain why, and the caveat must travel with every
+published number on those two categories.
+
+Lore's Memories schema has no caller-writable session-timestamp
+column. `Memory.createdAt` maps to Notion's `page.created_time`
+(server-set, not caller-settable); `Last Referenced At` is the
+read-decay anchor; `Decided At` and `Done At` are domain-specific to
+the decision and task surfaces; `Session` is `rich_text` carrying a
+session id, not a date. Lore's retrieval ranks by ingestion-time
+recency, not by event time embedded in the conversation.
+
+Consequence on those two categories: a LongMemEval score measures
+**whether the agent recovers temporal context from the memory body's
+free text**, not whether Lore's retrieval ranks by event time. The
+agent can still answer correctly when the body's prose carries the
+session timestamp explicitly — the bench is therefore a measurement
+of an agent capability composed with Lore's ingestion shape, not a
+direct comparison to systems that rank by event time. The comparison
+to Zep's `longmemeval_s` numbers on these two categories is not
+apples-to-apples on the temporal axis.
+
+The bench artifact's `summary.temporalFidelityCaveat` field carries
+this disclaimer verbatim so downstream consumers (CI logs,
+dashboards, public posts) cannot strip it from headline output.
+Adding a writable session-time column to the Memories schema would
+let retrieval rank by event time and convert this caveat into an
+honest apples-to-apples comparison; until then, the caveat applies.
+
 ## Runner modes
 
 Three runners ship today; the first two share the same suite YAML format and

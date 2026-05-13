@@ -21,6 +21,7 @@ dropped active SessionEnd registration.
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `helpers.ts`                   | Entry point: routes to `autosave` / `wakeup` / `auto-digest` / `session-end` handlers                                       |
 | `prompts.ts`                   | Pure prompt builders for background-save sub-agents                                                                         |
+| `conversation-mining.ts`       | `runConversationMining(transcript, options)` — synchronous, awaitable counterpart to `background.ts`'s detached fire-and-forget spawn. Co-located here because it shares the prompt builder, binary resolver, and `buildSafeEnv` partition with the autosave spawn primitive; consumers needing deterministic per-session completion (eval harnesses, one-shot replays) import this seam directly. The hook itself does not call this helper — its lock + concurrency-cap machinery is owned by `spawnBackgroundSave`. |
 | `transcript.ts`                | Parse Claude Code / Codex transcript formats into messages                                                                  |
 | `lock.ts`                      | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir                       |
 | `config.ts`                    | `.lore.yaml` `hooks` section defaults + merge                                                                               |
