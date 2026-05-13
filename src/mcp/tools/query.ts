@@ -137,7 +137,9 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
     {
       title: "Vault read paths",
       description:
-        "Read the vault: list memories, search memories, query the fact graph, or audit overdue items. Action-dispatched:\n\n" +
+        "Vault retrieval — list memories, search memories, query the fact graph, or audit overdue items. " +
+        "**Call this BEFORE answering factual questions about stored conversation or recorded knowledge** — the vault is authoritative; abstain only after `action: 'search'` (and `action: 'ask'` when the question names an entity) return nothing. " +
+        "Action-dispatched:\n\n" +
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows by default; `includeContent: true` to fetch bodies. Cursor-paginated.\n" +
         "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `hybrid`). `contains` is DS-scoped substring with server-side filters; `semantic` is workspace-wide vector ranking over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
         "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`). Prepends a project framing block by default (`includeContext: false` to suppress). Pass `asOf: 'YYYY-MM-DD'` for a transaction-time as-of recall (what Lore knew at that date) or `includeHistory: true` to surface invalidated facts inline.\n" +

@@ -5,7 +5,7 @@ import { z } from "zod"
 
 export const EVAL_SUITE_VERSION = 1
 
-export const EVAL_RUNNERS = ["retrieval", "notion", "task"] as const
+export const EVAL_RUNNERS = ["retrieval", "notion", "task", "bench"] as const
 
 /**
  * Agents the committed task-eval YAML may reference. `mock` is
@@ -197,6 +197,167 @@ export const evalMemoryScenarioSchema = z
       .default([]),
   })
   .strict()
+
+/**
+ * LongMemEval bench-suite schema (issue #595). Structurally disjoint
+ * from `evalSuiteSchema`: the dispatcher in `runEvalSuite` reads the
+ * top-level `runner` field first and routes "bench" to `runBenchSuite`
+ * before deeper validation.
+ *
+ * Every field that has a single supported value (model snapshots,
+ * adapter, benchmark) is a `z.literal` — adding a second model is a
+ * Zod-schema change, which is exactly the audit checkpoint we want.
+ * `.strict()` at every level rejects unknown fields so a typo can't
+ * silently disable a knob.
+ */
+/**
+ * Ingestion strategy for the bench. Two values:
+ *
+ * - `lore-mine` (V1 default): each session is mined through the
+ *   production Stop-hook autosave pipeline (`runConversationMining`
+ *   → `claude -p` → `lore mcp` tools). Faithful to Lore's production
+ *   write path. On LongMemEval's synthetic-conversation corpus the
+ *   autosave's "durable knowledge" filter intentionally rejects
+ *   casual conversational facts, so mining produces ~1 memory per
+ *   ~30-session haystack and the agent recalls little. The bench
+ *   number measures "Lore's production filter against the LongMemEval
+ *   workload" — honest but not Zep-comparable.
+ *
+ * - `raw-transcript`: each session is stored verbatim as one memory
+ *   (title `Session <i>`, body = the session transcript). Bypasses
+ *   the autosave filter; the agent's `lore-query` / `lore-context`
+ *   retrieves the transcript memory and answers from its body. This
+ *   mirrors Zep's Graphiti-ingest baseline: every conversational
+ *   token is stored, retrieval reads it back. Apples-to-apples with
+ *   the published Zep LongMemEval numbers.
+ *
+ * The two strategies measure different things — V1 ships both,
+ * suite YAML picks. The committed `longmemeval.yaml` keeps
+ * `lore-mine` (V1 contract); a parallel `longmemeval-raw-transcript.yaml`
+ * runs raw-transcript so operators can publish whichever number
+ * matches the workload they're calibrating against.
+ */
+export const BENCH_INGESTION_STRATEGIES = ["lore-mine", "raw-transcript"] as const
+export type BenchIngestionStrategy = (typeof BENCH_INGESTION_STRATEGIES)[number]
+
+/**
+ * Retrieval strategy for the agent. Two values:
+ *
+ * - `tool-driven` (V1 default): the agent has Lore MCP tools
+ *   (`lore-query`, `lore-memory`, `lore-context`) registered and
+ *   decides for itself when to call them. Maps to mid-session
+ *   followup behavior in production Lore. **Currently structurally
+ *   unavailable under `codex exec`** — Codex 0.128.0 does not load
+ *   MCP servers in its non-interactive exec mode (`enable_mcp_apps`
+ *   feature flag is "under development"). The agent sees no tools
+ *   and falls through to shell-command attempts that all fail with
+ *   `command not found`. Listed here for documentation completeness
+ *   and to keep the schema stable when a future Codex release or
+ *   Claude Code headless adapter restores tool-driven retrieval.
+ *
+ * - `wake-up-prefetch`: the bench-runner calls `loadWakeUpData` with
+ *   `userQuery=<question>` BEFORE invoking the agent. The
+ *   relevance-ranked top memories (bodies included) are rendered as
+ *   a system-prompt addendum the agent reads inline. No MCP tools
+ *   required — the agent just answers from the injected context.
+ *   Maps to how Lore's wake-up hook actually works at session start:
+ *   the hook calls `lore-context action='wake-up' userQuery=<task>`
+ *   via the agent's MCP integration and the response is pasted into
+ *   the agent's context window. For the bench surface, this is
+ *   functionally equivalent: pre-fetched relevance bundle, agent
+ *   answers from it.
+ */
+export const BENCH_AGENT_RETRIEVAL_STRATEGIES = [
+  "tool-driven",
+  "wake-up-prefetch",
+] as const
+export type BenchAgentRetrievalStrategy =
+  (typeof BENCH_AGENT_RETRIEVAL_STRATEGIES)[number]
+
+export const benchSuiteSchema = z
+  .object({
+    runner: z.literal("bench"),
+    benchmark: z.literal("longmemeval"),
+    suite: z.string().min(1),
+    corpus: z
+      .object({
+        name: z.string().min(1),
+        path: z.string().min(1),
+      })
+      .strict(),
+    agent: z
+      .object({
+        model: z.literal("gpt-4o-mini-2024-07-18"),
+        adapter: z.literal("codex"),
+        systemPrompt: z.string().min(1),
+        retrieval: z
+          .enum(BENCH_AGENT_RETRIEVAL_STRATEGIES)
+          .default("tool-driven"),
+      })
+      .strict(),
+    judge: z
+      .object({
+        model: z.literal("gpt-4o-2024-08-06"),
+        recallPrompt: z.string().min(1),
+        abstentionPrompt: z.string().min(1),
+      })
+      .strict(),
+    ingestion: z
+      .object({
+        strategy: z.enum(BENCH_INGESTION_STRATEGIES).default("lore-mine"),
+      })
+      .strict()
+      .default({ strategy: "lore-mine" }),
+    caps: z
+      .object({
+        perExampleWrites: z.number().int().positive().default(500),
+        perSuiteWrites: z.number().int().positive().default(250_000),
+      })
+      .strict()
+      .default({ perExampleWrites: 500, perSuiteWrites: 250_000 }),
+    notes: z.string().default(""),
+  })
+  .strict()
+
+export type BenchSuite = z.infer<typeof benchSuiteSchema>
+
+export interface LoadedBenchSuite {
+  suite: BenchSuite
+  path: string
+  root: string
+}
+
+export async function loadBenchSuite(path: string): Promise<LoadedBenchSuite> {
+  const absolute = resolve(path)
+  const raw = await readFile(absolute, "utf-8")
+  const parsed = parseEvalYaml(raw, absolute)
+  return {
+    suite: benchSuiteSchema.parse(parsed),
+    path: absolute,
+    root: dirname(absolute),
+  }
+}
+
+/**
+ * Cheap discriminator read off the top of a YAML document so the
+ * dispatcher can route to the bench vs retrieval/task path before
+ * deeper validation. Returns null on parse failure — the caller falls
+ * back to the legacy `evalSuiteSchema` parse error path.
+ */
+export function peekSuiteRunner(raw: string): EvalRunner | null {
+  let parsed: unknown
+  try {
+    parsed = parseYaml(raw)
+  } catch {
+    return null
+  }
+  const runner = (parsed as { runner?: unknown })?.runner
+  if (typeof runner !== "string") return null
+  if ((EVAL_RUNNERS as readonly string[]).includes(runner)) {
+    return runner as EvalRunner
+  }
+  return null
+}
 
 export type EvalSuite = z.infer<typeof evalSuiteSchema>
 export type EvalTask = EvalSuite["tasks"][number]

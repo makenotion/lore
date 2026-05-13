@@ -3866,6 +3866,12 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     NOTION_BASE_URL: "https://api-dev.notion.com",
     NOTION_API_BASE_URL: "https://api-dev.notion.com",
     LORE_USER_NAME: "Real Operator",
+    // Bench-mode write-budget pair. In production these are unset
+    // and the placeholder doesn't get written; the test exhaustively
+    // pins the placeholder shape on the bench-active branch so a
+    // future install-side change can't accidentally drop the keys.
+    LORE_MCP_WRITE_BUDGET: "500",
+    LORE_MCP_BUDGET_STATE_FILE: "/tmp/state.json",
   }
 
   // Probes that should never appear in committed PnP config:
@@ -3948,7 +3954,7 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     // Pin the full env_vars line shape to catch ordering regressions
     // — the per-key probe above would still pass if a refactor
     // shuffled the array.
-    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME"]')
+    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME", "LORE_MCP_WRITE_BUDGET", "LORE_MCP_BUDGET_STATE_FILE"]')
   })
 })
 

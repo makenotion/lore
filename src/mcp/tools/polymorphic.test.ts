@@ -1744,7 +1744,16 @@ describe("MCP tool surface", () => {
     // dispatcher with multiple actions) or a critical-rule block
     // pushed onto an existing description must bump this ceiling
     // explicitly and document why in the same change.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 11050
+    // Bumped 11050 → 11450 (+400) for the lore-query "retrieve-first"
+    // framing paragraph. The added wording instructs agents to call
+    // `action: 'search'` (and `action: 'ask'` when an entity is named)
+    // BEFORE abstaining — closes the failure mode where a model with
+    // weak tool-use propensity (e.g. gpt-4o-mini under the bench)
+    // reads the question, decides "I don't know," and never tries
+    // retrieval. Production agents also benefit from the same
+    // posture against in-context guessing. Per-tool ceiling for
+    // lore-query also bumped 1340 → 1580 below.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 11450
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1855,7 +1864,14 @@ describe("MCP tool surface", () => {
       "lore-pinned": 1330,
       // Issue #284 — bumped 1190 → 1340 to absorb the
       // `lore-query action='ask'` asOf / includeHistory bullet.
-      "lore-query": 1340,
+      // Bumped 1340 → 1580 to absorb the "retrieve-first" framing
+      // paragraph instructing agents to call `action: 'search'`
+      // (and `action: 'ask'` when an entity is named) BEFORE
+      // abstaining — closes the LongMemEval failure mode where
+      // gpt-4o-mini reads the question, decides "I don't know,"
+      // and never tries retrieval. Production agents benefit from
+      // the same posture against in-context guessing.
+      "lore-query": 1580,
       // Issue #284 — bumped 1390 → 1440 to absorb the
       // `Invalidated At` / `Invalidated By` mention on
       // `lore-fact action='invalidate'` and the new `sourceMemoryId`

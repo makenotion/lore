@@ -1,0 +1,310 @@
+# --- PHASE 2 PRECONDITION ---
+#
+# This workflow is Phase 1 scaffolding. As of the Phase 1 merge it is
+# NOT runnable on its declared `ubuntu-latest` runner: a hosted runner
+# has no `.lore.yaml` at the `LORE_BENCH_CONFIG_ROOT` path, no `codex`
+# CLI, and no `claude` CLI installed, and the `longmemeval.yaml` suite
+# it bootstraps uses `lore-mine` ingestion which depends on both. The
+# Phase 1 bench scored 0% across every configured strategy because
+# Lore's retrieval surface depends on agent-curated enrichment that
+# raw-transcript ingestion doesn't populate (see `docs/evals.md`
+# "Agent retrieval strategies"). Until Phase 2 (#604) lands the
+# `simulated-autosave` strategy that produces a meaningful Zep-
+# comparable headline number, the CI workflow has no number worth
+# gating on — hardening the workflow now is premature work.
+#
+# Phase 2 follow-up: configure a self-hosted runner image (or hosted-
+# runner provisioning script) that supplies `.lore.yaml` from a secret
+# payload, pins the `codex` + `claude` CLI versions, and switches the
+# suite path to whichever surface produces the publishable headline
+# (likely `longmemeval-wake-up.yaml` or `longmemeval-simulated-
+# autosave.yaml`). Tracked at #605.
+#
+name: bench-longmemeval
+on:
+  # Manual-trigger only for now. The cron schedule is intentionally
+  # absent — bench runs are gated to operator-initiated dispatches
+  # until baselining + cost behavior have shaken out on demand. Switch
+  # to scheduled nightly cadence in a follow-up once the steady-state
+  # cost + drift gate are trusted.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "If set, post results as a comment on this PR"
+        required: false
+permissions:
+  contents: read
+  statuses: write
+  # GitHub Actions only honors `permissions:` at workflow or job
+  # scope — NOT at step scope (`actionlint` flags step-level use as
+  # `unexpected key "permissions" for step to execute action`). The
+  # PR-comment step gates on `github.event.inputs.pr_number != ''`,
+  # which limits actual API use to operator-initiated PR-comment
+  # dispatches; non-PR-comment dispatches grant the workflow the
+  # permission but never exercise it. The workflow is
+  # `workflow_dispatch`-only so a malicious push cannot trigger a
+  # comment post.
+  pull-requests: write
+
+jobs:
+  bench:
+    name: LongMemEval bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        # actions/checkout v4.2.0 — SHA-pinned per Semgrep supply-chain
+        # finding 791747685; update by replacing the SHA and the
+        # trailing version comment together.
+        uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871
+
+      - name: Setup Node
+        # actions/setup-node v4.0.4
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Fetch corpus
+        # No secrets needed: HF fetch is unauthenticated. Env vars are
+        # scoped onto the steps that actually need them rather than
+        # job-level inheritance so a transitive npm postinstall hook
+        # can't observe the bench secrets.
+        run: node dist/cli.js eval bench fetch longmemeval
+
+      - name: Detect baseline mode
+        id: baseline-mode
+        run: |
+          if [ -f "evals/baselines/longmemeval-s-gpt4o-mini.json" ]; then
+            echo "mode=comparison" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=bootstrap" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run bench (bootstrap)
+        if: steps.baseline-mode.outputs.mode == 'bootstrap'
+        id: run-bootstrap
+        env:
+          LORE_EVAL_BENCH_REAL: "1"
+          LORE_EVAL_BENCH_MAX_USD: "100"
+          LORE_BENCH_NOTION_TOKEN: ${{ secrets.LORE_BENCH_NOTION_TOKEN }}
+          LORE_BENCH_OPENAI_API_KEY: ${{ secrets.LORE_BENCH_OPENAI_API_KEY }}
+          LORE_BENCH_CONFIG_ROOT: ${{ secrets.LORE_BENCH_CONFIG_ROOT }}
+          LORE_BENCH_SANDBOX_PROJECT_NAME: ${{ secrets.LORE_BENCH_SANDBOX_PROJECT_NAME }}
+          ARTIFACT_OUT: evals/results/bench-${{ github.sha }}.json
+        run: |
+          node dist/cli.js eval run \
+            --runner bench \
+            evals/bench-suites/longmemeval.yaml \
+            --out "$ARTIFACT_OUT"
+
+      - name: Run bench (comparison)
+        if: steps.baseline-mode.outputs.mode == 'comparison'
+        id: run-comparison
+        env:
+          LORE_EVAL_BENCH_REAL: "1"
+          LORE_EVAL_BENCH_MAX_USD: "100"
+          LORE_BENCH_NOTION_TOKEN: ${{ secrets.LORE_BENCH_NOTION_TOKEN }}
+          LORE_BENCH_OPENAI_API_KEY: ${{ secrets.LORE_BENCH_OPENAI_API_KEY }}
+          LORE_BENCH_CONFIG_ROOT: ${{ secrets.LORE_BENCH_CONFIG_ROOT }}
+          LORE_BENCH_SANDBOX_PROJECT_NAME: ${{ secrets.LORE_BENCH_SANDBOX_PROJECT_NAME }}
+          ARTIFACT_OUT: evals/results/bench-${{ github.sha }}.json
+        run: |
+          node dist/cli.js eval run \
+            --runner bench \
+            --baseline evals/baselines/longmemeval-s-gpt4o-mini.json \
+            evals/bench-suites/longmemeval.yaml \
+            --out "$ARTIFACT_OUT"
+
+      - name: Upload artifact
+        if: always()
+        # actions/upload-artifact v4.4.0
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+        env:
+          ARTIFACT_PATH: evals/results/bench-${{ github.sha }}.json
+          ARTIFACT_NAME: bench-artifact-${{ github.sha }}
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 90
+
+      - name: Render step summary
+        if: always()
+        env:
+          ARTIFACT_PATH: evals/results/bench-${{ github.sha }}.json
+          BASELINE_MODE: ${{ steps.baseline-mode.outputs.mode }}
+        run: |
+          if [ -f "$ARTIFACT_PATH" ]; then
+            if [ "$BASELINE_MODE" = "bootstrap" ]; then
+              echo "## Bootstrap run" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "No baseline file present at workflow checkout. This run produced a fresh artifact but did NOT run drift gating. A maintainer must capture and commit \`evals/baselines/longmemeval-s-gpt4o-mini.json\` from this artifact before drift gating activates." >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            node -e "
+              const a = JSON.parse(require('fs').readFileSync(process.env.ARTIFACT_PATH, 'utf-8'));
+              const s = a.summary;
+              const fmt = (x) => (x * 100).toFixed(2) + '%';
+              console.log('## LongMemEval bench artifact');
+              console.log('');
+              console.log('| metric | value |');
+              console.log('|---|---|');
+              console.log('| Run id | ' + a.runId + ' |');
+              console.log('| Total examples | ' + s.totalExamples + ' |');
+              console.log('| Scored | ' + s.scoredExamples + ' |');
+              console.log('| Overall accuracy | ' + fmt(s.overall.accuracy) + ' |');
+              console.log('| Runner-measured cost | \$' + s.overall.cost.runnerMeasuredUsd + ' |');
+              console.log('| Ingestion estimated | \$' + s.overall.cost.ingestionEstimatedUsd + ' |');
+              console.log('| Total estimated | \$' + s.overall.cost.totalEstimatedUsd + ' |');
+              console.log('| Aborted | ' + s.aborted + ' |');
+              console.log('');
+              console.log('### Per-category accuracy');
+              console.log('| category | n | correct | accuracy |');
+              console.log('|---|---|---|---|');
+              for (const [cat, stat] of Object.entries(s.byCategory)) {
+                console.log('| ' + cat + ' | ' + stat.n + ' | ' + stat.correct + ' | ' + fmt(stat.accuracy) + ' |');
+              }
+              if (s.cleanupFailures.length > 0) {
+                console.log('');
+                console.log('### Cleanup failures');
+                for (const f of s.cleanupFailures) console.log('- ' + f);
+              }
+              console.log('');
+              console.log('**Temporal fidelity caveat:** ' + s.temporalFidelityCaveat);
+              console.log('');
+              console.log('**Diagnostic-count caveat:** ' + s.diagnosticCountCaveat);
+            " >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Bench produced no artifact; check job logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Commit status
+        if: always()
+        # actions/github-script v7.0.1
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          ARTIFACT_PATH: evals/results/bench-${{ github.sha }}.json
+          BASELINE_MODE: ${{ steps.baseline-mode.outputs.mode }}
+          # The bench run step's outcome propagates into the commit
+          # status. `node dist/cli.js eval run --baseline ...` exits
+          # non-zero when `compareBenchBaseline` reports drift; without
+          # threading the step outcome here, a real regression would
+          # land a green commit status (the artifact summary's `aborted`
+          # flag only covers cap / cost-cap / sandbox aborts, not drift
+          # gate failures). One of the two `outcome` slots is always
+          # `skipped` because the bootstrap-vs-comparison branch is
+          # mutually exclusive — the script below collapses the two
+          # into a single `BENCH_RUN_OUTCOME` signal.
+          BOOTSTRAP_OUTCOME: ${{ steps.run-bootstrap.outcome }}
+          COMPARISON_OUTCOME: ${{ steps.run-comparison.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = process.env.ARTIFACT_PATH;
+            const mode = process.env.BASELINE_MODE;
+            // Collapse the bootstrap / comparison branch outcomes into
+            // a single signal. Exactly one branch runs per workflow
+            // dispatch (the other is `skipped`); the `if:` guards on
+            // the run steps enforce this.
+            const bootstrapOutcome = process.env.BOOTSTRAP_OUTCOME ?? 'skipped';
+            const comparisonOutcome = process.env.COMPARISON_OUTCOME ?? 'skipped';
+            const runOutcome =
+              mode === 'bootstrap' ? bootstrapOutcome : comparisonOutcome;
+            let state = 'error';
+            let description = 'bench infrastructure failure';
+            if (!fs.existsSync(path)) {
+              // No artifact — the bench step failed before writing
+              // its JSON output. Fall through to the default
+              // `error` / `bench infrastructure failure` state.
+            } else {
+              const artifact = JSON.parse(fs.readFileSync(path, 'utf-8'));
+              if (artifact.summary.aborted) {
+                // Bootstrap or comparison: an aborted run is a failure
+                // regardless of mode. A cost-cap-aborted bootstrap
+                // that produced no scored examples must not post a
+                // green status.
+                state = 'failure';
+                description = `aborted: ${artifact.summary.abortReason}`;
+              } else if (runOutcome === 'failure') {
+                // Comparison-mode drift gate failure: the CLI exited
+                // non-zero from `compareBenchBaseline`'s regression
+                // report. The artifact wrote successfully but the
+                // numbers regressed past the baseline. Post `failure`
+                // so the commit status matches the job outcome —
+                // green here would mislead reviewers scanning statuses.
+                state = 'failure';
+                description =
+                  mode === 'bootstrap'
+                    ? 'bootstrap run failed — see job logs'
+                    : `drift regression — accuracy ${(artifact.summary.overall.accuracy * 100).toFixed(2)}%`;
+              } else if (mode === 'bootstrap') {
+                state = 'success';
+                description = 'bootstrap run — review artifact and commit baseline';
+              } else {
+                state = 'success';
+                description = `accuracy ${(artifact.summary.overall.accuracy * 100).toFixed(2)}%`;
+              }
+            }
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state,
+              context: 'bench/longmemeval',
+              description: description.slice(0, 140),
+            });
+
+      - name: Post PR comment
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number != ''
+        # Step-level `permissions:` is invalid GHA syntax — `actionlint`
+        # reports `unexpected key "permissions" for step`. The
+        # `pull-requests: write` grant lives at workflow scope above;
+        # the `if:` gates actual usage to operator-initiated PR-comment
+        # dispatches.
+        # actions/github-script v7.0.1
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          ARTIFACT_PATH: evals/results/bench-${{ github.sha }}.json
+          PR_NUMBER_RAW: ${{ github.event.inputs.pr_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = process.env.ARTIFACT_PATH;
+            if (!fs.existsSync(path)) return;
+            // Strict integer validation: anything that isn't a
+            // positive integer rejects the comment post. The raw
+            // value lands here via env, so template-evaluation-time
+            // injection (the prior `${{ ... }}` inline-interpolation
+            // shape) is impossible.
+            const raw = (process.env.PR_NUMBER_RAW ?? '').trim();
+            if (!/^[1-9][0-9]{0,9}$/.test(raw)) {
+              core.setFailed(`Invalid pr_number "${raw}"; expected positive integer`);
+              return;
+            }
+            const prNumber = Number(raw);
+            const artifact = JSON.parse(fs.readFileSync(path, 'utf-8'));
+            const s = artifact.summary;
+            const fmt = (x) => (x * 100).toFixed(2) + '%';
+            const lines = [
+              '## LongMemEval bench result',
+              '',
+              `Run id: \`${artifact.runId}\``,
+              `Overall accuracy: ${fmt(s.overall.accuracy)} (${s.overall.correct}/${s.scoredExamples})`,
+              `Cost (estimated total): \$${s.overall.cost.totalEstimatedUsd}`,
+              '',
+              '| category | n | correct | accuracy |',
+              '|---|---|---|---|',
+              ...Object.entries(s.byCategory).map(([c, st]) => `| ${c} | ${st.n} | ${st.correct} | ${fmt(st.accuracy)} |`),
+            ];
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: lines.join('\n'),
+            });

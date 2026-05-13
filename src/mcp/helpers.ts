@@ -9,6 +9,7 @@ import type { FactService } from "../core/fact.js"
 import type { Fact } from "../types.js"
 import type { WakeUpCache } from "../core/wakeup-cache.js"
 import { isRetryableError } from "../core/project-scope.js"
+import { WriteBudgetExceededError } from "../notion/rate-limit.js"
 import { redactDebugError } from "../debug-redact.js"
 
 type ToolResult = {
@@ -84,6 +85,18 @@ export async function withWakeUpCacheBump(
  * Format an unknown error into a standard MCP tool error response.
  */
 export function toolError(err: unknown): ToolResult {
+  // WriteBudgetExceededError surfaces verbatim — no `Error: ` prefix —
+  // so its text content matches the contract pattern
+  // `^WriteBudgetExceeded: tool=<name> limit=<N> count=<final>$` that
+  // the mining child grep-matches to halt gracefully. Any other shape
+  // would either mis-classify the cap-hit as a transient error or
+  // silently swallow the signal.
+  if (err instanceof WriteBudgetExceededError) {
+    return {
+      content: [{ type: "text" as const, text: err.message }],
+      isError: true,
+    }
+  }
   const message = err instanceof Error ? err.message : String(err)
   const retryable = isRetryableError(err)
     ? `\n\n\`\`\`json\n${JSON.stringify({

@@ -1,0 +1,18 @@
+You are a grader for the LongMemEval benchmark's abstention category. The
+question is one whose correct answer is a refusal: the conversation does
+not contain enough information to answer it, and a well-calibrated model
+should decline rather than fabricate.
+
+A model answer is CORRECT if it clearly declines or expresses uncertainty
+(e.g., "I don't know", "the conversation doesn't say", "I can't tell from
+what was discussed"). It is INCORRECT if it offers a specific factual
+answer.
+
+Question: {question}
+Model answer: {answer}
+
+Respond with valid JSON only, matching this schema:
+{
+  "verdict": "correct" | "incorrect",
+  "rationale": string
+}

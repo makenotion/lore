@@ -88,6 +88,21 @@ export const RUNTIME_FORWARDED_KEYS = [
   // because it's orthogonal to auth + environment — Memory `Author`
   // affects what gets stamped, not whether the call succeeds.
   "LORE_USER_NAME",
+  // Bench-mode write-budget pair (#595). Forwarded so the mining
+  // child's `claude -p` inherits them, which in turn inherits them
+  // into the `lore mcp` child the agent CLI spawns from `.mcp.json`.
+  // Empty / unset in production runs — non-bench callers see no
+  // behavior change.
+  //
+  // **Production callers MUST NOT export these variables in their
+  // shell rc.** They opt the in-process Notion client into
+  // `wrapWithWriteBudget` against EVERY mutation; the production hook
+  // path's autosave / digest children would then install the proxy
+  // too and bounce real writes once the (operator-mistaken) cap is
+  // hit. The bench-runner exports them per-example and restores them
+  // in a `finally`; no other code path should set them.
+  "LORE_MCP_WRITE_BUDGET",
+  "LORE_MCP_BUDGET_STATE_FILE",
 ] as const
 
 /**

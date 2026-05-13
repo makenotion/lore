@@ -1,0 +1,21 @@
+{
+  "models": {
+    "gpt-4o-mini-2024-07-18": {
+      "inputPer1K": 0.00015,
+      "cachedInputPer1K": 0.000075,
+      "outputPer1K": 0.0006,
+      "reasoningOutputPer1K": 0.0006
+    },
+    "gpt-4o-2024-08-06": {
+      "inputPer1K": 0.0025,
+      "cachedInputPer1K": 0.00125,
+      "outputPer1K": 0.01,
+      "reasoningOutputPer1K": 0.01
+    }
+  },
+  "ingestion": {
+    "perSessionEstimatedUsd": 0.018,
+    "calibrationSource": "committed-estimate",
+    "calibratedAt": "pending-bootstrap"
+  }
+}

@@ -1,0 +1,45 @@
+runner: bench
+benchmark: longmemeval
+suite: longmemeval-wake-up
+corpus:
+  name: longmemeval_s_cleaned
+  path: evals/bench-corpora/longmemeval/longmemeval_s_cleaned.json
+agent:
+  model: gpt-4o-mini-2024-07-18
+  adapter: codex
+  systemPrompt: evals/prompts/longmemeval-agent-system-wake-up.txt
+  retrieval: wake-up-prefetch
+judge:
+  model: gpt-4o-2024-08-06
+  recallPrompt: evals/prompts/longmemeval-judge.txt
+  abstentionPrompt: evals/prompts/longmemeval-judge-abstention.txt
+ingestion:
+  strategy: raw-transcript
+caps:
+  perExampleWrites: 500
+  perSuiteWrites: 250000
+notes: |
+  Wake-up-prefetch retrieval variant: the bench-runner calls
+  `loadWakeUpData`-style relevance search seeded by the user's
+  question BEFORE invoking the agent, and injects the top-10
+  matching memory bodies into the agent's prompt as a "Retrieved
+  context" block. The agent answers from the injected context — no
+  MCP tool calls required.
+
+  Mirrors how Lore's wake-up hook works in production: at session
+  start the hook calls `lore-context action='wake-up'
+  userQuery=<task>` via the agent's MCP integration and the
+  response is pasted into the agent's context window. For a
+  one-shot bench question, the relevance-ranked taskMemories
+  section is the load-bearing part — digest / recent / active-tasks
+  sections of full wake-up are noise for a single question.
+
+  Uses raw-transcript ingestion so the haystack is fully present in
+  the vault; the retrieval surface's job is to find the right
+  memories among the ~30-50 per-example transcripts.
+
+  This is the bench's V1 publishable number under Codex 0.128.0,
+  which does not load MCP servers in `codex exec`. The sibling
+  `longmemeval-raw-transcript.yaml` uses `retrieval: tool-driven`
+  and depends on MCP-in-exec landing in a future Codex release (or
+  a Claude Code headless adapter) to produce a number.

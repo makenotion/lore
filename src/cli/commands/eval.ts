@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises"
 import { Command } from "commander"
 import { initServices } from "../../services.js"
 import {
@@ -14,7 +15,7 @@ import {
 } from "../../eval/baseline.js"
 import { runTaskEvalSuite } from "../../eval/task-runner.js"
 import { resolveProjectByName } from "../../core/project-scope.js"
-import { EVAL_RUNNERS, type EvalRunner } from "../../eval/schema.js"
+import { EVAL_RUNNERS, peekSuiteRunner, type EvalRunner } from "../../eval/schema.js"
 import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
 
 export interface EvalRunCliOptions {
@@ -29,6 +30,13 @@ export interface EvalRunCliOptions {
   maxHarm?: number
   baselinePath?: string
   projectName?: string
+  /**
+   * Prefix slice for sample runs. Bench-only — rejected on every
+   * other runner mode. Refuses to land when `--out` writes under an
+   * `evals/baselines/` directory so a smoke run cannot accidentally
+   * baseline.
+   */
+  limit?: number
   json: boolean
 }
 
@@ -40,6 +48,7 @@ export function parseEvalRunCliOptions(raw: {
   maxHarm?: string
   baseline?: string
   project?: string
+  limit?: string
   json?: boolean
 }): CliParseResult<EvalRunCliOptions> {
   // When `raw.runner` is omitted on the CLI, leave `runner` undefined so
@@ -103,6 +112,36 @@ export function parseEvalRunCliOptions(raw: {
     }
   }
 
+  if (runner === "bench") {
+    // Bench mode has its own baseline shape (`bench-baseline.ts`) and
+    // a single judge-driven correctness signal — the retrieval lift /
+    // harm thresholds and the per-vault project scope don't apply.
+    const benchIncompatible: Array<{ flag: string; raw: string | undefined }> = [
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of benchIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner bench; bench drift gating runs through --baseline against the bench-specific snapshot.`,
+        }
+      }
+    }
+  }
+
+  let limit: number | undefined
+  if (raw.limit !== undefined) {
+    // Bench-only gate is enforced AFTER `peekSuiteRunner` resolves
+    // the effective runner in the action handler — a YAML-declared
+    // `runner: bench` should accept `--limit` even when the CLI
+    // flag is omitted. Here we only validate the integer shape.
+    const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
+    if (!parsedLimit.ok) return parsedLimit
+    limit = parsedLimit.value
+  }
+
   return {
     ok: true,
     value: {
@@ -113,6 +152,7 @@ export function parseEvalRunCliOptions(raw: {
       maxHarm: maxHarm.value,
       baselinePath: raw.baseline,
       projectName: raw.project,
+      limit,
       json: !!raw.json,
     },
   }
@@ -273,6 +313,10 @@ evalCommand.addCommand(
       "--project <name>",
       "Sandbox project to scope retrieval against (required for --runner notion)"
     )
+    .option(
+      "--limit <n>",
+      "Bench-only: run a prefix slice of the corpus (smoke / sample runs). Rejected when --out writes into evals/baselines/."
+    )
     .option("--json", "Print the full JSON artifact to stdout")
     .action(
       async (
@@ -285,6 +329,7 @@ evalCommand.addCommand(
           maxHarm?: string
           baseline?: string
           project?: string
+          limit?: string
           json?: boolean
         }
       ) => {
@@ -296,6 +341,41 @@ evalCommand.addCommand(
         }
 
         try {
+          // When `--runner` was omitted on the CLI, peek the suite
+          // YAML's `runner` field and route accordingly. Without this,
+          // a suite YAML declaring `runner: bench` would fall through
+          // to `runEvalSuite` (retrieval default) and surface a
+          // useless Zod error before the bench dispatcher could
+          // claim it — contradicting the parser comment in
+          // `parseEvalRunCliOptions` that the YAML runner field wins
+          // when the CLI flag is omitted.
+          if (parsed.value.runner === undefined) {
+            try {
+              const raw = await readFile(suite, "utf-8")
+              const peeked = peekSuiteRunner(raw)
+              if (peeked !== null) {
+                parsed.value.runner = peeked
+              }
+            } catch {
+              // Suite read failure flows through to the
+              // runEvalSuite / runBenchSuite call below, which raises
+              // the proper file-not-found error with full path
+              // context. Suppressing here keeps a separate-error
+              // path from clobbering the canonical one.
+            }
+          }
+          // Post-peek `--limit` gate. The parser only validates the
+          // integer shape because peek may flip `parsed.value.runner`
+          // from undefined → "bench" via the YAML's runner field; an
+          // earlier `runner === "bench"` check in the parser would
+          // reject the legitimate YAML-routed bench-with-limit case.
+          if (parsed.value.limit !== undefined && parsed.value.runner !== "bench") {
+            console.error(
+              "Eval failed: --limit is only supported with --runner bench (or a suite YAML with `runner: bench`); retrieval / task / notion runners consume the whole suite.",
+            )
+            process.exit(1)
+            return
+          }
           if (parsed.value.runner === "task") {
             const { artifact, outPath } = await runTaskEvalSuite(suite, {
               outPath: parsed.value.outPath,
@@ -338,6 +418,77 @@ evalCommand.addCommand(
             }
             if (artifact.summary.failedTasks > 0) process.exit(1)
             return
+          }
+
+          if (parsed.value.runner === "bench") {
+            const { runBenchSuite, assertBenchEnvReady, restoreBenchEnv } = await import(
+              "../../eval/bench-runner.js"
+            )
+            const { buildBenchSandbox } = await import("../../eval/bench-sandbox.js")
+            const {
+              compareBenchBaseline,
+              readBenchBaselineSnapshot,
+            } = await import("../../eval/bench-baseline.js")
+            // Run the bench env preflight + LORE_BENCH_* → standard
+            // Lore env remap BEFORE `buildBenchSandbox` calls
+            // `initServices`, so the in-process service init sees
+            // the remapped `NOTION_API_TOKEN` / `LORE_CONFIG_ROOT`.
+            // Capture the snapshot here and restore in a `finally`
+            // so an imported / test CLI execution doesn't leave env
+            // mutated past the command's lifetime. `runBenchSuite`
+            // calls `assertBenchEnvReady` again internally but its
+            // restore is a no-op against the already-bench state —
+            // this outer pair is the load-bearing one.
+            const envSnapshot = assertBenchEnvReady()
+            try {
+              const sandbox = await buildBenchSandbox()
+              const { artifact, outPath } = await runBenchSuite({
+                suitePath: suite,
+                outPath: parsed.value.outPath,
+                limit: parsed.value.limit,
+                sandbox,
+              })
+              let driftRegressed = false
+              if (parsed.value.baselinePath) {
+                const baseline = await readBenchBaselineSnapshot(
+                  parsed.value.baselinePath,
+                )
+                const drift = compareBenchBaseline({ artifact, baseline })
+                driftRegressed = drift.regressed
+                if (drift.regressed) {
+                  console.error("Bench drift gate FAILED:")
+                  for (const reason of drift.reasons) {
+                    console.error(`  - ${reason}`)
+                  }
+                  if (drift.regressedExamples.length > 0) {
+                    console.error(
+                      `  Regressed examples: ${drift.regressedExamples.slice(0, 10).join(", ")}` +
+                        (drift.regressedExamples.length > 10
+                          ? ` (+${drift.regressedExamples.length - 10} more)`
+                          : ""),
+                    )
+                  }
+                }
+              }
+              if (parsed.value.json) {
+                console.log(JSON.stringify(artifact, null, 2))
+              } else {
+                console.log(
+                  `Bench finished: ${artifact.summary.overall.correct}/${artifact.summary.scoredExamples} correct ` +
+                    `(${(artifact.summary.overall.accuracy * 100).toFixed(2)}%).`,
+                )
+                console.log(`Artifact: ${outPath}`)
+                if (artifact.summary.aborted) {
+                  console.error(`Aborted: ${artifact.summary.abortReason ?? "unknown"}`)
+                }
+              }
+              if (artifact.summary.aborted || driftRegressed) {
+                process.exit(1)
+              }
+              return
+            } finally {
+              restoreBenchEnv(envSnapshot)
+            }
           }
 
           const runOptions: RunEvalOptions = {
@@ -458,17 +609,64 @@ evalCommand.addCommand(
           process.exit(1)
           return
         }
-        const baselineRunnerCheck = validateBaselineRunnerSupport(parsed.value.runner)
-        if (!baselineRunnerCheck.ok) {
-          console.error(`Eval baseline failed: ${baselineRunnerCheck.message}`)
-          process.exit(1)
-          return
-        }
 
         try {
+          // When `--runner` was omitted on the CLI, peek the suite
+          // YAML's `runner` field and route accordingly. Mirrors the
+          // `lore eval run` dispatch path so a YAML-declared
+          // `runner: bench` lands in the bench-baseline branch
+          // without an explicit `--runner bench` flag.
+          if (parsed.value.runner === undefined) {
+            try {
+              const raw = await readFile(suite, "utf-8")
+              const peeked = peekSuiteRunner(raw)
+              if (peeked !== null) {
+                parsed.value.runner = peeked
+              }
+            } catch {
+              // Suite read failure flows through to the runner call
+              // below, which raises a clearer file-not-found error.
+            }
+          }
+          const baselineRunnerCheck = validateBaselineRunnerSupport(parsed.value.runner)
+          if (!baselineRunnerCheck.ok) {
+            console.error(`Eval baseline failed: ${baselineRunnerCheck.message}`)
+            process.exit(1)
+            return
+          }
           const runOptions: RunEvalOptions = {
             runner: parsed.value.runner,
             notionServices: buildNotionServicesFactory(parsed.value.projectName),
+          }
+          if (parsed.value.runner === "bench") {
+            const { runBenchSuite, assertBenchEnvReady, restoreBenchEnv } = await import(
+              "../../eval/bench-runner.js"
+            )
+            const { buildBenchBaselineSnapshot, writeBenchBaselineSnapshot } =
+              await import("../../eval/bench-baseline.js")
+            const { buildBenchSandbox } = await import("../../eval/bench-sandbox.js")
+            // Capture the env snapshot here and restore in finally so
+            // an imported / test CLI execution does not leak the
+            // bench env-remap past the command's lifetime. Same
+            // posture as the bench branch of `eval run`.
+            const envSnapshot = assertBenchEnvReady()
+            try {
+              const sandbox = await buildBenchSandbox()
+              const { artifact } = await runBenchSuite({
+                suitePath: suite,
+                sandbox,
+              })
+              const snapshot = buildBenchBaselineSnapshot(artifact, {
+                notes: opts.notes,
+              })
+              await writeBenchBaselineSnapshot(opts.out, snapshot)
+              console.log(
+                `Bench baseline written: ${opts.out} (runner=bench, examples=${snapshot.summary.totalExamples})`,
+              )
+              return
+            } finally {
+              restoreBenchEnv(envSnapshot)
+            }
           }
           const { artifact } = await runEvalSuite(suite, runOptions)
           const snapshot = buildEvalBaselineSnapshot(artifact, {
@@ -489,3 +687,98 @@ evalCommand.addCommand(
       }
     )
 )
+
+// ---------------------------------------------------------------------------
+// `lore eval bench` — LongMemEval bench-runner CLI surface (issue #595).
+// Sub-actions: `fetch`, `cleanup-orphans`. The `run` and `baseline` entries
+// reuse the top-level `lore eval run` / `lore eval baseline` commands with
+// `--runner bench`; this group hosts only the bench-specific helpers.
+// ---------------------------------------------------------------------------
+
+const benchCommand = new Command("bench").description(
+  "LongMemEval bench-runner helpers (corpus fetch, orphan-cleanup)",
+)
+
+benchCommand.addCommand(
+  new Command("fetch")
+    .description(
+      "Download the LongMemEval corpus from the HF revision pinned by checksums.json. Idempotent — re-running does not overwrite a sha-matched file.",
+    )
+    .argument("<benchmark>", "Bench name; currently only `longmemeval`")
+    .option(
+      "--out <path>",
+      "Override the corpus output path. Defaults to evals/bench-corpora/<benchmark>/<corpus-name>.json next to checksums.json.",
+    )
+    .action(
+      async (benchmark: string, opts: { out?: string }) => {
+        if (benchmark !== "longmemeval") {
+          console.error(
+            `lore eval bench fetch: only "longmemeval" is supported (got "${benchmark}").`,
+          )
+          process.exit(1)
+          return
+        }
+        try {
+          const { fetchLongMemEvalCorpus } = await import(
+            "../../eval/bench-fetch.js"
+          )
+          const report = await fetchLongMemEvalCorpus({ outPath: opts.out })
+          if (report.skipped) {
+            console.log(
+              `Corpus already up to date (sha256 match): ${report.path}`,
+            )
+            return
+          }
+          console.log(
+            `Corpus written: ${report.path}\n` +
+              `  HF revision: ${report.revision}\n` +
+              `  sha256: ${report.sha256}`,
+          )
+        } catch (err) {
+          console.error(
+            "lore eval bench fetch failed:",
+            err instanceof Error ? err.message : err,
+          )
+          process.exit(1)
+        }
+      },
+    ),
+)
+
+benchCommand.addCommand(
+  new Command("cleanup-orphans")
+    .description(
+      "Archive bench sub-projects under the sandbox vault whose ULID-embedded timestamp is older than --older-than hours. Idempotent. Requires LORE_EVAL_BENCH_REAL=1.",
+    )
+    .option("--dry-run", "List matching projects without archiving")
+    .option(
+      "--older-than <hours>",
+      "Minimum age in hours; defaults to 24",
+      "24",
+    )
+    .action(async (opts: { dryRun?: boolean; olderThan?: string }) => {
+      try {
+        const { runBenchCleanupOrphans } = await import(
+          "../../eval/bench-cleanup.js"
+        )
+        const result = await runBenchCleanupOrphans({
+          olderThanHours: Number.parseInt(opts.olderThan ?? "24", 10),
+          dryRun: opts.dryRun === true,
+        })
+        console.log(
+          `Cleanup-orphans: ${result.archivedCount} archived, ${result.skippedCount} skipped (already archived / too fresh).`,
+        )
+        for (const orphan of result.archived) {
+          console.log(`  - archived: ${orphan.name}`)
+        }
+      } catch (err) {
+        console.error(
+          "lore eval bench cleanup-orphans failed:",
+          err instanceof Error ? err.message : err,
+        )
+        process.exit(1)
+      }
+    }),
+)
+
+evalCommand.addCommand(benchCommand)

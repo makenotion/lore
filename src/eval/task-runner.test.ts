@@ -3,6 +3,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+  BENCH_CHILD_CLEARED_ENV_KEYS,
+  buildBenchCodexChildEnv,
+  buildBenchSpawnArgs,
   buildCodexChildEnv,
   CODEX_FORWARDED_ENV_KEYS,
   runTaskEvalSuite,
@@ -832,3 +835,98 @@ function mockAdapter(
 function successResult(): AgentRunResult {
   return { exitCode: 0, stdout: "", stderr: "", timedOut: false }
 }
+
+describe("bench spawn argv carries NO secrets", () => {
+  it("buildBenchSpawnArgs does not contain bearer-shaped substrings", () => {
+    // Invariant: the bench MCP config (transport, command, args, env
+    // including the Notion bearer) lives entirely on disk at
+    // `<workspace>/.codex/config.toml` (mode 0600). The spawn
+    // argv carries ZERO `-c mcp_servers.lore.*` overrides. Any
+    // future refactor that re-introduces `-c mcp_servers.lore.env=...`
+    // would fail this test loudly.
+    //
+    // The assertion uses sentinel bearer-shaped tokens that the
+    // operator's real env may or may not contain. They flow through
+    // process.env in the test's setup; `buildBenchSpawnArgs` ignores
+    // env entirely (the workspace path and prompt are its only inputs)
+    // so the assertion is structural, not env-dependent.
+    process.env["LORE_BENCH_NOTION_TOKEN"] =
+      "ntn_SENTINEL_BENCH_TOKEN_MUST_NEVER_REACH_ARGV"
+    process.env["NOTION_API_TOKEN"] =
+      "ntn_OPERATOR_DAY_TO_DAY_MUST_NEVER_REACH_ARGV"
+    try {
+      const args = buildBenchSpawnArgs("/tmp/lore-bench-test-workspace", "Q?")
+      const joined = args.join(" ")
+      expect(joined).not.toMatch(/ntn_/)
+      expect(joined).not.toMatch(/secret_/)
+      expect(joined).not.toMatch(/development_ntn_/)
+      expect(joined).not.toMatch(/sk-/)
+      // Sanity: the args list still carries the expected non-secret
+      // structural flags so a future revert that drops `--sandbox`
+      // or `--json` fails LOUDLY here rather than at runtime.
+      expect(joined).toContain("--json")
+      expect(joined).toContain("--cd /tmp/lore-bench-test-workspace")
+      expect(joined).toContain("--sandbox workspace-write")
+      expect(joined).toContain("--skip-git-repo-check")
+    } finally {
+      delete process.env["LORE_BENCH_NOTION_TOKEN"]
+      delete process.env["NOTION_API_TOKEN"]
+    }
+  })
+
+  it("buildBenchCodexChildEnv strips Notion bearer from child env (bench partition contract)", () => {
+    // Negative-contract pin: the Codex child's env partition MUST
+    // NOT carry the Notion bearer. The MCP child reads its auth from
+    // the on-disk `[mcp_servers.lore.env]` block in the workspace
+    // `.codex/config.toml` (see `buildBenchWorkspace`), not from
+    // Codex's parent env. Clearing Notion-shaped keys from the
+    // Codex parent env is defense-in-depth so a future Codex
+    // env-passthrough behavior change cannot accidentally route the
+    // wrong token into the MCP child.
+    const parent: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin",
+      HOME: "/tmp/home",
+      OPENAI_API_KEY: "sk-operator-day-to-day",
+      LORE_BENCH_OPENAI_API_KEY: "sk-bench-only",
+      NOTION_API_TOKEN: "ntn_OPERATOR_DAY_TO_DAY_TOKEN_MUST_NOT_LEAK",
+      LORE_NOTION_TOKEN: "ntn_LEGACY_TOKEN_MUST_NOT_LEAK_EITHER",
+      LORE_BENCH_NOTION_TOKEN: "ntn_BENCH_TOKEN_ALSO_NOT_FORWARDED_VIA_ENV",
+      GITHUB_TOKEN: "ghp_must_not_leak",
+      ANTHROPIC_API_KEY: "sk-ant-must-not-leak",
+    }
+    const childEnv = buildBenchCodexChildEnv(parent)
+    // OPENAI_API_KEY is sourced from LORE_BENCH_OPENAI_API_KEY, not
+    // the operator's day-to-day value.
+    expect(childEnv["OPENAI_API_KEY"]).toBe("sk-bench-only")
+    // Every Notion-bearer-shaped key must be absent from the child
+    // env partition. The MCP child's auth comes from the on-disk
+    // `.codex/config.toml`'s `[mcp_servers.lore.env]` block, not from
+    // env inheritance — the Codex parent env carries nothing
+    // Notion-shaped.
+    expect(childEnv["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(childEnv["LORE_NOTION_TOKEN"]).toBeUndefined()
+    expect(childEnv["LORE_BENCH_NOTION_TOKEN"]).toBeUndefined()
+    expect(childEnv["GITHUB_TOKEN"]).toBeUndefined()
+    expect(childEnv["ANTHROPIC_API_KEY"]).toBeUndefined()
+    // No bearer-shaped substring appears anywhere in the child env
+    // (defense-in-depth against a future allowlist that admits the
+    // wrong key).
+    const joined = JSON.stringify(childEnv)
+    expect(joined).not.toMatch(/ntn_OPERATOR/)
+    expect(joined).not.toMatch(/ntn_LEGACY/)
+    expect(joined).not.toMatch(/ntn_BENCH/)
+    expect(joined).not.toMatch(/ghp_/)
+    expect(joined).not.toMatch(/sk-ant/)
+  })
+
+  it("BENCH_CHILD_CLEARED_ENV_KEYS lists every Notion-bearer key", () => {
+    // Regression guard: if a future contributor adds a new bearer
+    // key without listing it here, this test fails. The set must
+    // include both Notion forms (canonical + legacy) plus any other
+    // operator-day-to-day secrets the bench needs to clear.
+    expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("NOTION_API_TOKEN")
+    expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("LORE_NOTION_TOKEN")
+    expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("GITHUB_TOKEN")
+    expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("ANTHROPIC_API_KEY")
+  })
+})

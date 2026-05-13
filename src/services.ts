@@ -23,7 +23,10 @@ import {
   type ClientAuthRefreshOutcome,
   type RefreshClientAuth,
 } from "./notion/client.js"
-import { createLimitedClient } from "./notion/rate-limit.js"
+import {
+  createLimitedClient,
+  wrapWithWriteBudget,
+} from "./notion/rate-limit.js"
 import {
   isRunToolBlockEditEnabled,
   isRunToolEnabled,
@@ -202,6 +205,107 @@ export function resolveRunToolBatchCreatesFlag(
  * REST `pages.create` path, which accepts plain page ids
  * regardless of host).
  */
+/**
+ * Read the bench-mode write-budget env vars and validate them.
+ *
+ * The CLI's `lore mcp --write-budget <N> --budget-state-file <path>`
+ * flags export `LORE_MCP_WRITE_BUDGET` and
+ * `LORE_MCP_BUDGET_STATE_FILE` before `startServer` is imported. When
+ * both are present and valid, `initServices` wraps the Notion client
+ * with `wrapWithWriteBudget` between the rate-limit Proxy and the SDK
+ * so every successful mutation counts against the cap. Missing vars
+ * are the production path (no wrap, server behaves identically to
+ * today). An invalid value (non-positive integer, missing path) is a
+ * misconfiguration and throws so the operator sees the error at MCP
+ * start rather than after the first mutation tool call.
+ */
+/**
+ * Module-scope state for the write-budget shutdown hook:
+ *
+ *   - `writeBudgetShutdownHooksInstalled` is the once-per-process
+ *     flag that gates `process.on(...)` registration. A re-entrant
+ *     `initServicesFromConfig` (CLI subcommand chain, retry path,
+ *     test fixture) does NOT register more handlers.
+ *   - `writeBudgetActiveFlush` is the latest flush callback. The
+ *     once-installed handlers read this ref so a re-init swaps the
+ *     callback under the same single-listener registration.
+ *
+ * The hooks themselves call `process.exit(128 + signal)` after the
+ * synchronous flush so a signal-handler installation does NOT
+ * suppress Node's default termination behavior. Without the exit,
+ * adding a `SIGTERM` listener overrides default termination — the
+ * write-budgeted MCP child would survive its parent's graceful
+ * timeout signal.
+ *
+ * **Hooks are installed ONLY when bench-write-budget env is present**
+ * (`initServicesFromConfig` gates the call on `writeBudgetFlush !== null`).
+ * Regular CLI subcommands that don't enter bench mode never install
+ * the signal listeners, so their own SIGTERM/SIGINT handling — if
+ * any — is unaffected. A future CLI subcommand that runs under
+ * bench env AND wants its own signal handling would be preempted
+ * by these listeners; that's a deliberate trade-off (preserving the
+ * write-budget child's graceful-shutdown guarantee outranks the
+ * unlikely co-installed-signal-handler case).
+ */
+let writeBudgetShutdownHooksInstalled = false
+let writeBudgetActiveFlush: (() => void) | null = null
+
+export function installWriteBudgetShutdownHooks(): void {
+  if (writeBudgetShutdownHooksInstalled) return
+  writeBudgetShutdownHooksInstalled = true
+  let flushed = false
+  const flushOnce = (): void => {
+    if (flushed) return
+    flushed = true
+    const flush = writeBudgetActiveFlush
+    if (!flush) return
+    try {
+      flush()
+    } catch {
+      // Best-effort: a shutdown-time write failure cannot meaningfully
+      // recover. The cap-exceeded inline writer is the load-bearing
+      // signal; the steady-state flush is diagnostic.
+    }
+  }
+  process.on("exit", flushOnce)
+  // SIGTERM / SIGINT handlers MUST exit after the synchronous flush
+  // — adding a signal listener otherwise overrides Node's default
+  // termination behavior, and a write-budgeted `lore mcp` child
+  // would survive its parent's graceful timeout. POSIX exit codes
+  // for fatal signals are `128 + signal-number`.
+  process.on("SIGTERM", () => {
+    flushOnce()
+    process.exit(128 + 15)
+  })
+  process.on("SIGINT", () => {
+    flushOnce()
+    process.exit(128 + 2)
+  })
+}
+
+export function readWriteBudgetEnv(): {
+  limit: number
+  stateFilePath: string
+} | null {
+  const limitRaw = process.env["LORE_MCP_WRITE_BUDGET"]?.trim()
+  const pathRaw = process.env["LORE_MCP_BUDGET_STATE_FILE"]?.trim()
+  if (!limitRaw && !pathRaw) return null
+  if (!limitRaw || !pathRaw) {
+    throw new Error(
+      "LORE_MCP_WRITE_BUDGET and LORE_MCP_BUDGET_STATE_FILE must be " +
+        "set together. Set both env vars (or none) before starting the " +
+        "MCP server.",
+    )
+  }
+  const limit = Number.parseInt(limitRaw, 10)
+  if (!Number.isInteger(limit) || limit <= 0 || String(limit) !== limitRaw) {
+    throw new Error(
+      `LORE_MCP_WRITE_BUDGET must be a positive integer, got "${limitRaw}"`,
+    )
+  }
+  return { limit, stateFilePath: pathRaw }
+}
+
 export function deriveRelationUrlBase(apiBaseUrl: string | undefined): string {
   if (apiBaseUrl === undefined || apiBaseUrl === null) {
     return "https://www.notion.so/"
@@ -401,16 +505,51 @@ export async function initServicesFromConfig(
   // constants and are tunable via the `notion.rateLimit` config block.
   // The RunTool wrapper dispatches through `client.request()`, which IS
   // proxied here, so RunTool calls automatically share this gate.
+  const writeBudgetEnv = readWriteBudgetEnv()
+  // The wrapped instance carries a `flushBudgetCount` callback the
+  // shutdown hook below invokes to persist the final counter even
+  // when the cap was NOT exceeded. Without the flush, the state file
+  // is written only on cap-hit and `ingestion.notionWrites` in the
+  // bench artifact falls back to the diagnostic row-count sum.
+  let writeBudgetFlush: (() => void) | null = null
+  const installWriteBudget = (raw: Client): Client => {
+    if (writeBudgetEnv === null) return raw
+    const wrapped = wrapWithWriteBudget(raw, {
+      limit: writeBudgetEnv.limit,
+      stateFilePath: writeBudgetEnv.stateFilePath,
+    })
+    writeBudgetFlush = wrapped.flushBudgetCount
+    return wrapped.client
+  }
   const client = authRefresh
     ? createAuthRefreshingClient(authSnapshotRef.current, authRefresh, {
         createClient: (token, baseUrl) =>
-          createLimitedClient(createClient(token, baseUrl), rateLimitOptions),
+          createLimitedClient(
+            installWriteBudget(createClient(token, baseUrl)),
+            rateLimitOptions,
+          ),
         onAuthChange: (nextAuth) => {
           authSnapshotRef.current = nextAuth
           identityRef.current?.clearCache()
         },
       })
-    : createLimitedClient(createClient(auth.token, auth.baseUrl), rateLimitOptions)
+    : createLimitedClient(
+        installWriteBudget(createClient(auth.token, auth.baseUrl)),
+        rateLimitOptions,
+      )
+  // Install the shutdown hook ONLY when bench-mode env was active.
+  // The handler set is module-scope and once-per-process; this call
+  // updates the active flush callback and is idempotent across
+  // re-entrant `initServicesFromConfig` (CLI subcommand chain,
+  // retry path, test fixture). Without the dedupe, every re-init
+  // accumulated three more listeners and Node emitted
+  // `MaxListenersExceededWarning` at 11. See
+  // `installWriteBudgetShutdownHooks` for the SIGTERM/SIGINT exit
+  // semantics that preserve default termination behavior.
+  if (writeBudgetFlush !== null) {
+    writeBudgetActiveFlush = writeBudgetFlush
+    installWriteBudgetShutdownHooks()
+  }
 
   // Warn-once if a RunTool feature flag is on AND the resolved auth
   // source is a known integration-secret path that RunTool will

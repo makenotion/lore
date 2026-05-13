@@ -38,6 +38,8 @@ function exhaustiveAllKeys(key: RuntimeForwardedKey): RuntimeForwardedKey {
     case "NOTION_BASE_URL":
     case "NOTION_API_BASE_URL":
     case "LORE_USER_NAME":
+    case "LORE_MCP_WRITE_BUDGET":
+    case "LORE_MCP_BUDGET_STATE_FILE":
       return key
     default:
       return assertNever(key)
@@ -72,6 +74,8 @@ describe("RUNTIME_FORWARDED_KEYS — declaration shape", () => {
       "NOTION_BASE_URL",
       "NOTION_API_BASE_URL",
       "LORE_USER_NAME",
+      "LORE_MCP_WRITE_BUDGET",
+      "LORE_MCP_BUDGET_STATE_FILE",
     ])
   })
 
@@ -83,7 +87,7 @@ describe("RUNTIME_FORWARDED_KEYS — declaration shape", () => {
     // as a second guard against an accidental dual-edit. Adding a key
     // is a deliberate change to both surfaces; the expected length
     // updates here in the same patch.
-    expect(RUNTIME_FORWARDED_KEYS).toHaveLength(8)
+    expect(RUNTIME_FORWARDED_KEYS).toHaveLength(10)
   })
 
   it("contains no duplicate keys", () => {

@@ -1,3 +1,6 @@
+import { renameSync, writeFileSync } from "node:fs"
+import { dirname, basename } from "node:path"
+
 /**
  * Shared concurrency + request-rate governor for outbound Notion SDK calls.
  *
@@ -547,4 +550,354 @@ export function createLimitedClient(
     })
 
   return wrapLevel(client)
+}
+
+// ---------------------------------------------------------------------------
+// Bench-mode write-budget Proxy (issue #595)
+//
+// The 500-write-per-example cap is a safety gate, not a diagnostic.
+// Post-hoc detection ("oh, we did 900 writes") satisfies nothing — the
+// writes already landed. The cap is enforced inside the MCP server by
+// wrapping the Notion client with a Proxy that increments a counter on
+// every successful mutation. Once the counter strictly exceeds the
+// limit, every subsequent mutation throws `WriteBudgetExceededError`
+// (which the MCP layer maps to the `WriteBudgetExceeded:` text-error
+// envelope) and the state file is written atomically once per server
+// lifetime so the mining child can grep-detect the cap-hit and halt.
+//
+// Layering: rate-limit Proxy → write-budget Proxy → SDK. The 429 retry
+// runs first (a successful retry counts as one write, a failed retry
+// counts zero). The write-budget Proxy increments on `await`-resolved
+// success only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Direct SDK methods that count as mutations. Matched by dot-joined
+ * path against the recursive Proxy walk so a renamed nested method
+ * fails the unit test before it can silently bypass the gate.
+ *
+ * `pages.create` / `pages.update` are the obvious surface; v5's
+ * markdown body API lands writes through `pages.updateMarkdown`, which
+ * `MemoryService` / `DecisionService.create` / `EntityService.create`
+ * all consume — without it the bench under-counts page-body writes,
+ * which is the dominant write surface for memory/decision/entity
+ * creation.
+ *
+ * `databases.create` and `dataSources.update` are vault-setup /
+ * schema-patching surfaces. The bench uses a pre-existing sandbox vault
+ * so they should not fire during a bench run; counting them defends
+ * against an accidental setup call slipping into a per-example flow.
+ */
+export const WRITE_BUDGET_DIRECT_MUTATIONS: readonly string[] = [
+  "pages.create",
+  "pages.update",
+  "pages.updateMarkdown",
+  "databases.create",
+  "dataSources.update",
+]
+
+/**
+ * `client.request()` body shapes classified by their `body.type`
+ * discriminator. The RunTool dispatch path layers structured operations
+ * over the SDK's generic `request` method; classification here keeps
+ * the write-budget gate aware of those operations.
+ *
+ * Unknown `body.type` defaults to mutation (default-deny): a future
+ * RunTool tool added to the SDK should not silently bypass the gate.
+ * If a new read-only RunTool consumer lands, it's a one-line classifier
+ * update at the same site that adds the consumer.
+ */
+export const WRITE_BUDGET_RUNTOOL_MUTATIONS: readonly string[] = [
+  "create_pages",
+  "update_page",
+  "update_content",
+]
+
+export const WRITE_BUDGET_RUNTOOL_READS: readonly string[] = [
+  "query_data_sources",
+  "search",
+]
+
+/**
+ * Direct SDK methods that are reads. Used by tests to assert every
+ * documented read method routes through the passthrough branch — a
+ * future SDK addition that lands a new mutation method requires a
+ * one-line entry in `WRITE_BUDGET_DIRECT_MUTATIONS` and the test
+ * fails until the classifier is updated.
+ */
+export const WRITE_BUDGET_DIRECT_READS: readonly string[] = [
+  "pages.retrieve",
+  "pages.retrieveMarkdown",
+  "pages.properties.retrieve",
+  "dataSources.retrieve",
+  "dataSources.query",
+  "databases.retrieve",
+  "search",
+]
+
+/**
+ * Classification verdict for one outbound call.
+ *
+ * - `"mutation"` — increment the counter on `await`-resolved success;
+ *   throw `WriteBudgetExceededError` past the cap.
+ * - `"read"` — passthrough, do not increment.
+ */
+export type WriteBudgetClassification = "mutation" | "read"
+
+/**
+ * Decide whether a call traversing the recursive proxy is a mutation.
+ *
+ * `path` is the dot-joined property path from the client root to the
+ * called function (`pages.update`, `dataSources.query`,
+ * `pages.properties.retrieve`, etc.).
+ *
+ * `args` is the raw arguments array. For direct SDK methods the array
+ * is ignored. For `client.request()` calls (`path === "request"`), the
+ * first argument is inspected: if it's an object with a string `type`
+ * field matching a known mutation discriminator the call is a
+ * mutation, with a known read discriminator a read, and any unknown
+ * shape defaults to mutation under the default-deny rule.
+ */
+export function classifyWriteBudget(
+  path: string,
+  args: readonly unknown[],
+): WriteBudgetClassification {
+  if (WRITE_BUDGET_DIRECT_MUTATIONS.includes(path)) return "mutation"
+  if (path === "request") {
+    const body = (args[0] as { body?: unknown } | undefined)?.body
+    if (body === undefined || body === null || typeof body !== "object") {
+      // Body absent or non-object: a method-shape regression should not
+      // pass-fail the bench either way. Treat as passthrough.
+      return "read"
+    }
+    const type = (body as { type?: unknown }).type
+    if (typeof type !== "string") return "mutation"
+    if (WRITE_BUDGET_RUNTOOL_MUTATIONS.includes(type)) return "mutation"
+    if (WRITE_BUDGET_RUNTOOL_READS.includes(type)) return "read"
+    // Default-deny: unknown body.type counts as mutation. A future
+    // read-only RunTool consumer must be added explicitly.
+    return "mutation"
+  }
+  return "read"
+}
+
+/**
+ * Thrown by the write-budget proxy when a mutation tool call follows
+ * a cap-exceeded counter. The MCP server maps this to the
+ * `WriteBudgetExceeded: tool=<name> limit=<N> count=<final>` text-error
+ * envelope the mining child grep-matches to halt.
+ */
+export class WriteBudgetExceededError extends Error {
+  constructor(
+    public readonly toolPath: string,
+    public readonly limit: number,
+    public readonly count: number,
+  ) {
+    super(
+      `WriteBudgetExceeded: tool=${toolPath} limit=${limit} count=${count}`,
+    )
+    this.name = "WriteBudgetExceededError"
+  }
+}
+
+/**
+ * On-disk state file body. Two shapes — the original cap-exceeded
+ * payload AND a count-only payload the MCP server writes on shutdown
+ * when the cap was NOT exceeded. The reader (`readBudgetCount` in
+ * `bench-ingest.ts`) uses the `count` field as authoritative under
+ * both shapes; the bench-runner's `notionWrites` field is therefore
+ * the proxy-counted total regardless of cap state.
+ */
+export interface WriteBudgetStateFileBody {
+  writeBudgetExceeded: boolean
+  limit: number
+  count: number
+  /** ISO timestamp the file was written; `exceededAt` when the cap fired. */
+  exceededAt: string
+}
+
+export interface WriteBudgetOptions {
+  /** Maximum number of successful mutations allowed. Positive integer. */
+  limit: number
+  /**
+   * Absolute path to write the state file when the cap is exceeded.
+   * Directory must exist; file is created on first cap-exceeded write.
+   */
+  stateFilePath: string
+  /**
+   * Internal test seam — overrides `Date.now()` for the `exceededAt`
+   * timestamp. Production passes nothing.
+   */
+  now?: () => Date
+  /**
+   * Internal test seam — overrides the atomic state-file writer.
+   * Production passes nothing; the default uses `writeFileSync` to a
+   * tmpfile + `renameSync` for atomicity.
+   */
+  writeStateFile?: (path: string, body: WriteBudgetStateFileBody) => void
+}
+
+/**
+ * Default state-file writer: write to `<path>.tmp` with mode 0600, then
+ * rename atomically over `path`. Atomic posix-rename guarantees the
+ * reader (the mining seam in `runConversationMining`) either sees the
+ * pre-cap-hit nonexistent file OR the fully-written post-cap-hit body
+ * — never a partial write.
+ */
+function defaultWriteStateFile(
+  path: string,
+  body: WriteBudgetStateFileBody,
+): void {
+  const tmp = `${dirname(path)}/.${basename(path)}.tmp-${process.pid}-${Date.now()}`
+  writeFileSync(tmp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
+  renameSync(tmp, path)
+}
+
+/**
+ * Wrap a Notion client (typically already wrapped by
+ * `createLimitedClient`) with a Proxy that counts successful mutations
+ * and enforces a per-server-lifetime cap. Returns a Proxy structurally
+ * identical to the input client.
+ *
+ * Sits BELOW the rate-limit proxy in the layering. The rate-limit
+ * proxy's 429 retry runs first; a successful retry counts as one
+ * write (it landed on Notion), a failed retry counts zero. The
+ * counter increments on `await`-resolved success only.
+ *
+ * The state file is written exactly once per server lifetime; the
+ * call that pushes the counter over the cap ALSO throws
+ * `WriteBudgetExceededError`. Subsequent over-cap mutation calls
+ * throw without re-writing the state file. Reads continue to function
+ * past the cap (a halted mining child may want to query before
+ * exiting; not counting reads against the cap is intentional).
+ */
+/**
+ * Result of `wrapWithWriteBudget`. `client` is the Proxy that
+ * intercepts mutations; `flushBudgetCount` writes the current
+ * counter to the state file at shutdown time so a non-cap-exceeded
+ * run still surfaces an authoritative `notionWrites` count.
+ *
+ * The MCP server invokes `flushBudgetCount` from a `SIGTERM` /
+ * `SIGINT` / `process.exit` handler installed at services-init time;
+ * the per-call cap-exceeded path still writes its own state-file
+ * entry inline (no flush needed in that branch).
+ */
+export interface WrappedWriteBudget {
+  client: Client
+  /**
+   * Persist the final counter to the configured state-file path.
+   * No-op once the cap-exceeded inline writer already fired.
+   * Safe to call multiple times — the second call writes a fresh
+   * snapshot with the same `writeBudgetExceeded` verdict.
+   */
+  flushBudgetCount: () => void
+  /** Current counter value — primarily for tests. */
+  getCount: () => number
+}
+
+export function wrapWithWriteBudget(
+  client: Client,
+  options: WriteBudgetOptions,
+): WrappedWriteBudget {
+  if (!Number.isInteger(options.limit) || options.limit <= 0) {
+    throw new Error(
+      `wrapWithWriteBudget: limit must be a positive integer (got ${options.limit})`,
+    )
+  }
+  if (!options.stateFilePath || typeof options.stateFilePath !== "string") {
+    throw new Error(
+      "wrapWithWriteBudget: stateFilePath is required (absolute path)",
+    )
+  }
+  const writeStateFile = options.writeStateFile ?? defaultWriteStateFile
+  const now = options.now ?? (() => new Date())
+
+  const state = {
+    count: 0,
+    capExceededWritten: false,
+  }
+
+  const writeSnapshot = (writeBudgetExceeded: boolean): void => {
+    const body: WriteBudgetStateFileBody = {
+      writeBudgetExceeded,
+      limit: options.limit,
+      count: state.count,
+      exceededAt: now().toISOString(),
+    }
+    try {
+      writeStateFile(options.stateFilePath, body)
+    } catch (err) {
+      process.stderr.write(
+        `[lore] write-budget: failed to write state file ` +
+          `"${options.stateFilePath}" (${(err as Error).message ?? "unknown"})\n`,
+      )
+    }
+  }
+
+  const wrapMethod =
+    (
+      fn: (...args: unknown[]) => unknown,
+      thisArg: unknown,
+      path: string,
+    ) =>
+    async (...args: unknown[]): Promise<unknown> => {
+      const verdict = classifyWriteBudget(path, args)
+      if (verdict === "read") {
+        // Passthrough — no counter increment, no cap check.
+        return fn.apply(thisArg, args) as Promise<unknown>
+      }
+      // Pre-call cap check uses `>=` so a `--write-budget 500`
+      // configuration permits at most 500 successful mutations, not
+      // 501. The prior `>` check let the 501st mutation dispatch
+      // before throwing; the cap is a safety/spend gate, not a
+      // diagnostic, and the natural reading of the contract is
+      // strict: at exactly `limit` successful writes, the next
+      // mutation does NOT dispatch.
+      if (state.count >= options.limit) {
+        // Write the cap-exceeded state file ONCE — the first request
+        // that sees the cap-hit synthesizes the snapshot before
+        // throwing. Subsequent over-cap calls throw without
+        // re-writing.
+        if (!state.capExceededWritten) {
+          writeSnapshot(true)
+          state.capExceededWritten = true
+        }
+        throw new WriteBudgetExceededError(path, options.limit, state.count)
+      }
+      const result = await (fn.apply(thisArg, args) as Promise<unknown>)
+      state.count += 1
+      return result
+    }
+
+  const wrapLevel = <T extends object>(obj: T, path: string): T =>
+    new Proxy(obj, {
+      get(target, prop, receiver) {
+        if (typeof prop === "symbol") {
+          return Reflect.get(target, prop, receiver)
+        }
+        const value = Reflect.get(target, prop, receiver)
+        const nextPath = path === "" ? prop : `${path}.${prop}`
+        if (typeof value === "function") {
+          return wrapMethod(value as (...args: unknown[]) => unknown, target, nextPath)
+        }
+        if (typeof value === "object" && value !== null) {
+          return wrapLevel(value as object, nextPath)
+        }
+        return value
+      },
+    })
+
+  return {
+    client: wrapLevel(client, ""),
+    // `writeBudgetExceeded` means *"a mutation was attempted past
+    // the cap and rejected"*, NOT *"the counter happens to be at the
+    // cap"*. Exact-cap-without-attempted-overflow is the same
+    // not-exceeded verdict the raw-transcript path uses (it halts
+    // before crossing, so the counter can land at exactly `limit`
+    // with no rejection event). The two surfaces report the same
+    // verdict for the same observable behavior: `capExceededWritten`
+    // is the sole source of truth.
+    flushBudgetCount: () => writeSnapshot(state.capExceededWritten),
+    getCount: () => state.count,
+  }
 }

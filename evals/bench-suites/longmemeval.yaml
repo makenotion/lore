@@ -1,0 +1,20 @@
+runner: bench
+benchmark: longmemeval
+suite: longmemeval-baseline
+corpus:
+  name: longmemeval_s_cleaned
+  path: evals/bench-corpora/longmemeval/longmemeval_s_cleaned.json
+agent:
+  model: gpt-4o-mini-2024-07-18
+  adapter: codex
+  systemPrompt: evals/prompts/longmemeval-agent-system.txt
+judge:
+  model: gpt-4o-2024-08-06
+  recallPrompt: evals/prompts/longmemeval-judge.txt
+  abstentionPrompt: evals/prompts/longmemeval-judge-abstention.txt
+caps:
+  perExampleWrites: 500
+  perSuiteWrites: 250000
+notes: |
+  Phase 1 LongMemEval bench suite. Headline corpus is the full
+  longmemeval_s_cleaned set; see issue #595 for the V1-decisions table.

@@ -147,6 +147,12 @@ export async function runEvalSuite(
 ): Promise<{ artifact: EvalRunArtifact; outPath: string }> {
   const loaded = await loadEvalSuite(suitePath)
   const runner = options.runner ?? loaded.suite.runner
+  if (runner === "bench" || runner === "task") {
+    throw new Error(
+      `runEvalSuite does not dispatch the "${runner}" runner; the caller must route ` +
+        `to runBenchSuite / runTaskEvalSuite directly. The CLI handles this in commands/eval.ts.`
+    )
+  }
   if (runner !== "retrieval" && runner !== "notion") {
     throw new Error(`Unsupported eval runner "${runner}". Use "retrieval" or "notion".`)
   }

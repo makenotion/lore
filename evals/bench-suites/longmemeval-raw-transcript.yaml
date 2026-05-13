@@ -1,0 +1,32 @@
+runner: bench
+benchmark: longmemeval
+suite: longmemeval-raw-transcript
+corpus:
+  name: longmemeval_s_cleaned
+  path: evals/bench-corpora/longmemeval/longmemeval_s_cleaned.json
+agent:
+  model: gpt-4o-mini-2024-07-18
+  adapter: codex
+  systemPrompt: evals/prompts/longmemeval-agent-system-raw-transcript.txt
+judge:
+  model: gpt-4o-2024-08-06
+  recallPrompt: evals/prompts/longmemeval-judge.txt
+  abstentionPrompt: evals/prompts/longmemeval-judge-abstention.txt
+ingestion:
+  strategy: raw-transcript
+caps:
+  perExampleWrites: 500
+  perSuiteWrites: 250000
+notes: |
+  Raw-transcript ingestion variant: each haystack session is stored
+  verbatim as one memory, bypassing the Stop-hook autosave's "durable
+  knowledge" filter. Apples-to-apples with Zep's published Graphiti
+  baseline on longmemeval_s — every conversational token is stored,
+  retrieval reads it back through lore-query / lore-context.
+
+  The sibling longmemeval.yaml runs the same corpus through
+  `runConversationMining` (Lore's production write path). The two
+  numbers measure different things: this suite measures retrieval
+  quality with full corpus fidelity; the sibling measures the
+  production write path's signal-extraction behavior on a synthetic
+  conversational workload.

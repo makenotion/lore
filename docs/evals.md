@@ -65,15 +65,17 @@ honest apples-to-apples comparison; until then, the caveat applies.
 
 ## Runner modes
 
-Three runners ship today; the first two share the same suite YAML format and
-surface registry, the third is its own format because it scores agent-produced
-workspace state rather than retrieved memory ids:
+Four runners ship today; the first two share the same suite YAML format and
+surface registry, the last two each have their own format because they score
+agent-produced workspace state or LongMemEval-style multi-session recall
+rather than retrieved memory ids:
 
 | Runner | What it exercises | Where to use it |
 | --- | --- | --- |
 | `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls. | Per-PR CI; the inner-loop fast feedback. |
 | `notion` | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion. | Nightly CI; PRs that touch retrieval composition or ranking. |
 | `task` | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`. | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path. |
+| `bench` | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI. | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0. |
 
 Pass `--runner notion --project <SandboxProject>` to route a run through the
 production retrieval stack (rate limiter, hybrid search, contains/semantic
@@ -241,6 +243,202 @@ node dist/cli.js eval run evals/suites/lore-core.yaml \
   --out evals/results/lore-core-latest.json \
   --json
 ```
+
+## LongMemEval bench-runner
+
+The `bench` runner targets the publicly comparable LongMemEval `s_cleaned`
+corpus. Each example is a haystack of 30–40 multi-turn sessions plus one
+target question; the runner replays the haystack through Lore's production
+mining seam (`runConversationMining`), invokes a Codex-driven agent to
+answer through `lore-context` / `lore-query` / `lore-memory`, and scores
+the answer with a snapshot-pinned OpenAI judge.
+
+### One-time setup
+
+```bash
+node dist/cli.js eval bench fetch longmemeval
+```
+
+Downloads the corpus from the HF revision pinned in
+`evals/bench-corpora/longmemeval/checksums.json` and verifies sha256.
+Re-running is idempotent (sha-matched file is left in place).
+
+### Required env vars
+
+| Variable | Purpose |
+| --- | --- |
+| `LORE_EVAL_BENCH_REAL=1` | Master gate — without it every bench-mode adapter refuses to spawn. |
+| `LORE_BENCH_NOTION_TOKEN` | Per-run Notion token; the bench-runner writes it into the per-example workspace's `.codex/config.toml` (mode `0600`) so the spawned MCP child can authenticate. See "Secrets posture" below for the full risk model — use a revocable bench-scoped token, not your day-to-day `NOTION_API_TOKEN`. |
+| `LORE_BENCH_OPENAI_API_KEY` | OpenAI key for both the agent (Codex shells out) and the judge. |
+| `LORE_BENCH_CONFIG_ROOT` | Path to a `.lore.yaml` directory targeting the sandbox vault. |
+| `LORE_BENCH_SANDBOX_PROJECT_NAME` | Parent sandbox project name; per-example sub-projects are created under it. |
+| `LORE_EVAL_BENCH_MAX_USD` | Optional cost cap (default 75). The runner aborts between examples if the projected total exceeds it. |
+
+### Running
+
+```bash
+node dist/cli.js eval run --runner bench \
+  evals/bench-suites/longmemeval.yaml \
+  --out evals/results/bench-$(date +%Y%m%d).json
+```
+
+Pass `--baseline evals/baselines/longmemeval-s-gpt4o-mini.json` to gate
+drift; the first dispatched run lands in **bootstrap** mode (no baseline
+file present) and a maintainer commits the captured baseline before
+drift gating activates.
+
+The bench workflow (`.github/workflows/eval-bench.yml`) is
+**workflow_dispatch-only** for now — bench runs are operator-initiated,
+not scheduled. Promotion to a recurring cadence is a follow-up once
+the steady-state cost + drift gate are trusted.
+
+### Ingestion strategies
+
+Two strategies ship in V1; the suite YAML's `ingestion.strategy`
+chooses between them. Both produce the same artifact shape; the
+`config.ingestion.strategy` and `config.ingestion.seam` fields
+record which path produced the numbers.
+
+- **`lore-mine`** (V1 default, [`longmemeval.yaml`](../evals/bench-suites/longmemeval.yaml)) —
+  each session is mined through the production Stop-hook autosave
+  pipeline: `runConversationMining` spawns `claude -p`, which calls
+  Lore MCP tools, which run the autosave's "durable knowledge"
+  filter. Faithful to Lore's production write path. The autosave
+  filter intentionally rejects casual conversational facts, so on
+  LongMemEval's synthetic-conversation corpus mining produces ~1
+  memory per ~30-session haystack and the agent recalls little. This
+  number measures "Lore's production filter against the LongMemEval
+  workload" — honest but not directly comparable to memory systems
+  that ingest every token.
+- **`raw-transcript`** ([`longmemeval-raw-transcript.yaml`](../evals/bench-suites/longmemeval-raw-transcript.yaml)) —
+  each haystack session is stored verbatim as one memory (title
+  `Session <i>: <session-id>`, body = the rendered transcript). The
+  agent's `lore-query` / `lore-context` retrieves transcript memories
+  by question relevance and reads the body via
+  `lore-memory action='expand'`. Bypasses `runConversationMining`
+  entirely — no `claude -p`, no autosave-prompt filter. Apples-to-apples
+  with Zep's published Graphiti baseline on `longmemeval_s`.
+
+Both strategies share the same per-example / per-suite write caps and
+the same retrieval surface (the agent does not know which path
+populated the vault). Publishing a number alongside a Zep-comparable
+headline means picking `raw-transcript`; publishing a number that
+reflects what Lore writes in production means picking `lore-mine`.
+
+### Agent retrieval strategies
+
+The bench supports two retrieval surfaces, selected via the suite
+YAML's `agent.retrieval` field. Both produce the same artifact shape;
+`config.agent.retrieval` records which surface produced the numbers.
+
+- **`tool-driven`** (V1 default) — the agent has Lore MCP tools
+  (`lore-query`, `lore-memory`, `lore-context`) registered and decides
+  for itself when to call them. Maps to mid-session followup behavior
+  in production Lore. **Currently structurally unavailable under
+  `codex exec`** — Codex 0.128.0 does not load MCP servers in its
+  non-interactive exec mode (`enable_mcp_apps` feature flag is "under
+  development"). The agent sees no tools and falls through to shell-
+  command attempts that all fail with `command not found`. Listed in
+  the schema for completeness and to keep YAML loading stable when a
+  future Codex release or a Claude Code headless adapter restores
+  tool-driven retrieval.
+- **`wake-up-prefetch`** ([`longmemeval-wake-up.yaml`](../evals/bench-suites/longmemeval-wake-up.yaml)) —
+  the bench-runner calls `services.memories.search({query, projectId,
+  includeContent: true, mode: "hybrid"})` BEFORE invoking the agent
+  and injects the top-10 matching memory bodies into the user prompt
+  as a "Retrieved context" block. The agent answers from the injected
+  context — no MCP tool calls required, which sidesteps the
+  MCP-in-exec gap. Mirrors how Lore's wake-up hook actually works at
+  session start: the hook calls `lore-context action='wake-up'
+  userQuery=<task>` via the agent's MCP integration and the response
+  is pasted into the agent's context window. For a one-shot bench
+  question the relevance-ranked taskMemories section is the
+  load-bearing part — digest / recent / active-tasks sections of full
+  wake-up are noise for a single question.
+
+The two strategies compose with `ingestion.strategy` independently:
+
+| `ingestion.strategy` | `agent.retrieval` | What it measures | Currently runnable |
+|---|---|---|---|
+| `lore-mine` | `tool-driven` | Production write path × agent tool-call propensity | ⚠️ Blocked on MCP-in-exec |
+| `lore-mine` | `wake-up-prefetch` | Production write path × isolated retrieval surface | ✅ Yes |
+| `raw-transcript` | `tool-driven` | Full corpus fidelity × agent tool-call propensity (Zep-comparable headline) | ⚠️ Blocked on MCP-in-exec |
+| `raw-transcript` | `wake-up-prefetch` | Full corpus fidelity × isolated retrieval surface (V1 publishable headline) | ✅ Yes |
+
+The V1 publishable headline lives at `longmemeval-wake-up.yaml`. The
+tool-driven Zep-comparable number becomes available once Codex ships
+`enable_mcp_apps` (or a Claude Code headless adapter lands).
+
+### Safety gates
+
+- **Sandbox-name discipline.** Sub-project names match `lme-<id>-<ulid>`;
+  the runner refuses any name containing `production` / `prod` and
+  requires a sandbox marker in the parent project name.
+- **Per-example write cap.** `lore mcp --write-budget 500
+  --budget-state-file <path>` installs a Proxy on the Notion client
+  between the rate-limit gate and the SDK. Once successful mutations
+  exceed 500, every subsequent mutation tool returns the
+  `WriteBudgetExceeded:` MCP error envelope and the mining child halts.
+- **Per-suite write cap.** 250,000 writes across the run, inclusive
+  ceiling — the example that pushes the running total to exactly the
+  cap is scored, but the next example does not start. Hard abort with
+  `summary.aborted: true`.
+- **Cost cap.** Runner-measured agent + judge spend plus an
+  ingestion-estimated number (sessions × per-session table from
+  `evals/bench/pricing.json`). Projected after every example; aborts
+  before the next one if the projection exceeds the cap.
+- **Secrets posture.** Per-example workspaces are created via
+  `mkdtemp` at mode `0700` (owner traverse only). The workspace
+  carries the `.lore-bench-mode` sentinel and a `.codex/config.toml`
+  written at mode `0600` (owner read/write only). The
+  `.codex/config.toml` embeds the bench `NOTION_API_TOKEN` and
+  `LORE_CONFIG_ROOT` in its `[mcp_servers.lore.env]` table so the
+  spawned MCP child can authenticate; the values do NOT appear in
+  Codex argv (`buildBenchSpawnArgs` carries zero secrets). Threat
+  model: the token is on disk for the duration of the example
+  (~3–5 minutes), readable only by the owning UID, removed when
+  `runBenchExample`'s `finally` deletes the workspace. **Cancellation
+  or `--keep-workspaces` leaves the file behind** — operators
+  running with either must clean up manually (`rm -rf
+  /tmp/lore-bench-*`) and use a per-run revocable bench-scoped
+  token (`LORE_BENCH_NOTION_TOKEN` is deliberately distinct from
+  `NOTION_API_TOKEN` for this reason). An adversarial corpus-row
+  prompt-injection reaching the agent could `cat
+  .codex/config.toml` from within its sandbox; LongMemEval
+  mitigates this at the supply-chain layer (HF-pinned + sha256-
+  verified corpus), and `redactBearerTokens` strips verbatim
+  bearer-shaped substrings from any answer/judge output before
+  artifact write as defense-in-depth.
+
+### Model snapshot pinning
+
+`benchSuiteSchema` pins `agent.model` to `z.literal("gpt-4o-mini-2024-07-18")`
+and `judge.model` to `z.literal("gpt-4o-2024-08-06")`. The schema is
+the deliberate audit checkpoint when bumping models — a model bump
+must include a coordinated Zod-schema change, a baseline re-capture
+to absorb the ranking delta, and a `evals/bench/pricing.json` update
+so the cost cap remains honest. The model-version coupling is by
+design.
+
+### Caveats baked into every artifact
+
+- **`summary.temporalFidelityCaveat`** — Lore's Memory schema has no
+  caller-writable session-timestamp column today. The
+  `temporal-reasoning` and `knowledge-update` scores measure
+  agent-recovers-temporal-context-from-body-text, not
+  Lore-ranks-by-event-time.
+- **`summary.diagnosticCountCaveat`** — `ingestion.memoriesCreated` and
+  `ingestion.factsCreated` come from `listAllForBackfill({ projectId })`,
+  which may include vault-wide unscoped rows. The authoritative
+  per-example write count is `ingestion.notionWrites` (sourced from
+  the write-budget Proxy's counter).
+
+### Cleanup
+
+`lore eval bench cleanup-orphans --older-than 24` archives any
+`lme-<id>-<ulid>` sub-project under the sandbox vault whose
+ULID-embedded timestamp is older than 24 hours. ULIDs decode without
+a Notion round-trip; idempotent.
 
 ## Suite Format
 
