@@ -15,8 +15,8 @@
  *   isolation into one shared bucket. The 0.10.0 ntn-first move existed
  *   to escape that bucket; PATs preserve the per-user property.
  *
- * The classifier is display-only — it does NOT change `AuthSource` in
- * `src/config.ts`, does NOT route tokens through different code paths,
+ * The classifier is display-only — it does NOT change the resolved
+ * `AuthSource`, does NOT route tokens through different code paths,
  * and does NOT influence rate-limit or retry semantics on the wire. It
  * exists so `lore auth --whoami` can surface a one-line label that
  * lets an operator self-diagnose the "I pasted an integration token

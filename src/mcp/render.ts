@@ -183,7 +183,7 @@ function unresolvedHint(id: string): string {
  * Structural subtype documenting the field set `formatMemoryListItem`
  * actually reads. Using a structural subtype (rather than `Memory`) means
  * `DecisionSummary` and `TaskSummary` — the body-less projections, see
- * naming note in `0.7.0/README.md` — can be passed without an unsafe
+ * naming note from the body-less projection design — can be passed without an unsafe
  * cast. The fields cover what every meta-builder used by the recall /
  * search / wake-up surfaces needs: source / kind / status / tags /
  * dates for recall/search, source / tags / date for wake-up Recent
@@ -205,14 +205,14 @@ export interface MemoryListItem {
    * --build-confidence-scores`). Drives the trust-indicator line rendered
    * between heading and synopsis when the score falls below
    * `CONFIDENCE_DISPLAY_THRESHOLD`; null and above-threshold rows render
-   * byte-identically to pre-0.8.0.
+   * byte-identically to the no-trust-indicator baseline.
    */
   confidenceScore: number | null
   /**
    * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
    * row has been touched once by a read path (or backfilled by
    * `lore migrate --build-confidence-scores`). Read by the wake-up Stale
-   * Confidence section's per-row meta builder (issue 0.8.0/#10) to render
+   * Confidence section's per-row meta builder to render
    * `Last referenced: Nd ago`. Carried on the structural type rather than
    * cast at the call site so other section-specific meta builders that
    * want the same neglect signal don't have to re-derive it. `Memory`,
@@ -221,12 +221,12 @@ export interface MemoryListItem {
    */
   lastReferencedAt: string | null
   /**
-   * System-managed counter incremented on every topic-key upsert
-   * (0.9.0/#06). Defaults to 1 for fresh rows and for legacy rows.
+   * System-managed counter incremented on every topic-key upsert.
+   * Defaults to 1 for fresh rows and for legacy rows.
    * `defaultMemoryMetaBuilder` surfaces a `rev N` marker when the value
    * is at or above `REVISION_DISPLAY_THRESHOLD`. `Memory`, `DecisionSummary`,
    * and `TaskSummary` all carry the field structurally — same migration
-   * pattern as `confidenceScore` (0.8.0/09).
+   * pattern as `confidenceScore`.
    */
   revisionCount: number
   /**
@@ -262,7 +262,7 @@ export interface FormatMemoryListItemOptions {
    * Recall/search pass a builder that emits the
    * `[source, kind (when !== "note"), status (when !== "informational"),
    * tags.join(", ") (when non-empty), updatedAt.split("T")[0]]`
-   * pipe-joined shape pre-#03 already produced. Wake-up Recent /
+   * pipe-joined shape recall/search produce. Wake-up Recent /
    * Related pass a leaner builder. Omitting this option falls back to
    * the recall/search shape via `defaultMemoryMetaBuilder`.
    */
@@ -289,12 +289,12 @@ export interface FormatMemoryListItemOptions {
 
 /**
  * Threshold at or above which `defaultMemoryMetaBuilder` renders a
- * `rev N` marker on the meta line (0.9.0/#10). Pinned at 2 — a fresh
+ * `rev N` marker on the meta line. Pinned at 2 — a fresh
  * row carries `Revision Count: 1` and would otherwise add visual noise
  * with no signal. Single source of truth; tuning the threshold is a
  * one-line change.
  *
- * Parallels `CONFIDENCE_DISPLAY_THRESHOLD` (0.8.0/09) in posture — both
+ * Parallels `CONFIDENCE_DISPLAY_THRESHOLD` in posture — both
  * gate an additive surface signal on a system-managed numeric column —
  * but the comparison polarities INVERT: the trust label fires when
  * `confidenceScore < threshold` (low-confidence rows are the ones that
@@ -311,8 +311,8 @@ export const REVISION_DISPLAY_THRESHOLD = 2
  * `.filter((p): p is string => p !== null)` chains drop the slot
  * cleanly. Single helper consumed by every meta builder
  * (`defaultMemoryMetaBuilder`, plus wake-up's
- * `wakeUpMemoryMetaBuilder` and `staleConfidenceMetaBuilder` over in
- * `src/mcp/tools/context.ts`) so a future tuning of the threshold or
+ * `wakeUpMemoryMetaBuilder` and `staleConfidenceMetaBuilder` on the
+ * `lore-context` MCP tool) so a future tuning of the threshold or
  * the rendered string lands in one place.
  *
  * Returns `null` rather than the empty string so consumers using a
@@ -332,8 +332,8 @@ export function renderRevisionMarker(revisionCount: number): string | null {
  * stored `Confidence Score` may be below `CONFIDENCE_DISPLAY_THRESHOLD`.
  * Returns the italic-wrapped label (`_{label}_`) prefixed by `indent`
  * when the row is scored AND below the display threshold; returns
- * `null` otherwise (pre-migration / unscored rows AND above-threshold
- * rows render byte-identically to pre-0.8.0).
+ * `null` otherwise (unmigrated / unscored rows AND above-threshold
+ * rows render byte-identically to the no-trust-indicator baseline).
  *
  * Single source of truth for the cross-surface trust line shape
  * (0.9.0/DEFERRED-07): `lore-decision action='list' | 'context'`,
@@ -365,7 +365,7 @@ export function renderTrustLine(
 }
 
 /**
- * Default builder matching recall / search's pre-#03 meta shape. Pulled
+ * Default builder matching recall / search's meta shape. Pulled
  * out so wake-up's section-specific builders can fall back to it for the
  * non-Recent-Memories surfaces if they ever need to.
  *
@@ -419,9 +419,9 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
  * from the synopsis content; plain-text readers see the underscores
  * literally — still parseable, still readable.
  *
- * The synopsis is defensively truncated at `SYNOPSIS_MAX` (declared in
- * `src/types.ts`). Per #01 the service layer accepts up to the Notion
- * 2000-char ceiling and only the MCP write Zod enforces the 500-char
+ * The synopsis is defensively truncated at `SYNOPSIS_MAX`. The service
+ * layer accepts up to the Notion 2000-char ceiling and only the MCP
+ * write Zod enforces the 500-char
  * soft cap — internal callers (bulk migrations, `--backfill-synopses`
  * synthesizer, future scripts) can write longer values, and a 1500-char
  * synopsis on a wake-up listing would blow up the page. Truncation
@@ -437,12 +437,12 @@ export function formatMemoryListItem(
   const heading = "#".repeat(headingLevel)
   const lines: string[] = [`${heading} ${memory.title}`]
 
-  // Trust indicator (#09). Above the synopsis on purpose — a
-  // low-confidence memory's synopsis is itself suspect, so the signal
-  // has to land before the reader parses the content. The threshold gate
-  // and the "pre-migration / unscored row" null-guard both live inside
-  // `renderTrustLine` so this surface stays aligned with the
-  // decision-list / task-list / wake-up surfaces (0.9.0/DEFERRED-07).
+  // Trust indicator. Above the synopsis on purpose — a low-confidence
+  // memory's synopsis is itself suspect, so the signal has to land
+  // before the reader parses the content. The threshold gate and the
+  // "unscored row" null-guard both live inside `renderTrustLine` so
+  // this surface stays aligned with the decision-list / task-list /
+  // wake-up surfaces.
   const trustLine = renderTrustLine(memory.confidenceScore)
   if (trustLine !== null) {
     lines.push(trustLine)
@@ -505,7 +505,7 @@ export function truncateSynopsis(synopsis: string): string {
 
 /**
  * Predicate classification for the grouped-display taxonomy used by
- * `lore-query action='ask'` (P2-06):
+ * `lore-query action='ask'`:
  *
  * - `governance` — decision-graph edges (`decided_by`, `supersedes_decision`)
  *   that answer "what decisions govern this?"
@@ -514,7 +514,7 @@ export function truncateSynopsis(synopsis: string): string {
  *
  * Unknown predicates fall through to `structure` so a predicate added
  * server-side still renders in *some* bucket instead of disappearing.
- * Kept in `render.ts` so other read tools can reuse the same taxonomy
+ * Kept so other read tools can reuse the same taxonomy
  * without duplicating predicate lists.
  */
 export type FactClass = "governance" | "structure"

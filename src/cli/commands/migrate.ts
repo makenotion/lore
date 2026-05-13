@@ -467,11 +467,11 @@ export const migrateCommand = new Command("migrate")
           const dedupVerb = opts.dryRun ? "Would backfill" : "Backfilled"
           // "key columns" instead of naming both: `result.backfilled`
           // counts rows where *either* DedupKey or SubjectKey drifted, so
-          // a P1-04-migrated vault where only SubjectKey needed writing
-          // would otherwise show "Backfilled DedupKey + SubjectKey on N
-          // facts" and have the operator wondering why DedupKey got
-          // rewritten. The aggregate phrasing matches the trigger
-          // semantics without needing per-column counters.
+          // a partially-migrated vault where only SubjectKey needed
+          // writing would otherwise show "Backfilled DedupKey +
+          // SubjectKey on N facts" and have the operator wondering why
+          // DedupKey got rewritten. The aggregate phrasing matches the
+          // trigger semantics without needing per-column counters.
           console.log(
             `\n${dedupVerb} key columns on ${result.backfilled} fact${result.backfilled === 1 ? "" : "s"} (${result.skipped} already up to date).`
           )
@@ -581,7 +581,7 @@ export const migrateCommand = new Command("migrate")
         }
 
         if (opts.backfillSynopses) {
-          // Issue #194: thread the operator-configured background agent
+          // Thread the operator-configured background agent
           // through the synopsis synthesizer so a Codex-only operator
           // running `--backfill-synopses` (without `--synopsis-backend
           // placeholder`) gets the same redirected binary the autosave /
@@ -630,11 +630,11 @@ export const migrateCommand = new Command("migrate")
           // silent archive. --dry-run + --apply would be ambiguous, so we
           // honor dry-run whenever it's set regardless of --apply.
           //
-          // Posture: --apply (not --yes). P1-10's encoding migrations use
-          // --yes as the commit gate because the rewrite rewrites every
-          // fact body (bigger blast radius than one rename). P2-08's spec
-          // explicitly specifies --apply, matching --backfill-fact-sources.
-          // Kept as-is per spec; the irreversibility caveat below closes
+          // Posture: --apply (not --yes). Encoding migrations use --yes
+          // as the commit gate because the rewrite rewrites every fact
+          // body (bigger blast radius than one rename); this path is
+          // one rename per group and matches `--backfill-fact-sources`'s
+          // --apply posture. The irreversibility caveat below closes
           // the gap that --yes would otherwise have signalled.
           const writing = opts.apply === true && !opts.dryRun
           const results = await services.vault.migrateAliasMerges(aliasMergePlans, {
@@ -810,16 +810,16 @@ async function migrateOutOfVocabTags(
   const plans: MemoryTagPlan[] = []
   const ambiguousFreq = new Map<string, number>()
 
-  // Phase 1 — scan: collect plans across every cursor page without
+  // Scan pass — collect plans across every cursor page without
   // writing. No update() call inside this loop, so the sort order is
   // stable for the duration of pagination.
   //
-  // `includeProposed: true` opts out of issue #281 Phase 2's
-  // `Status != proposed` default-recall filter. This is a maintenance
-  // path that promises a full-vault scan ("Reclassified N memories ...
-  // M memories scanned"); silently skipping proposed rows would
-  // mis-report the scanned total and break idempotency (a follow-up
-  // run after a row leaves proposed state would suddenly find it).
+  // `includeProposed: true` opts out of the `Status != proposed`
+  // default-recall filter. This is a maintenance path that promises
+  // a full-vault scan ("Reclassified N memories ... M memories
+  // scanned"); silently skipping proposed rows would mis-report the
+  // scanned total and break idempotency (a follow-up run after a row
+  // leaves proposed state would suddenly find it).
   for (;;) {
     const { items, nextCursor } = await services.memories.list({
       limit: PAGE_SIZE,
@@ -868,7 +868,7 @@ async function migrateOutOfVocabTags(
     }
   }
 
-  // Phase 2 — apply: one update per snapshotted plan. Sequential writes
+  // Apply pass — one update per snapshotted plan. Sequential writes
   // match the Notion API's rate ceiling and keep the per-memory error
   // blast radius contained.
   if (!options.dryRun && plans.length > 0) {
@@ -922,8 +922,8 @@ async function upgradeLegacyDecisionTags(services: LoreServices): Promise<number
   let upgraded = 0
 
   while (true) {
-    // `includeProposed: true` opts out of issue #281 Phase 2's
-    // `Status != proposed` default-recall filter. Pre-`Kind` legacy
+    // `includeProposed: true` opts out of the `Status != proposed`
+    // default-recall filter. Pre-`Kind` legacy
     // rows tagged `decision` may carry any status — including
     // proposed — and the upgrade-then-strip contract must catch
     // every such row to be idempotent. Without the opt-in, a
@@ -1161,8 +1161,8 @@ export function printDiscoveryBreadcrumb(label: string): void {
  * Scan the Facts DB for rows carrying HTML-encoded Subject/Object payloads,
  * print a plan-then-apply report, and — when not a dry run and no collisions
  * block the row — rewrite Subject/Object/DedupKey in one atomic
- * `pages.update`. The collision gate mirrors the posture P1-10 established
- * for `--fix-topic-encoding` / `--merge-duplicate-topics`.
+ * `pages.update`. The collision gate matches the posture
+ * `--fix-topic-encoding` / `--merge-duplicate-topics` established.
  */
 export async function runFactEncodingFix(
   services: LoreServices,
@@ -1244,16 +1244,15 @@ export async function runFactEncodingFix(
  *   `pages.updateMarkdown` full-body `replace_content`.
  * - **Flag-on (`LORE_USE_RUNTOOL_BLOCK_EDIT=1`) above the cap, row
  *   eligible**: RunTool `update_content` with deterministic
- *   per-entity substitutions (issue #534 AC #5). Multi-pass /
+ *   per-entity substitutions. Multi-pass /
  *   no-substitutions oversized rows still surface in
  *   `oversizedSkipped`.
  *
  * Plan-mode preview reads `EncodedMemoryRow.anchoredPathPlanned`
  * (computed during scan with the same local guards as the apply
  * path) so per-row labels and the bucket counters reflect what
- * apply mode will do — see `src/core/memory-encoding.ts`'s
- * `fixMemoryEncoding` docstring for the predict/apply parity
- * contract.
+ * apply mode will do — the `fixMemoryEncoding` docstring carries the
+ * predict/apply parity contract.
  */
 export async function runMemoryEncodingFix(
   services: LoreServices,
@@ -1280,7 +1279,7 @@ export async function runMemoryEncodingFix(
   // predict the anchored path will land. Without this gate, plan
   // output would say "body fixes: 0 (1 skipped)" while apply mode
   // would actually fix the row — breaking the plan-then-execute
-  // contract under `LORE_USE_RUNTOOL_BLOCK_EDIT` (issue #534 review).
+  // contract under `LORE_USE_RUNTOOL_BLOCK_EDIT`.
   const isBodyFixablePlanned = (r: EncodedMemoryRow): boolean =>
     r.contentNeedsFix && (!r.contentTooLargeToFix || r.anchoredPathPlanned)
   const fixableRows = planOnly
@@ -1315,7 +1314,7 @@ export async function runMemoryEncodingFix(
       // Three body-state shapes for the per-row preview:
       //   - non-oversized AND content needs fix → "body" (canonical path)
       //   - oversized AND anchored path planned → "body via anchored
-      //     RunTool patterns" (issue #534 AC #5)
+      //     RunTool patterns"
       //   - oversized AND anchored path NOT planned → "body skipped"
       // The middle case is what was missing pre-review: plan output
       // labeled every oversized row as "skipped" regardless of whether
@@ -1352,8 +1351,8 @@ export async function runMemoryEncodingFix(
   }
 
   if (report.oversizedAnchoredPlanned.length > 0) {
-    // New section under `LORE_USE_RUNTOOL_BLOCK_EDIT` (issue #534
-    // AC #5): oversized rows that DO get fixed via RunTool's
+    // New section under `LORE_USE_RUNTOOL_BLOCK_EDIT`: oversized
+    // rows that DO get fixed via RunTool's
     // anchored `update_content` path. Distinguishing them from
     // `oversizedSkipped` is what keeps plan output truthful — the
     // pre-review version conflated both into a single "skipped"
@@ -1732,10 +1731,10 @@ function acquireBuildEntitiesMigrationLock(
 }
 
 /**
- * Issue #542 — drive the orphan-rate report after `--build-entities`.
+ * Drive the orphan-rate report after `--build-entities`.
  *
  * Two execution paths, gated by `LORE_USE_RUNTOOL_AGGREGATE` (defaults
- * to the parent `LORE_USE_RUNTOOL`, which itself defaults ON post-#543):
+ * to the parent `LORE_USE_RUNTOOL`, which itself defaults ON):
  *
  * 1. **RunTool aggregate path.** Issues a single
  *    `query_data_sources` SQL query that groups facts by
@@ -1769,8 +1768,7 @@ function acquireBuildEntitiesMigrationLock(
  * rows. Without this distinction an operator running the
  * operator-friendly preview (`--build-entities --report-orphan-rate
  * --dry-run`) would read the metric as if the migration had landed;
- * the silent mislabel was the principal-engineer blocker on PR
- * #547.
+ * the silent mislabel was rejected during review.
  *
  * Read-only and best-effort — a failed report does NOT abort the
  * migration, since the migration's apply path has already landed by
@@ -1853,7 +1851,7 @@ export async function runOrphanRateReport(
 }
 
 /**
- * Issue #109 — collapse normalized-equivalent topic groups whose stored
+ * Collapse normalized-equivalent topic groups whose stored
  * names differ but normalize to the same key. Plan-only by default; the
  * apply pass rewrites memory→topic relations onto the canonical and
  * archives the sibling rows. Idempotent.
@@ -1958,7 +1956,7 @@ export async function runSynopsisBackfill(
     backend: SynopsisBackend
     batchSize?: number
     /**
-     * Resolved background-agent shape (issue #194). Forwarded to
+     * Resolved background-agent shape. Forwarded to
      * `backfillSynopses` so the configured binary / args drive the
      * synthesizer spawn. When omitted, the synthesizer falls through
      * to the historical claude-shaped defaults.
@@ -2127,7 +2125,7 @@ export async function runBuildConfidenceScores(
   // For the success path, `LruCache.getOrLoad` collapses the second
   // resolve to a cache hit — one in-memory lookup. For the failure
   // path, `findByName` returns `null` and the LRU explicitly does
-  // NOT cache negatives (`project.ts`), so the duplicate query would
+  // NOT cache negatives, so the duplicate query would
   // re-run if reached — but it never is, because this preflight's
   // throw aborts before the migration call. The redundant work is
   // bounded to the success path only.
@@ -2332,7 +2330,7 @@ export async function runBuildFactConfidenceScores(
 }
 
 /**
- * Driver for `--backfill-fact-observed-at` (issue #284). Same
+ * Driver for `--backfill-fact-observed-at`. Same
  * plan-then-execute discipline as the sibling fact-confidence
  * migration: strict-resolve `--project`, walk every fact via
  * `FactService.listAllForBackfill` (including invalidated rows so
@@ -2418,7 +2416,7 @@ export async function runBackfillFactObservedAt(
     console.log(
       `\n[lore] backfill-fact-observed-at: wrote ${written} row${written === 1 ? "" : "s"}.`
     )
-    // Issue #284 review item #4 — per-row failure surface. Lets the
+    // Per-row failure surface. Lets the
     // operator distinguish transient errors (likely re-runnable) from
     // schema mismatches (need their own remediation) without parsing
     // stderr progress lines.
@@ -2428,14 +2426,12 @@ export async function runBackfillFactObservedAt(
       )
       const PREVIEW = 5
       for (const failure of failures.slice(0, PREVIEW)) {
-        // R3-C — route SDK error messages through redactDebugMessage
+        // Route SDK error messages through redactDebugMessage
         // before rendering to a user-visible channel. Today's Notion
         // SDK does not interpolate page bodies into Error.message;
         // the redactor is forward-compat hardening that matches the
         // posture every other operator-visible error surface in this
-        // codebase already adopts (per src/cli/commands/mine.ts and
-        // the partial-failure observability contract in
-        // src/mcp/AGENTS.md).
+        // codebase already adopts.
         console.log(
           `       - ${failure.factId}: ${redactDebugMessage(failure.message)}`
         )

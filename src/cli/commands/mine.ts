@@ -87,7 +87,7 @@ export const DEFAULT_MINE_LIMIT = 50
  * `MemoryService.list`'s upper bound. The post-filter on
  * `(source, title, projectIds)` keeps the candidate window tight, but
  * the underlying contains query orders by `last_edited_time desc`, so
- * a small ceiling can paginate the previously-mined row out on busy
+ * a small ceiling can paginate the already-mined row out on busy
  * vaults. 100 is the Notion-side cap; raising further would require
  * pagination, which the issue's idempotency contract doesn't justify
  * for the per-file lookup.
@@ -180,7 +180,7 @@ export interface MineCliOptions {
 
 /**
  * Validate `lore mine`'s raw flag inputs. Mirrors the strict-integer
- * posture in `parseScanCliOptions` (`commands/conflicts.ts`): reject
+ * posture in `parseScanCliOptions`: reject
  * fractional, exponent-notation, leading-sign, and trailing-alpha
  * limits via a digit-only regex BEFORE any numeric coercion.
  *
@@ -221,7 +221,7 @@ export function parseMineCliOptions(raw: {
  * Translate a glob pattern into an anchored, slash-aware `RegExp`.
  *
  * Path separators are normalized to forward slashes BEFORE matching
- * (see `matchesGlob` below) so the pattern grammar is platform-
+ * (via `matchesGlob` below) so the pattern grammar is platform-
  * independent — operators write `src/**` regardless of OS.
  *
  * Supported tokens:
@@ -256,8 +256,8 @@ export function parseMineCliOptions(raw: {
  * Brace expansion (`{a,b}`) is intentionally NOT supported —
  * brace literals `{` / `}` are escaped through to literal regex
  * matches. Adding brace expansion would pull in a real glob
- * library; the issue's acceptance criteria use `src/**\/*.ts`-
- * style patterns which need only the four tokens above.
+ * library; the supported `src/**\/*` extension-scoped patterns need
+ * only the four tokens above.
  */
 export function globToRegExp(pattern: string): RegExp {
   let out = "^"
@@ -358,11 +358,11 @@ export function globToRegExp(pattern: string): RegExp {
 /**
  * Match a relative path against a glob pattern.
  *
- * Forward-slash-normalized so Windows-style paths (`src\\foo.ts`)
+ * Forward-slash-normalized so Windows-style paths (backslash-joined)
  * match patterns written with `/`. The walker emits paths joined via
  * `path.join`, which uses the platform separator; normalizing here
- * means `mine.ts`'s pattern grammar stays platform-independent
- * regardless of where the walker ran.
+ * means the pattern grammar stays platform-independent regardless of
+ * where the walker ran.
  */
 export function matchesGlob(filePath: string, pattern: string): boolean {
   const normalized = filePath.split(/[\\/]/).join("/")
@@ -402,7 +402,7 @@ export function selectMineFiles(
  *   CLI surfaces (`lore conflicts scan`, `lore tasks reconcile`)
  *   treat unknown project names as fatal; mine matches.
  * - **No `--project`**: defers to `services.context.project` (the
- *   `.lore.yaml`-resolved current project, possibly the catch-all),
+ *   .lore.yaml-resolved current project, possibly the catch-all),
  *   or `null` if cwd resolves to no project at all.
  */
 export async function resolveMineProject(
@@ -466,7 +466,7 @@ function debugMineLockError(source: string, err: unknown): void {
   // this caller — a long ENAMETOOLONG path or a stack-laden custom error
   // shouldn't spill the per-line invariant log aggregators rely on.
   // Routing through the shared helper also keeps the helper as the
-  // single chokepoint for every LORE_DEBUG-gated emitter (issue #488).
+  // single chokepoint for every LORE_DEBUG-gated emitter.
   process.stderr.write(
     `[lore] mine-lock-${source}: error=${redactDebugError(err)} source=mine-${source}\n`
   )
@@ -496,7 +496,8 @@ function minePostCreateStabilizeMs(): number {
 
 function getMineLockDir(): string {
   // Resolve on every call so tests and hook-hosted invocations can
-  // override LORE_HOOK_STATE_DIR at runtime, matching hooks/lock.ts.
+  // override LORE_HOOK_STATE_DIR at runtime, matching the hook-layer
+  // session-lock helper's posture.
   const stateRoot = process.env["LORE_HOOK_STATE_DIR"]
     ? join(process.env["LORE_HOOK_STATE_DIR"])
     : join(tmpdir(), "lore-hook-state")
@@ -813,8 +814,8 @@ async function withMineFileLock<T>(
  *   mention the relPath in their body or title (different source =
  *   different upsert lineage).
  * - `title === expectedTitle` rejects mined files whose path is a
- *   substring of the queried one (e.g. `src/foo.ts` substring-
- *   matches `src/foo.ts.bak`).
+ *   substring of the queried one (a source-file path may
+ *   substring-match a backup-suffix variant of the same path).
  * - `projectIdsEqual` rejects rows whose project-set differs from
  *   the intended scope. Without this, `lore mine --project Foo`
  *   could match an unscoped or differently-scoped row and rewrite
@@ -834,9 +835,9 @@ export async function findExistingFileMemory(
     projectId,
     limit: FIND_EXISTING_LIMIT,
     includeContent: false,
-    // Mine's upsert idempotency must match against proposed rows too
-    // (issue #281, AC #2). The default-exclude on `MemoryService.search`
-    // would otherwise let a re-mine create a duplicate row against a
+    // Mine's upsert idempotency must match against proposed rows too.
+    // The default-exclude on `MemoryService.search` would otherwise
+    // let a re-mine create a duplicate row against a
     // file memory whose `Status` was set to `proposed` (manually or
     // by a future autosave-as-proposed flow). The upsert lookup is
     // identity-shaped, not recall-shaped, so review state is irrelevant.
@@ -923,12 +924,11 @@ async function processOneFile(
           // Topic preservation: when the rerun has no `--topic` (or
           // `topicId` couldn't be resolved without a project), we omit
           // the field from the update payload so `MemoryService.update`
-          // leaves the existing Topic relation in place. Mirrors the
-          // upsert-by-topic-key contract documented in
-          // `src/core/CLAUDE.md` (Status / Topic preserve silently on
-          // upsert). An operator who wants to retire a stale topic
-          // explicitly should call `lore-memory action='update'` —
-          // not the mine path, which is content-replication, not
+          // leaves the existing Topic relation in place. Same contract
+          // `MemoryService.upsertByTopicKey` follows: Status and Topic
+          // preserve silently on upsert. An operator who wants to retire
+          // a stale topic explicitly should call `lore-memory action='update'`
+          // — not the mine path, which is content-replication, not
           // metadata-curation.
           await services.memories.update(existingId, {
             title,
@@ -1100,8 +1100,8 @@ export const mineCommand = new Command("mine")
           console.error(`Mine failed: ${parsed.message}`)
           process.exit(1)
           // Defensive `return` after `process.exit` — same posture as
-          // `commands/conflicts.ts`. TypeScript's narrowing of
-          // `parsed.ok` via `process.exit`'s `never` return is
+          // the rest of the CLI command surface. TypeScript's
+          // narrowing of `parsed.ok` via `process.exit`'s `never` return is
           // fragile across tsconfig changes.
           return
         }

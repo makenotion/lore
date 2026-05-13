@@ -2,23 +2,20 @@
  * Lexical conflict-candidate generator. Pure function over a `Memory[]`
  * snapshot; no Notion access.
  *
- * The module is the *deterministic* half of the 0.9.0 conflict-detection
+ * The module is the *deterministic* half of the conflict-detection
  * workflow. It returns pairs whose titles, keywords, and tags overlap
  * enough to be worth examining — a cheap pre-filter over the same
- * trigram + tag-overlap helpers that back the near-duplicate probe in
- * `near-duplicate.ts`. The *semantic* half — judging whether a pair
- * actually conflicts, supersedes, or is just related — happens in the
- * calling agent's context and is recorded via `lore-memory action='compare'`
- * (#05). Kept honest in the framing: the system surfaces *candidates*,
- * the agent provides the *verdict*.
+ * trigram + tag-overlap helpers that back the near-duplicate probe.
+ * The *semantic* half — judging whether a pair actually conflicts,
+ * supersedes, or is just related — happens in the calling agent's
+ * context and is recorded via `lore-memory action='compare'`. Kept
+ * honest in the framing: the system surfaces *candidates*, the agent
+ * provides the *verdict*.
  *
  * Engram seeds the same role with FTS5 over an SQLite catalog; lore
- * reuses the existing in-memory helpers from `./similarity.ts` because
+ * reuses the in-memory `trigramJaccard` / `tagOverlap` helpers because
  * the candidate set fits in memory and the one-off scan is amortized
- * across the agent's reasoning step that follows. See
- * `src/core/AGENTS.md` § "Locked LLM prompts" for the canonical
- * engram-borrow rationale (this file's comment is the design-choice
- * note; the doctrine lives there).
+ * across the agent's reasoning step that follows.
  */
 
 import type { Memory } from "../types.js"
@@ -41,8 +38,8 @@ export interface ConflictCandidate {
 
 /**
  * Default trigram-similarity floor for surfacing a pair. Lower than the
- * memory near-duplicate threshold (`MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7`
- * in `src/mcp/tools/memory.ts`) by design: near-duplicates are a stricter
+ * memory near-duplicate threshold (`MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7`)
+ * by design: near-duplicates are a stricter
  * version of conflict candidates — conflict candidates include weaker
  * surface overlap, with the agent providing the semantic judgment.
  */
@@ -62,8 +59,9 @@ export const CONFLICT_TAG_OVERLAP_THRESHOLD = 0.5
  * half a million pairs by accident.
  *
  * To opt OUT of any cap, callers pass `pairLimit:
- * Number.POSITIVE_INFINITY` (or its alias `Infinity`) explicitly. #09's
- * `--exhaustive` flag uses this exact path. The two-axis design (default
+ * Number.POSITIVE_INFINITY` (or its alias `Infinity`) explicitly. The
+ * `lore conflicts scan --exhaustive` flag uses this exact path. The
+ * two-axis design (default
  * 50 OR explicit Infinity) is deliberate: an engineer reading the
  * signature should never have to guess what "unbounded" means; passing
  * `{}` defaults to 50, which silently defeats `--exhaustive` if someone's
@@ -87,20 +85,20 @@ export interface FindConflictCandidatesOptions {
   /**
    * Maximum pairs to return. When omitted, defaults to
    * `CONFLICT_PAIR_LIMIT` (50). Pass `Number.POSITIVE_INFINITY`
-   * (or `Infinity`) to skip truncation entirely — used by #09's
-   * `--exhaustive` flag.
+   * (or `Infinity`) to skip truncation entirely — used by
+   * `lore conflicts scan --exhaustive`.
    */
   pairLimit?: number
 }
 
 /**
  * Generate lexical conflict candidates from a memory set. Pure function;
- * no Notion access. The caller (#09's CLI scan) provides the memory list
- * AND is responsible for any post-filtering (e.g., dropping pairs already
- * in `comparedWith`). Keeping this module's scope to candidate
- * *generation* — not state-aware filtering — decouples it from the
- * `comparedWith` schema column added in #02 and from any future skip-
- * conditions a caller wants to apply.
+ * no Notion access. The caller (the `lore conflicts scan` CLI) provides
+ * the memory list AND is responsible for any post-filtering (e.g.,
+ * dropping pairs already in `comparedWith`). Keeping this module's
+ * scope to candidate *generation* — not state-aware filtering —
+ * decouples it from the `comparedWith` schema column and from any
+ * future skip-conditions a caller wants to apply.
  *
  * Filters this function applies:
  * - At least one shared project (intersection on `projectIds`; memories
@@ -109,7 +107,7 @@ export interface FindConflictCandidatesOptions {
  *
  * Filters this function does NOT apply (caller's job):
  * - Archived state (lives on Notion page metadata, not on the `Memory`
- *   shape; #09's `MemoryService.listForScan` filters archived rows at the
+ *   shape; `MemoryService.listForScan` filters archived rows at the
  *   query layer).
  * - Skip-already-judged via `comparedWith` membership.
  * - Skip-already-superseded via `Status` or `Supersedes`.
@@ -150,8 +148,8 @@ export function findConflictCandidates(
   // overlapping projects; quartic regression there would be
   // pathological. The two paths share threshold + signal logic via
   // a per-pair callback so the visible output stays byte-identical
-  // across paths (cross-checked by the equivalence test in
-  // `conflict.test.ts`).
+  // across paths (cross-checked by the equivalence test alongside
+  // this module).
   const isUnbounded = !Number.isFinite(cap)
 
   if (isUnbounded) {
@@ -291,8 +289,9 @@ function walkPairs(
       const b = memories[j]
 
       // Self-pair guard: if the caller hands us a list with the same
-      // memory referenced twice (paginated branches in #09's loader
-      // returning a row twice, a defensive dedup miss, etc.), the
+      // memory referenced twice (paginated branches in `lore conflicts
+      // scan`'s loader returning a row twice, a defensive dedup miss,
+      // etc.), the
       // index-based loop would emit a `(m, m)` pair at similarity 1.0
       // and burn a candidate slot.
       if (a.id === b.id) continue
@@ -309,9 +308,8 @@ function walkPairs(
       // Fold keywords into the trigram blob so phrase-shaped surface
       // signal (PR numbers, file paths, ticket IDs) contributes to the
       // similarity score even when the title alone wouldn't cross the
-      // threshold. Keywords is a single free-form string per
-      // `src/types.ts:460`, not an array — concatenating with a space
-      // is the right shape.
+      // threshold. `Memory.keywords` is a single free-form string,
+      // not an array — concatenating with a space is the right shape.
       const blobA = a.title + " " + a.keywords
       const blobB = b.title + " " + b.keywords
       const similarity = trigramJaccard(blobA, blobB)

@@ -1,5 +1,5 @@
 /**
- * Project-context orchestrator (issue 0.6.0/18).
+ * Project-context orchestrator.
  *
  * Composes a renderable framing block from an already-resolved `Project`
  * row plus config + cwd state. Used by `lore-context action='wake-up'`,
@@ -7,8 +7,9 @@
  * "what is this project, and how is it different from its siblings?"
  * question every fresh agent session needs first.
  *
- * Free-function shape, not a `ProjectService` method, by design — see
- * `src/core/AGENTS.md` "Service Class Pattern". The handlers always
+ * Free-function shape, not a `ProjectService` method, by design — the
+ * Service Class Pattern reserves services for Notion-row ownership.
+ * The handlers always
  * have a resolved `Project` in hand (returned by `findByPath` / `findByName`
  * or carried on `services.context.project`), so reading the description
  * requires no additional Notion call. `siblings` and `isCatchAllFallback`
@@ -37,7 +38,7 @@ import { formatCatchAllScopeSummary, subProjectNames } from "./context.js"
  * `isCatchAllFallback` is caller-supplied because the orchestrator owns
  * cwd context, the helper does not. Explicit-projectName matches must
  * pass `false` (an explicit pick is never a catch-all fallback); the
- * auto-resolved path mirrors `services.context.isCatchAllFallback`.
+ * auto-resolved path matches `services.context.isCatchAllFallback`.
  */
 export interface ProjectContext {
   projectId: string
@@ -96,9 +97,9 @@ export function composeProjectContext(
  *
  * The catch-all warning's lead-in (`Scoped to catch-all "X"
  * (monorepo-wide). Sub-projects available: ...`) is emitted via the
- * shared `formatCatchAllScopeSummary` helper in `src/core/context.ts`
+ * shared `formatCatchAllScopeSummary` helper
  * so it stays byte-identical to the save-side warning emitted from
- * `src/mcp/resolve.ts:54-58`. Only the call-to-action tail diverges:
+ * the MCP project resolver. Only the call-to-action tail diverges:
  * read tools accept `projectName` only, save tools accept
  * `projectName | projectNames`.
  *

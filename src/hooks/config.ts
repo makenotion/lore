@@ -1,7 +1,7 @@
 /**
  * Hook config shape + defaulting policy.
  *
- * Kept separate from `helpers.ts` because that module runs `main()` at import
+ * Kept separate because that module runs `main()` at import
  * time. Pulling the pure helpers out keeps them importable from tests and
  * from anywhere else that needs to know what a missing flag means.
  */
@@ -14,7 +14,7 @@ import { canonicalizeAgentName } from "./agent-identity.js"
 export const DEFAULT_SAVE_INTERVAL = 5
 
 /**
- * Default background-agent binary (issue #194). Claude Code's headless
+ * Default background-agent binary. Claude Code's headless
  * `claude -p` is what every Stop-spawn autosave and Stop-spawn digest
  * synthesizer has shelled out to since the hooks layer existed. The
  * `LoreConfig.hooks.backgroundAgent` knob plus `LORE_BACKGROUND_COMMAND`
@@ -33,8 +33,8 @@ export const DEFAULT_BACKGROUND_COMMAND = "claude"
 export const ALLOWED_TOOLS_PLACEHOLDER = "{{allowedTools}}"
 
 /**
- * Default args for `claude -p`. Mirrors what `spawnBackgroundSave` has
- * shipped since the hooks layer existed:
+ * Default args for `claude -p`. Matches what `spawnBackgroundSave`
+ * ships:
  *   - `-p` headless prompt mode
  *   - `--allowedTools <list>` (the substitution lands here)
  *   - `--dangerously-skip-permissions` (background save can't prompt)
@@ -61,14 +61,14 @@ export const DEFAULT_BACKGROUND_ARGS: readonly string[] = [
  * The shape here uses Codex's `exec` subcommand and `--full-auto` to run
  * non-interactively. There is NO `{{allowedTools}}` placeholder because
  * Codex's exec mode doesn't carry an analogous flag — the agent's
- * allowlist must be configured out-of-band (Codex's `.codex/config.toml`
+ * allowlist must be configured out-of-band (Codex's .codex/config.toml
  * `approval_mode` / `mcp_servers.<name>.allowed_tools` entries are the
  * canonical knobs). The install-time path emits an explicit warning
  * about this when an operator's resolved args lack the placeholder.
  *
  * Operators who pin Codex to a different shape (e.g. an older Codex
  * version that uses different flag spelling) override `args` in their
- * `.lore.yaml` to drop or replace these defaults.
+ * .lore.yaml to drop or replace these defaults.
  */
 export const CODEX_BACKGROUND_ARGS: readonly string[] = ["exec", "--full-auto"]
 
@@ -95,8 +95,8 @@ export const CODEX_BACKGROUND_ARGS: readonly string[] = ["exec", "--full-auto"]
  * command's basename falls outside this map, so an operator on an
  * unsupported binary sees the gap before the runtime spawn fails.
  *
- * Adding a preset is a one-line change here plus a test in
- * `config.test.ts`. New presets MUST honor the `{{allowedTools}}`
+ * Adding a preset is a one-line change here plus a paired test.
+ * New presets MUST honor the `{{allowedTools}}`
  * placeholder convention OR document explicitly (in their args
  * docstring) that the agent's allowlist must be configured
  * out-of-band — `renderAgentArgs` silently drops the value when the
@@ -126,15 +126,15 @@ export function lookupCommandPreset(command: string): readonly string[] | undefi
  * Map from canonical agent name (`LORE_AGENT_NAME` env, after
  * `canonicalizeAgentName`) to the background-agent command name that
  * agent's installer should default to. Lets the resolver pick a
- * compatible default WITHOUT requiring per-project `.lore.yaml` setup
+ * compatible default WITHOUT requiring per-project .lore.yaml setup
  * or a shell-rc-exported `LORE_BACKGROUND_COMMAND` — a Codex install
  * already prefixes hook commands with `LORE_AGENT_NAME=Codex `, so the
  * hook-fire-time env carries everything needed to derive `command:
  * codex`.
  *
- * Resolution priority (highest first), see `resolveBackgroundAgent`:
+ * Resolution priority (highest first) per `resolveBackgroundAgent`:
  *   1. `LORE_BACKGROUND_COMMAND` env (operator-scoped override)
- *   2. `hooks.backgroundAgent.command` in `.lore.yaml` (project-scoped)
+ *   2. `hooks.backgroundAgent.command` in .lore.yaml (project-scoped)
  *   3. `AGENT_BACKGROUND_COMMAND[canonicalAgent]` derived default
  *   4. `DEFAULT_BACKGROUND_COMMAND` (`"claude"`, the historical default)
  *
@@ -144,8 +144,8 @@ export function lookupCommandPreset(command: string): readonly string[] | undefi
  * resolve `claude` from tier 4. Codex installs set the prefix at
  * install time so tier 3 fires every hook.
  *
- * Adding a derivation is a one-line change here plus a test in
- * `config.test.ts`. The keyspace MUST use canonical agent names —
+ * Adding a derivation is a one-line change here plus a paired
+ * test. The keyspace MUST use canonical agent names —
  * matched against `canonicalizeAgentName(envSource["LORE_AGENT_NAME"])`
  * — so a future change to canonicalization (e.g., a new Claude
  * variant the regex collapses) doesn't silently shift derivations.
@@ -178,7 +178,7 @@ export interface HookConfig {
   autoDigest: boolean
   /**
    * Whether the Stop-spawn autosave sub-agent should extract atomic
-   * learnings in addition to the session synopsis (0.9.0/08). Honored by
+   * learnings in addition to the session synopsis. Honored by
    * the prompt builder; the helper layer combines this with the
    * `LORE_DISABLE_LEARNING_EXTRACTION` env override before passing the
    * resolved boolean to `buildBackgroundSavePrompt`.
@@ -186,7 +186,7 @@ export interface HookConfig {
   learningExtraction: boolean
   /**
    * Whether the Stop-spawn autosave sub-agent should write atomic
-   * learnings as `status: "proposed"` (issue #281, AC #1). Default
+   * learnings as `status: "proposed"`. Default
    * `false` so existing installs see byte-identical autosave
    * behavior. When `true` AND `learningExtraction` is also `true`,
    * the prompt builder instructs the sub-agent to add `status:
@@ -195,7 +195,7 @@ export interface HookConfig {
    */
   proposeAutosaveLearnings: boolean
   /**
-   * Resolved background-agent shape (issue #194). Defaults to
+   * Resolved background-agent shape. Defaults to
    * `{ command: "claude", args: <DEFAULT_BACKGROUND_ARGS> }`. Honors
    * `LoreConfig.hooks.backgroundAgent.{command,args}` overrides plus the
    * `LORE_BACKGROUND_COMMAND` env-var override on `command`. The spawn
@@ -216,7 +216,7 @@ export interface HookConfig {
 }
 
 /**
- * Merge a `.lore.yaml` hooks section with built-in defaults.
+ * Merge a .lore.yaml hooks section with built-in defaults.
  *
  * `autoSave`, `wakeUp`, `autoDigest`, and `learningExtraction` default to
  * true: hooks are opt-out, not opt-in, once the integration is installed.
@@ -224,7 +224,7 @@ export interface HookConfig {
  *
  * `envSource` is injectable for test determinism — production callers use
  * `process.env`. The env source is consulted only for
- * `LORE_BACKGROUND_COMMAND` (issue #194); other env-var overrides
+ * `LORE_BACKGROUND_COMMAND`; other env-var overrides
  * (`LORE_AUTO_DIGEST`, `LORE_DISABLE_LEARNING_EXTRACTION`) live at the
  * spawn / prompt-build layer where they're combined with the merged
  * config.
@@ -257,7 +257,7 @@ export function mergeHookDefaults(
  *   1. `LORE_BACKGROUND_COMMAND` env — operator-scoped ad-hoc override
  *      (a developer experimenting with a different agent CLI in their
  *      shell rc).
- *   2. `hooks.backgroundAgent.command` in `.lore.yaml` — project-scoped
+ *   2. `hooks.backgroundAgent.command` in .lore.yaml — project-scoped
  *      override committed for the whole team.
  *   3. `AGENT_BACKGROUND_COMMAND[canonicalAgent]` — derived from the
  *      `LORE_AGENT_NAME` env the installer set on the host's hook
@@ -275,7 +275,7 @@ export function mergeHookDefaults(
  * rejects — making the documented common case (swap binary, keep
  * everything else) silently broken. There's no env-var path for args
  * because the value is a structured array (env vars are scalar);
- * operators who need to pin a custom shape edit `.lore.yaml`.
+ * operators who need to pin a custom shape edit .lore.yaml.
  *
  * Unknown commands fall through to `DEFAULT_BACKGROUND_ARGS` so the
  * historical Claude flag shape is preserved as the conservative
@@ -298,7 +298,7 @@ function resolveBackgroundAgent(
   const envCommand = envSource["LORE_BACKGROUND_COMMAND"]
   const trimmedEnvCommand =
     envCommand && envCommand.trim().length > 0 ? envCommand.trim() : undefined
-  // Derive default from agent context. Canonicalization mirrors what
+  // Derive default from agent context. Canonicalization matches what
   // `deriveAgentName` does to populate the Memory `Agent:` field — a
   // future Claude-variant the regex collapses won't silently shift
   // tier-3 lookups because canonical Claude Code does NOT appear in
@@ -323,7 +323,7 @@ function resolveBackgroundAgent(
   // array and env vars are scalar — a split-on-whitespace parser would
   // re-introduce the quoting bugs (`--flag "value with spaces"`) the
   // structured shape exists to avoid. Operators who need ad-hoc arg
-  // overrides edit `.lore.yaml`.
+  // overrides edit .lore.yaml.
   const presetArgs = lookupCommandPreset(command) ?? DEFAULT_BACKGROUND_ARGS
   const args = override?.args ? [...override.args] : [...presetArgs]
   return { command, args }

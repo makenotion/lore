@@ -1,15 +1,12 @@
 /**
- * Single source of truth for the issue #560 hook-disclosure copy that
- * `lore init` (`commands/init.ts`) and `lore install --client {claude,
- * codex}` (`commands/install.ts`) both print, and that `.lore.example.yaml`
- * mirrors as a prose block. Pre-PR #567 round-2 review the same content
- * was duplicated across three surfaces (init.ts inlined yaml comment,
- * init.ts inlined stdout lines, example yaml prose); a typo fix in one
- * silently desynced the others.
+ * Single source of truth for the hook-disclosure copy that
+ * `lore init` and `lore install --client {claude, codex}` both print,
+ * and that .lore.example.yaml parallels as a prose block. Centralized
+ * here so a typo fix in one surface cannot silently desync the others.
  *
  * Cursor's MCP runtime does not activate Lore's Stop / UserPromptSubmit
- * hooks (`src/cli/AGENTS.md`), so `runCursorInstall` deliberately does
- * NOT print this block — there's nothing to disclose on that host.
+ * hooks, so `runCursorInstall` deliberately does NOT print this block
+ * — there's nothing to disclose on that host.
  *
  * Fragments (knob list, descriptions, env overrides, privacy framing,
  * docs reference) are exported as constants so tests can pin them; the
@@ -19,7 +16,7 @@
 
 /**
  * The four `.lore.yaml > hooks` knobs whose schema default is `true`
- * (`src/hooks/config.ts:232-248` — `mergeHookDefaults`). Every entry here
+ * (`mergeHookDefaults`). Every entry here
  * triggers a background side effect — either a write to the operator's
  * Notion vault, a read from it, or both. Adding a fifth default-true
  * hook in a future change MUST add a row to this table; the test bed
@@ -27,14 +24,14 @@
  * structural guard.
  */
 export interface HookDisclosureRow {
-  /** `hooks.<name>` knob in `.lore.yaml`. Used in the disable hint. */
+  /** `hooks.<name>` knob in .lore.yaml. Used in the disable hint. */
   readonly knob: string
   /** One-sentence description of the side effect. */
   readonly description: string
   /**
    * Optional per-session env-var override. `LORE_AUTOSAVE=false` and
    * friends short-circuit the hook without editing config. Not every
-   * hook has one — `wakeUp` is governed by `.lore.yaml` only.
+   * hook has one — `wakeUp` is governed by .lore.yaml only.
    */
   readonly envOverride?: string
 }
@@ -72,7 +69,7 @@ export const HOOK_DISCLOSURE_ROWS: readonly HookDisclosureRow[] = [
  * learning-extraction LLM call, which sends the transcript to whichever
  * background-agent CLI the operator has configured (Claude API by
  * default, Codex if `LORE_AGENT_NAME=Codex`, or a custom command under
- * `hooks.backgroundAgent.command`). PR #567 round-2 review.
+ * `hooks.backgroundAgent.command`).
  */
 export const HOOK_PRIVACY_FRAMING =
   "Writes land in your Notion vault; transcript content is sent to your configured background-agent LLM (Claude API by default; Codex if LORE_AGENT_NAME=Codex)."
@@ -82,13 +79,13 @@ export const HOOK_DOCS_REFERENCE = "Full reference: docs/hooks.md."
 
 /**
  * The four-line opt-out instruction. Names the boolean knobs explicitly
- * (PR #567 round-1 review: an earlier "Set any value below to `false`"
- * implied `saveInterval: false` would work; that's a number in the
- * schema and `false` trips `parseConfigAllowingInvalidHooks` into
- * dropping the entire hooks block, silently re-enabling the very hooks
- * the operator was trying to disable). Mentions the env overrides for
- * the three hooks that have one — `wakeUp` has no env knob, so the
- * line covers what exists rather than implying parity.
+ * — an earlier "Set any value below to `false`" implied
+ * `saveInterval: false` would work; that's a number in the schema and
+ * `false` trips `parseConfigAllowingInvalidHooks` into dropping the
+ * entire hooks block, silently re-enabling the very hooks the operator
+ * was trying to disable. Mentions the env overrides for the three
+ * hooks that have one — `wakeUp` has no env knob, so the line covers
+ * what exists rather than implying parity.
  */
 export function buildOptOutHint(): string[] {
   const knobs = HOOK_DISCLOSURE_ROWS.map((r) => `hooks.${r.knob}: false`).join(" / ")
@@ -105,9 +102,9 @@ export function buildOptOutHint(): string[] {
  * Lines printed to stdout by `lore init` (both no-arg and explicit-page
  * paths) and `lore install --client {claude,codex}`. Two-space indent
  * on the bullets matches the existing `Next steps:` / install summary
- * shape; bullets use ASCII `-` (PR #567 review nit: `•` mojibakes on
- * legacy Windows consoles, and the CLI does run on Windows even
- * though the hook runner is POSIX-only).
+ * shape; bullets use ASCII `-` because `•` mojibakes on legacy Windows
+ * consoles, and the CLI does run on Windows even though the hook
+ * runner is POSIX-only.
  */
 export function buildHookDisclosureLines(): string[] {
   const knobColumnWidth = Math.max(...HOOK_DISCLOSURE_ROWS.map((r) => r.knob.length))

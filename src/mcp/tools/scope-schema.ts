@@ -1,8 +1,8 @@
 /**
  * Shared Zod schema for the `scope` parameter on every tool that
- * writes a Memory or Fact (issue #283).
+ * writes a Memory or Fact.
  *
- * The schema mirrors `MemoryScopeInput` in `src/types.ts` exactly:
+ * The schema matches `MemoryScopeInput` exactly:
  *
  * - `kind` — one of the nine `MemoryScopeKind` values, or `null` to
  *   clear the column.
@@ -63,7 +63,6 @@ export const scopeInputSchema = z
 
 /**
  * Inferred TypeScript shape from `scopeInputSchema`. Matches
- * `MemoryScopeInput` in `src/types.ts` modulo the optional outer
- * wrapper.
+ * `MemoryScopeInput` modulo the optional outer wrapper.
  */
 export type ScopeInput = z.infer<typeof scopeInputSchema>

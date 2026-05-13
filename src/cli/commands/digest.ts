@@ -18,7 +18,7 @@ import { touchDigestMarker } from "../../hooks/digest-marker.js"
 import { safeFilenameSegment } from "../../hooks/marker-key.js"
 
 /**
- * Resolve the absolute path configured for a project in `.lore.yaml`. When
+ * Resolve the absolute path configured for a project in .lore.yaml. When
  * the operator runs `lore digest --project Widget` from outside the Widget
  * subtree, we'd rather spawn the synthesizer inside Widget's configured path
  * so the child's own cwd-based context resolution agrees with the prompt's
@@ -92,7 +92,7 @@ export const digestCommand = new Command("digest")
           )
           projectId = found.id
           projectLabel = found.name
-          // Find the matching `.lore.yaml` entry so we can spawn from the
+          // Find the matching .lore.yaml entry so we can spawn from the
           // project's configured path rather than whatever cwd the operator
           // happens to be in.
           projectConfigPath = services.config.projects?.find(
@@ -112,15 +112,14 @@ export const digestCommand = new Command("digest")
               "inside a configured project path."
           )
           process.exit(1)
-          // Defensive `return` after `process.exit` — same posture as
-          // `commands/mine.ts` and `commands/search.ts`. In production
+          // Defensive `return` after `process.exit` — matches the
+          // standing exit-test pattern across the CLI. In production
           // `process.exit(1)` actually terminates, so this line is
           // unreachable. Under the shared no-throw `trapProcessExit`
-          // mock in `src/cli/test-helpers.ts`, execution continues
-          // after `process.exit(1)` records the code; without the
-          // explicit `return` here, `gatherDigestData(... projectLabel)`
-          // would run with a `null` projectLabel and corrupt the
-          // test bed.
+          // mock, execution continues after `process.exit(1)` records
+          // the code; without the explicit `return` here,
+          // `gatherDigestData(... projectLabel)` would run with a
+          // `null` projectLabel and corrupt the test bed.
           return
         }
 
@@ -153,21 +152,21 @@ export const digestCommand = new Command("digest")
 
         const spawnCwd = resolveSpawnCwd(services.configRoot, projectConfigPath)
         // Routes through `safeFilenameSegment` for the same reason
-        // `digest-scheduler.ts` does — one shared sanitization +
-        // length-cap policy across every hook-state filename builder
-        // (see `src/hooks/marker-key.ts`). Two parallel `digest-` lock
-        // builders inlining the regex would drift the moment one is
-        // tweaked; this CLI surface and the auto-digest scheduler must
-        // produce byte-identical lock keys for the same `projectLabel`
-        // so a manual `lore digest` and a Stop-fired auto-digest race
-        // through the same `MAX_CONCURRENT_SAVES` gate.
+        // the auto-digest scheduler does — one shared sanitization +
+        // length-cap policy across every hook-state filename builder.
+        // Two parallel `digest-` lock builders inlining the regex
+        // would drift the moment one is tweaked; this CLI surface and
+        // the auto-digest scheduler must produce byte-identical lock
+        // keys for the same `projectLabel` so a manual `lore digest`
+        // and a Stop-fired auto-digest race through the same
+        // `MAX_CONCURRENT_SAVES` gate.
         const lockKey = `digest-${safeFilenameSegment(projectLabel)}`
         const hookConfig = mergeHookDefaults(services.config.hooks)
         const result = spawnBackgroundSave(spawnCwd, prompt, lockKey, {
           logLabel: "digest",
           allowedTools: DIGEST_ALLOWLIST,
           agent: hookConfig.backgroundAgent,
-          // Apply the ntn-source env partition (issue #475). `services`
+          // Apply the ntn-source env partition. `services`
           // is the same in-process bundle whose `resolveAuth` produced
           // `authSource`, so the synthesizer's env matches the source
           // the foreground gather call already authenticated against.
@@ -187,25 +186,25 @@ export const digestCommand = new Command("digest")
           if (result.kind === "lock-path-too-long") {
             // Distinct from "Digest already in flight": there is no peer
             // doing the work. Pointing the operator at LORE_HOOK_STATE_DIR
-            // is the actionable knob (see issue #485).
+            // is the actionable knob.
             console.error(
               `Failed to spawn digest synthesizer: lock path too long (${result.code}). ` +
                 `Shorten LORE_HOOK_STATE_DIR.`
             )
             process.exit(1)
             // Defensive `return` so the no-throw `trapProcessExit`
-            // mock in `src/cli/test-helpers.ts` doesn't fall through
-            // to the generic `Failed to spawn digest synthesizer.`
-            // line below and stack a misleading message on top of
-            // the actionable lock-path-too-long diagnostic.
-            // Production `process.exit(1)` actually terminates, so
-            // this line is unreachable there.
+            // mock doesn't fall through to the generic `Failed to
+            // spawn digest synthesizer.` line below and stack a
+            // misleading message on top of the actionable
+            // lock-path-too-long diagnostic. Production
+            // `process.exit(1)` actually terminates, so this line
+            // is unreachable there.
             return
           }
           console.error("Failed to spawn digest synthesizer.")
           process.exit(1)
           // Defensive `return` after `process.exit` — same posture as
-          // `commands/mine.ts` and `commands/search.ts`. In production
+          // the standing pattern across CLI commands. In production
           // `process.exit(1)` actually terminates, so this line is
           // unreachable. Under the shared no-throw `trapProcessExit`
           // mock, execution continues after `process.exit(1)` records

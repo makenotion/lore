@@ -15,7 +15,7 @@ type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
   /**
-   * Opt-out marker for `withWakeUpCacheBump` (issue #495). Set on
+   * Opt-out marker for `withWakeUpCacheBump`. Set on
    * write-action handlers whose code path provably did NOT mutate
    * Notion — e.g. the assertive-reuse short-circuit in
    * `lore-task action='create'` (returns an existing row without
@@ -37,7 +37,7 @@ type ToolResult = {
 
 /**
  * Run a write-action handler and bump the wake-up cache's write
- * epoch (issue #495). Wraps each write-action `case` in the
+ * epoch. Wraps each write-action `case` in the
  * polymorphic dispatchers so a save / update / archive / create /
  * close / supersede invalidates a cached wake-up snapshot from
  * before the write.
@@ -58,10 +58,10 @@ type ToolResult = {
  * this).
  *
  * The wrapper is structurally tiny on purpose — it sits at the
- * dispatcher seam, where the same write actions enumerated in issue
- * #495 live as `case` arms. Centralizing the bump here keeps the
- * cache's invalidation contract auditable: any handler not routed
- * through this wrapper is, by construction, a read action.
+ * dispatcher seam, where the write-action case arms live.
+ * Centralizing the bump here keeps the cache's invalidation contract
+ * auditable: any handler not routed through this wrapper is, by
+ * construction, a read action.
  *
  * `cache` is typed as optional because dozens of unit-test fixtures
  * across the MCP test suite construct partial `LoreServices` shapes
@@ -129,7 +129,7 @@ export function paginationFooter(
  *
  * Only `error.message` is logged — not `error.stack`, `.body`, `.headers`, or
  * the full error object. The message is then routed through
- * `redactDebugError` (`src/debug-redact.ts`) which bounds length, strips
+ * `redactDebugError` which bounds length, strips
  * forward-compatible SDK leak shapes (`body=` / `headers=` / `payload=`),
  * and replaces Notion page-id-shaped substrings with `<page-id>`. The
  * explicit `root=<rootId>` field is NOT redacted — operators need it to
@@ -163,8 +163,8 @@ function oneLine(value: string): string {
 }
 
 /**
- * Operator observability for the auto-`mentions` fact emission path
- * (0.8.0/#07). The auto-emit branch fires per-entity `createWithDedup`
+ * Operator observability for the auto-`mentions` fact emission path.
+ * The auto-emit branch fires per-entity `createWithDedup`
  * calls in parallel after `lore-memory action='save'`; a per-entity
  * failure (transient 429, dedup probe race, schema drift on a vault
  * that hasn't run `lore migrate`) degrades to a no-op for THAT entity
@@ -186,18 +186,15 @@ function oneLine(value: string): string {
  * if a future entity tokenizer surfaces a multi-line input.
  *
  * `source` is the originating tool action (`save` for save-time
- * emission; `update` for the diff-driven re-emission landed via
- * DEFERRED-03). Carrying it on every line lets a future contributor
- * distinguish save-time vs. update-time emission failures without
- * grepping the calling stack. `kind` distinguishes the per-entity
- * fact create from the stale-fact invalidate path that landed when
- * DEFERRED-03 grew diff-and-invalidate semantics; defaults to
- * `"create"` so existing save-time call sites stay source-compatible
- * (no parameter re-threading at the call boundary). The emitted log
- * line itself is NOT byte-identical pre-#491 — `kind=create` joins
- * the stable key set on every save-time line — but the key set is
- * uniform across save-time creates, update-time creates, and
- * update-time invalidates so log parsers grepping `[lore]
+ * emission; `update` for the diff-driven re-emission). Carrying it on
+ * every line lets a future contributor distinguish save-time vs.
+ * update-time emission failures without grepping the calling stack.
+ * `kind` distinguishes the per-entity fact create from the stale-fact
+ * invalidate path the diff-and-invalidate semantics introduced;
+ * defaults to `"create"` so existing save-time call sites stay
+ * source-compatible (no parameter re-threading at the call boundary).
+ * The key set is uniform across save-time creates, update-time creates,
+ * and update-time invalidates so log parsers grepping `[lore]
  * auto-fact-failure:` see one contract, not three.
  */
 export function debugLogAutoFactFailure(
@@ -254,7 +251,7 @@ export function debugLogContradictionFailure(
 
 /**
  * Per-row failure logger for `MemoryService.touchOnRead` calls fired
- * from MCP read paths (issue 0.8.0/05). Touch is advisory — a 429 on
+ * from MCP read paths. Touch is advisory — a 429 on
  * one row must not break the surrounding response — so the wiring
  * passes an `onError(memoryId, error)` callback that flows here.
  *
@@ -296,8 +293,8 @@ export function debugLogTouchFailure(
 }
 
 /**
- * Single shared seam for the citation-as-evidence touch wiring (issue
- * 0.8.0/05). All five MCP read paths that surface a memory funnel
+ * Single shared seam for the citation-as-evidence touch wiring.
+ * All five MCP read paths that surface a memory funnel
  * through here so the contract — empty-batch short-circuit, per-row
  * failure routing through `debugLogTouchFailure`, top-level throw
  * suppression — lives in one place. Reworking the contract (e.g.
@@ -308,16 +305,14 @@ export function debugLogTouchFailure(
  * `await` is deliberate: tests rely on the awaited completion to
  * observe the touch via spy assertions, and the production path's
  * write latency on the first cite of the day is bounded by the
- * rate-limit middleware's concurrency cap (per issue 0.8.0/05's risk
- * note: `ceil(N / concurrency) × per-call-latency`). A `void
+ * rate-limit middleware's concurrency cap
+ * (`ceil(N / concurrency) × per-call-latency`). A `void
  * touchOnRead(...).catch(() => {})` pattern would let the response
  * return slightly faster but would (a) make the touch genuinely fire-
  * and-forget — losing the deterministic test observability — and (b)
  * race the next read on the same row through Notion's eventually-
  * consistent query index. The `await` posture trades a one-time first-
- * wake-up-of-day latency hit for testability and read-consistency; it
- * matches the spec literally and the trade-off is documented in the
- * 0.8.0/#12 release notes.
+ * wake-up-of-day latency hit for testability and read-consistency.
  *
  * **Advisory contract.** Both the per-row `onError` callback and the
  * outer `try/catch` are needed: the callback drains the data layer's
@@ -386,7 +381,7 @@ export async function fireFactTouchOnRead(
 
 /**
  * Render a Zod validation error as a single-line dispatch error message
- * for the polymorphic `lore-*` tools (P3-01). Surfaces the first issue
+ * for the polymorphic `lore-*` tools. Surfaces the first issue
  * with `field.path: message` so the calling agent can correct the call
  * without parsing a stack trace. Discriminated-union mismatches manifest
  * as `action: Invalid discriminator value` which already names the

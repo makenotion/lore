@@ -1,18 +1,15 @@
 /**
- * Public surface for the quarantined RunTool integration. Phase 0
- * (issue #532) shipped the contract README; issue #533 (PR #538)
- * landed the shared `runTool<T>(client, tool, params)` dispatcher
- * along with the `create_pages` consumer; issue #534 (PR #537)
- * extends with `update_page` / `update_content` for anchored
- * markdown edits; issue #535 extends with `query_data_sources` SQL
- * filter helpers for entity / near-duplicate / conflict-scan
- * predicate pushdowns; issue #541 extends with `search` for the
- * `MemoryService` semantic lane.
+ * Public surface for the quarantined RunTool integration. The
+ * README pins the contract; the shared `runTool<T>(client, tool, params)`
+ * dispatcher lands alongside the `create_pages`, `update_page` /
+ * `update_content` (anchored markdown edits), `query_data_sources`
+ * (SQL filter helpers for entity / near-duplicate / conflict-scan
+ * predicate pushdowns), and `search` (semantic lane) consumers.
  *
  * This barrel re-exports the consumer surface that
- * `MemoryService`, `EntityService`, `memory-encoding.ts`, and the
- * conflict scanner pull in. Sibling modules (`update-page.ts`,
- * `create-pages.ts`, `query.ts`, `search.ts`) live alongside;
+ * `MemoryService`, `EntityService`, and the conflict scanner pull
+ * in. Sibling modules (the `create_pages` / `update_page` /
+ * `query_data_sources` / `search` wrappers) live alongside;
  * importers should pull from this barrel rather than the deeper
  * files so the quarantine boundary stays narrow.
  */
@@ -34,7 +31,7 @@ export type {
   UpdatePageContentParams,
 } from "./update-page.js"
 
-// Issue #535 — SQL filter helpers
+// SQL filter helpers
 export {
   comparedPairKey,
   fetchAlreadyComparedPairKeys,
@@ -50,7 +47,7 @@ export type {
   SqlEntityNameMatch,
 } from "./query.js"
 
-// Issue #542 — SQL aggregate helpers
+// SQL aggregate helpers
 export {
   extractFirstRelationId,
   querySubjectGroupCountsViaRunTool,
@@ -74,7 +71,7 @@ export type {
   SqlResultRow,
 } from "./types.js"
 
-// Issue #541 — search consumer
+// Search consumer
 export {
   RunToolSearchRestrictedError,
   searchViaRunTool,

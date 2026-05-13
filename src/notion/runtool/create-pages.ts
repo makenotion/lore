@@ -4,12 +4,12 @@
  *
  * Replaces the per-page `pages.create` + optional `pages.updateMarkdown`
  * fan-out with a single `POST /v1/tools/run` request per chunk for
- * create-heavy paths (issue #533). The auto-learn `mentions` fact
+ * create-heavy paths. The auto-learn `mentions` fact
  * emission in `MemoryService.handleSave` / `handleUpdate` is the
  * canonical first consumer; future create-heavy migrations or imports
  * can adopt the same primitive opt-in per call site.
  *
- * Surface contract (called out in issue #533's "Approach"):
+ * Surface contract:
  *
  * 1. **Same-parent batching only.** Every page in one call shares one
  *    `data_source_id` parent. Callers that mix data sources must group
@@ -31,7 +31,7 @@
  *    which goes through `client.request()` — the same Proxy that
  *    rate-limits and auth-refreshes every other Notion call. A
  *    parallel `pLimit` here would defeat the composition contract
- *    (issue #532's "RunTool calls must compose with the same
+ *    (the RunTool quarantine rule "must compose with the same
  *    configured request pacing/backoff") so chunks dispatch
  *    serially. The shared bucket bounds inter-chunk spacing.
  *
@@ -39,11 +39,10 @@
  * `pages.create`-shaped Notion REST format that `buildFactProps` /
  * `buildMemoryProps` produce. The wrapper itself converts those
  * REST shapes into the flat SQLite-style property map RunTool's
- * `create_pages` consumes (via
- * `convertNotionRestToSqliteProperties` from
- * `./sqlite-properties.ts`). The conversion is grounded in the
+ * `create_pages` consumes via
+ * `convertNotionRestToSqliteProperties`. The conversion is grounded in the
  * empirical wire format observed live against an internal
- * vault Facts DB at PR #538 review time — title/rich_text/select
+ * vault Facts DB during batch-create rollout — title/rich_text/select
  * → flat strings, dates → 3-key `date:<col>:start/:end/:is_datetime`
  * expansion, relations → JSON-stringified array of user-facing
  * URLs. Without the conversion the server rejects the call with
@@ -74,7 +73,7 @@ import type {
  * so a future schema-pin refresh touches exactly one constant. The
  * issue notes "Do not bake in 100 without a test or Public API-team
  * confirmation"; the alias schema IS the public API team's
- * confirmation surface, and the test in `create-pages.test.ts` pins
+ * confirmation surface, and the test pins
  * the constant.
  */
 export const RUNTOOL_CREATE_PAGES_MAX_CHUNK = 100
@@ -115,15 +114,15 @@ export interface CreatePagesViaRunToolInput {
    */
   chunkSize?: number
   /**
-   * User-facing host root used to construct relation URLs
+   * User-facing host root for constructing relation URLs
    * (e.g. `https://dev.notion.so/` for the dev environment,
    * `https://www.notion.so/` for production). Must match the
-   * workspace's user-facing domain — see
-   * `services.ts:deriveRelationUrlBase`. Live verification at
-   * PR #538 review time confirmed that the server rejects relation
-   * URLs whose host doesn't match the workspace environment.
-   * Optional; defaults to the production host. Production callers
-   * MUST thread the derived base from the auth chain.
+   * workspace's user-facing domain — `deriveRelationUrlBase`
+   * computes the canonical mapping. Live verification confirmed
+   * that the server rejects relation URLs whose host doesn't match
+   * the workspace environment. Optional; defaults to the production
+   * host. Production callers MUST thread the derived base from the
+   * auth chain.
    */
   relationUrlBase?: string
 }
@@ -227,11 +226,12 @@ export async function createPagesViaRunTool(
     // Convert each page's Notion REST property shape into the
     // flat SQLite-style map RunTool's create_pages consumes. The
     // empirical wire format (read-shape inspection of an existing
-    // mentions fact via `query_data_sources` at PR-#538 review
-    // time) showed selects/text as bare strings, dates as the 3-key
+    // mentions fact via `query_data_sources`) showed selects/text as
+    // bare strings, dates as the 3-key
     // `date:<col>:start/:end/:is_datetime` expansion, and relations
-    // as JSON-stringified URL arrays — see
-    // `sqlite-properties.ts`'s docstring for the canonical table.
+    // as JSON-stringified URL arrays — see the
+    // `convertNotionRestToSqliteProperties` docstring for the
+    // canonical table.
     // Without this conversion the server rejects the call with
     // `validation_error` because Notion REST shapes (`{ title:
     // [{ text: {...} }] }`, `{ relation: [{ id }] }`, etc.) are

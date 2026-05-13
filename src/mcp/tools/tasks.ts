@@ -1,14 +1,14 @@
 /**
- * Task tools (P3-02 + PF3-06).
+ * Task tools.
  *
  * Tasks are the canonical surface for tracked work. The polymorphic
  * `lore-task` dispatcher is action-routed across
  * `create` / `update` / `close` / `list` — matching the rest of the
- * P3-01 polymorphic family (`lore-memory`, `lore-decision`, etc.).
+ * polymorphic family (`lore-memory`, `lore-decision`, etc.).
  *
  * Each handler is a thin orchestration layer over `services.tasks`
  * (`TaskService`) plus project-name resolution; the heavy lifting —
- * schema, defaults, Notion calls — lives in `src/core/task.ts`.
+ * schema, defaults, Notion calls — lives in `TaskService`.
  */
 
 import { z } from "zod"
@@ -118,11 +118,11 @@ function urgencyMarker(days: number): string {
  * via the shared helper, mirroring `formatMemoryListItem`'s discipline
  * for over-cap rows that landed via legacy / migration paths.
  *
- * Trust indicator (DEFERRED-01 follow-up to 0.8.0/#09): when the row's
+ * Trust indicator: when the row's
  * stored `Confidence Score` is below `CONFIDENCE_DISPLAY_THRESHOLD`, an
  * indented italic label lands between the title row and the synopsis,
  * matching the placement in `formatMemoryListItem`. Null and above-
- * threshold rows render byte-identically — pre-migration vaults look
+ * threshold rows render byte-identically — unmigrated vaults look
  * unchanged until `lore migrate --build-confidence-scores` populates
  * scores. NOT gated by `includeSynopsis`: trust is system metadata,
  * not synopsis content; the two surfaces are independent.
@@ -187,7 +187,7 @@ interface CreateArgs {
 
 /**
  * Names the caller-provided non-key fields that the assertive-reuse
- * branch will silently ignore. Issue #265's reuse predicate consumes
+ * branch will silently ignore. The reuse predicate consumes
  * only `(subject, entity, projectIds)` — every other create-time field
  * is structurally dropped if reuse fires. Surfacing the dropped names
  * in the response prevents an agent from believing a state transition
@@ -245,14 +245,13 @@ async function handleCreate(
       args.projectNames
     )
 
-    // Sequenced probe — issue #265's assertive-reuse promotion needs
-    // the entity-matched candidate set in hand BEFORE deciding whether
-    // to create, so an exact `(entity, subject, project-set)` match can
-    // short-circuit to reuse without leaving an orphan task or topic.
-    // Pre-#265 this probe ran in parallel with `services.tasks.create`
-    // since it was advisory-only; promotion to assertive forces the
-    // sequence (same posture as `MemoryService.upsertByTopicKey`'s
-    // pre-create `findByTopicKey` lookup). Cost is one extra
+    // Sequenced probe — assertive reuse needs the entity-matched
+    // candidate set in hand BEFORE deciding whether to create, so an
+    // exact `(entity, subject, project-set)` match can short-circuit
+    // to reuse without leaving an orphan task or topic. The probe
+    // runs sequentially with `services.tasks.create` (same posture as
+    // `MemoryService.upsertByTopicKey`'s pre-create
+    // `findByTopicKey` lookup). Cost is one extra
     // `dataSources.query` round-trip on the create path; bounded
     // (limit=10) and the same query the advisory footer needs anyway.
     //
@@ -275,13 +274,11 @@ async function handleCreate(
     // (`findExactReuseTarget`) compares decoded titles via
     // `normalizeReuseKey`, and the advisory close-CTA footer renders the
     // same canonical form an operator sees in Notion. Decoding once
-    // here keeps the three consumers internally consistent — pre-#265's
-    // raw-input path was uniformly encoded end-to-end (probe issued
-    // encoded, footer rendered encoded), so the fix is to make the
-    // post-#265 path uniformly decoded. `decodeTextEntities` is
-    // idempotent, so the redundant decode inside `findDuplicateActiveTasks`
-    // and `normalizeReuseKey` remains correct (and load-bearing for
-    // non-MCP callers that don't pre-decode).
+    // here keeps the three consumers internally consistent.
+    // `decodeTextEntities` is idempotent, so the redundant decode
+    // inside `findDuplicateActiveTasks` and `normalizeReuseKey`
+    // remains correct (and load-bearing for non-MCP callers that
+    // don't pre-decode).
     const probeEntity = decodeTextEntities(args.entity ?? args.subject)
     const duplicates = await findDuplicateActiveTasks(services.tasks, {
       entity: probeEntity,
@@ -296,8 +293,8 @@ async function handleCreate(
     // gate so a reuse hit does not leak an orphan Topic — same
     // discipline `lore-memory action='save'` follows for the autosave
     // learning duplicate gate. `LORE_DISABLE_TASK_REUSE=1` (or the
-    // broader `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`) restores the
-    // pre-#265 advisory-only behavior.
+    // broader `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`) restores
+    // advisory-only behavior.
     const reuseTarget = findExactReuseTarget(duplicates, {
       subject: args.subject,
       entity: probeEntity,
@@ -368,7 +365,7 @@ async function handleCreate(
 
       return {
         content: [{ type: "text", text: reuseLines.join("\n") }],
-        // Issue #495: assertive reuse short-circuits before
+        // Assertive reuse short-circuits before
         // `services.tasks.create` runs — Notion was not mutated and
         // the wake-up cache should NOT be invalidated for this path.
         // See `withWakeUpCacheBump`'s docstring for the marker
@@ -411,15 +408,15 @@ async function handleCreate(
       author: resolvedAuthor,
       agent: args.agent,
       session: args.session,
-      // Scope / lifetime (issue #283).
+      // Scope / lifetime.
       scope: args.scope,
     })
 
     // The probe ran before create, so by construction `task.id` cannot
-    // appear in `duplicates`. Pre-#265 the parallel-probe posture
-    // required a post-fetch `t.id !== task.id` filter to close the
+    // appear in `duplicates`. A parallel-probe posture would require
+    // a post-fetch `t.id !== task.id` filter to close the
     // eventual-consistency window between create and the query index;
-    // sequencing makes that filter dead code. The advisory footer
+    // sequencing makes that filter unnecessary. The advisory footer
     // renders `duplicates` directly.
     const filteredDuplicates = duplicates
 
@@ -542,7 +539,7 @@ async function handleUpdate(
       tags: args.tags,
       keywords: args.keywords,
       synopsis: args.synopsis,
-      // Scope / lifetime update (issue #283).
+      // Scope / lifetime update.
       scope: args.scope,
     })
 
@@ -591,7 +588,7 @@ async function handleClose(services: LoreServices, args: CloseArgs): Promise<Too
     await services.tasks.close(args.taskId, closingState)
 
     // Re-read the post-close row so the response can echo the stamped
-    // `Done At` (issue 0.7.0/07). On a vault that hasn't migrated the
+    // `Done At`. On a vault that hasn't migrated the
     // Memories DS to add the column, `extractDate` returns `null` and
     // we suppress the line — graceful degradation, no version gate.
     let doneAt: string | null = null

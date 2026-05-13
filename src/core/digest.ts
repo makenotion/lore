@@ -16,8 +16,8 @@
 import type { Memory, TaskSummary } from "../types.js"
 
 /**
- * Default staleness window matching `DEFAULT_DIGEST_FRESHNESS_DAYS` in
- * `wakeup.ts`: once a digest ages past this many days,
+ * Default staleness window matching `DEFAULT_DIGEST_FRESHNESS_DAYS`:
+ * once a digest ages past this many days,
  * `lore-context action='wake-up'` stops surfacing it on the fast path.
  * The Stop-triggered auto-digest reuses the same threshold — re-synthesize
  * just in time for the next wake-up to pick it up.
@@ -55,7 +55,7 @@ export interface DigestServices {
 
 /**
  * Cap on the "Open Work" tasks section so prompt-budget impact stays
- * roughly neutral against the pre-#23 tracking-fact section. The fetch
+ * roughly neutral against the legacy tracking-fact section. The fetch
  * issues `limit: MAX_OPEN_WORK_TASKS + 1` so the renderer can detect
  * truncation locally; if Notion still reports `nextCursor` after that
  * fetch (i.e. the open-work population exceeds the local probe), the
@@ -106,8 +106,8 @@ function computeWindow(
 
 /**
  * Strip the time half off an ISO datetime so callers can compare / render
- * `YYYY-MM-DD`. Duplicates across the CLI and hook previously hand-rolled
- * `.split("T")[0] ?? fallback` for this; DRY it here.
+ * `YYYY-MM-DD`. Centralized so the CLI and hook surfaces share one
+ * `.split("T")[0] ?? fallback` implementation.
  */
 export function isoDate(input: string | Date): string {
   const iso = typeof input === "string" ? input : input.toISOString()
@@ -143,7 +143,7 @@ export async function gatherDigestData(
     }),
     // Sort by creation so freshness aligns with "latest created digest":
     // an edit to an older digest must not mask a newer one. Mirrors the
-    // same guard in `core/wakeup.ts` — keeping the two lookups consistent
+    // same guard — keeping the two lookups consistent
     // is load-bearing for the wake-up fast path.
     services.memories.list({
       projectId: opts.projectId ?? undefined,
@@ -153,7 +153,7 @@ export async function gatherDigestData(
     }),
     // Open Work signal: active tasks (open + blocked). The synthesizer
     // prompt depends on a "what's open" cue, so this section is the
-    // committed replacement for the pre-#23 tracking-fact open-loops
+    // committed replacement for the legacy tracking-fact open-loops
     // grouping. Fetch one beyond the display cap so the renderer can
     // distinguish "exactly 25 visible, none truncated" from "25 visible
     // plus more behind the cap" — and trust Notion's `nextCursor` /

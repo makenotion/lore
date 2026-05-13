@@ -10,9 +10,9 @@
  * `it.each` tables drift the moment one is updated and the others are
  * forgotten.
  *
- * Plain `.ts` (not `.test.ts`) so the file is not picked up by vitest's
- * test discovery — it's data, not a suite. Imported only from test
- * modules.
+ * Plain source file (not a test file) so vitest's test discovery
+ * does not pick it up — it's data, not a suite. Imported only from
+ * test modules.
  */
 
 /** `[label, hostileSessionId]` tuples. */

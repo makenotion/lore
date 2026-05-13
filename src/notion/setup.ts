@@ -615,10 +615,10 @@ export async function migrateVaultSchema(
   // error message keeps pointing at a single DB instead of a batched
   // rejection.
   for (const { key, expected, dsId, liveProps } of resolved) {
-    // Phase 1: detect missing property names.
+    // Step 1: detect missing property names.
     const missing = Object.keys(expected).filter((name) => !(name in liveProps))
 
-    // Phase 2: detect missing select options on properties that exist in both.
+    // Step 2: detect missing select options on properties that exist in both.
     const addedOptions: Array<{ property: string; options: string[] }> = []
     const optionUpdates: AnyProperties = {}
     for (const name of Object.keys(expected)) {
@@ -629,7 +629,7 @@ export async function migrateVaultSchema(
       optionUpdates[name] = diff.mergedProperty
     }
 
-    // Phase 3: detect relation config drift (e.g. single_property → dual_property).
+    // Step 3: detect relation config drift (e.g. single_property → dual_property).
     const addedRelationConfig: MigrationDiff["addedRelationConfig"] = []
     const relationUpdates: AnyProperties = {}
     for (const name of Object.keys(expected)) {

@@ -1,9 +1,9 @@
 /**
  * Prompt builders for hook-driven saves.
  *
- * Extracted from `helpers.ts` so they can be unit-tested without triggering
- * the `main()` entry point that runs at import time. Pure string functions —
- * no filesystem, no Notion, no process state.
+ * Pure string functions — no filesystem, no Notion, no process state —
+ * so they can be unit-tested without triggering the hook helpers'
+ * import-time entry point.
  */
 
 import { safeFilenameSegment } from "./marker-key.js"
@@ -143,12 +143,10 @@ function buildSourceLinkGuidance(): string {
  * `buildSourceLinkGuidance` so contract wording can change without
  * touching this string.
  *
- * P3-01 collapsed the 24-tool surface into polymorphic dispatchers;
- * PF3-06 added `lore-task` to subsume the standalone task tools landed by
- * P3-02; the 0.6.0 deprecation purge removed the legacy journal
- * dispatcher, leaving seven polymorphic dispatchers. This prompt teaches
- * the action-dispatch surface so background subagents we drive learn
- * the canonical names.
+ * The MCP surface is seven polymorphic dispatchers (lore-context,
+ * lore-memory, lore-query, lore-fact, lore-decision, lore-project,
+ * lore-task). This prompt teaches the action-dispatch surface so
+ * background subagents we drive learn the canonical names.
  *
  * Tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`)
  * are now rejected on `lore-fact` action='create'; open work goes through
@@ -245,27 +243,28 @@ If this session produced no atomic learnings (a routine task, status check, unbl
  * context, so the transcript must be embedded in the prompt.
  *
  * The sub-agent runs with an allowlist of lore-* tools, so the prompt must
- * only reference tools that are actually in the allowlist (see
- * `spawnBackgroundSave` in `background.ts`).
+ * only reference tools that are actually in the allowlist (the
+ * `spawnBackgroundSave` helper carries the canonical list).
  *
  * `options.extractLearnings` — when true (default) appends the
- * atomic-learning extraction block. When false, the prompt reproduces the
- * pre-0.9.0 synopsis-only shape byte-for-byte. Toggled by the dual kill
+ * atomic-learning extraction block. When false, the prompt reproduces
+ * the synopsis-only shape byte-for-byte. Toggled by the dual kill
  * switches (`LORE_DISABLE_LEARNING_EXTRACTION=1` env var or
- * `hooks.learningExtraction: false` in `.lore.yaml`); see `helpers.ts`.
+ * `hooks.learningExtraction: false` in .lore.yaml); resolved by the
+ * hook helpers.
  *
  * `options.proposeLearnings` — when true (default false) instructs
  * the sub-agent to set `status: "proposed"` on every atomic-learning
  * save so the rows land in the review inbox instead of default
- * recall (issue #281, AC #1). Resolved by the helper layer from
- * `hooks.proposeAutosaveLearnings` in `.lore.yaml`. Has no effect
+ * recall. Resolved by the helper layer from
+ * `hooks.proposeAutosaveLearnings` in .lore.yaml. Has no effect
  * when `extractLearnings` is false — the learning block is omitted
  * entirely in that case.
  *
  * `options.authorName` — engineer-author display name to inject into
  * the identity block (DEFERRED-ATTRIBUTION). Resolved by the caller
- * (`deriveAuthorName` in `helpers.ts`) from `LORE_USER_NAME` env;
- * absence is the no-op pre-DEFERRED-ATTRIBUTION shape.
+ * via `deriveAuthorName` from `LORE_USER_NAME` env; absence is the
+ * no-op pre-DEFERRED-ATTRIBUTION shape.
  */
 export function buildBackgroundSavePrompt(
   subProjects: string[],

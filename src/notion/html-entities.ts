@@ -6,13 +6,13 @@
  * transcript context as markdown, or the agent emitting names that quote
  * markup-ish content) has been observed to HTML-encode `&` and kin before
  * the value reaches the MCP boundary. On re-save the already-encoded value
- * gets encoded again. P1-10 fixed this for topic names; this helper is the
- * shared primitive used by every write path that feeds plain-text fields
- * (topics, memory titles + content, fact subjects + objects).
+ * gets encoded again. This helper is the shared primitive used by every
+ * write path that feeds plain-text fields (topics, memory titles +
+ * content, fact subjects + objects).
  *
  * Uses `entities.decodeHTML` so the full HTML5 named + numeric entity set is
- * covered; a future upstream producer emitting `&nbsp;`, `&rsquo;`,
- * `&#8217;`, etc. doesn't reopen the bug.
+ * covered; a future upstream producer emitting `&nbsp;` or `&rsquo;` or
+ * numeric character references doesn't reopen the bug.
  *
  * The fixed-point loop is the important bit: `decodeHTML("&amp;amp;")` only
  * peels off one layer. Every decoding pass strictly shrinks the string when

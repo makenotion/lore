@@ -355,7 +355,7 @@ async function handleCreate(
         author: resolvedAuthor,
         agent: args.agent,
         session: args.session,
-        // Scope / lifetime (issue #283).
+        // Scope / lifetime.
         scope: args.scope,
       }),
       probePromise,
@@ -416,8 +416,8 @@ async function handleCreate(
           sourceMemoryId: created.id,
           confidence: created.confidence,
           subjectEntityId,
-          // Issue #283 review — system-managed `decided_by` facts
-          // must inherit the decision's scope so a session-scoped
+          // System-managed `decided_by` facts must inherit the
+          // decision's scope so a session-scoped
           // decision does not leak the affected entity through
           // `lore-decision action='context'` or `lore-query
           // action='ask'` for readers outside that session. The
@@ -493,8 +493,8 @@ async function handleCreate(
           projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
           sourceMemoryId: created.id,
           confidence: created.confidence,
-          // Issue #283 review — supersedes_decision facts inherit
-          // the new decision's scope; the new decision is the
+          // `supersedes_decision` facts inherit the new decision's
+          // scope; the new decision is the
           // governing identity slot, so its scope determines who
           // can see the supersession edge.
           scope: memoryScopeToInput(created.scope),
@@ -647,12 +647,12 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
     ]
     for (const d of decisions) {
       lines.push(`### ${d.title}`)
-      // Trust indicator (0.9.0/DEFERRED-07, carrying 0.8.0/#09 forward).
-      // Sits ABOVE the synopsis for the same reason `formatMemoryListItem`
-      // places it there: a low-confidence decision's synopsis is itself
-      // suspect, so the signal has to land before the reader parses the
-      // rule. Threshold + pre-migration null-guard live inside
-      // `renderTrustLine`; un-backfilled vaults stay byte-identical.
+      // Trust indicator. Sits ABOVE the synopsis for the same reason
+      // `formatMemoryListItem` places it there: a low-confidence
+      // decision's synopsis is itself suspect, so the signal has to
+      // land before the reader parses the rule. Threshold + unscored
+      // null-guard live inside `renderTrustLine`; un-backfilled vaults
+      // stay byte-identical.
       const trustLine = renderTrustLine(d.confidenceScore)
       if (trustLine !== null) {
         lines.push(trustLine)
@@ -748,7 +748,7 @@ async function handleContext(
     // PF3-01 — resolve the entity name to a canonical row first so the
     // fact lookup can ride the relation join. This brings
     // `lore-decision action='context'` to parity with `lore-query action='ask'`
-    // (issue 0.6.0/03): both surfaces should agree on which decisions govern a given
+    // both surfaces should agree on which decisions govern a given
     // canonical entity, regardless of whether the caller typed the name
     // or an alias. Strict mode (no auto-create): the read path must not
     // mint canonical rows just by looking up an unknown entity.
@@ -901,9 +901,9 @@ async function handleSupersede(
       projectIds: newDecision.projectIds.length > 0 ? newDecision.projectIds : undefined,
       sourceMemoryId: newDecision.id,
       confidence: newDecision.confidence,
-      // Issue #283 review — same posture as the create-time
-      // supersedes_decision write: the new decision's scope
-      // determines visibility of the supersession edge.
+      // Same posture as the create-time `supersedes_decision` write:
+      // the new decision's scope determines visibility of the
+      // supersession edge.
       scope: memoryScopeToInput(newDecision.scope),
     })
     // Contradiction decrement is advisory: a transient 429 / archived
@@ -1010,8 +1010,8 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("context"),
-    // Reject empty / whitespace-only entity at the boundary (issue
-    // #481). The handler routes through `FactService.queryByEntity`,
+    // Reject empty / whitespace-only entity at the boundary. The
+    // handler routes through `FactService.queryByEntity`,
     // which short-circuits an empty input to `[]`, but failing the
     // dispatch with a clear error beats silently returning "no
     // decisions found" when the agent passed a blank string by mistake.
@@ -1036,7 +1036,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
 
 export function registerDecisionTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-decision — polymorphic dispatcher (P3-01)
+  // lore-decision — polymorphic dispatcher
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-decision",

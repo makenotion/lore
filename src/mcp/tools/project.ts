@@ -123,7 +123,7 @@ const projectDispatchSchema = z.discriminatedUnion("action", [
 
 export function registerProjectTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-project — polymorphic dispatcher (P3-01)
+  // lore-project — polymorphic dispatcher
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-project",

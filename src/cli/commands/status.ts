@@ -36,13 +36,13 @@ import { notionPageUrl, terminalLink } from "../output.js"
 
 /**
  * Raw Notion `Predicate` select values for the legacy tracking-predicate
- * facts that #23 (the 0.6.0 deprecation purge) will hide from `pageToFact`
- * and remove from the `FactPredicate` typed union.
+ * facts that are dropped from `pageToFact` and from the `FactPredicate`
+ * typed union.
  *
  * Inlined as raw strings rather than imported from `TRACKING_PREDICATES`
- * because #23 will mutate that exported list — depending on it would make
- * the preflight silently match a shrinking set after #23 ships. The
- * preflight needs to keep matching the historical Notion select values
+ * because that exported list shrinks over time — depending on it would
+ * make the preflight silently match a shrinking set. The preflight
+ * needs to keep matching the historical Notion select values
  * regardless of what the typed union looks like in any given release.
  */
 const TRACKING_PREDICATE_PREFLIGHT_VALUES: string[] = [
@@ -86,7 +86,7 @@ export const statusCommand = new Command("status")
             )
           : services.context.project
 
-      // Tracking-predicate preflight (#24, ships in 0.5.x patch). Renders
+      // Tracking-predicate preflight. Renders
       // a warning when the vault still carries facts whose predicate is
       // one of the historical tracking values (`needs_action`,
       // `waiting_on`, `blocked_by`). Informational only — the rest of
@@ -133,18 +133,18 @@ export const statusCommand = new Command("status")
         for (const line of backgroundFailureLines) console.log(line)
       }
 
-      // Status probes fan out via `Promise.all` — task summary
-      // (issue 0.7.0/13), memory confidence summary (DEFERRED-04),
-      // proposed-memory inbox count (issue #281, AC #5), and
+      // Status probes fan out via `Promise.all` — task summary,
+      // memory confidence summary, proposed-memory inbox count, and
       // wake-up coverage. All probes read the same project scope,
       // so wall-clock at the orchestration level is `max(probe_i)`
       // rather than the sum. Adding a future probe extends the
       // tuple and the destructure; the comment is generic on
       // purpose so it can't drift on the next addition.
-      // Pre-#07 vaults silently omit the closure-rate line —
-      // `countClosedSince` returns null on the missing-property
-      // error path. Pre-#11 vaults render the confidence line with
-      // `0 scored` and no avg/below-threshold suffix; the line
+      // Vaults missing the `Done At` column silently omit the
+      // closure-rate line — `countClosedSince` returns null on the
+      // missing-property error path. Vaults whose `Confidence Score`
+      // column has not been backfilled render the confidence line
+      // with `0 scored` and no avg/below-threshold suffix; the line
       // itself never disappears. The proposed-inbox line is
       // suppressed entirely on `total === 0` so an empty inbox
       // doesn't occupy a row of vault state.
@@ -174,9 +174,9 @@ export const statusCommand = new Command("status")
         }),
         services.memories.confidenceStats({ projectId: project?.id }),
         loadProposedInboxStatus(services, { projectId: project?.id }),
-        // Issue #283 — surfaces expired/expiring/out-of-context rows
-        // for cleanup. Same fan-out posture as the other probes;
-        // wall-clock at the orchestration level stays `max(...)`.
+        // Surfaces expired/expiring/out-of-context rows for cleanup.
+        // Same fan-out posture as the other probes; wall-clock at the
+        // orchestration level stays `max(...)`.
         loadExpiringScopedStatus(services, { projectId: project?.id }),
         loadWakeUpData(services, {
           projectId: project?.id,
@@ -247,8 +247,8 @@ const projectsCmd = new Command("projects")
     try {
       // Sub-commands are narrow read-only listings — they don't surface
       // drift, so they take the default `false`. Made explicit so a
-      // future contributor adding a third subcommand sees the policy in
-      // grep, not just the AGENTS.md table.
+      // future contributor adding a third subcommand sees the policy
+      // on a grep of the call sites rather than inferring it.
       const services = await initServices(undefined, { driftCheck: false })
       const status = opts.all ? "any" : opts.archivedOnly ? "archived" : "active"
       const projects = await services.projects.list(status)
@@ -335,7 +335,7 @@ statusCommand.addCommand(topicsCmd)
  * are independently testable.
  */
 export interface DigestRow {
-  /** Configured project name (matches `.lore.yaml` and the marker filename). */
+  /** Configured project name (matches .lore.yaml and the marker filename). */
   name: string
   /**
    * Latest existing `source: digest` memory linked to this project, or null
@@ -585,7 +585,7 @@ export interface DriftStatusReport {
    */
   markerAgeDays: number | null
   /**
-   * False when the loader was called without a `.lore.yaml` config root —
+   * False when the loader was called without a .lore.yaml config root —
    * the renderer drops the entire section so the output stays clean. Always
    * true when called from `lore status`, since `initServices()` requires a
    * config root to succeed; the seam exists for symmetry with how
@@ -659,7 +659,7 @@ export function formatDriftStatus(report: DriftStatusReport): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Tracking-predicate preflight (#24)
+// Tracking-predicate preflight
 // ---------------------------------------------------------------------------
 
 /**
@@ -714,11 +714,11 @@ export async function loadTrackingPreflight(
  * length check — same contract shape as `formatDigestStatus` /
  * `formatDriftStatus`.
  *
- * Post-#23 (0.6.0) prose: the tracking predicates are removed from
+ * Prose: the tracking predicates are removed from
  * `FactPredicate`, the read paths filter historical rows at
  * `pageToFact`, and the migration command (`lore migrate
  * --migrate-tracking-to-tasks`) has been deleted. Operators who still
- * see this warning are looking at rows that lore can no longer surface;
+ * see this warning are looking at rows lore does not surface;
  * the only remediation paths left are restoring the migration code from
  * git history or hand-editing the Notion rows.
  *
@@ -771,8 +771,8 @@ export interface ConfidenceStatsReport {
  *   length check suppresses the line entirely (same contract as
  *   `formatDigestStatus` / `formatDriftStatus` / `formatTrackingPreflight`).
  * - `scoredMemories === 0` ⇒ `Memory confidence: N total, 0 scored`.
- *   Pre-#11 vaults that haven't run
- *   `lore migrate --build-confidence-scores` land here. The `(avg …)`
+ *   Vaults that haven't run `lore migrate --build-confidence-scores`
+ *   land here. The `(avg …)`
  *   suffix is suppressed — there is no meaningful average over zero
  *   rows.
  * - `belowThreshold === 0` ⇒
@@ -821,9 +821,8 @@ export function formatConfidenceSummary(report: ConfidenceStatsReport): string[]
   // `Memory confidence:` rather than `Memories:` deliberately —
   // the bare `Memories:` prefix would visually collide with the
   // `Database counts → Memories: N` line two rows above on
-  // post-#11 vaults where archive-rate is low. Two summaries
-  // reading as a duplicate count is the failure mode this naming
-  // sidesteps.
+  // vaults where archive-rate is low. Two summaries reading as
+  // a duplicate count is the failure mode this naming sidesteps.
   let line = `Memory confidence: ${report.totalMemories} total, ${scoredMemories} scored`
   if (scoredMemories > 0) {
     const subStats: string[] = [`avg ${averageScore.toFixed(2)}`]
@@ -835,12 +834,12 @@ export function formatConfidenceSummary(report: ConfidenceStatsReport): string[]
   return [line]
 }
 
-// Proposed-memory inbox (issue #281, AC #5) — `loadProposedInboxStatus`
-// + `formatProposedInboxStatus` live in `src/core/proposed-inbox.ts` so
-// the CLI and MCP `lore-context action='status'` surfaces emit the same
-// line for the same vault state. Same parity contract as `taskStats` /
-// `formatTaskSummary` in `src/core/task.ts`.
+// Proposed-memory inbox — `loadProposedInboxStatus` and
+// `formatProposedInboxStatus` live in the core layer so the CLI and
+// MCP `lore-context action='status'` surfaces emit the same line for
+// the same vault state. Same parity contract as `taskStats` /
+// `formatTaskSummary`.
 //
-// Expiring scoped rows (issue #283) — `loadExpiringScopedStatus` +
-// `formatExpiringScopedSummary` live in `src/core/expiring-scoped.ts`
-// for the same parity reason.
+// Expiring scoped rows — `loadExpiringScopedStatus` and
+// `formatExpiringScopedSummary` live in the core layer for the same
+// parity reason.

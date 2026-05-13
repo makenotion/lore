@@ -1,24 +1,24 @@
 /**
  * Hook helper utilities.
  *
- * These are invoked by the shell hook scripts to interact with Lore.
- * The hooks call `node dist/hooks/helpers.js <action>` with
- * relevant context passed via environment variables.
+ * Invoked by host-assistant hook scripts to interact with Lore. The
+ * runner receives the hook action as `argv[2]` and reads the hook
+ * event from stdin or environment variables, depending on the action.
  *
  * Autosave flow:
  *   - Stop hook: count-based trigger → spawns a detached `claude -p`
  *     sub-agent in the background that writes structured content via lore-*
  *     MCP tools. The main agent is never blocked.
  *   - Stop also schedules an auto-digest helper as a separate detached node
- *     child (see `auto-digest` action below) so digest synthesis never runs
+ *     child (the `auto-digest` action below) so digest synthesis never runs
  *     inline on the Stop hot path.
  *
- * A per-session lock (see `lock.ts`) ensures at most one background save is
+ * A per-session lock ensures at most one background save is
  * in flight per session, and a global cap bounds total concurrent spawns.
  *
- * The `session-end` action exists only as a one-release exit-0 compatibility
- * shim for stale Claude Code settings written before 0.6.0; new installs no
- * longer register a SessionEnd hook (see `cli/commands/install.ts`).
+ * The `session-end` action exists only as a compatibility shim for stale
+ * host-assistant settings; current installs do not register a SessionEnd
+ * hook.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
@@ -85,7 +85,7 @@ interface HookEvent {
  * neither Claude Code's markers nor an explicit LORE_AGENT_NAME override
  * are present, return undefined — callers omit the Agent line rather than
  * stamping a confident-but-wrong guess onto the memory. The Codex installer
- * should inject `LORE_AGENT_NAME=Codex` into `.codex/hooks.json`'s env so
+ * should inject `LORE_AGENT_NAME=Codex` into .codex/hooks.json's env so
  * Codex sessions resolve here; other integrations do the same.
  *
  * Both resolution paths route through `canonicalizeAgentName` so the eight
@@ -127,7 +127,7 @@ export function deriveAgentName(_event: HookEvent): string | undefined {
  * line in that case rather than stamping a placeholder. The spawned
  * MCP server's lazy `users.me` fallback can still resolve the engineer
  * identity — but only if the parent forwards the credentials needed
- * for the call (see `spawnBackgroundSave`'s env-passthrough rules).
+ * for the call (per `spawnBackgroundSave`'s env-passthrough rules).
  *
  * Exported for unit-test coverage; not part of the module's public
  * surface for production callers.
@@ -206,9 +206,9 @@ async function tryMarkWakeupRun(sessionId: string | undefined): Promise<boolean>
 
 /**
  * Lightweight project context resolution from .lore.yaml — no Notion API
- * calls. Mirrors `resolveProject`'s longest-prefix logic from
- * `core/context.ts` and additionally surfaces the sub-project list and
- * catch-all name so the save prompts can enumerate alternatives.
+ * calls. Mirrors `resolveProject`'s longest-prefix logic and
+ * additionally surfaces the sub-project list and catch-all name so the
+ * save prompts can enumerate alternatives.
  */
 function resolveProjectContext(
   cwd: string,
@@ -310,11 +310,10 @@ async function main(): Promise<void> {
       await handleAutoDigest()
       break
     case "session-end":
-      // 0.6.0: kept as an exit-0 compatibility action for stale Claude Code
-      // settings.json registrations written before active SessionEnd was
-      // removed. `lore install --client claude` strips the registration on
-      // reinstall; this case lets stale settings fail silently in the
-      // meantime. A future release may remove it.
+      // Exit-0 compatibility action for stale Claude Code settings
+      // registrations. `lore install --client claude` strips the
+      // registration on reinstall; this case lets any stale settings
+      // exit cleanly without side effects.
       await handleSessionEnd()
       break
     default:
@@ -324,10 +323,10 @@ async function main(): Promise<void> {
 }
 
 /**
- * True when this module is the Node entry point (invoked via `node
- * dist/hooks/helpers.js`). False when imported from another module — tests
- * import this file directly and must not trigger `main()`'s process.exit
- * paths or argv routing.
+ * True when this module is the Node entry point (invoked directly as
+ * the launcher script). False when imported from another module —
+ * tests import this file directly and must not trigger `main()`'s
+ * process.exit paths or argv routing.
  */
 function isEntryPoint(): boolean {
   const entry = process.argv[1]
@@ -345,12 +344,11 @@ function isEntryPoint(): boolean {
 
 /**
  * Stop / autosave entry point. Two callers:
- *   - Legacy `hooks/autosave.sh` shim: forwards stdin via
- *     `LORE_AUTOSAVE_CONTENT` and invokes `node dist/hooks/helpers.js
- *     autosave` (no `event` argument). The env var path stays for one
- *     deprecation cycle.
- *   - 0.11.0+ `lore hooks autosave`: reads stdin in the CLI subcommand
- *     and passes it through `opts.event`. Skips the env var entirely.
+ *   - Legacy shell shim: forwards stdin via `LORE_AUTOSAVE_CONTENT`
+ *     (no `event` argument); the env var path is preserved for
+ *     compatibility with legacy installs.
+ *   - `lore hooks autosave`: reads stdin in the CLI subcommand and
+ *     passes it through `opts.event`. Skips the env var entirely.
  *
  * `opts.event` wins when both are set so a CLI caller can override a
  * stale env var inherited from a parent process.
@@ -442,10 +440,10 @@ async function clearStopFailure(
 
 /**
  * Derive the foreground's resolved `AuthSource` for the autosave spawn
- * + auto-digest helper-fork env partition (issue #475). Returns
+ * + auto-digest helper-fork env partition. Returns
  * `undefined` when the Stop path has no loaded config (failure-context
  * fallback in `loadHookState`) or when `resolveAuth` itself rejects —
- * both branches preserve the pre-#475 every-key forward so the Stop
+ * both branches preserve the every-key forward so the Stop
  * hot path never gains a new failure mode. The detached children's
  * own startup `resolveAuth` calls surface genuine auth problems
  * through their stderr logs.
@@ -459,21 +457,21 @@ async function clearStopFailure(
  * operator would see a stderr nag at hook cadence rather than the
  * intended once-per-warning-window cadence.
  *
- * Cost reflects `resolveAuth`'s priority walk (see `src/config.ts`):
+ * Cost reflects `resolveAuth`'s priority walk:
  * `NOTION_API_TOKEN`-source operators short-circuit at priority 1
  * with zero I/O; `ntn-auth-json`, `LORE_NOTION_TOKEN`, and
- * `config-auth-token` operators all pay the priority-2 `auth.json`
- * `readFile` plus dynamic import of `auth/ntn.js` because the walk
- * checks priority 2 BEFORE falling through to the legacy env / repo
- * sources. `LORE_NOTION_TOKEN` and `config-auth-token` operators
+ * `config-auth-token` operators all pay the priority-2 auth.json
+ * `readFile` plus a dynamic import of the ntn-token loader because
+ * the walk checks priority 2 BEFORE falling through to the legacy
+ * env / repo sources. `LORE_NOTION_TOKEN` and `config-auth-token` operators
  * then continue to priorities 3/4 after the priority-2 miss; only
  * the `NOTION_API_TOKEN` path avoids any I/O. `loadNtnToken`'s
  * dynamic import is cached after the first call (rarely matters
  * since `lore hooks autosave` is a fresh process per Stop), and the
  * read itself is a single small-file `readFile` — negligible for
- * the Stop hot path's "in-the-millisecond" budget. Stays in sync
- * with `src/hooks/AGENTS.md`'s "Two-process split is load-bearing"
- * addendum; if you change one, change both.
+ * the Stop hot path's "in-the-millisecond" budget. The hook-agent
+ * doc carries the "Two-process split is load-bearing" addendum; if
+ * you change the behavior here, update that doc.
  *
  * Exported for unit-test coverage of the four-branch failure matrix
  * (no failureContext, null config, resolveAuth rejection, success);
@@ -550,14 +548,14 @@ export async function handleStop(
     }
     // Resolve the foreground's auth source once per Stop fire so
     // BOTH the autosave spawn AND the auto-digest helper fork apply
-    // the ntn-source partition (issue #475). One disk read of
-    // `~/.config/notion/auth.json` covers both hops; the digest
+    // the ntn-source partition. One disk read of
+    // ~/.config/notion/auth.json covers both hops; the digest
     // helper would otherwise inherit the parent's full env (Node
     // default) and leak `LORE_NOTION_TOKEN` even when the foreground
     // resolved via ntn. Derived BEFORE the no-transcript early
     // return so that path's `scheduleAutoDigestSpawn` also gets the
     // partition. Defensive: a `resolveAuth` failure (no token
-    // configured, transient `auth.json` read error) falls back to
+    // configured, transient auth.json read error) falls back to
     // the legacy every-key forward so the Stop hot path itself
     // never gains a new failure mode. The spawned children re-run
     // `resolveAuth` themselves and surface genuine auth problems
@@ -586,7 +584,7 @@ export async function handleStop(
     if (sinceLast >= threshold) {
       const sessionContent = formatTranscriptSessionContent(transcript.messages)
       if (sessionContent) {
-        // Atomic-learning extraction (0.9.0/08) is disabled if EITHER knob
+        // Atomic-learning extraction is disabled if EITHER knob
         // says so — env var OR config — so both must be permissive for
         // the section to ship. Same posture as `autoDigest`'s pair of
         // knobs above; an operator who set the env var and then forgot
@@ -594,10 +592,10 @@ export async function handleStop(
         const learningExtractionEnabled =
           process.env["LORE_DISABLE_LEARNING_EXTRACTION"] !== "1" &&
           config.learningExtraction
-        // Phase 3 of issue #281, AC #1. The flag is false by default,
+        // Proposed-by-default routing. The flag is false by default,
         // so existing installs see byte-identical autosave behavior.
         // Operators opt in via `hooks.proposeAutosaveLearnings: true`
-        // in `.lore.yaml` to route auto-extracted learnings through
+        // in .lore.yaml to route auto-extracted learnings through
         // the review inbox instead of writing them directly to
         // accepted recall.
         const proposeLearnings =
@@ -621,7 +619,7 @@ export async function handleStop(
         // where it is. For benign races, the peer's spawn will produce a
         // memory and the next Stop catches up against the new count. For
         // genuine failures, leaving the counter unchanged lets the next
-        // Stop hook retry. (See PR #66.)
+        // Stop hook retry.
         // Capture the recovery boundary before spawning so cleanup only clears
         // failures observed before this attempt; concurrent failures at or after
         // this timestamp must survive for the operator to see.
@@ -654,7 +652,7 @@ export async function handleStop(
     }
     process.stdout.write("{}\n")
     // Auto-digest scheduling runs in a detached child so the parent Stop
-    // hook never pays the cost of `.lore.yaml` parse + Notion init + digest
+    // hook never pays the cost of .lore.yaml parse + Notion init + digest
     // gather. The marker debounce inside the helper guarantees ≤ 1 digest
     // per project per 7 days regardless of how often Stop fires.
     scheduleAutoDigestSpawn(event.cwd ?? process.cwd(), {
@@ -679,18 +677,18 @@ export async function handleStop(
 // ---------------------------------------------------------------------------
 //
 // Claude Code registration sets `runOnce: true` on the `UserPromptSubmit`
-// hook (see `mergeClaudeHookEntries` in `cli/commands/install.ts`). Codex's
-// `UserPromptSubmit` hook exposes the prompt too, but has no equivalent
-// `runOnce`, so the helper maintains a per-session marker before it touches
-// Notion. That keeps ranked wake-up as a first-prompt path instead of a
-// per-turn query.
+// hook (the `mergeClaudeHookEntries` install path writes the flag).
+// Codex's `UserPromptSubmit` hook exposes the prompt too, but has no
+// equivalent `runOnce`, so the helper maintains a per-session marker
+// before it touches Notion. That keeps ranked wake-up as a first-prompt
+// path instead of a per-turn query.
 
 /**
  * Parse the JSON payload host `UserPromptSubmit` hooks deliver
  * on stdin (forwarded by `wakeup.sh` via `LORE_WAKEUP_EVENT`). Returns
  * the user's prompt text when present, `undefined` otherwise. The
- * `undefined` return is the fallback signal — wake-up degrades to the
- * pre-P3-05 unranked output without needing a user query.
+ * `undefined` return is the fallback signal — wake-up degrades to
+ * unranked output without needing a user query.
  *
  * Several callers produce `undefined` and they all drop into the same
  * fallback path:
@@ -711,10 +709,8 @@ export async function handleStop(
  * — the only useful signal is "did we get a usable prompt or not."
  *
  * Hook payload schemas (incl. the `prompt` field on `UserPromptSubmit`) are
- * documented at
- * https://docs.claude.com/en/docs/claude-code/hooks#userpromptsubmit;
- * https://developers.openai.com/codex/hooks#userpromptsubmit; if the field
- * name changes, this parser is the one place that needs updating.
+ * documented by each host vendor under their `UserPromptSubmit` hook section.
+ * If the field name changes, this parser is the one place that needs updating.
  *
  * Exported for unit-test coverage; not part of the module's public
  * surface for production callers.
@@ -827,7 +823,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // detection is debounced via the per-config-root marker so an
     // operator on a stale vault still gets occasional warnings without
     // the multi-page Topics scan running against the rate-limited
-    // client every fire. See `src/hooks/drift-marker.ts`.
+    // client every fire..
     services = await initServicesFromConfig(
       process.cwd(),
       hookState.configRoot,
@@ -838,7 +834,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // Init failures may carry SDK-interpolated request-scoped detail
     // (vault page id, base URL, partial query text). Route through the
     // shared `LORE_DEBUG` redactor so the centralized stderr surface
-    // doesn't leak vault locators to a log aggregator (issue #488).
+    // doesn't leak vault locators to a log aggregator.
     process.stderr.write(
       `[lore] wakeup: init failed — ${redactDebugError(err)}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`
     )
@@ -846,7 +842,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   }
   const project = services.context.project
 
-  // P3-05: `UserPromptSubmit` payloads carry the user's actual question,
+  // `UserPromptSubmit` payloads carry the user's actual question,
   // letting wake-up rank memories instead of dumping generic recents. Current
   // Claude Code and Codex installs pass the payload via stdin/`opts.event`;
   // legacy `SessionStart` installs and other callers with no prompt fall
@@ -874,23 +870,21 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       // the extra Notion query for the same reason. Same posture as
       // `includeDecisions: false` above.
       includeStaleConfidence: false,
-      // Hook never renders the Proposed Memories inbox section
-      // (issue #281, AC #2) — skip the extra Notion query so the
-      // session-start latency stays unchanged. Same posture as
-      // `includeDecisions: false` and `includeStaleConfidence:
-      // false` above.
+      // Hook never renders the Proposed Memories inbox section —
+      // skip the extra Notion query so the session-start latency
+      // stays unchanged. Same posture as `includeDecisions: false`
+      // and `includeStaleConfidence: false` above.
       includeProposedMemories: false,
-      // Hook never renders the Inherited Memories section (issue
-      // #286) — skip the per-upstream Notion fan-out so the
-      // session-start hot path doesn't pay one
-      // `dataSources.query` per configured upstream on every
-      // launch. Same posture as `includeDecisions: false` etc. PR
-      // #589 review flagged the previous default (`true`) as a
-      // performance regression and a privacy posture change
-      // operators hadn't opted into.
+      // Hook never renders the Inherited Memories section — skip
+      // the per-upstream Notion fan-out so the session-start hot
+      // path doesn't pay one `dataSources.query` per configured
+      // upstream on every launch. Same posture as
+      // `includeDecisions: false` etc. The previous default
+      // (`true`) was a performance regression and a privacy
+      // posture change operators hadn't opted into.
       includeInheritedMemories: false,
-      // Hook never renders the Pinned Context section (issue
-      // #282) — skip the `listPinnedBlocks` + `countPinnedBlocks`
+      // Hook never renders the Pinned Context section — skip
+      // the `listPinnedBlocks` + `countPinnedBlocks`
       // round-trips so the session-start hot path doesn't pay
       // two extra `dataSources.query` calls per launch. Same
       // posture as `includeInheritedMemories: false` above. The
@@ -915,7 +909,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // to interpolate request-scoped detail into `Error.message` (page
     // ids, partial query fragments, sometimes echoed bodies). Route
     // through the shared `LORE_DEBUG` redactor before the message lands
-    // on stderr (issue #488).
+    // on stderr.
     process.stderr.write(
       `[lore] wakeup: load failed — ${redactDebugError(err)}. Skipping context injection.\n`
     )
@@ -953,10 +947,10 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
 
   const sections: string[] = []
 
-  // Issue 0.6.0/18: prepend the same project framing block as the MCP
+  // Prepend the same project framing block as the MCP
   // `lore-context action='wake-up'` surface. The shell hook always reads
   // `services.context.project` and `services.context.isCatchAllFallback`
-  // — there is no explicit-projectName override on this path (Fix 2).
+  // — there is no explicit-projectName override on this path.
   const projectContextLines = renderProjectContextLines(
     composeProjectContext(project, hookState.config, services.context.isCatchAllFallback)
   )
@@ -972,12 +966,12 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     }
   }
 
-  // P3-05: relevance hits seeded by the user's first message. Surfaced
+  // Relevance hits seeded by the user's first message. Surfaced
   // directly under the digest because it's the densest single signal
   // about what the user is actually asking about — denser than
-  // timestamp-ordered recents or active-task seeds. Section is omitted
-  // entirely when no userQuery was available so the output stays
-  // identical to the pre-P3-05 shape on the fallback path.
+  // timestamp-ordered recents or active-task seeds. The section is
+  // omitted entirely when no userQuery was available so the output
+  // stays free of an empty section header on the fallback path.
   if (taskMemories && taskMemories.length > 0) {
     sections.push("\n## For Your Current Task")
     for (const mem of taskMemories) {
@@ -1110,7 +1104,7 @@ function visibleTaskQuotas(limit: number): [number, number, number] {
 // ---------------------------------------------------------------------------
 
 /**
- * True when `LORE_AUTO_DIGEST=false` is set. Env overrides `.lore.yaml` —
+ * True when `LORE_AUTO_DIGEST=false` is set. Env overrides .lore.yaml —
  * consistent with how `LORE_AUTOSAVE=false` overrides `hooks.autoSave`.
  */
 function autoDigestEnvDisabled(): boolean {
@@ -1119,9 +1113,9 @@ function autoDigestEnvDisabled(): boolean {
 
 /**
  * Auto-digest action handler. Runs in the detached node child spawned by
- * the Stop hook (see `scheduleAutoDigestSpawn` in `digest-scheduler.ts`).
+ * the Stop hook (via `scheduleAutoDigestSpawn`).
  *
- * Loads `.lore.yaml`, honors `hooks.autoDigest: false` plus
+ * Loads .lore.yaml, honors `hooks.autoDigest: false` plus
  * `LORE_AUTO_DIGEST=false`, then delegates to `fireDigestIfStale` whose
  * marker debounce guarantees ≤ 1 digest per project per 7 days regardless
  * of how often the Stop hook fires.
@@ -1158,18 +1152,16 @@ export async function handleAutoDigest(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// SessionEnd — exit-0 compatibility shim for Claude Code settings written
-// before 0.6.0 dropped active SessionEnd registration. Kept for one release
-// cycle so stale `node dist/hooks/helpers.js session-end` invocations in
-// `~/.claude/.../settings.json` exit cleanly. A future release may delete
-// this and the matching `hooks/session-end.sh` shim.
+// SessionEnd — exit-0 compatibility shim. Lore does not register a
+// SessionEnd hook on current installs; this handler exists so any
+// stale host-assistant settings invoking the legacy session-end shim
+// exit cleanly with no work.
 // ---------------------------------------------------------------------------
 
 /**
- * SessionEnd compatibility no-op. New installs no longer register a
+ * SessionEnd compatibility no-op. Current installs do not register a
  * SessionEnd hook; this handler is intentionally inert so stale Claude
- * Code settings written before 0.6.0 keep exiting `0` until operators
- * reinstall.
+ * Code settings still exit `0` until operators reinstall.
  *
  * Resolves with `undefined`, never reads any environment, never spawns,
  * never logs. A stale invocation must be invisible to the operator.

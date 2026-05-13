@@ -11,7 +11,7 @@
  * destroy real work, so the operator stays in the loop: this surface
  * presents candidates with structured scoring and copy-paste close
  * incantations, never auto-closes. The MCP action's read-only contract
- * (issue 0.7.0/14) is enforced by the handler implementation, not by
+ * is enforced by the handler implementation, not by
  * `readOnlyHint` (the tool registration also serves write actions).
  */
 
@@ -81,9 +81,9 @@ export const MAX_RECONCILE_LIMIT = 100
  * Resolution-shaped cues. Hard cues land 1.0 on the cueMatch axis;
  * soft cues land 0.5. Hard-coded list, fixture-pinned. Project-specific
  * verbs ("rolled out", "promoted", "GA'd") are not in the default cue
- * list and a future operator-tuning knob (`.lore.yaml`
+ * list and a future operator-tuning knob (.lore.yaml
  * `reconcile.cues`) is the next step if real-vault feedback warrants
- * it. Out of scope for #14.
+ * it. Out of scope for the initial reconcile surface.
  */
 const HARD_CUE_PATTERN =
   /\b(?:merged|shipped|resolved|fixed|closed|completed|deployed)\b/i
@@ -145,7 +145,7 @@ export interface ReconcileOptions {
  * `LoreServices.tasks` / `LoreServices.memories`. Narrowed to the exact
  * methods consumed so test fixtures can supply plain stubs without
  * constructing the full services. Mirrors the `MemoryLister` / `TaskLister`
- * shape from `near-duplicate.ts`.
+ * shape.
  */
 export interface ReconcileServices {
   tasks: Pick<TaskService, "list">
@@ -309,7 +309,7 @@ async function scoreTaskCandidates(
   // Drop self-references (task rows) and decisions before scoring.
   // Reconcile scans tasks AGAINST memories; matching task rows would
   // create self-referential loops, and decisions have their own
-  // reconciliation surface (out of scope for #14). The 4× over-fetch
+  // reconciliation surface. The 4× over-fetch
   // is best-effort headroom — if the top-20 hits are all task /
   // decision rows for some task, the eligible set is smaller than
   // RECONCILE_PER_TASK_LIMIT and that task scores against fewer (or
@@ -338,7 +338,7 @@ async function scoreTaskCandidates(
     const candidate = scoreCandidate(task, memory, todayMs)
     // Cue-gate (step 3 in the spec): drop pairs with no resolution-
     // shaped cue BEFORE the threshold filter. A pure entity mention
-    // ("blocking on PR #1234 because X") is not a resolution
+    // ("blocking on the auth PR because X") is not a resolution
     // candidate regardless of recency.
     if (candidate.cueMatch === 0) continue
     scored.push(candidate)
@@ -349,8 +349,8 @@ async function scoreTaskCandidates(
 
 /**
  * Compose the search query from the task's title + entity + synopsis.
- * Empty parts skip cleanly so pre-#01 / pre-#02 vaults (synopsis is
- * the empty string) degrade to entity + title matching.
+ * Empty parts skip cleanly so vaults whose synopsis column is empty
+ * degrade to entity + title matching.
  */
 export function composeReconcileQuery(
   task: Pick<TaskSummary, "title" | "entity" | "synopsis">,
@@ -478,9 +478,9 @@ function scoreRecency(memory: Memory, todayMs: number): number {
  * The codebase has no concurrency-limiter primitive today (`settleAll`
  * is a partial-failure aggregator over a pre-built `Promise[]`, not a
  * rate-limited fan-out); reconcile ships its own minimal helper. If a
- * future caller wants the same primitive, promote to
- * `src/core/concurrency.ts` and re-export — at a single use site in
- * 0.7.0 co-location is the right shape.
+ * future caller wants the same primitive, promote to a shared
+ * concurrency module and re-export — at a single use site
+ * co-location is the right shape.
  */
 async function mapWithConcurrency<T, R>(
   items: T[],

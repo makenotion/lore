@@ -26,12 +26,12 @@ async function readStdinToString(): Promise<string> {
  *
  * Replaces the legacy `hooks/*.sh` shell wrappers that committed
  * absolute paths into consumer assistant config. Each subcommand reads
- * stdin directly and dispatches to `src/hooks/helpers.ts` via an
+ * stdin directly and dispatches to the hook helpers via an
  * explicit `{ event }` parameter, skipping the `LORE_AUTOSAVE_CONTENT`
  * / `LORE_WAKEUP_EVENT` env-var indirection the shell wrappers needed
  * to bridge stdin into the Node process.
  *
- * Lazy-imports `helpers.js` so `lore --help` doesn't pay the helper's
+ * Lazy-imports helpers.js so `lore --help` doesn't pay the helper's
  * eager Notion / Zod boot cost.
  */
 export const hooksCommand = new Command("hooks").description(
@@ -66,8 +66,8 @@ hooksCommand
   .description("Session-end shim (compatibility for pre-0.6.0 settings)")
   .action(() => {
     // Matches `hooks/session-end.sh` byte-for-byte: exit 0, no work,
-    // no output. New installs no longer register a SessionEnd hook;
-    // this exists only so stale Claude Code settings stop emitting
-    // "command not found" until the operator reinstalls.
+    // no output. Lore does not register a SessionEnd hook; this shim
+    // exists so stale Claude Code settings stop emitting "command
+    // not found" until the operator reinstalls.
     process.exit(0)
   })

@@ -11,7 +11,7 @@
  * tag filter. The query runs at the tool layer in parallel with the
  * actual create so it doesn't add wall-clock latency.
  *
- * Thresholds are initial guesses from the P2-03 spec (0.7 for memories,
+ * Thresholds are initial guesses (0.7 for memories,
  * 0.6 for decisions); tune on real data after rollout.
  */
 
@@ -31,7 +31,7 @@ import { trigramJaccard, tagOverlap } from "./similarity.js"
 /**
  * Sentinel keyword written into a memory's `Keywords` column at the same
  * `pages.update` that archives a properties-only orphan after a partial
- * `MemoryService.create` failure (issue #477). Notion's archive is soft —
+ * `MemoryService.create` failure. Notion's archive is soft —
  * within ~30 days, an operator restoring from the workspace trash (or a
  * UI-level bulk restore) re-introduces the orphan as a live properties-
  * only row. The sentinel is the load-bearing signal that lets every
@@ -43,10 +43,10 @@ import { trigramJaccard, tagOverlap } from "./similarity.js"
  * resurfaced row instead of surfacing it as a "live duplicate target"
  * with an empty body.
  *
- * Living in `near-duplicate.ts` rather than `memory.ts` because two of
- * the original three filters live here, and `memory.ts` already imports
- * from this module — co-locating the constant with its primary
- * consumers avoids a circular import.
+ * Living here rather than alongside `MemoryService` because two of
+ * the original three filters live here, and `MemoryService` already
+ * imports from this module — co-locating the constant with its
+ * primary consumers avoids a circular import.
  *
  * **Substring match, not tag equality.** Both the server-side filter
  * (`Keywords rich_text does_not_contain ...`) and the client-side
@@ -54,9 +54,9 @@ import { trigramJaccard, tagOverlap } from "./similarity.js"
  * on the literal sentinel string. The leading `__` mimics the
  * system-managed-sentinel convention used elsewhere AND keeps the
  * literal long enough that an agent or operator typing keyword content
- * cannot accidentally collide with it. A user keyword like
- * `path/to/__lore-cleanup-orphan-related-test.ts` would technically
- * substring-match and trigger the filter, but typing such a value
+ * cannot accidentally collide with it. A user keyword that happens
+ * to contain the sentinel substring would technically substring-match
+ * and trigger the filter, but typing such a value
  * voluntarily is implausible enough that the cleaner write-path
  * (`existing keywords + " " + sentinel`) is preferable to a more
  * complex word-boundary scheme.
@@ -77,7 +77,7 @@ export interface NearDuplicateMatch {
   titleSimilarity: number
   /**
    * Jaccard over tag sets. Range `[0, 1]`. `0` when either row has no
-   * tags (see `tagOverlap` in `similarity.ts` for the empty-set rule),
+   * tags (via `tagOverlap`'s empty-set rule),
    * so callers render this only when `> 0` — a 0.0 reading on an
    * untagged candidate carries no information and would be noise.
    */
@@ -92,12 +92,12 @@ export interface NearDuplicateMatch {
  * service, and documents exactly which query shape the probe depends on
  * so future `list()` signature changes don't silently break the probe.
  *
- * `includeProposed` is load-bearing on the write-safety paths after Phase
- * 2 of issue #281: `MemoryService.list` adds a `Status != proposed`
+ * `includeProposed` is load-bearing on the write-safety paths:
+ * `MemoryService.list` adds a `Status != proposed`
  * default-recall filter when no explicit `status` is passed. Probes that
  * need to consider proposed rows (decision near-duplicate over
- * `accepted | proposed`, autosave-learning dedup against rows Phase 3
- * may write as `proposed`) must opt in via this flag, otherwise the
+ * `accepted | proposed`, autosave-learning dedup against rows written
+ * as `proposed`) must opt in via this flag, otherwise the
  * candidate pool silently drops the very rows the probe is meant to
  * deduplicate against.
  */
@@ -124,7 +124,7 @@ export interface MemoryLister {
     // every probe-used field MUST be enumerated here.
   }): Promise<{ items: Memory[]; nextCursor?: string }>
   /**
-   * Issue #535 candidate-pool fetcher. When the `MemoryLister` is a
+   * Candidate-pool fetcher. When the `MemoryLister` is a
    * real `MemoryService`, this routes through the SQL filter path
    * if `LORE_USE_RUNTOOL_FILTER_SQL=1` and a RunTool client is
    * wired; otherwise it forwards to `list({ excludeKinds, ... })`
@@ -158,12 +158,12 @@ export interface FindNearDuplicatesOpts {
    * Project to scope the candidate pool. Must be provided — vault-wide
    * probes are skipped because they'd scan the entire Memories DB, busting
    * the one-query budget. Multi-project saves pass the primary project;
-   * cross-project near-duplicates are a Phase 3/4 concern.
+   * cross-project near-duplicates are deferred future work.
    */
   projectId?: string
   /**
-   * Topic filter for decisions (same-topic is part of the P2-03 decision
-   * rule). Leave undefined for the memory path.
+   * Topic filter for decisions (same-topic is part of the decision-path
+   * probe rule). Leave undefined for the memory path.
    */
   topicId?: string
   /**
@@ -239,25 +239,23 @@ export async function findNearDuplicates(
 
   // The probe's `statuses` filter is post-fetch on the REST fallback
   // path and lets the decision path keep one server query for an
-  // `accepted | proposed` candidate pool. Since Phase 2 of issue
-  // #281 added a default-exclude filter for `Status = proposed` to
-  // `MemoryService.list`, the post-fetch `statuses` whitelist runs
-  // against an already-narrowed set whenever `proposed` is in the
-  // requested set. Opt in to proposed rows on the way down so the
-  // post-filter sees the intended candidate pool. Memory near-dup
-  // probes (no `statuses` passed) keep the default-recall posture —
-  // proposed inbox rows do not surface as memory-side near-duplicate
-  // candidates.
+  // `accepted | proposed` candidate pool. `MemoryService.list` applies
+  // a default-exclude filter for `Status = proposed`, so the post-fetch
+  // `statuses` whitelist runs against an already-narrowed set whenever
+  // `proposed` is in the requested set. Opt in to proposed rows on the
+  // way down so the post-filter sees the intended candidate pool.
+  // Memory near-dup probes (no `statuses` passed) keep the
+  // default-recall posture — proposed inbox rows do not surface as
+  // memory-side near-duplicate candidates.
   //
-  // Issue #535 SQL path: when `memories.listForNearDuplicates` is
-  // available (real `MemoryService`, not a test fixture
-  // implementing only `list`), it routes through the SQL filter
-  // helper if `LORE_USE_RUNTOOL_FILTER_SQL=1` and falls back to
-  // `list({ excludeKinds })` otherwise. Either way, the
-  // server-side `Kind NOT IN (...)` filter applies BEFORE the
-  // limit truncation — closing the JS-post-filter recall hole the
-  // pre-#535 code paid every time the candidate pool was
-  // decision-heavy.
+  // SQL path: when `memories.listForNearDuplicates` is available (real
+  // `MemoryService`, not a test fixture implementing only `list`), it
+  // routes through the SQL filter helper if
+  // `LORE_USE_RUNTOOL_FILTER_SQL=1` and falls back to
+  // `list({ excludeKinds })` otherwise. Either way, the server-side
+  // `Kind NOT IN (...)` filter applies BEFORE the limit truncation —
+  // closing the JS-post-filter recall hole the REST-fallback code
+  // paid every time the candidate pool was decision-heavy.
   const includeProposed = opts.statuses?.includes("proposed") ?? false
   let items: Memory[]
   try {
@@ -274,9 +272,8 @@ export async function findNearDuplicates(
           : {}),
         ...(topTags.length > 0 ? { tags: topTags } : {}),
         limit: opts.limit ?? 50,
-        // Same `|| undefined` shape as the pre-#535 lister payload —
-        // see the comment below for the rationale that pin tests
-        // (`near-duplicate.test.ts:no-opt-in assertion`) cement.
+        // Same `|| undefined` shape as the REST lister payload — see the
+        // comment below for the rationale that pin tests cement.
         includeProposed: includeProposed || undefined,
       })
     } else {
@@ -288,13 +285,13 @@ export async function findNearDuplicates(
         limit: opts.limit ?? 50,
         includeContent: false,
         // `|| undefined` (not just `includeProposed`) keeps the lister
-        // payload byte-identical to the pre-#281 shape on the
+        // payload byte-identical to the pre-default-exclude shape on the
         // memory-path probe (no `statuses`) — `false` and `undefined`
         // route through different code paths in some `MemoryService.list`
-        // mocks, and the `near-duplicate.test.ts` no-opt-in assertion
-        // pins `includeProposed` to be undefined on the lister call.
-        // Do not simplify to `includeProposed`; the literal `false`
-        // would visibly change the lister payload shape.
+        // mocks, and the no-opt-in assertion pins `includeProposed` to
+        // be undefined on the lister call. Do not simplify to
+        // `includeProposed`; the literal `false` would visibly change
+        // the lister payload shape.
         includeProposed: includeProposed || undefined,
       })
       items = result.items
@@ -311,7 +308,7 @@ export async function findNearDuplicates(
 
   const matches: NearDuplicateMatch[] = []
   for (const mem of items) {
-    // Exclude resurfaced cleanup-orphans (issue #477). A partial
+    // Exclude resurfaced cleanup-orphans. A partial
     // `MemoryService.create` whose body write fails leaves a properties-
     // only row that gets soft-archived and tagged with this sentinel; an
     // operator restoring from Notion's trash within ~30 days reanimates
@@ -524,15 +521,14 @@ export async function findAutosaveLearningDuplicate(
   if (scope === "project" && !queryProjectId) return null
   if (opts.title.trim() === "") return null
 
-  // `includeProposed: true` is a write-safety opt-in. Phase 2 of
-  // issue #281 added `Status != proposed` to `MemoryService.list`'s
-  // default filter; Phase 3 lets autosave hooks write atomic learnings
-  // as `Status: proposed` when `hooks.proposeAutosaveLearnings` is
-  // enabled. Without this flag, the dedup gate silently misses the
-  // very rows the previous autosave run just wrote — repeated runs
-  // would duplicate proposed learnings instead of reusing them. Same
-  // posture as `findNearDuplicates`'s decision-path opt-in: a
-  // write-safety probe must see candidates regardless of recall
+  // `includeProposed: true` is a write-safety opt-in. `MemoryService.list`
+  // applies `Status != proposed` to its default filter, but autosave hooks
+  // may write atomic learnings as `Status: proposed` when
+  // `hooks.proposeAutosaveLearnings` is enabled. Without this flag, the
+  // dedup gate silently misses the very rows the previous autosave run
+  // just wrote — repeated runs would duplicate proposed learnings instead
+  // of reusing them. Same posture as `findNearDuplicates`'s decision-path
+  // opt-in: a write-safety probe must see candidates regardless of recall
   // visibility, because the inbox state and the duplicate-prevention
   // contract are orthogonal concerns.
   let items: Memory[]
@@ -570,7 +566,7 @@ export async function findAutosaveLearningDuplicate(
     ) {
       continue
     }
-    // Exclude resurfaced cleanup-orphans (issue #477). Even though the
+    // Exclude resurfaced cleanup-orphans. Even though the
     // autosave-learning probe's blocking contract is stronger than the
     // advisory near-dup probe, an empty-body orphan resurrected from
     // Notion's trash must NOT be returned as the reuse target — the
@@ -690,39 +686,33 @@ export interface FindDuplicateActiveTasksOpts {
  * `lore-task action='create'` path. Returns `[]` on failure, never
  * throws — probe failures must not block the create.
  *
- * **Sequenced before create as of issue #265.** The `lore-task
+ * **Sequenced before create.** The `lore-task
  * action='create'` wire-in awaits this probe BEFORE dispatching
  * `services.tasks.create`, so the entity-matched candidate pool is
  * available to `findExactReuseTarget` for the assertive-reuse short-
- * circuit. Pre-#265 this probe ran in parallel with the create as an
- * advisory-only sibling of `findNearDuplicates` — that contract is
- * gone; the helper now powers two consumers (assertive reuse +
+ * circuit. The helper powers two consumers (assertive reuse +
  * advisory close-CTA footer) and the call site sequences them.
  *
  * **Encoded-input handling.** `entity` is decoded with
- * `decodeTextEntities` before going onto the wire, mirroring
+ * `decodeTextEntities` before going onto the wire, matching
  * `TaskService.create`'s `decodeTextEntities(input.entity ?? input.subject)`
- * write-side decode (`src/core/task.ts:180`). Without this, a caller
+ * write-side decode. Without this, a caller
  * passing `entity: "PR &amp; Review"` would query Notion for the encoded
  * form and miss any stored row whose `Entity` column was decoded at
- * write time — re-introducing the silent-miss case PF1-06's decode
- * boundary was designed to close, exactly the failure mode #265 is
- * supposed to prevent on the reuse path.
+ * write time — re-introducing the silent-miss case the decode
+ * boundary was designed to close, exactly the failure mode reuse
+ * is supposed to prevent.
  *
  * **Sort order.** Pinned to `updatedAtDesc` so the first candidate is
  * the most-recently-edited row. `findExactReuseTarget` returns the
  * first matching candidate, so this sort is what makes the predicate's
- * "most-recently-edited wins on ties" contract real. Pre-#265 the
- * default sort (`reviewByAsc`) was acceptable because the result was
- * advisory-only and the agent saw all peers at once; under assertive
- * reuse the sort is load-bearing.
+ * "most-recently-edited wins on ties" contract real.
  *
  * **No just-created-row exclusion** is applied inside this helper.
- * Pre-#265 the parallel-with-create posture meant the just-created id
- * couldn't be known at probe-fire time; under #265's sequencing the
+ * Under the sequence-before-create posture the
  * just-created id literally cannot appear (probe completes strictly
- * before create dispatches). Either way, the helper performs no
- * exclusion of its own.
+ * before create dispatches). The helper performs no exclusion of
+ * its own.
  *
  * Honors `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` for parity with the
  * memory / decision probes — one operator switch, every duplicate
@@ -738,9 +728,9 @@ export async function findDuplicateActiveTasks(
   if (!opts.entity || opts.entity.trim() === "") return []
 
   // Decode at the boundary so the server-side `Entity contains` filter
-  // sees the same canonical form `TaskService.create` writes (see
-  // `src/core/task.ts:180`). Whitespace-only after decode short-
-  // circuits — same posture as the raw-input guard above.
+  // sees the same canonical form `TaskService.create` writes via its
+  // write-boundary entity decode. Whitespace-only after decode
+  // short-circuits — same posture as the raw-input guard above.
   const decodedEntity = decodeTextEntities(opts.entity)
   if (decodedEntity.trim() === "") return []
 
@@ -850,16 +840,14 @@ export function findExactReuseTarget(
  * canonical form. Three deliberate divergences:
  *
  * - **`decodeTextEntities` is load-bearing.** `TaskService.create`
- *   decodes `subject`/`entity` at the write boundary
- *   (`src/core/task.ts:176, 180`), so a stored row's title is the
- *   decoded form. Without the decode here, a caller passing the
- *   already-decoded subject `"Café & Bar"` against a stored title
- *   `"Café &amp; Bar"` (pre-PF1-06 vault) would normalize differently
- *   and miss reuse — exactly the silent-miss the
- *   `lore migrate --fix-memory-encoding` migration was designed to
- *   close. AGENTS.md "Near-Duplicate Probe" calls this out as
- *   load-bearing for the trigram pipeline; the same logic applies to
- *   the exact-equality predicate.
+ *   decodes `subject` and `entity` at the write boundary, so a stored
+ *   row's title is the decoded form. Without the decode here, a
+ *   caller passing the already-decoded subject `"Café & Bar"` against
+ *   a stored title `"Café &amp; Bar"` (un-migrated vault) would
+ *   normalize differently and miss reuse — exactly the silent-miss
+ *   `lore migrate --fix-memory-encoding` was designed to close. The
+ *   same decode discipline is load-bearing for the trigram pipeline;
+ *   the same logic applies to the exact-equality predicate.
  *
  * - **`.toLowerCase()` not `.toLocaleLowerCase()`.** Vault state is
  *   shared across engineers; comparison is per-process. A Turkish-
@@ -894,7 +882,7 @@ function normalizeReuseKey(s: string): string {
 
 /**
  * Set-equality check over project-id arrays. `[]` matches only `[]`.
- * Mirrors the rule `MemoryService.upsertByTopicKey` enforces via
+ * Matches the rule `MemoryService.upsertByTopicKey` enforces via
  * `findByTopicKey` — `[A]` does not match `[A, B]`.
  */
 function projectSetEqual(a: readonly string[], b: readonly string[]): boolean {
@@ -923,7 +911,7 @@ const ENTITY_CANDIDATE_LIMIT = 5
  * the input pays the scan cost of 100 matches; the cap is the bound
  * on that scan work, not on Set growth. (A pre-add `sizeBefore` /
  * `sizeAfter` accounting would let a pathological-but-realistic input
- * — same `PR #1234` repeated 50 times in keywords — keep the loop
+ * — same entity-id repeated 50 times in keywords — keep the loop
  * running indefinitely under one pattern, blocking later patterns.)
  *
  * Without this cap, a memory whose body shovels dozens of capitalized-
@@ -971,7 +959,7 @@ const CAPITALIZED_SINGLE_PATTERN = /\b[A-Z][a-zA-Z0-9]*\b/g
  * phrase tokenizers last (multi-word before single-word so multi-word
  * candidates get the higher-priority slots when budget is tight). The
  * Set-of-strings dedup that `extractEntityCandidates` runs collapses
- * pattern overlap (e.g. `PR #1234` and the `#1234` substring both
+ * pattern overlap (e.g. `PR-1234` and the bare `1234` substring both
  * appear).
  *
  * `[A-Z]{2,}-\d+` minimum-two-uppercase-letters narrows Jira-style to
@@ -1132,12 +1120,12 @@ function isMeaningfulCapitalizedMatch(s: string): boolean {
  * the probe rather than firing a tag-only query that would over-broaden.
  *
  * The match set is order-preserving by pattern priority: a memory that
- * mentions `PR #1234`, `SENTRY-1234`, and "AuthService" yields
- * `["PR #1234", "#1234", "SENTRY-1234", "AuthService"]` in that order.
- * `Set` dedup collapses pattern overlap (the `#1234` substring matches
- * both the PR pattern and the standalone `#N` pattern; both are kept
- * because their literal strings differ — `Entity contains "PR #1234"`
- * narrows differently than `Entity contains "#1234"`).
+ * mentions a PR-prefixed entity, a Jira-style id, and "AuthService"
+ * yields the candidates in that order.
+ * `Set` dedup collapses pattern overlap (a bare numeric substring matches
+ * both the PR pattern and the standalone numeric pattern; both are kept
+ * because their literal strings differ — `Entity contains "PR-1234"`
+ * narrows differently than `Entity contains "1234"`).
  *
  * Capped at `ENTITY_CANDIDATE_LIMIT` total. A memory whose title alone
  * spawns 20+ capitalized-phrase candidates lands the first 5 in
@@ -1236,7 +1224,7 @@ export interface FindRelatedActiveTasksOpts {
   memoryKeywords?: string
   /**
    * Memory synopsis (1–2 sentence gist). Empty string when not populated;
-   * the probe still works on title + keywords. Soft dep on #02 — the
+   * the probe still works on title + keywords. The
    * field always exists in `SaveArgs`, but is not guaranteed non-empty.
    */
   memorySynopsis?: string
@@ -1261,8 +1249,8 @@ export interface FindRelatedActiveTasksOpts {
  * Probe for active tasks tracking the same entity as a just-saved
  * memory. Fired in parallel with `lore-memory action='save'` so the
  * response can surface closure CTAs at the resolution moment — a memory
- * titled "Merged PR #1234" cross-references any active task whose
- * `Entity` column contains "PR #1234".
+ * titled `Merged PR-1234` cross-references any active task whose
+ * `Entity` column contains `PR-1234`.
  *
  * Advisory only: returns `[]` on failure, never throws, must not block
  * the save. No just-saved-row exclusion is needed: tasks and ordinary

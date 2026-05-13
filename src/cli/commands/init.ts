@@ -25,19 +25,18 @@ import {
 import { confirmPrompt } from "./init-prompt.js"
 
 /**
- * Re-export of the shared helper so existing import sites
- * (`./init.test.ts`, in particular) keep working after the PR #567
- * round-2 round of extraction into `src/cli/hook-disclosure.ts`. New
- * call sites should import from `hook-disclosure.js` directly.
+ * Re-export of the shared helper so existing import sites keep
+ * working. New call sites should import from the hook-disclosure
+ * module directly.
  */
 export const buildHookDisclosureLines = buildHookDisclosureLinesShared
 
 /**
- * Build the `.lore.yaml` text emitted by `lore init`. Pure so tests can
+ * Build the .lore.yaml text emitted by `lore init`. Pure so tests can
  * assert the comment placement without spinning up the Notion-touching
  * command path.
  *
- * The 0.9.0/08 `learningExtraction` knob and the issue #281
+ * The `learningExtraction` knob and the
  * `proposeAutosaveLearnings` knob are surfaced as *commented*
  * defaults inside the `hooks:` block — operators see the fields
  * exist without them changing behavior on a fresh install. The
@@ -68,21 +67,21 @@ export function buildInitConfigYaml(pageId: string, workspaceId?: string): strin
 
   const doc = new Document(config)
   // Leading hook-disclosure block, attached to the `hooks` key's
-  // commentBefore so it renders above the `hooks:` line in the output
-  // (issue #560). Operators who skim the generated config without
-  // reading docs/hooks.md still see (a) the two background side-
-  // effects are on by default, (b) writes go to their own vault via
-  // the auth chain above, and (c) the one-line shape of the disable
-  // knob. The trailing commented-default lines further down inside
-  // the map advertise additional opt-in knobs without changing
-  // behavior — both surfaces coexist.
+  // commentBefore so it renders above the `hooks:` line in the output.
+  // Operators who skim the generated config without reading external
+  // documentation still see (a) the two background side-effects are
+  // on by default, (b) writes go to their own vault via the auth
+  // chain above, and (c) the one-line shape of the disable knob.
+  // The trailing commented-default lines further down inside the map
+  // advertise additional opt-in knobs without changing behavior —
+  // both surfaces coexist.
   const top = doc.contents
   if (isMap(top)) {
     const hooksPair = top.items.find(
       (p) => isScalar(p.key) && (p.key as { value: unknown }).value === "hooks"
     )
     if (hooksPair && isScalar(hooksPair.key)) {
-      // Body assembled from the shared `hook-disclosure.ts` fragments
+      // Body assembled from the shared hook-disclosure fragments
       // so the example yaml, the generated yaml, and both CLI surfaces
       // can't drift on wording or knob coverage.
       hooksPair.key.commentBefore = buildHookYamlCommentBefore()
@@ -117,8 +116,8 @@ export function buildInitConfigYaml(pageId: string, workspaceId?: string): strin
  *
  * The v5 SDK's `CreatePageParameters` is a strict discriminated union;
  * the workspace-parent variant may not infer cleanly through structural
- * typing. The cast follows `src/notion/CLAUDE.md`'s "Filter Type
- * Casting" precedent — verify at SDK-upgrade time and drop the cast if
+ * typing. The cast follows the SDK-layer Filter Type Casting
+ * precedent — verify at SDK-upgrade time and drop the cast if
  * the inference improves.
  */
 export async function createWorkspaceLevelPage(
@@ -189,10 +188,9 @@ async function tryResolveAuth(cwd: string): Promise<ResolvedAuth | null> {
  * try, leading to a vault created in prod despite the explicit dev
  * request.
  *
- * Delegates the URL → env mapping to `oauth.ts:ntnEnvFromBaseUrl` so
- * every Lore-managed ntn login surface (#06 / #07 / #08 / #09) agrees
- * on the canonical URL table — per the milestone spec's "Centralize
- * this so every surface agrees" guidance.
+ * Delegates the URL → env mapping to `ntnEnvFromBaseUrl` so
+ * every Lore-managed ntn login surface agrees on the canonical URL
+ * table — the "Centralize this so every surface agrees" rule.
  *
  * The `undefined === prod` rule is load-bearing and lives here, NOT
  * in `ntnEnvFromBaseUrl`: ntn-source auth pointing at prod returns
@@ -239,9 +237,9 @@ function expectedBaseUrlForEnv(env: NtnEnv): string | undefined {
  * `name` is accepted for option-shape symmetry with the no-arg flow
  * but ignored here — the page already exists, Lore doesn't rename it.
  * A truthy value emits a one-line stderr note (matching the
- * `--cursor-global ignored under --client claude` precedent in
- * `install.ts`) so an operator who scripted `--name` against the wrong
- * shape isn't surprised by silent drop.
+ * `--cursor-global ignored under --client claude` precedent) so an
+ * operator who scripted `--name` against the wrong shape isn't
+ * surprised by silent drop.
  */
 export async function runExplicitPageInit(
   pageId: string,
@@ -296,7 +294,7 @@ export async function runExplicitPageInit(
   // (four pages.create + assorted reads) stays under Notion's rps
   // ceiling just like the MCP/CLI hot paths. No config is loaded here
   // yet so use the default concurrency; operators with a custom value
-  // in `.lore.yaml` pick it up on subsequent commands.
+  // in .lore.yaml pick it up on subsequent commands.
   const client = createLimitedClient(createClient(token, baseUrl))
 
   // Preflight before doing the heavy database-creation work. If the
@@ -366,7 +364,7 @@ export async function runExplicitPageInit(
  * `lore init` no-arg path. Resolves the ntn-issued token (or recovers
  * via interactive ntn install/login), creates a workspace-level vault
  * page, runs `verifyVaultAccess` post-creation, initializes the four
- * databases, and writes `.lore.yaml`. End-to-end onboarding for a fresh
+ * databases, and writes .lore.yaml. End-to-end onboarding for a fresh
  * project under ntn-first auth.
  */
 export async function runNoArgInit(opts: {
@@ -396,7 +394,7 @@ export async function runNoArgInit(opts: {
   const vaultTitle =
     opts.name && opts.name.trim().length > 0 ? opts.name.trim() : defaultVaultTitle(cwd)
 
-  // Refuse to overwrite an existing `.lore.yaml`. Check existence
+  // Refuse to overwrite an existing .lore.yaml. Check existence
   // outside the early-exit branch so a future `process.exit` mock (or a
   // hook that catches PromiseRejection) can't silently fall through into
   // the create path.
@@ -427,7 +425,7 @@ export async function runNoArgInit(opts: {
   //
   //   (a) ntn not installed / not logged in / auth.json missing → genuine
   //       "no auth, recover via interactive install + login".
-  //   (b) ntn installed, logged in, but `auth.json` carries multiple
+  //   (b) ntn installed, logged in, but auth.json carries multiple
   //       workspaces with no selector (no NOTION_WORKSPACE_ID env, no
   //       .lore.yaml yet — we're initializing, so there isn't one) →
   //       `loadNtnToken` writes a stderr hint and returns null.
@@ -459,8 +457,8 @@ export async function runNoArgInit(opts: {
       )
       console.error(`Available: ${workspaces.join(", ")}`)
       console.error("")
-      // Single actionable next step — `auth.workspaceId in .lore.yaml`
-      // is bootstrap-impossible during init (no `.lore.yaml` exists
+      // Single actionable next step — `auth.workspaceId` in .lore.yaml
+      // is bootstrap-impossible during init (no .lore.yaml exists
       // yet), so listing it as a parallel option misleads readers
       // skimming for what to type. The env-var route is the only
       // surface that works at first run; subsequent commands pick up
@@ -499,11 +497,10 @@ export async function runNoArgInit(opts: {
   }
 
   // If no auth resolves, offer to run ntn login (after checking ntn
-  // install state). Same shell-out pattern as Phase 2's `lore auth
-  // --login` and `lore install`. Reuses helpers from #02
-  // (`isNtnInstalled`, `installNtn`, `runNtnLogin`). No
-  // `NOTION_KEYRING=0` check — `runNtnLogin()` forces it inside the
-  // spawn per Option A.
+  // install state). Same shell-out pattern as `lore auth --login` and
+  // `lore install`. Reuses `isNtnInstalled` / `installNtn` /
+  // `runNtnLogin`. No `NOTION_KEYRING=0` check — `runNtnLogin()`
+  // forces it inside the spawn.
   if (!auth) {
     console.log("Cannot initialize vault — no Notion auth available.")
     console.log("")
@@ -613,9 +610,8 @@ export async function runNoArgInit(opts: {
       )
     } else if (auth.source === "env-lore-notion-token") {
       // Soft-deprecated path. The right migration is `lore auth
-      // --migrate` once Phase 2 #07 ships; for now the operator
-      // unsets and re-logs. Unlike NOTION_API_TOKEN, this legacy path
-      // does not honor LORE_NOTION_BASE_URL from operator env.
+      // --migrate`. Unlike NOTION_API_TOKEN, this legacy path does
+      // not honor LORE_NOTION_BASE_URL from operator env.
       console.error("  Unset LORE_NOTION_TOKEN to fall through to ntn-resolved auth,")
       console.error("  or migrate legacy auth before retrying:")
       console.error("    lore auth --migrate")
@@ -777,11 +773,11 @@ export async function runNoArgInit(opts: {
  * `runExplicitPageInit` / `runNoArgInit` and the commander dispatch
  * can't drift if a future option is added.
  *
- * `--name` is a post-spec addition (PR #177 review feedback): the spec
- * lists `<page-id>` / `--token` / `-y/--yes` only, but the cwd-derived
- * default title plus the explicit override addresses the multi-vault-
- * per-workspace footgun the reviewer flagged. Worth carrying forward
- * into the issue spec on the next pass.
+ * `--name` is an addition over the original surface (`<page-id>` /
+ * `--token` / `-y/--yes`): the cwd-derived default title plus the
+ * explicit override handles the multi-vault-per-workspace footgun
+ * where two `lore init` runs against the same workspace would
+ * otherwise produce indistinguishable page titles.
  */
 interface InitOpts {
   token?: string

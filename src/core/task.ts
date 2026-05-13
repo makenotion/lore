@@ -6,17 +6,17 @@
  * length cap), the subject becomes the title (structurally indexed),
  * and `Task State` carries the lifecycle. Tasks are the canonical
  * surface for tracked work; the legacy tracking-predicate facts that
- * predated this surface have been removed (P3-02 successor; tracking
- * predicates were dropped from `FactPredicate` in 0.6.0).
+ * predated this surface have been removed (tracking predicates are
+ * not part of the current `FactPredicate` union).
  *
  * The split exists because the Facts DB was designed for atomic
  * `(Subject, Predicate, Object)` triples — `AuthService uses JWT`.
- * Tracked-work rows used to land in Facts with 187-char-average
+ * Tracked-work rows formerly landed in Facts with 187-char-average
  * ticket descriptions in the Object slot, which made structural
  * queries useless on that data and flooded `lore-query action='ask'`
  * with prose. Tasks pull this prose out of Facts and into the right shape.
  *
- * Service mirrors `DecisionService`: shares the Memories DB with
+ * Service parallels `DecisionService`: shares the Memories DB with
  * `MemoryService`, sets the `Kind` discriminator on every create, and
  * exposes index-tier listings that skip the `retrieveMarkdown` body
  * fetch. Cross-service orchestration (e.g. `lore-query action='ask'`
@@ -68,8 +68,8 @@ import { validateRichTextMetadataFields } from "./rich-text-schema.js"
  * cleared so service-layer writes don't land a row with a string of
  * spaces masquerading as content. The cross-field guard for
  * `state: "blocked"` (paired with `blockedBy`) is enforced separately
- * at the MCP boundary by `mcp/tools/tasks.ts:isUnusableBlockerLabel`,
- * since per-field Zod can't express a multi-field invariant.
+ * at the MCP boundary by `isUnusableBlockerLabel` since per-field
+ * Zod can't express a multi-field invariant.
  *
  * `isCleared` formalizes the empty-or-cleared check at one call site
  * so a future caller can't accidentally check `value === ""` in one
@@ -158,11 +158,11 @@ export interface OverdueTaskWindow {
 
 export class TaskService {
   /**
-   * Resolved scope context (issue #283) — same posture as
+   * Resolved scope context — same posture as
    * `MemoryService.scopeCtx`. The default-retrieval filter narrows
    * `list()` to broadcast scopes plus narrow scopes whose `Scope
    * Key` matches the reader's identity slot. Tests construct
-   * `TaskService` without scope context and stay on the pre-#283
+   * `TaskService` without scope context and stay on the unscoped
    * filter shape; production `initServicesFromConfig` always passes
    * a context, turning the filter on.
    */
@@ -248,13 +248,12 @@ export class TaskService {
         taskState: state,
         blockedBy,
         entity,
-        // Scope / lifetime (issue #283). Tasks default to whatever
-        // scope the caller passes; the conventional pairing is
-        // `kind: "session"` + `lifetime: "until-task-closed"` for
-        // per-session tracked work. The translation from
-        // `MemoryScopeInput` to builder primitives mirrors
-        // `MemoryService.create`'s helper so the column writes are
-        // consistent across both surfaces.
+        // Scope / lifetime. Tasks default to whatever scope the caller
+        // passes; the conventional pairing is `kind: "session"` +
+        // `lifetime: "until-task-closed"` for per-session tracked work.
+        // The translation from `MemoryScopeInput` to builder primitives
+        // matches `MemoryService.create`'s helper so the column writes
+        // are consistent across both surfaces.
         scopeKind: input.scope?.kind,
         scopeKey: input.scope?.key,
         audience: input.scope?.audience,
@@ -410,12 +409,12 @@ export class TaskService {
     }
 
     const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
-    // Default scope filter (issue #283). A session-scoped task created
-    // by another reader's session must not surface in this reader's
-    // `lore-task action='list'`; the filter applies the same scope-
-    // inclusion rule as `MemoryService.list`. `includeOutOfScope: true`
-    // opts out for audit/operator paths; the filter no-ops when no
-    // scope context was injected (tests on the pre-#283 filter shape).
+    // Default scope filter. A session-scoped task created by another
+    // reader's session must not surface in this reader's `lore-task
+    // action='list'`; the filter applies the same scope-inclusion rule
+    // as `MemoryService.list`. `includeOutOfScope: true` opts out for
+    // audit/operator paths; the filter no-ops when no scope context
+    // was injected.
     //
     // The server-side filter is 2-deep (Notion's compound-filter
     // limit); the kind+key binding runs client-side via
@@ -512,7 +511,7 @@ export class TaskService {
       // Update-to-terminal stamps `Done At` in the same atom as the
       // state write so a closure-via-update produces the same on-disk
       // shape as `close()`. Without this, every update-to-terminal
-      // would silently undercount #13's closure-rate metric. Re-open
+      // would silently undercount the closure-rate metric. Re-open
       // (`state: "open"`) intentionally does NOT clear — `Done At`
       // tracks "most recent close timestamp" as historical fact.
       if (input.state === "done" || input.state === "cancelled") {
@@ -555,18 +554,18 @@ export class TaskService {
       }
     }
     // Empty string / null both clear the date; an explicit YYYY-MM-DD
-    // sets it; `undefined` leaves it untouched. The rule is the same
-    // shared "empty string == absence" semantic the Zod boundary
-    // enforces — see `isCleared` above for the canonical statement of
-    // it. `blockedBy` / `entity` follow the same rule but the column
-    // type (rich_text) accepts an empty string verbatim, so they
-    // don't need the explicit `{ date: null }` translation here.
+    // sets it; `undefined` leaves it untouched. Same "empty string ==
+    // absence" rule `isCleared` formalizes — Zod boundary maps both `""`
+    // and `null` to "clear this column" in `{ date: null }` form.
+    // `blockedBy` / `entity` follow the same rule but the column type
+    // (rich_text) accepts an empty string verbatim, so they don't need
+    // the explicit `{ date: null }` translation here.
     if (input.dueDate !== undefined) {
       props[MEMORY_PROPS.REVIEW_BY] = isCleared(input.dueDate)
         ? { date: null }
         : { date: { start: input.dueDate as string } }
     }
-    // Scope / lifetime (issue #283). Inlined-update path mirrors
+    // Scope / lifetime. Inlined-update path matches
     // `MemoryService.update`'s shape one-for-one — same tristate
     // semantics on each column. Tasks are Memories so the columns
     // are the same.
@@ -738,8 +737,9 @@ export class TaskService {
   /**
    * Count tasks whose `Done At` is on or after `date` AND whose
    * current `Task State` is terminal (`done` / `cancelled`). Returns
-   * `null` on a pre-#07 vault (the column doesn't exist; Notion
-   * returns a `validation_error` on the filter clause) so the caller
+   * `null` on a vault that hasn't run the `Done At`-introducing
+   * migration (the column doesn't exist; Notion returns a
+   * `validation_error` on the filter clause) so the caller
    * can suppress the closure-rate line entirely instead of
    * fabricating a zero.
    *
@@ -811,7 +811,7 @@ export class TaskService {
     projectId?: string
     limit?: number
     /**
-     * Issue #283 — opt out of the default-scope filter so audit /
+     * Opt out of the default-scope filter so audit /
      * migration callers can see narrow-scope and expired rows. The
      * MCP `lore-query action='audit'` surface consumes this method,
      * so the gate keeps the default `false`: a session-scoped
@@ -836,7 +836,7 @@ export class TaskService {
     }
 
     const baseFilter = { and: filters }
-    // Default scope filter (issue #283). Same posture as `list()`
+    // Default scope filter. Same posture as `list()`
     // above: server-side narrows to broadcast + reader's narrow kinds
     // (Notion's 2-deep cap), client-side `matchesDefaultScope`
     // threaded as `collectLivePages.extraFilter` enforces the
@@ -906,9 +906,9 @@ function toTaskSummary(task: Task): TaskSummary {
 /**
  * Determine whether a task counts as overdue against `today`. Returns the
  * integer days past due, or `null` when the task has no due date or is
- * still within its window. Same shape as `daysOverdue` in
- * `mcp/tools/knowledge.ts` so the rendering layer can share its
- * urgency-marker helpers.
+ * still within its window. Same shape as the knowledge tool's
+ * `daysOverdue` so the rendering layer can share its urgency-marker
+ * helpers.
  */
 export function taskDaysOverdue(
   task: Pick<TaskSummary, "reviewBy" | "taskState">,
@@ -929,7 +929,7 @@ export function taskDaysOverdue(
  * uniformly.
  *
  * `TaskSummary` inherits `updatedAt: string` from `Memory` via the
- * `Omit<Memory, "content">` projection in `src/types.ts`; the field is
+ * `Omit<Memory, "content">` projection; the field is
  * populated by `pageToMemory` from Notion's `last_edited_time` page
  * attribute. `last_edited_time` updates on any property change — a tag
  * edit, a comment, a re-relation — so a "stale" task here is "no edits
@@ -959,7 +959,7 @@ export function taskDaysStale(
 /**
  * Aggregated task counts surfaced by `lore status` /
  * `lore-context action='status'`. `closedLast30Days` is `null` on
- * pre-#07 vaults that lack the `Done At` column; the renderer
+ * vaults that lack the `Done At` column; the renderer
  * suppresses the closure-rate line entirely in that case.
  */
 export interface TaskStats {
@@ -1066,7 +1066,8 @@ const TASKS_PREFIX = "Tasks: "
  * - Optionally: a closure-rate continuation line, indented to align
  *   under the start of `N` on the primary line so the two read as
  *   one logical block. Rendered only when `closedLast30Days !== null`
- *   (post-#07 vaults). Pre-#07 vaults silently omit the line.
+ *   (vaults with the `Done At` column). Older vaults silently omit
+ *   the line.
  *
  * Pure function: deterministic in `report`, no I/O.
  */

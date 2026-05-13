@@ -34,10 +34,10 @@ export async function collectLivePages(input: {
   query: QueryPage
   maxPages?: number
   /**
-   * Issue #283 — optional client-side post-filter applied to each
+   * Optional client-side post-filter applied to each
    * live page during pagination. Returning `false` drops the page
    * from the result without consuming a slot toward `limit`, so the
-   * walker keeps paginating to backfill. Mirrors how the existing
+   * walker keeps paginating to backfill. Matches how the existing
    * `isLiveFullPage` filter handles archived rows.
    *
    * The Notion server-side filter for narrow scope is restricted to

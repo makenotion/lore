@@ -1,19 +1,19 @@
 /**
  * Shared filesystem debounce marker for the read-only schema drift check
- * fired by `VaultManager.load()`. Same shape and purpose as
- * `digest-marker.ts`: when a hot startup path (MCP server, shell hooks)
- * passes `driftCheck: "debounced"` to `initServicesFromConfig`, the marker
+ * fired by `VaultManager.load()`. Same shape and purpose as the digest
+ * marker: when a hot startup path (MCP server, shell hooks) passes
+ * `driftCheck: "debounced"` to `initServicesFromConfig`, the marker
  * mtime decides whether we run the drift scan or skip it for this fire.
  *
  * Keyed on a short hash of the config root so multiple worktrees pointing
  * at the same vault share a single suppression window — without that
  * keying, every worktree would rediscover drift independently and the
  * debounce would lose most of its value on agents who rotate worktrees
- * for stacked PR work. Key derivation lives in `marker-key.ts` alongside
- * `digest-marker.ts`'s helpers so the truncation tradeoff stays in
- * lockstep across every filesystem marker.
+ * for stacked PR work. Key derivation lives in the shared marker-key
+ * helper so the truncation tradeoff stays in lockstep across every
+ * filesystem marker.
  *
- * Reuses `getStateDir()` from `lock.ts` so `LORE_HOOK_STATE_DIR` overrides
+ * Reuses `getStateDir()` so `LORE_HOOK_STATE_DIR` overrides
  * (parallel test files) flow through automatically.
  */
 

@@ -40,10 +40,10 @@ export interface VaultLoadOptions {
    * rate-limited client with the hot path — so it must NOT default to
    * true on hot startup paths.
    *
-   * Resolution policy lives at the `initServices` seam (see
-   * `src/services.ts`'s `InitServicesOptions.driftCheck`); by the time
-   * the value reaches here it has been resolved from any debounce
-   * decision into a plain boolean.
+   * Resolution policy lives at the `initServices` seam via
+   * `InitServicesOptions.driftCheck`; by the time the value reaches
+   * here it has been resolved from any debounce decision into a
+   * plain boolean.
    *
    * Default: `false`.
    */
@@ -96,7 +96,7 @@ export class VaultManager {
 
   async load(options: VaultLoadOptions = {}): Promise<Vault> {
     this.vault = await verifyVaultDatabases(this.client, this.pageId)
-    // Drift detection is opt-in. The pre-0.6.0 default fired drift on every
+    // Drift detection is opt-in. The earlier default fired drift on every
     // load, which forced wake-up, autosave, CLI reads, and MCP startup to
     // contend with a multi-page Topics scan + per-DS `dataSources.retrieve`
     // for the same rate-limited client. Callers that want occasional drift
@@ -360,7 +360,7 @@ export class VaultManager {
   }
 
   /**
-   * Detect normalized-equivalent topic groups (issue #109) — rows with
+   * Detect normalized-equivalent topic groups — rows with
    * different stored names that share a normalized lookup key — and
    * optionally collapse each group onto a canonical row.
    *

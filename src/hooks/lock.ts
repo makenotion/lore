@@ -9,7 +9,7 @@
  *
  * The spawned child is `claude` — we can't attach a cleanup hook to it, so
  * the lock is owned by the child's PID and released implicitly when that PID
- * is no longer alive. Every acquire call performs a PID liveness probe to
+ * is dead. Every acquire call performs a PID liveness probe to
  * garbage-collect stale locks left behind by crashed or killed children.
  */
 import {
@@ -143,13 +143,12 @@ export function activeSaveCount(): number {
  * record a background-failure marker rather than treating it as
  * `race-lost`.
  *
- * The `safeFilenameSegment` cap in `marker-key.ts` keeps NAME_MAX safe for
+ * The `safeFilenameSegment` cap keeps NAME_MAX safe for
  * hostile session ids on its own, but an unusually long
  * `LORE_HOOK_STATE_DIR` close to `PATH_MAX` (≈1024 bytes on darwin, 4096
  * on Linux) can still push the full path over the syscall limit. Without
  * this classified throw, the underlying `ENAMETOOLONG` propagates out of
- * every Stop hook for the affected session and indefinitely skips autosave
- * (issue #485).
+ * every Stop hook for the affected session and indefinitely skips autosave.
  */
 export class LockPathTooLongError extends Error {
   readonly code: "ENAMETOOLONG" | "ENOENT"
@@ -205,7 +204,7 @@ function isAbsorbedPathError(
  * to `null` would silently feed the digest scheduler's `isBenignRace`
  * branch (leaving the marker fresh, suppressing auto-digest until the
  * marker expired) and the CLI's "Digest already in flight" message,
- * neither of which is true when no peer exists. See issue #485.
+ * neither of which is true when no peer exists.
  */
 export function tryAcquireSessionLock(
   sessionId: string,

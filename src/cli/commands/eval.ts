@@ -202,8 +202,8 @@ function parseOptionalUnitInterval(
  * The match uses **word-boundary** regex (not substring) so
  * production names that incidentally embed `eval` / `test` / `sandbox`
  * substrings (e.g., "Evaluations Q1") don't slip through as
- * sandboxes — and a project named "Greatest hits" is no longer falsely
- * accepted because of `eval` matching `evaluations` `greate`. The
+ * sandboxes — and a project named "Greatest hits" does not falsely
+ * accept because of `eval` matching `evaluations` `greate`. The
  * accepted markers are the conventional internal sandbox names.
  *
  * @throws when the project name lacks a sandbox marker and the

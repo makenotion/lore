@@ -3,17 +3,17 @@
  * current project when the last digest is older than the freshness window,
  * debounced via a shared filesystem marker.
  *
- * Extracted from `helpers.ts` so (a) the module can be unit-tested without
+ * Extracted so (a) the module can be unit-tested without
  * triggering the hook dispatcher's `main()` at import time, and (b) every
  * external dependency (service init, spawn, marker I/O) is injectable —
  * tests swap real filesystem + Notion + child_process for stubs.
  *
  * The Stop hook spawns `node helpers.js auto-digest` as a detached child
- * (see `scheduleAutoDigestSpawn` below) so this scheduler — which loads
- * `.lore.yaml`, initializes a Notion client, and gathers digest data — never
+ * via `scheduleAutoDigestSpawn` below, so this scheduler — which loads
+ * .lore.yaml, initializes a Notion client, and gathers digest data — never
  * runs inline on the Stop hot path.
  *
- * Decision log (see the review response on P2-04):
+ * Design rules:
  * - **Optimistic touch-before-spawn**: we touch the marker *before* spawning
  *   and roll it back on spawn failure. Closes the check-then-act race where
  *   two sibling Stop hooks can both read a stale marker and double-spawn.
@@ -61,10 +61,10 @@ export interface DigestSchedulerState {
   configRoot: string
   autoDigest: boolean
   /**
-   * Resolved background-agent shape (issue #194). When omitted, the
+   * Resolved background-agent shape. When omitted, the
    * scheduler falls through to the spawn primitive's built-in default
    * (`claude -p`). Production callers pass the value from the merged
-   * `HookConfig` so a `.lore.yaml` override or `LORE_BACKGROUND_COMMAND`
+   * `HookConfig` so a .lore.yaml override or `LORE_BACKGROUND_COMMAND`
    * env knob applies to digest spawns the same way it applies to autosave
    * spawns.
    */
@@ -249,7 +249,7 @@ export async function fireDigestIfStale(
     logLabel: "digest",
     allowedTools: DIGEST_ALLOWLIST,
     agent: state.backgroundAgent,
-    // Apply the ntn-source env partition (issue #475). `services` is
+    // Apply the ntn-source env partition. `services` is
     // the same in-process bundle whose `resolveAuth` produced
     // `authSource`, so the digest synthesizer's spawn-time env
     // matches the source the foreground digest gather already used.
@@ -318,7 +318,7 @@ async function clearFailureMarker(
 /**
  * Fork a detached node child that runs the `auto-digest` helper action so
  * `fireDigestIfStale`'s Notion init + digest data gathering never run on the
- * Stop hot path. The child resolves to the same `helpers.js` script that's
+ * Stop hot path. The child resolves to the same helpers.js script that's
  * already in the dispatcher.
  *
  * Fail-open: any spawn failure is logged and swallowed so the Stop hook
@@ -333,8 +333,8 @@ export interface ScheduleAutoDigestSpawnOptions {
   recordFailure?: typeof recordBackgroundFailure
   clearFailure?: typeof clearBackgroundFailure
   /**
-   * Foreground's resolved `AuthSource`. Mirrors
-   * `SpawnBackgroundSaveOptions.authSource` (issue #475) for the
+   * Foreground's resolved `AuthSource`. Matches
+   * `SpawnBackgroundSaveOptions.authSource` for the
    * Stop → auto-digest-helper hop. When `"ntn-auth-json"`, the
    * detached helper's inherited env drops
    * `RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` so a stale
@@ -343,12 +343,12 @@ export interface ScheduleAutoDigestSpawnOptions {
    * `ps -wwwE` / the helper's third-party-agent debug logs before
    * the inner synthesizer spawn's own partition runs. The helper
    * re-resolves auth via `loadNtnToken` against the same
-   * `~/.config/notion/auth.json` and lands on the same token.
+   * ~/.config/notion/auth.json and lands on the same token.
    *
    * Non-ntn sources keep the legacy full-env inheritance — those
    * callers' `resolveAuth` priority chain reaches the bearer only
    * through env. Omitted-`authSource` callers (test fixtures,
-   * legacy invocations) preserve pre-#475 behavior verbatim.
+   * legacy invocations) preserve the every-key forward verbatim.
    */
   authSource?: AuthSource
 }
@@ -370,12 +370,12 @@ export function scheduleAutoDigestSpawn(
   try {
     const helperPath = fileURLToPath(new URL("./helpers.js", import.meta.url))
     // Default-inherited env minus the auth-token subset under
-    // `ntn-auth-json` (issue #475). Spread-then-delete preserves
+    // `ntn-auth-json`. Spread-then-delete preserves
     // every other operator-controlled knob the helper expects in
     // env (`LORE_HOOK_STATE_DIR`, `LORE_DEBUG`, `LORE_AUTO_DIGEST`,
     // `LORE_AGENT_NAME`, etc.) — only the bearer-token keys are
     // removed, so the helper's own `resolveAuth` falls through to
-    // `loadNtnToken` against `~/.config/notion/auth.json` and
+    // `loadNtnToken` against ~/.config/notion/auth.json and
     // lands on the same source as the foreground. For non-ntn
     // and omitted-authSource sources the spread preserves env
     // contents but returns a fresh shallow copy (NOT the live
@@ -422,8 +422,8 @@ export function scheduleAutoDigestSpawn(
  * so the bearer never lands in the helper child's env; the
  * helper's own `initServicesFromConfig` re-runs `resolveAuth`,
  * which falls through to `loadNtnToken` against the operator's
- * `auth.json` and lands on the same workspace token as the
- * foreground (issue #475).
+ * auth.json and lands on the same workspace token as the
+ * foreground.
  *
  * Non-ntn sources and omitted `authSource` callers receive a
  * shallow copy of `process.env` rather than the live reference

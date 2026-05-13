@@ -1,10 +1,9 @@
 /**
- * Small SDK-error inspection helpers for the issue #535 SQL filter
- * call sites.
+ * Small SDK-error inspection helpers for the SQL filter call sites.
  *
  * The shared `runTool<T>(client, tool, params)` dispatcher
- * propagates Notion SDK errors verbatim (per `client.ts`'s "Errors
- * propagate verbatim" contract) so callers can branch on
+ * propagates Notion SDK errors verbatim (per the RunTool dispatcher's
+ * "Errors propagate verbatim" contract) so callers can branch on
  * `err.status` / `err.code` directly. The SQL filter call sites
  * share two posture decisions:
  *
@@ -37,7 +36,7 @@ import { redactDebugError, redactDebugMessage } from "../../debug-redact.js"
  * consumers exist today; future consumers (`fetch`, `move_pages`,
  * etc.) MUST import this regex rather than re-declaring it:
  *
- * - **`update_page`** (`update-page.ts`) — validates the caller's
+ * - **`update_page`** — validates the caller's
  *   `pageId` parameter at the wrapper boundary so a malformed id
  *   surfaces as a clear local error rather than a generic Notion
  *   400 from the wire.
@@ -93,8 +92,8 @@ export function isSqlValidationError(err: unknown): boolean {
  *
  * Routes through `redactDebugError` so SDK-interpolated leak vectors
  * (page ids, headers, etc.) don't surface in the log line — same
- * defense-in-depth posture as `src/mcp/helpers.ts`'s
- * `debugLogPartialFailures`.
+ * defense-in-depth posture as `debugLogPartialFailures` on the MCP
+ * tool helpers.
  */
 export function logRunToolFallback(source: string, err: unknown): void {
   if (process.env["LORE_DEBUG"] !== "1") return
@@ -168,8 +167,9 @@ let warnedRestrictedResourceFallback = false
 /**
  * Emit a single once-per-process stderr warning when ANY RunTool
  * consumer falls back from a 403 RestrictedResource. Lifted out of
- * the per-consumer modules (`client.ts`'s `update_page` latch,
- * `search.ts`'s search latch) so an integration-secret operator
+ * the per-consumer modules (the `update_page` latch on the runtool
+ * client, the search latch on the runtool search wrapper) so an
+ * integration-secret operator
  * dogfooding multiple flagged-on surfaces sees one warning instead
  * of N. The README's "silently degrade … but loud enough" mandate
  * is a per-process posture, not per-tool.
@@ -214,7 +214,7 @@ let warnedRunToolIntegrationSecret = false
  * with no operator-visible signal.
  *
  * Once-per-process so a long-lived MCP server doesn't spam stderr;
- * idempotent on `services.ts` re-init.
+ * idempotent on services re-init.
  */
 export function warnRunToolIntegrationSecretOnce(authSource: string): void {
   if (warnedRunToolIntegrationSecret) return

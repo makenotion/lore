@@ -43,8 +43,8 @@ export function catchAllProjectName(config: LoreConfig): string | null {
  * Shared lead-in for the catch-all-scope warning, used by every surface
  * that needs to tell an operator "you're scoped to the catch-all because
  * no sub-project prefix matched, here are the alternatives." The save
- * tools (`src/mcp/resolve.ts`) and the read tools' framing block
- * (`src/core/project-context.ts`) call this so the wording and the
+ * tools and the read tools' framing block
+ * call this so the wording and the
  * sub-project list stay byte-identical across surfaces — operators see
  * one consistent message regardless of which path triggered it.
  *

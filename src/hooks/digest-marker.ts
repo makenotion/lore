@@ -7,12 +7,12 @@
  * Keyed on a short hash of the config root *plus* the project name so two
  * vaults that both have a project with the same name in the same user's
  * `$TMPDIR` don't collide — a cross-vault collision would silently debounce the second
- * vault's digest forever. Key derivation and segment sanitization live in
- * `marker-key.ts` so this module, `drift-marker.ts`, and the lock/log/
- * count paths in `lock.ts` / `helpers.ts` stay in lockstep on the
- * truncation length and the sanitization charset.
+ * vault's digest forever. Key derivation and segment sanitization live
+ * in the shared marker-key helper so this module, the drift marker,
+ * and the lock / log / count paths stay in lockstep on the truncation
+ * length and the sanitization charset.
  *
- * The state dir is resolved per-call via `getStateDir()` from `lock.ts` so
+ * The state dir is resolved per-call via `getStateDir()` so
  * `LORE_HOOK_STATE_DIR` overrides (used by parallel test files for
  * isolation) flow through automatically.
  */

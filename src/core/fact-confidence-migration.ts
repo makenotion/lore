@@ -10,9 +10,10 @@
  * read-side `touchOnRead` (or by a prior run of this migration) is left
  * alone.
  *
- * Mirrors `confidence-migration.ts` (the memory-side baseline) line-for-line.
- * The two workstreams are structurally identical because `decay.ts` is
- * shared — only the I/O wrapper changes (FactService vs MemoryService).
+ * Mirrors the memory-side confidence-baseline migration line-for-line.
+ * The two workstreams are structurally identical because the decay
+ * algebra is shared — only the I/O wrapper changes
+ * (`FactService` vs `MemoryService`).
  */
 
 import type { LoreServices } from "../services.js"

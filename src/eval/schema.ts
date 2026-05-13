@@ -22,7 +22,7 @@ export const TASK_EVAL_SUITE_VERSION = 1
 export type TaskEvalAgent = (typeof TASK_EVAL_AGENTS)[number]
 
 /**
- * Memory conditions for the task-eval matrix (#450 Gap 3 spec).
+ * Memory conditions for the task-eval matrix.
  * Each task is exercised against every condition listed in its
  * `memoryConditions` map; the runner seeds the workspace with the
  * condition's fixture file before invoking the agent. Mirrors the

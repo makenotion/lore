@@ -377,7 +377,7 @@ function unionAllProjectIds(pages: PageObjectResponse[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Normalized-equivalent (similar) merges — issue #109 cleanup pass
+// Normalized-equivalent (similar) merges — cleanup pass
 // ---------------------------------------------------------------------------
 
 /** One normalized-equivalent topic group detected in the Topics DB. Unlike
@@ -412,7 +412,7 @@ export interface SimilarTopicMergeResult {
   canonicalName: string
   canonicalId: string
   /** Final Project relation on the canonical, as the union of every
-   *  sibling's pre-merge relation. */
+   *  sibling's before-the-merge relation. */
   canonicalProjectIds: string[]
   /** Sibling topic ids that were archived (memories re-pointed off them). */
   archivedIds: string[]
@@ -788,7 +788,7 @@ export function validateTopicAliasMergePlans(plans: TopicAliasMergePlan[]): void
  *
  * Names in `plans` are decoded via the shared HTML-entity helper on
  * entry so a YAML listing `Build & Tooling` matches DB rows that still
- * read `Build &amp; Tooling`. In practice the encoding migration (P1-10)
+ * read `Build &amp; Tooling`. In practice the encoding migration
  * should run first, but decoding on entry keeps the two migrations
  * order-independent for well-formed YAML.
  */

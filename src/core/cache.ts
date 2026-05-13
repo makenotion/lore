@@ -115,7 +115,8 @@ export class LruCache<K, V> {
       this.store.delete(key)
       return undefined
     }
-    // Re-insert to move this key to the most-recently-used tail position.
+    // Re-insert to move this key to the MRU tail position; eviction
+    // pops from the head.
     this.store.delete(key)
     this.store.set(key, entry)
     return entry.value
@@ -213,7 +214,7 @@ export class LruCache<K, V> {
           } else if (value === null) {
             // The `value as V` cast is sound by construction:
             // `cacheNegatives: true` is type-permitted only when
-            // `null extends V` (see `LruCacheOptions<V>`). A
+            // `null extends V` on the `LruCacheOptions<V>` shape. A
             // `cacheNegatives` cache therefore has `V` widened to
             // include `null`, and committing the runtime `null` is
             // structurally legal — no possibility of `get()` later

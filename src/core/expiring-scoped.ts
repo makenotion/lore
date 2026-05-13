@@ -1,12 +1,11 @@
 /**
  * Aggregator + renderer for the `lore status` and `lore-context
- * action='status'` "expiring scoped rows" surface (issue #283).
+ * action='status'` "expiring scoped rows" surface.
  *
- * Lives in `src/core/` rather than `src/cli/` so both the MCP and
- * CLI status surfaces import from the same module — same parity
- * contract as `taskStats` / `formatTaskSummary` in `src/core/task.ts`
- * and `loadProposedInboxStatus` / `formatProposedInboxStatus` in
- * `src/core/proposed-inbox.ts`.
+ * Lives in the core layer rather than the CLI layer so both the MCP
+ * and CLI status surfaces import from the same module — same parity
+ * contract as `taskStats` / `formatTaskSummary` and
+ * `loadProposedInboxStatus` / `formatProposedInboxStatus`.
  *
  * The shared seam protects against the line drifting between
  * surfaces: a future tweak to the wording or the threshold composes

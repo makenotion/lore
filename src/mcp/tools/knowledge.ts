@@ -40,7 +40,7 @@ type ToolResult = {
 }
 
 /**
- * Default per-bucket cap for `lore-query action='ask'`'s grouped display (P2-06).
+ * Default per-bucket cap for `lore-query action='ask'`'s grouped display.
  * A well-connected entity with 20+ facts compresses down to 15 visible
  * rows at this cap (5 × 3 buckets). Callers can raise via the `limit`
  * param when they really do need the full list.
@@ -67,7 +67,7 @@ const SUGGESTED_OVERFLOW_LIMIT = 20
  * `informs`) stay internal-only — created by `DecisionService` and
  * never via `lore-fact`.
  *
- * `mentions` (0.8.0/#07) is also internal-only — auto-emitted by
+ * `mentions` is also internal-only — auto-emitted by
  * `lore-memory action='save'`. Agents that want to assert a richer
  * relationship (`uses`, `depends_on`, etc.) call `lore-fact
  * action='create'` directly; the auto-emitted `mentions` shape is the
@@ -166,12 +166,12 @@ function renderGenericTrailing(
   opts: { asOf?: string } = {}
 ): string {
   const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
-  // Issue #284 — transaction-time invalidation surfaces when the row was
+  // Transaction-time invalidation surfaces when the row was
   // invalidated. Distinct from `Valid Until` (domain-truth end); the
   // bitemporal axis renders inline so callers using `asOf` /
   // `includeHistory` can read provenance directly from the response.
   //
-  // R3 blocker fix: on an `asOf` recall, suppress the INVALIDATED
+  // On an `asOf` recall, suppress the INVALIDATED
   // segment when the invalidation date is AFTER the cutoff. The
   // server-side filter (`asOfFilterClauses`) deliberately includes
   // rows whose `Invalidated At > asOf` (they were live from Lore's
@@ -233,7 +233,7 @@ const FACT_RRF_K = 4
 
 /**
  * Confidence-weighted recency ranking for fact-bucket rendering
- * (DEFERRED-02). Mirrors memory-side RRF (#08): assign each item a
+ * (DEFERRED-02). Matches memory-side RRF: assign each item a
  * recency-rank by `validFrom` desc, then compute
  * `1 / (FACT_RRF_K + rank + 1) * confidenceFactor(score)`, then sort
  * by composite score desc.
@@ -263,7 +263,7 @@ const FACT_RRF_K = 4
  * The kill switch (`LORE_DISABLE_CONFIDENCE_FACTOR=1`) lives inside
  * `confidenceFactor`, so a sustained-failure rollback to pre-DEFERRED-02
  * ordering is one env var away — same posture as memory-side RRF
- * (#08). With the kill switch active, every score collapses to 1.0
+ * applied on the memory side. With the kill switch active, every score collapses to 1.0
  * and the RRF pass devolves to monotonic-by-rank == byte-identical
  * pre-DEFERRED-02 recency ordering.
  */
@@ -290,7 +290,7 @@ function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: F
 
 /**
  * Dedup-collect the source-memory IDs visible in a `lore-query
- * action='ask'` response (issue 0.8.0/05). Walks the post-cap
+ * action='ask'` response. Walks the post-cap
  * **visible** slices, not the raw input arrays — rows past the
  * per-bucket cap render as `(N hidden)` and the agent never sees
  * them, so touching their backing memories would inflate
@@ -431,9 +431,9 @@ export async function handleLearn(
     // omit the relation, surface a warning" — the substring-fallback
     // path in `queryByEntity` still finds the row later.
     //
-    // Caught by review on PR #88. Mirrors the resilience posture
-    // `lore-query action='ask'`'s tasks lookup (further down in this
-    // file) already uses for the same reason.
+    // Mirrors the resilience posture `lore-query action='ask'`'s tasks
+    // lookup (further down in this file) already uses for the same
+    // reason.
     const [subjectResolution, objectResolution] = await Promise.all([
       services.entities
         .resolveOrCreateEntity(args.subject, {
@@ -519,7 +519,7 @@ export async function handleLearn(
       sourceMemoryId: effectiveSource,
       subjectEntityId,
       objectEntityId,
-      // Scope / lifetime (issue #283).
+      // Scope / lifetime.
       scope: args.scope,
     })
 
@@ -564,7 +564,7 @@ export async function handleInvalidate(
     // `Valid Until` updates if the read happens after invalidation, and
     // `FactService.invalidate` returns `void`. A `null` from `getById`
     // can mean three things: the page came back partial (Notion `is_full_page`
-    // guard fails), the row is archived (issue #497 — `getById` returns
+    // guard fails), the row is archived (`getById` returns
     // null for archived rows so callers stay symmetric across "row missing"
     // and "row archived"), or the row is one of the historical tracking
     // predicates that `pageToFact` filters out. In all three cases there is
@@ -572,21 +572,21 @@ export async function handleInvalidate(
     // inside `FactService.invalidate` itself — no `Valid Until` write lands
     // on archived rows.
     const fact = await services.facts.getById(args.factId)
-    // Issue #284 — when the caller threads `sourceMemoryId`, that becomes
+    // When the caller threads `sourceMemoryId`, that becomes
     // the `Invalidated By` relation: the memory that prompted the
     // invalidation. Distinct from the fact's existing `Source` link
     // (`fact.sourceMemoryId`), which names the *supporting* memory at
     // creation time. Both axes can coexist on one row.
     //
-    // Precheck mirrors `handleLearn`'s provenance contract: the invalidating
-    // memory must resolve to a live (non-archived) Memories row, and its
-    // project scope must be compatible with the fact's. Without this
-    // gate the relation accepts any same-workspace id the token can
-    // see — including archived memories and memories scoped to an
-    // unrelated project — which pollutes the audit trail the new
-    // `Invalidated By` column exists to provide. Omit the second
-    // argument entirely when no provenance is threaded so the
-    // pre-#284 single-arg call site stays byte-stable.
+    // Precheck matches `handleLearn`'s provenance contract: the
+    // invalidating memory must resolve to a live (non-archived)
+    // Memories row, and its project scope must be compatible with
+    // the fact's. Without this gate the relation accepts any
+    // same-workspace id the token can see — including archived
+    // memories and memories scoped to an unrelated project — which
+    // pollutes the audit trail the `Invalidated By` column exists to
+    // provide. Omit the second argument entirely when no provenance
+    // is threaded so the single-arg call site stays byte-stable.
     if (args.sourceMemoryId) {
       let invalidatingProjectIds: string[]
       try {
@@ -602,7 +602,7 @@ export async function handleInvalidate(
         // 429 / 5xx / network errors (the operator-facing failure
         // class — surfaced to the outer `toolError` with the raw
         // Notion error so the agent sees the transient and can
-        // retry). The bare-catch shape pre-fix collapsed every
+        // retry). The bare-catch shape earlier collapsed every
         // failure into the unresolved error, degrading the
         // operator's mental model during rate-limit blips.
         if (isTransientNotionError(err)) {
@@ -696,13 +696,13 @@ interface AskArgs {
   limit?: number
   includeContext?: boolean
   /**
-   * Transaction-time recall cutoff (issue #284). YYYY-MM-DD form. Returns
+   * Transaction-time recall cutoff. YYYY-MM-DD form. Returns
    * the slice of facts Lore knew about by this date and had not yet
    * invalidated by this date.
    */
   asOf?: string
   /**
-   * Include invalidated facts in the result (issue #284). Default false
+   * Include invalidated facts in the result. Default false
    * — only live facts surface. Useful for tracing how knowledge about an
    * entity changed over time.
    */
@@ -715,10 +715,10 @@ export async function handleAsk(
   toolName: string
 ): Promise<ToolResult> {
   try {
-    // Mirrors `handleWakeUp`'s explicit-projectName rule (issue 0.6.0/18,
-    // Fix 2): the framing block describes the project the rest of the
-    // response is filtered to. Explicit picks are strict and never catch-all
-    // fallbacks; omitted scope mirrors `services.context`.
+    // Matches `handleWakeUp`'s explicit-projectName rule: the framing
+    // block describes the project the rest of the response is filtered
+    // to. Explicit picks are strict and never catch-all fallbacks;
+    // omitted scope reads from `services.context`.
     const {
       projectId,
       project: resolvedProject,
@@ -802,7 +802,7 @@ export async function handleAsk(
       services.facts.queryByEntity(args.entity, {
         projectId,
         entityId,
-        // Issue #284 — temporal recall controls. `asOf` switches the
+        // Temporal recall controls. `asOf` switches the
         // domain-truth `Valid Until is_empty` filter for a transaction-
         // time pair (Observed At ≤ asOf AND (Invalidated At empty OR
         // > asOf)). `includeHistory` drops the live-only gate entirely
@@ -823,7 +823,7 @@ export async function handleAsk(
     ])
     const tasks = taskListing.items
 
-    // Single-paragraph framing block (issue 0.6.0/18, Fix 4). Defaults
+    // Single-paragraph framing block. Defaults
     // to `includeContext !== false` so cold-start agents and monorepo
     // hops see project + siblings + catch-all warnings without a
     // separate `lore-context action='wake-up'` round-trip. Agents with
@@ -868,9 +868,7 @@ export async function handleAsk(
     // pass in parallel — they're data-independent (different fact subsets
     // in, disjoint outputs out) and both ride the shared rate-limited
     // Notion client, so concurrency here cuts wall-clock to the slower
-    // of the two without raising peak Notion load. Sequential awaits
-    // here used to add `T(decisionLinks) + T(titleMap)` to every
-    // `lore-query action='ask'` call.
+    // of the two without raising peak Notion load.
     //
     // Failure-semantics note: `Promise.all` short-circuits on the first
     // rejection, which would lose `debugLogPartialFailures` observability
@@ -878,8 +876,8 @@ export async function handleAsk(
     // paths — `resolveCanonicalDecisionLinks` surfaces failures through
     // a structured `failures` array via `settleAll`, and
     // `MemoryService.getTitleById` catches `titleCache.getOrLoad(id, () =>
-    // fetchTitle(id))` rejections and returns `null` (see
-    // `src/core/memory.ts`). `fetchTitle` returns `null` for known-absent
+    // fetchTitle(id))` rejections and returns `null`. `fetchTitle`
+    // returns `null` for known-absent
     // ids (404 / RestrictedResource / archived) so `getOrLoad` commits a
     // tombstone, and throws for transient errors (429 / 5xx / network)
     // so `getOrLoad` rejects without caching — `getTitleById`'s catch
@@ -987,7 +985,7 @@ export async function handleAsk(
     }
 
     // Tasks bucket — surfaces tracked work touching the entity. The
-    // pre-#23 open-loops view was a fact partition; tasks are the
+    // legacy open-loops view was a fact partition; tasks are the
     // canonical surface now and this section is what
     // `lore-query action='ask'` callers see in its place.
     type Tasked = { sortKey: string | null; line: string }
@@ -1050,8 +1048,8 @@ export async function handleAsk(
         : ""
 
     // Header noun: tasks become first-class in the same response, so a
-    // vault with only tasks (post-migration, sparse facts) doesn't
-    // misreport "0 facts" when the section actually rendered.
+    // vault with only tasks (and sparse facts after the migration)
+    // doesn't misreport "0 facts" when the section actually rendered.
     const noun = taskItems.length > 0 && facts.length === 0 ? "results" : "facts"
     const response: ToolResult = {
       content: [
@@ -1062,7 +1060,7 @@ export async function handleAsk(
       ],
     }
 
-    // Citation-as-evidence (issue 0.8.0/05). The ask response surfaces
+    // Citation-as-evidence. The ask response surfaces
     // canonical decisions (decisions are memories) and the source
     // memories backing each fact; both are cites and both bump the
     // confidence column. The IDs are surfaced but the full memories
@@ -1191,7 +1189,7 @@ export async function handleAudit(
           // (DEFERRED-07) so an audit reader sees the trust signal
           // immediately under the title and BEFORE the staleness
           // detail. `renderTrustLine` returns null for null /
-          // above-threshold scores, so pre-migration audit output
+          // above-threshold scores, so unmigrated-vault audit output
           // is byte-identical to pre-DEFERRED-02.
           const trustLine = renderTrustLine(f.confidenceScore ?? null, "  ")
           const trustRow = trustLine !== null ? `${trustLine}\n` : ""
@@ -1311,7 +1309,7 @@ const factDispatchSchema = z
     z.object({
       action: z.literal("create"),
       // Reject empty / whitespace-only subject and object at the
-      // boundary (issues #467 + #481, write-path symmetry). An empty
+      // boundary; write-path symmetric with the read-path guard. An empty
       // / whitespace-only triple would land in `createWithDedup`,
       // hash through `normalize("")` into `DedupKey`, and persist a
       // structurally degenerate fact row that confuses downstream
@@ -1335,7 +1333,7 @@ const factDispatchSchema = z
     z.object({
       action: z.literal("invalidate"),
       factId: z.string(),
-      // Issue #284 — optional invalidation provenance. The memory id
+      // Optional invalidation provenance. The memory id
       // recorded on the fact's `Invalidated By` relation, distinct from
       // `Source` (creation-time provenance). Optional because operators
       // sometimes invalidate without a memory to point at (e.g. an
@@ -1366,7 +1364,7 @@ const factDispatchSchema = z
 
 export function registerKnowledgeTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-fact — polymorphic dispatcher (P3-01)
+  // lore-fact — polymorphic dispatcher
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-fact",

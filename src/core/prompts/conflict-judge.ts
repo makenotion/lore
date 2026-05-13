@@ -12,9 +12,9 @@
  * than rewriting this one. Old verdicts continue to reference the old
  * version; new verdicts use the new one.
  *
- * The locked-prompt discipline is borrowed from engram; see
- * `src/core/AGENTS.md` § "Locked LLM prompts" for the canonical
- * single-source pointer (engram repo path + rationale).
+ * The locked-prompt discipline is borrowed from engram. The version
+ * stamp + frozen wording posture is the load-bearing piece; the
+ * specific prompt text is Lore's own.
  *
  * The verdict vocabulary `conflicts_with | supersedes | scoped |
  * related | compatible | not_conflict` is **frozen for 0.9.x**. Adding

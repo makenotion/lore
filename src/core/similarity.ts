@@ -10,11 +10,11 @@
  * enough signal to flag duplicates that differ only in wording
  * (`"Wakeup hook crash diagnosis"` vs `"Wakeup hook crash + migration plan"`)
  * without paying for embeddings. Richer similarity lives downstream
- * (see Phase 3 / Phase 4 in Lore-Issues).
+ * (richer similarity is deferred future work).
  *
  * Keeping this side-effect-free means tests run synchronously and the
- * helpers can be reused by future consumers (P3-03 entity canonicalization,
- * P3-04 DS-scoped search) without dragging Notion state. The one import
+ * helpers can be reused by future consumers (entity canonicalization,
+ * DS-scoped search) without dragging Notion state. The one import
  * (`decodeTextEntities`) is itself pure and carries no Notion knowledge.
  */
 
@@ -30,7 +30,7 @@ import { decodeTextEntities } from "../notion/html-entities.js"
 const TRIGRAM_SIZE = 3
 
 /**
- * Sentinel wrapper used to pad the input so short titles still produce
+ * Sentinel wrapper that pads the input so short titles still produce
  * trigrams and so boundary trigrams carry positional information. Two
  * spaces gives enough padding that a single character collapses to
  * `"  X"` and `" X "` and `"X  "` — each contributes a trigram that
@@ -44,7 +44,7 @@ const PADDING = "  "
  *
  * **Entity decode is load-bearing.** Pre-PF1-06 vaults still hold titles
  * written as `"Café &amp;amp; Bar"`, while any post-PF1-06 write lands
- * as `"Café & Bar"` (see `MemoryService.create` at `memory.ts:196`).
+ * as `"Café & Bar"` because `MemoryService.create` decodes at the write boundary.
  * Without decoding on the read side, the probe would trigram the
  * encoded legacy row against the decoded new row — and the `"&am"`,
  * `"amp"`, `"mp;"` trigrams the encoding added would drop a true
@@ -95,8 +95,9 @@ export function titleTrigrams(s: string): Set<string> {
  *
  * - `1.0` — identical after normalization (same title, case variation,
  *   internal whitespace differences).
- * - `~0.7` — roughly "one word edited" in a short title. The P2-03 spec
- *   uses `0.7` as the memory threshold and `0.6` for decisions.
+ * - `~0.7` — roughly "one word edited" in a short title. The
+ *   near-duplicate probe uses `0.7` as the memory threshold and
+ *   `0.6` for decisions.
  * - `0.0` — disjoint trigrams OR either side normalized to empty.
  *
  * Both sides empty returns `0` rather than `1` — two blank titles are

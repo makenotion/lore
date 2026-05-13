@@ -206,7 +206,7 @@ export async function readEvalBaselineSnapshot(
  * Compare a fresh artifact to a baseline snapshot and return a drift
  * report. Regression triggers — any one of these flips `regressed: true`:
  *
- * - A previously-passing result now fails.
+ * - A baselined-as-passing result now fails.
  * - `failedResults` increases vs. baseline.
  * - `memoryHarm` increases at all (or appears where the baseline had
  *   no harm signal). No tolerance — any new harm is a regression.
@@ -218,7 +218,7 @@ export async function readEvalBaselineSnapshot(
  * `memoryLift` are surfaced via `metricChanges` for visibility, but do
  * NOT auto-regress: a per-result drop already shows up as a new
  * failure, and a metric drop without a per-result regression usually
- * means a previously-failing result was tightened. Keep the bar at the
+ * means a baselined-as-failing result was tightened. Keep the bar at the
  * task level rather than the average.
  */
 export function compareToEvalBaseline(input: {
@@ -332,8 +332,7 @@ export function compareToEvalBaseline(input: {
     harmChange.current > harmChange.baseline
   ) {
     // No tolerance for harm — the JSDoc / docs / const-comment all
-    // promise that any post-baseline harm bump is a regression. The
-    // 1e-3 tolerance previously applied here contradicted that.
+    // promise that any post-baseline harm bump is a regression.
     regressions.push(
       `memoryHarm increased from ${harmChange.baseline} to ${harmChange.current}`
     )

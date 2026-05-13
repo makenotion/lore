@@ -5,10 +5,11 @@
  * to save, search, and recall memories from a Notion-backed vault.
  *
  * Two entry points reach this code:
- *   - Legacy: `node dist/mcp.js` (preserved for one release for `~/.lore`
- *     consumers; the file's own `if (isEntryPoint())` guard runs `main`).
- *   - Bin-dispatch: `lore mcp` (the default for 0.11.0+ installs). The
- *     CLI command lazy-imports `startServer` from this module.
+ *   - Legacy absolute-path launcher: `node` against the standalone
+ *     built MCP entry. The `isEntryPoint()` guard at the bottom of
+ *     this file runs `main()` for that path.
+ *   - Bin-dispatch: `lore mcp` (the default for current installs).
+ *     The CLI command lazy-imports `startServer` from this module.
  */
 
 import { fileURLToPath } from "node:url"
@@ -62,41 +63,11 @@ const DIAGNOSTIC_INPUT_SCHEMA = z
   .passthrough()
 
 export async function startServer(): Promise<void> {
-  // P3-01 collapsed the tool surface from 24 single-purpose tools to seven
-  // polymorphic dispatchers (with the prior names retained as deprecated
-  // aliases). The shape of every reconnecting client's tool list shifts
-  // observably, so the server version bumps 0.3.0 → 0.4.0.
-  //
-  // PF3-04 tightens the MCP `lore-context action='wake-up'` per-section
-  // defaults whenever `userQuery` is non-empty (mirroring the shell hook's
-  // `RANKED_WAKEUP_LIMITS`). MCP-direct callers that previously relied on
-  // the looser `DEFAULT_WAKEUP_*` caps for ranked calls now see fewer
-  // rows — observable shape change with no schema delta — so the server
-  // version bumps 0.4.0 → 0.5.0.
-  //
-  // 0.5.1 (issue 0.6.0/24) adds the `lore status` tracking-predicate
-  // preflight ahead of the 0.6.0 deprecation purge. No MCP surface
-  // change — patch bump per the version-literal-must-move-together
-  // contract documented in `src/mcp/AGENTS.md`.
-  //
-  // 0.10.1 exposes a diagnostic MCP surface for interactive service-init
-  // failures. The success path still registers the full dispatcher set,
-  // but degraded startup now presents the same dispatcher names with setup
-  // recovery text instead of disconnecting the client. (Surface count
-  // moved to eight in issue #282; the diagnostic set tracks it.)
-  //
-  // 0.11.0 packages the post-ntn dogfood hardening train: attribution,
-  // retry-safe writes, task/audit/list output fixes, entity merge, and
-  // Notion request throttling.
-  //
-  // Pending release after 0.11.0: explicit project scope fails closed
-  // across MCP and CLI entry points. Agents now get deterministic errors
-  // for typo'd, archived, inaccessible, or ambiguous project names
-  // instead of silently falling back to auto-detected or vault-wide scope.
-  //
-  // Pending release after 0.11.0: normal MCP fact creation flips from
-  // warning-only provenance guidance to hard-error enforcement before
-  // fact or Entity writes.
+  // The version literal below is the MCP handshake string. Bumps
+  // here move in lockstep with the package version, the CLI's
+  // `.version(...)` literal, and the Notion `User-Agent` constant
+  // so reconnecting clients always observe the same string the rest
+  // of the build advertises.
   const server = new McpServer(
     { name: "lore", version: "0.13.1" },
     {
@@ -113,8 +84,8 @@ export async function startServer(): Promise<void> {
     // MCP startup is a hot path — every reconnecting client kicks off a
     // fresh process and would otherwise enqueue a full schema-drift scan
     // against the same rate-limited client used for tool calls. Debounce
-    // it: the per-config-root marker (see `src/hooks/drift-marker.ts`)
-    // ensures the scan fires at most once per `DRIFT_DEBOUNCE_DAYS`.
+    // it: the per-config-root drift marker ensures the scan fires at
+    // most once per `DRIFT_DEBOUNCE_DAYS`.
     services = await initServices(undefined, { driftCheck: "debounced" })
   } catch (err) {
     if (process.env["LORE_BACKGROUND_AGENT"] === "true") {

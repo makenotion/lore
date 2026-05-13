@@ -1,5 +1,5 @@
 /**
- * `lore conflicts scan` (issue 0.9.0/#09).
+ * `lore conflicts scan`.
  *
  * Walks the vault, runs candidate generation per project (delegated to
  * `findConflictCandidates`), filters out pairs already judged via
@@ -13,10 +13,7 @@
  * Claude Code already; the natural judge is the *current* Claude
  * session, not a fresh subprocess. So the design is inverted: the
  * scanner produces output the calling agent reads, judges, and
- * dispatches back via `lore-memory action='compare'`. See
- * `Phase-3/09-lore-conflicts-scan-cli.md` for the full design rationale,
- * and `src/core/AGENTS.md` § "Locked LLM prompts" for the engram-borrow
- * doctrine.
+ * dispatches back via `lore-memory action='compare'`.
  */
 
 import { Command } from "commander"
@@ -304,11 +301,11 @@ export async function runScan(
   }
 
   // 4. Apply the already-judged filter: drop pairs where either side
-  //    names the other in `comparedWith`. The candidate generator at
-  //    `conflict.ts` deliberately does NOT filter here — state-aware
-  //    filtering belongs to the caller (this CLI).
+  //    names the other in `comparedWith`. The candidate generator
+  //    deliberately does NOT filter here — state-aware filtering
+  //    belongs to the caller (this CLI).
   //
-  //    Issue #535 SQL path: when `LORE_USE_RUNTOOL_FILTER_SQL=1` and a
+  //    SQL path: when `LORE_USE_RUNTOOL_FILTER_SQL=1` and a
   //    RunTool wrapper is wired, pre-build the set of already-compared
   //    pair-keys via one targeted SQL query per project that
   //    server-side narrows to rows whose `Compared With` is non-empty
@@ -427,9 +424,9 @@ function toScanPairMemory(
  * Render the scan as prompt-ready markdown for the calling agent. The
  * header explicitly tells the agent the next move (call
  * `lore-memory action='compare'`) and references the verdict
- * vocabulary by name. The 0.9.0 scan does NOT inline the locked prompt
- * verbatim. The canonical verdict definitions live in
- * docs/memory-workflows.md.
+ * vocabulary by name. The scan does NOT inline the locked prompt
+ * verbatim — the verdict-vocabulary contract lives in the lore
+ * conflict-detection workflow doc.
  */
 export function renderScanMarkdown(report: ScanReport): string {
   const lines: string[] = []
@@ -497,7 +494,7 @@ export function renderScanMarkdown(report: ScanReport): string {
     // produces fixed-shape signal strings today (`"title trigram:
     // 0.78"`, `"shared tags: auth, jwt"`), but rendering one signal
     // per bullet line means a future caller-controlled signal carrying
-    // a literal `;` (e.g., a phrase like `"refs PR #123; PR #456"`)
+    // a literal `;` (e.g., a phrase like `"refs auth-svc; api-gateway"`)
     // can't ambiguate the inline `"; "` separator we'd otherwise use.
     lines.push("**Signals:**")
     for (const signal of pair.signals) {

@@ -1,7 +1,7 @@
 /**
  * High-level wrapper for `update_page` / `update_content` that the
  * domain layer (e.g. `MemoryService.upsertByTopicKey` /
- * `rekeyTopicKey`, `memory-encoding.ts` large-body fix) consumes. Owns
+ * `rekeyTopicKey` large-body fix) consumes. Owns
  * three concerns:
  *
  * 1. **Pre-call validation.** Reject inputs the wrapper can prove will
@@ -14,13 +14,14 @@
  *    `RunToolBlockEditError`. The 403 `RestrictedResource` capability
  *    rejection ALSO maps to a fall-back-able kind
  *    (`restricted_resource`) because the auth-refresh proxy cannot
- *    repair it — see `client.ts` for the detailed contract. Other
+ *    repair it — the dispatcher's `RunToolBlockEditError` shape carries
+ *    the contract. Other
  *    transport errors (401 / 429 / 5xx / malformed) propagate
  *    verbatim so the auth-refresh and rate-limit gates keep working.
  * 3. **Narrow surface.** Callers pass an array of `{ old_str, new_str }`
  *    edits plus a deliberate `allowDeletingContent` opt-in. Everything
- *    else stays internal so the issue-#532 "narrow API" non-goal stays
- *    enforced.
+ *    else stays internal so the RunTool quarantine's "narrow API"
+ *    non-goal stays enforced.
  */
 
 import type { Client } from "@notionhq/client"

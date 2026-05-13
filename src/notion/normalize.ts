@@ -21,8 +21,7 @@ export interface FactTripleInput {
  * brackets, quotes, and other balanced punctuation stay attached —
  * `"foo (bar)"` normalizes to `"foo (bar)"`, not `"foo (bar"`. The broader
  * `\p{P}` class would silently delete asymmetric bracketing and bite
- * downstream reusers (P2-03 near-duplicate memories, P3-03 entity
- * canonicalization).
+ * downstream reusers (near-duplicate memories, entity canonicalization).
  */
 const TRAILING_STRIP_RE = /[.,;:!?\s]+$/
 
@@ -62,7 +61,7 @@ export const DEDUP_KEY_SEP = "\x1F"
 
 /**
  * Compute the dedup key for a fact triple. Subject and object are normalized;
- * the predicate is a closed enum (see `FactPredicate` in `types.ts`) so it
+ * the predicate is a closed enum (the `FactPredicate` union) so it
  * passes through unchanged. The resulting triple is hashed with SHA-256 to
  * produce a fixed-length 64-character hex digest.
  *
@@ -82,15 +81,15 @@ export function computeFactDedupKey(input: FactTripleInput): string {
 }
 
 /**
- * Canonical subject key for case-insensitive `queryBySubject` matching
- * (P3-03 Part A). Stored on the Facts DB's `SubjectKey` rich_text column
+ * Canonical subject key for case-insensitive `queryBySubject` matching.
+ * Stored on the Facts DB's `SubjectKey` rich_text column
  * alongside the human-readable `Subject` title.
  *
  * Implemented as a thin alias over `normalize` because the two share the
  * same fold semantics (NFC, whitespace collapse, trailing-terminator strip,
  * lowercase) — a separate "subject fold" would inevitably drift from the
- * dedup-key fold and reintroduce the very fragmentation P3-03 closes. A
- * future Part B (Entities DB) replaces this with a relation-based join,
+ * dedup-key fold and reintroduce the same fragmentation. The Entities
+ * DB replaces this with a relation-based join,
  * but the rich_text key is sufficient for the substring-contains queries
  * `lore-query action='ask'` and `queryByEntity` issue today.
  *

@@ -1,7 +1,7 @@
 /**
  * Convert Notion REST property shapes (`buildFactProps` /
  * `buildMemoryProps` output) into the flat SQLite-style property
- * map RunTool's `create_pages` consumes (issue #533).
+ * map RunTool's `create_pages` consumes.
  *
  * **Why this exists.** The `notion-create-pages` MCP tool's schema
  * advertises `properties: Record<string, string | number | null>`
@@ -9,7 +9,7 @@
  * exact expansion rules are not documented in the visible portion
  * of the public schema, so the conversion below is grounded in an
  * empirical inspection of an existing Facts DB row at the pinned
- * PR-#538 review time. The observed wire format on a live
+ * batch-create rollout. The observed wire format on a live
  * `mentions` fact, captured via `query_data_sources`:
  *
  * | Notion REST shape                              | SQLite-flat shape                                |
@@ -52,7 +52,7 @@
  *
  * **URL form for relations.** The empirical sample shows
  * `https://dev.notion.so/<32hex>` for a vault on `api-dev.notion.com`.
- * Live verification at PR #538 review time confirmed that the host
+ * Live verification confirmed that the host
  * MUST match the workspace's actual user-facing domain — the server
  * rejects `https://www.notion.so/<id>` against a dev workspace
  * (`Invalid page URL ... for property Project.`) and likewise the
@@ -263,11 +263,11 @@ function extractTextArrayContent(value: unknown): string {
  * `relationUrlBase` MUST be the user-facing host root for the
  * workspace (e.g. `https://dev.notion.so/` for dev,
  * `https://www.notion.so/` for production). Live-verification on
- * an internal vault at PR #538 review time confirmed that
- * the server rejects relation URLs whose host doesn't match the
- * workspace environment with `400 validation_error: Invalid page
- * URL`. The base must be derived from the configured auth host,
- * NOT hardcoded — see `services.ts:deriveRelationUrlBase`.
+ * an internal vault confirmed that the server rejects relation URLs
+ * whose host doesn't match the workspace environment with
+ * `400 validation_error: Invalid page URL`. The base must be derived
+ * from the configured auth host, NOT hardcoded —
+ * `deriveRelationUrlBase` carries the mapping.
  *
  * Idempotent and pure; no I/O.
  */

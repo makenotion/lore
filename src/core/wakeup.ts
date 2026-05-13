@@ -12,11 +12,11 @@
  * search. Seed phrases come from active task subjects — signal the user
  * wrote with intent — joined into one query so Notion's vector index
  * scores memory titles AND bodies against the union. This handles the
- * realistic case where task subjects read like phrases (e.g. "PR
- * #25650 label.applied classifier") that do not appear verbatim in memory
+ * realistic case where task subjects read like phrases (e.g.
+ * "label.applied classifier rollout") that do not appear verbatim in memory
  * titles but are semantically adjacent to the explaining memory.
  *
- * When the caller has the user's first message (P3-05: hook fires on
+ * When the caller has the user's first message (the hook fires on
  * `UserPromptSubmit`, not `SessionStart`), passing it via `userQuery`
  * fires an additional relevance search seeded by that message. The hits
  * surface as `taskMemories`, deduped against digest + recent + related,
@@ -49,10 +49,9 @@ import type { UpstreamVaultBundle } from "./topology-readers.js"
 import { redactDebugError } from "../debug-redact.js"
 
 export { WakeUpCache, computeWakeUpCacheKey }
-// Re-exported so existing callers that import `MS_PER_DAY` from
-// `wakeup.ts` keep working — the canonical declaration moved to
-// `types.ts` (issue 0.8.0/#10 follow-up) so day-arithmetic across
-// services shares one source of truth.
+// Re-exported so existing wake-up callers that import `MS_PER_DAY`
+// keep working — day-arithmetic across services shares one source
+// of truth at the canonical declaration.
 export { MS_PER_DAY }
 
 export const DEFAULT_WAKEUP_MEMORY_LIMIT = 10
@@ -88,8 +87,8 @@ export const DEFAULT_WAKEUP_TASK_LIMIT = 10
  */
 export const DEFAULT_WAKEUP_TASK_MEMORY_LIMIT = 3
 /**
- * Cap on the proposed-memory inbox section rendered at session start
- * (issue #281, AC #2). Mirrors the `proposedDecisions` cap of 20: a
+ * Cap on the proposed-memory inbox section rendered at session start.
+ * Mirrors the `proposedDecisions` cap of 20: a
  * triage surface, not an inventory. Operators with deeper inbox depth
  * see the full count surfaced via `WakeUpSectionCounts.proposedMemories`
  * + `lore status`'s Proposed memories line; the wake-up section caps
@@ -99,8 +98,8 @@ export const DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT = 20
 
 /**
  * Per-upstream cap for the inherited-memory section
- * (issue #286, "Read inheritance"). Three rows is the sparse
- * default the issue calls out: "a team/org vault is useful only
+ * ("Read inheritance"). Three rows is the sparse
+ * default: "a team/org vault is useful only
  * if inherited memory is sparse, labeled, and intentionally
  * capped." Operators with a different signal/noise tradeoff can
  * override per call via `WakeUpOptions.inheritedMemoryLimit`.
@@ -111,10 +110,10 @@ export const DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT = 3
  * and hasn't overridden the section explicitly. Tighter than the
  * surface-default caps above because relevance-ranked top hits carry more
  * signal-per-row than timestamp-ordered recents — a smaller bundle yields
- * better wake-up density. Values come straight from the P3-05 spec.
+ * better wake-up density. Values come from the relevance-section spec.
  *
- * Shared across both wake-up surfaces (`src/hooks/helpers.ts` and
- * `src/mcp/tools/context.ts`) so the prompt-budget contract stays
+ * Shared across both wake-up surfaces (the hook helper and the
+ * `lore-context` MCP tool) so the prompt-budget contract stays
  * identical regardless of which surface fired wake-up. A caller-supplied
  * value still wins — these are defaults, not ceilings.
  *
@@ -216,7 +215,7 @@ export interface WakeUpServices {
     }): Promise<Memory[]>
     /**
      * Surfaces low-score-or-long-neglected memories for the Stale
-     * Confidence wake-up subsection (0.8.0/#10). Required on the
+     * Confidence wake-up subsection. Required on the
      * structural type so the type system catches "I forgot to wire
      * the new method" at compile time rather than letting it
      * silently degrade to an empty section at runtime. Hook callers
@@ -230,7 +229,7 @@ export interface WakeUpServices {
       today: string
     }): Promise<Memory[]>
     /**
-     * True proposed-memory inbox depth (issue #281). Required on the
+     * True proposed-memory inbox depth. Required on the
      * structural type so the type system catches a forgotten wiring
      * — same posture as `queryStaleConfidence`. Hook callers skip
      * the query via `includeProposedMemories: false` /
@@ -242,7 +241,7 @@ export interface WakeUpServices {
       byAgent: Record<string, number>
     }>
     /**
-     * Pinned context blocks (issue #282). Required on the structural
+     * Pinned context blocks. Required on the structural
      * type so the type system catches a forgotten wiring — same
      * posture as `queryStaleConfidence` / `countProposed`. Hook
      * callers skip the query via `includePinnedBlocks: false` /
@@ -288,35 +287,34 @@ export interface WakeUpServices {
   }
   /**
    * Per-upstream read-only service bundles for inherited-memory
-   * fan-out (issue #286, "Read inheritance"). Optional so the
+   * fan-out ("Read inheritance"). Optional so the
    * structural type stays source-compatible with single-vault
    * fixtures and the shell hook's lightweight wake-up wiring;
    * absent / empty array suppresses the inherited section entirely
-   * (byte-identical behavior to pre-#286). Production wiring
+   * (byte-identical behavior to single-vault wake-up). Production wiring
    * threads `LoreServices.upstreams` through directly.
    *
    * **Optional is the deliberate test-fixture compatibility
-   * choice**, not a feature toggle (PR #589 round-2 review). The
+   * choice**, not a feature toggle. The
    * downstream consumer `runWakeUpFanOut` treats `undefined` and
    * `[]` identically — both suppress the section. New callers
    * constructing a `WakeUpServices` standalone should thread the
    * `LoreServices.upstreams` array directly; the optionality is
-   * for the existing test stubs in `wakeup.test.ts` that pre-date
-   * #286 and don't carry the field.
+   * for existing test stubs that don't carry the field.
    */
   upstreams?: readonly UpstreamVaultBundle[]
 }
 
 /**
- * One labeled section of inherited upstream memories on wake-up
- * (issue #286). Sections render in upstream-priority order
+ * One labeled section of inherited upstream memories on wake-up.
+ * Sections render in upstream-priority order
  * (ascending; lower fires first); local memories always outrank
  * inherited ones structurally because the inherited block renders
  * AFTER the primary sections.
  *
  * Per-upstream caps (default 3 via
  * `DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT`) keep the section sparse
- * and labeled — see the issue's design rule: "a team/org vault is
+ * and labeled — the design rule is "a team/org vault is
  * useful only if inherited memory is sparse, labeled, and
  * intentionally capped."
  *
@@ -328,7 +326,7 @@ export interface WakeUpServices {
  * preserved regardless.
  */
 export interface InheritedMemorySection {
-  /** Configured upstream label (display name from `.lore.yaml`). */
+  /** Configured upstream label (display name from .lore.yaml). */
   label: string
   /** Configured upstream page id. */
   pageId: string
@@ -420,9 +418,9 @@ export interface WakeUpCoverageInput {
   proposedDecisions: readonly DecisionSummary[]
   overdueDecisions: readonly DecisionSummary[]
   /**
-   * Optional so pre-Phase-2 (issue #281) call sites and test
-   * fixtures stay structurally compatible. Defaults to `[]` inside
-   * `computeWakeUpCoverage` — `sectionCounts.proposedMemories`
+   * Optional so call sites that don't render proposed memories and
+   * test fixtures stay structurally compatible. Defaults to `[]`
+   * inside `computeWakeUpCoverage` — `sectionCounts.proposedMemories`
    * collapses to zero in that case.
    */
   proposedMemories?: readonly Memory[]
@@ -499,7 +497,7 @@ export interface WakeUpOptions {
    * to 1000 chars before search to bound query size and keep the vector
    * index focused.
    *
-   * P3-05: when this is provided, the hook caller should also tighten
+   * When this is provided, the hook caller should also tighten
    * the per-section caps (recent: 3, related: 2, knowledge: 10) —
    * relevance-ranked top hits carry more weight than timestamp ordering,
    * so a smaller bundle yields better wake-up signal density.
@@ -524,7 +522,7 @@ export interface WakeUpOptions {
    */
   includeDecisions?: boolean
   /**
-   * When false, skip the Stale Confidence query (0.8.0/#10). The shell
+   * When false, skip the Stale Confidence query. The shell
    * hook never renders the section, so it has no reason to pay the
    * extra Notion round-trip on every session start. Defaults to true
    * so MCP callers (which DO render the section) keep working. Same
@@ -532,8 +530,8 @@ export interface WakeUpOptions {
    */
   includeStaleConfidence?: boolean
   /**
-   * When false, skip the proposed-memory inbox query (issue #281,
-   * AC #2). The shell hook never renders the section, so it has no
+   * When false, skip the proposed-memory inbox query. The shell
+   * hook never renders the section, so it has no
    * reason to pay the extra Notion round-trip on every session
    * start. Defaults to true so MCP callers (which DO render the
    * section) keep working. Same posture as `includeDecisions` /
@@ -547,7 +545,7 @@ export interface WakeUpOptions {
    */
   proposedMemoryLimit?: number
   /**
-   * When false, skip the pinned context blocks query (issue #282).
+   * When false, skip the pinned context blocks query.
    * The shell hook never renders the section, so it has no reason
    * to pay the extra Notion round-trip on every session start.
    * Defaults to true so MCP callers (which DO render the section)
@@ -562,12 +560,12 @@ export interface WakeUpOptions {
    */
   pinnedBlockLimit?: number
   /**
-   * Reader identity slots for pinned-block audience matching
-   * (issue #282). When omitted, only universally-targeted pins
-   * (audience empty or `all`) surface. Mirrors `MemoryScopeContext`
-   * from issue #283 — pinned blocks ride atop the same identity
-   * resolution, so a caller that already populates the context for
-   * scope filtering reuses it here without duplication.
+   * Reader identity slots for pinned-block audience matching.
+   * When omitted, only universally-targeted pins (audience empty
+   * or `all`) surface. Same shape as `MemoryScopeContext` — pinned
+   * blocks ride atop the same identity resolution, so a caller
+   * that already populates the context for scope filtering reuses
+   * it here without duplication.
    */
   pinnedReaderContext?: MemoryScopeContext
   /**
@@ -590,7 +588,7 @@ export interface WakeUpOptions {
   /** Override Date.now() for testing. */
   now?: number
   /**
-   * Process-local result cache (issue #495). When supplied,
+   * Process-local result cache. When supplied,
    * `loadWakeUpData` consults it before fan-out and stores the
    * computed result on the way out. Bumping `cache.bumpEpoch()` on
    * every MCP write action invalidates stale entries so a save +
@@ -606,8 +604,8 @@ export interface WakeUpOptions {
    */
   cache?: WakeUpCache
   /**
-   * When false, skip the upstream-vault fan-out entirely (issue
-   * #286). Same posture as `includeDecisions` /
+   * When false, skip the upstream-vault fan-out entirely.
+   * Same posture as `includeDecisions` /
    * `includeStaleConfidence` / `includeProposedMemories`: the shell
    * hook currently renders no inherited section, so it has no reason
    * to pay per-upstream Notion round-trips. Defaults to true so MCP
@@ -672,7 +670,7 @@ export interface WakeUpData {
   taskMemories: Memory[]
   /**
    * Memories awaiting review (`Status = proposed`) — the wake-up
-   * surface of the proposed-memory inbox (issue #281, AC #2).
+   * surface of the proposed-memory inbox.
    * Project-scoped when `projectId` is supplied, vault-wide
    * otherwise. Capped at `PROPOSED_MEMORY_LIMIT` so a large inbox
    * cannot dominate wake-up; the count surfaces in
@@ -681,7 +679,7 @@ export interface WakeUpData {
    *
    * Disjoint by construction: this section is the only surface that
    * sees `Status = proposed` rows; every other section applies the
-   * default-exclude added by Phase 2 of issue #281. No id-dedup
+   * default-exclude on `Status = proposed`. No id-dedup
    * needed. Empty when the option `includeProposedMemories` is
    * false (hook path) or no proposed rows exist for the requested
    * scope. Sorted oldest-first so stale review debt surfaces ahead
@@ -700,8 +698,8 @@ export interface WakeUpData {
   proposedMemoriesTotal: number
   /**
    * Memories scored below `CONFIDENCE_DISPLAY_THRESHOLD` OR with
-   * `Last Referenced At` past the `STALE_CONFIDENCE_DAYS` cutoff
-   * (0.8.0/#10). Sorted by score ascending, capped at
+   * `Last Referenced At` past the `STALE_CONFIDENCE_DAYS` cutoff.
+   * Sorted by score ascending, capped at
    * `STALE_CONFIDENCE_LIMIT`. Empty when the option
    * `includeStaleConfidence` is false (hook path) or the underlying
    * service does not implement the optional `queryStaleConfidence`
@@ -711,14 +709,14 @@ export interface WakeUpData {
    */
   staleConfidence: Memory[]
   /**
-   * Pinned context blocks (issue #282) for the wake-up Pinned
-   * Context section. Sorted by `Pinned Priority` descending, then by
-   * `created_time` descending. Capped at `pinnedBlockLimit`
-   * (default `DEFAULT_PINNED_BLOCK_LIMIT`). Empty when
-   * `includePinnedBlocks: false` or the vault has no pinned rows
-   * matching the reader's project + audience.
+   * Pinned context blocks for the wake-up Pinned Context section.
+   * Sorted by `Pinned Priority` descending, then by `created_time`
+   * descending. Capped at `pinnedBlockLimit` (default
+   * `DEFAULT_PINNED_BLOCK_LIMIT`). Empty when `includePinnedBlocks:
+   * false` or the vault has no pinned rows matching the reader's
+   * project + audience.
    *
-   * Rendered BEFORE the relevance-ranked sections per the issue's
+   * Rendered BEFORE the relevance-ranked sections per the
    * "always-visible, shareable, optionally read-only memory as a
    * coordination primitive" framing — pinned blocks are governance
    * context, not retrieved content.
@@ -732,7 +730,7 @@ export interface WakeUpData {
    */
   pinnedBlocks: Memory[]
   /**
-   * Total active-pinned-block count across the vault (issue #282).
+   * Total active-pinned-block count across the vault.
    * Surfaced separately from `pinnedBlocks.length` so the wake-up
    * renderer can compare against `PINNED_BLOCKS_ABUSE_THRESHOLD` and
    * append an inline operator-facing warning when the count is
@@ -752,13 +750,13 @@ export interface WakeUpData {
    */
   coverage: WakeUpCoverageMetrics | null
   /**
-   * Per-upstream inherited-memory sections (issue #286). Empty array
+   * Per-upstream inherited-memory sections. Empty array
    * when no upstreams are configured OR `includeInheritedMemories`
    * was disabled. Order matches the upstream priority order from
    * `buildVaultTopology` (ascending). Each section carries its own
    * `error` field so upstream failures degrade gracefully without
    * suppressing the others — the upstream-failure-isolation
-   * acceptance criterion of issue #286.
+   * invariant the inherited-memory section is built around.
    */
   inheritedMemories: InheritedMemorySection[]
 }
@@ -828,10 +826,11 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       proposedDecisions: proposedDecisionCount,
       overdueDecisions: overdueDecisionCount,
       // Use the true total when threaded; fall back to slice length
-      // for pre-#281 callers and tests that don't compute the total.
-      // Operators with deep inboxes need to see depth here, not the
-      // capped slice — see `WakeUpData.proposedMemoriesTotal`'s
-      // docstring.
+      // for callers and tests that don't compute the total. Operators
+      // with deep inboxes need to see depth here, not the capped
+      // slice — `proposedMemoriesTotal` carries the pre-cap total
+      // precisely so the counter doesn't degrade to "≤ slice cap" on
+      // large inboxes.
       proposedMemories:
         input.proposedMemoriesTotal ?? input.proposedMemories?.length ?? 0,
       staleConfidence: input.staleConfidence.length,
@@ -1000,7 +999,7 @@ async function runWakeUpFanOut(
   // rather than by a `{ items, ... }` envelope. The annotation makes the
   // contract obvious for the next reader and pins the resolution shape if
   // `MemoryService.search`'s return type ever changes.
-  // Stale Confidence (0.8.0/#10): single-page query, runs in parallel
+  // Stale Confidence: single-page query, runs in parallel
   // with the rest of the fan-out so the section costs no extra wall-
   // clock. Hook callers turn it off via `includeStaleConfidence:
   // false` (the hook never renders the section); the method itself is
@@ -1018,7 +1017,7 @@ async function runWakeUpFanOut(
       })
     : Promise.resolve([] as Memory[])
 
-  // Proposed-memory inbox surface (issue #281, AC #2). Two parallel
+  // Proposed-memory inbox surface. Two parallel
   // queries: a slice (rendered as the section body, sorted oldest-
   // first so stale review debt surfaces ahead of recent additions)
   // and a count (the true inbox depth, surfaced in the section
@@ -1035,7 +1034,7 @@ async function runWakeUpFanOut(
   // `MemoryService.countProposed` skip the project filter in that
   // branch, matching the `MemoryService.confidenceStats` /
   // `queryStaleConfidence` posture.
-  // Pinned context blocks (issue #282). Wake-up always runs the
+  // Pinned context blocks. Wake-up always runs the
   // query unless the caller explicitly disables it; defaults to
   // `DEFAULT_PINNED_BLOCK_LIMIT` (10). Single round-trip,
   // server-filtered by `Pinned = true` and (when supplied) project
@@ -1074,7 +1073,7 @@ async function runWakeUpFanOut(
     ? services.memories.list({
         projectId,
         status: "proposed",
-        // `excludeKinds: ["decision"]` mirrors `proposedMemoryFilter()`'s
+        // `excludeKinds: ["decision"]` matches `proposedMemoryFilter()`'s
         // `Kind != decision` clause so the slice and the count surface
         // the SAME row set. Without this, a proposed-Kind-`decision`
         // row would render in the section body but `countProposed`
@@ -1226,9 +1225,9 @@ async function runWakeUpFanOut(
       // Join entities into a single relevance query so Notion's vector
       // index scores memory titles AND bodies against the union. This is
       // strictly more permissive than substring title matching — task
-      // subjects like "PR #25650 outlook label.applied classifier" are
+      // subjects like "outlook label.applied classifier work" are
       // phrase-shaped, not bare entity names, and only relevance ranking
-      // finds the "PR #25650 label.applied classifier: false positives…"
+      // finds the "label.applied classifier: false positives…"
       // memory that explains them.
       //
       // `mode: "semantic"` is explicit (rather than relying on the default
@@ -1269,7 +1268,7 @@ async function runWakeUpFanOut(
   // the project's active work, and the two are not always the same
   // (a user can ask about anything, and the related section keeps active-
   // work context visible regardless). Future tuning may add a topical-
-  // overlap suppression heuristic; pin tests in `wakeup.test.ts` first
+  // overlap suppression heuristic; pin tests first
   // before wiring it.
   const taskMemories: Memory[] = []
   if (taskCandidates.length > 0 && taskMemoryLimit > 0) {
@@ -1356,24 +1355,21 @@ async function loadInheritedMemorySections(
   // fails surfaces as a section carrying its own `error` message
   // so the operator can triage which upstream is broken without
   // losing the others. Same posture as
-  // `loadVaultTopologyStatus`'s probe fan-out (issue #286
-  // "upstream-failure-isolation").
+  // `loadVaultTopologyStatus`'s probe fan-out: each upstream's
+  // failure is isolated to that upstream.
   //
-  // **`allSettled` is load-bearing here, not defensive.** PR #589
-  // round-2 review noted that `redactDebugError` propagates a
-  // throw when the thrown value's `toString()` throws (see the
-  // function's own docstring in `src/debug-redact.ts`). The inner
-  // try/catch calls `redactDebugError(err)` in its catch branch,
-  // so an exotic `toString`-throwing rejection from
-  // `bundle.loadReaders()` or `readers.memories.list()` would
-  // re-throw inside the mapper. Under `Promise.all` that
-  // re-throw would reject the whole fan-out and take down
-  // wake-up. `allSettled` always resolves; the post-loop unwrap
-  // maps any rejection (including a re-throw from
-  // `redactDebugError`) to a section value with `safeRedact`
-  // (which catches the re-throw itself), so the failure
-  // isolation contract holds for the full pathological-error
-  // chain.
+  // **`allSettled` is load-bearing here, not defensive.**
+  // `redactDebugError` propagates a throw when the thrown value's
+  // `toString()` itself throws. The inner try/catch calls
+  // `redactDebugError(err)` in its catch branch, so an exotic
+  // `toString`-throwing rejection from `bundle.loadReaders()` or
+  // `readers.memories.list()` would re-throw inside the mapper.
+  // Under `Promise.all` that re-throw would reject the whole
+  // fan-out and take down wake-up. `allSettled` always resolves;
+  // the post-loop unwrap maps any rejection (including a re-throw
+  // from `redactDebugError`) to a section value with `safeRedact`
+  // (which catches the re-throw itself), so the failure isolation
+  // contract holds for the full pathological-error chain.
   //
   // **Errors are redacted at capture**, not at the renderer
   // boundary. `WakeUpData` is a public shape; a future caller

@@ -1,7 +1,7 @@
 /**
  * Bounded, defensively-scrubbed redaction for SDK error messages and
  * structured SDK-logger payloads routed to `LORE_DEBUG=1`-gated stderr
- * emitters (issue #488).
+ * emitters.
  *
  * Lore documents `LORE_DEBUG=1` as a recommended diagnostic flag for
  * wake-up failures, partial-write failures, and identity-resolution
@@ -21,9 +21,9 @@
  *   interpolate them into `Error.message`, but historical SDK regressions
  *   in adjacent ecosystems (axios pre-1.x echoing `Authorization` headers
  *   in retry traces) make a forward-compatible guard load-bearing.
- * - **Should-redact (recon class).** Page IDs are not bearer secrets per
- *   the root `AGENTS.md` Authentication section, but they are access
- *   locators that let an outsider enumerate vault structure they would
+ * - **Should-redact (recon class).** Page IDs are not bearer secrets,
+ *   but they are access locators that let an outsider enumerate vault
+ *   structure they would
  *   otherwise need a working Notion grant to see. Truncated query
  *   fragments, response bodies echoed into messages, and request paths
  *   sit in the same class.
@@ -54,7 +54,7 @@
  *    - **Bare tokens** (the fallback) — consume until a hard stop
  *      character (`,`, `;`, `}`, `)`, `]`) OR until the next whitespace
  *      that's followed by another `<name>=` field-shape. The
- *      whitespace-with-field-lookahead heuristic addresses the
+ *      whitespace-with-field-lookahead heuristic handles the
  *      stringified-Error-cause case (`cause=Error: page lookup failed
  *      status=500`) where the bare-token branch would otherwise stop at
  *      the first space and leak the descriptive remainder; with the
@@ -62,9 +62,9 @@
  *      and stops at the next field marker (`status=`), redacting the
  *      whole `cause=` value cleanly.
  *
- *    The pre-#488-review-3 implementation used a regex-only branch that
- *    handled at most one level of nested braces; a two-level payload
- *    like `body={"outer":{"inner":{"a":"secret"}}, "message":"…"}`
+ *    An earlier regex-only branch handled at most one level of nested
+ *    braces; a two-level payload like
+ *    `body={"outer":{"inner":{"a":"secret"}}, "message":"…"}`
  *    fell through to the bare-token fallback and leaked the tail. The
  *    scanner's depth counter resolves that by walking arbitrary nesting.
  *
@@ -212,8 +212,8 @@ const MAX_EXTRA_INFO_DEPTH = 32
 
 /**
  * Walk `<field>=<value>` markers in a message, replacing each value
- * with the `<redacted>` sentinel. See the module docstring's defense 1
- * for the threat model; see `consumeFieldValue` for the per-shape
+ * with the `<redacted>` sentinel. The module docstring's first defense
+ * carries the threat model; `consumeFieldValue` carries the per-shape
  * boundary rules.
  *
  * The scanner is exported only for tests — production callers use
@@ -378,13 +378,12 @@ function consumeBareToken(message: string, start: number): number {
 function isWhitespace(c: string): boolean {
   // Includes ASCII space + tabs + form-feed + vertical tab + LF / CR.
   // Some call sites collapse control characters to spaces via
-  // `oneLine` (`src/mcp/helpers.ts`) before the line is written, but
-  // not all paths do — `rejectionToLogLine` in `src/core/memory.ts`
-  // routes through `redactDebugMessage` BEFORE its
-  // `HYBRID_LOG_CONTROL_CHARS` collapse, and a future caller could
-  // skip the post-collapse entirely. Covering `\n` / `\r` directly
-  // here keeps the bare-token consumer correct regardless of the
-  // call site's post-processing.
+  // `oneLine` before the line is written, but not all paths do —
+  // `rejectionToLogLine` routes through `redactDebugMessage` BEFORE
+  // its `HYBRID_LOG_CONTROL_CHARS` collapse, and a future caller
+  // could skip the post-collapse entirely. Covering `\n` / `\r`
+  // directly here keeps the bare-token consumer correct regardless
+  // of the call site's post-processing.
   return c === " " || c === "\t" || c === "\f" || c === "\v" || c === "\n" || c === "\r"
 }
 
@@ -466,9 +465,9 @@ const SENSITIVE_EXTRA_INFO_KEYS = new Set<string>([
  * 1. **Key-aware wholesale redaction.** When a property key matches
  *    `SENSITIVE_EXTRA_INFO_KEYS` (case-insensitive), the value is
  *    replaced with `<redacted>` rather than recursed — closes the
- *    structured-content leak class flagged in issue #488 review #4
- *    where an SDK shape like `{ body: { properties: ... } }` walked
- *    recursively and only string leaves got scrubbed.
+ *    structured-content leak class where an SDK shape like
+ *    `{ body: { properties: ... } }` would walk recursively and only
+ *    have its string leaves scrubbed.
  * 2. **Substring scrubbing on operational fields.** Non-sensitive
  *    string leaves route through `redactDebugMessage` so per-retry
  *    diagnostics like `path: "/v1/pages/<id>"` get page-id-shape

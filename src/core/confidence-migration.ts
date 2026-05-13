@@ -1,12 +1,13 @@
 /**
- * Baseline backfill for the dynamic-confidence workstream (0.8.0/#11).
+ * Baseline backfill for the dynamic-confidence workstream.
  *
- * `lore migrate --build-confidence-scores` seeds every pre-0.8.0 memory's
+ * `lore migrate --build-confidence-scores` seeds every memory's
  * `Confidence Score` from its categorical `Confidence` column and writes
  * `Last Referenced At = created_time`, then realizes any decay accrued
  * since creation. Operator-pulled, plan-then-execute, idempotent — the
- * skip-rule is `confidenceScore !== null`, so a row touched by Phase 2's
- * read-touch (or by a prior run of this migration) is left alone.
+ * skip-rule is `confidenceScore !== null`, so a row touched by the
+ * read-side `touchOnRead` (or by a prior run of this migration) is
+ * left alone.
  *
  * Mirrors the structure of `fact-encoding`/`memory-encoding` migrations
  * but lives off the `MemoryService` boundary — the migration consumes
@@ -183,9 +184,9 @@ async function executePlan(
 ): Promise<number> {
   // Bounded-concurrent dispatch: chunk into batches whose size matches
   // the configured Notion concurrency, then `Promise.all` each batch
-  // sequentially. The rate-limited client (`createLimitedClient` in
-  // `src/services.ts`) is a `p-limit` gate, so dispatching every row
-  // with one big `Promise.all` would also work — but chunking gives a
+  // sequentially. The rate-limited client (`createLimitedClient`)
+  // is a `p-limit` gate, so dispatching every row with one big
+  // `Promise.all` would also work — but chunking gives a
   // natural seam for the per-100-rows progress line and bounds the
   // in-flight promise count for very large vaults.
   //

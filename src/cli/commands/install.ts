@@ -78,9 +78,10 @@ export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
  *   resolution by default, so the same shape is portable across
  *   versions.
  *
- * The legacy absolute-path shape (`node <pkgRoot>/dist/mcp.js`) is
- * orthogonal — selected via `legacyPaths`, not via this enum — and
- * remains unchanged through the deprecation window.
+ * The legacy absolute-path shape (an explicit `node` invocation
+ * against the built MCP entry under the package root) is orthogonal
+ * — selected via `legacyPaths`, not via this enum — and remains
+ * unchanged through the deprecation window.
  */
 export type BinDispatchShape = "bare" | "yarn"
 
@@ -95,7 +96,7 @@ export interface McpEnvBuild {
   /**
    * Literal KEY=value entries always present:
    *   - `LORE_CONFIG_ROOT`  — so the spawned MCP child resolves the
-   *     right `.lore.yaml` even when the host's spawn-time cwd does
+   *     right .lore.yaml even when the host's spawn-time cwd does
    *     not match the operator's vault directory.
    *   - `LORE_SUPPRESS_DEPRECATIONS` — silences per-session
    *     deprecation warnings in the spawned child; the parent CLI
@@ -122,13 +123,13 @@ export interface McpEnvBuild {
 export interface BuildMcpEnvOptions {
   /**
    * Skip the `LORE_CONFIG_ROOT` static entry. Used by the Yarn-PnP
-   * shape because committed `.mcp.json` / `.cursor/mcp.json` /
-   * `.codex/config.toml` files are workspace-shared across
+   * shape because committed .mcp.json / .cursor/mcp.json /
+   * .codex/config.toml files are workspace-shared across
    * developers, and an absolute machine path (`/Users/foo/myrepo`)
    * leaks one developer's checkout into the others'. Under PnP
    * launches via `yarn run -T lore mcp`, the spawned MCP server's
    * cwd is the workspace root — `findConfigFile(cwd)` walks
-   * upward from there and resolves `.lore.yaml` without help.
+   * upward from there and resolves .lore.yaml without help.
    * Bare-bin (non-PnP) installs keep the static because the host's
    * spawn cwd may not match the operator's vault directory.
    */
@@ -149,7 +150,7 @@ export interface BuildMcpEnvOptions {
    * env var the operator had set at install time, because their
    * spawned MCP server's `resolveAuth` cannot fall back to ntn the
    * way an `ntn-auth-json` install can. `undefined` (no opinion) also
-   * preserves the pre-fix behavior — used by the print-config and
+   * preserves the earlier behavior — used by the print-config and
    * legacy-forwarded-note callers when they don't have an auth source
    * to consult.
    */
@@ -178,11 +179,11 @@ export interface BuildMcpEnvOptions {
 /**
  * Build the env map written into MCP entries (Claude / Cursor / Codex).
  *
- * Source-of-truth precedence matches `resolveAuth` (`src/config.ts`)
+ * Source-of-truth precedence matches `resolveAuth`
  * so the MCP server resolves identically to the CLI: NOTION_API_TOKEN
- * (env, canonical) > ntn-resolved (`auth.json`, no install-time
+ * (env, canonical) > ntn-resolved (auth.json, no install-time
  * forwarding required) > LORE_NOTION_TOKEN (env, soft-deprecated) >
- * `auth.token` in `.lore.yaml` (soft-deprecated).
+ * `auth.token` in .lore.yaml (soft-deprecated).
  *
  * Forwarding posture in 0.10.0:
  * - **Conditional**: each `RUNTIME_FORWARDED_KEYS` entry forwards
@@ -196,7 +197,7 @@ export interface BuildMcpEnvOptions {
  *   (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) are NOT forwarded even if
  *   set in the install-time env. The spawned MCP server's
  *   `resolveAuth` picks the same `ntn-auth-json` path on its own
- *   from `~/.config/notion/auth.json` (path 2), so the placeholders
+ *   from ~/.config/notion/auth.json (path 2), so the placeholders
  *   would fingerprint the operator's install-time shell and produce
  *   host-validator warnings (e.g. Claude Code `/doctor`'s "Missing
  *   environment variables") when the underlying vars later unset.
@@ -321,11 +322,12 @@ interface ClaudeMcpEntry {
   command: string
   args: string[]
   /**
-   * Absolute (or `${HOME}`-prefixed) directory the legacy launcher cd's
-   * into before invoking `node dist/mcp.js`. Bin-dispatch entries omit
-   * this field — the host assistant's launch cwd (typically the project
-   * root) is correct for `.lore.yaml` discovery, and pinning a specific
-   * cwd would defeat the portability the bin-dispatch shape provides.
+   * Absolute (or `${HOME}`-prefixed) directory the legacy launcher
+   * cd's into before invoking the absolute-path MCP entry. Bin-
+   * dispatch entries omit this field — the host assistant's launch
+   * cwd (typically the project root) is correct for .lore.yaml
+   * discovery, and pinning a specific cwd would defeat the
+   * portability the bin-dispatch shape provides.
    */
   cwd?: string
   env: Record<string, string>
@@ -343,7 +345,7 @@ function mergeMcpEnvForClaudeOrCursor(build: McpEnvBuild): Record<string, string
 }
 
 /**
- * Build the bin-dispatch `.mcp.json` entry for Lore. Emits
+ * Build the bin-dispatch .mcp.json entry for Lore. Emits
  * `{ command: "lore", args: ["mcp"], env: ... }` for `shape: "bare"`
  * (default), or `{ command: "yarn", args: ["lore", "mcp"], env: ... }`
  * for `shape: "yarn"` (Yarn Berry PnP consumers — see
@@ -373,7 +375,7 @@ export function buildClaudeMcpEntry(
     // one developer's machine path into everyone else's checkout.
     // The `yarn run -T` launch always lands at workspace root, so
     // the spawned MCP server's `findConfigFile(cwd)` walk resolves
-    // `.lore.yaml` without help.
+    // .lore.yaml without help.
     omitConfigRoot: shape === "yarn",
     authSource,
     notionBaseUrlLiteral,
@@ -386,14 +388,14 @@ export function buildClaudeMcpEntry(
 }
 
 /**
- * Legacy absolute-path `.mcp.json` shape used by `~/.lore` consumers
- * pre-0.11.0. Preserved through 0.11.x for the deprecation window;
- * `lore install --legacy-paths` opts back in. Targeted for removal in
- * 0.12.0 alongside the standalone `dist/mcp.js` tsup entry.
+ * Legacy absolute-path .mcp.json shape used by `~/.lore` consumers.
+ * Preserved for the deprecation window; `lore install --legacy-paths`
+ * opts back in. Targeted for removal alongside the standalone
+ * bundled `mcp` entry.
  *
  * The 0.10.0 ntn-first env shape applies on this path too — the MCP
  * server's startup `resolveAuth` consults `LORE_CONFIG_ROOT` to find
- * `.lore.yaml` regardless of which launch shape the host uses.
+ * .lore.yaml regardless of which launch shape the host uses.
  */
 export function buildLegacyClaudeMcpEntry(
   mcpJsPath: string,
@@ -416,8 +418,8 @@ export function buildLegacyClaudeMcpEntry(
 }
 
 /**
- * Cursor's `.cursor/mcp.json` schema accepts the same `command` / `args` /
- * `cwd` / `env` shape as Claude Code's `.mcp.json`. The two formats are
+ * Cursor's .cursor/mcp.json schema accepts the same `command` / `args` /
+ * `cwd` / `env` shape as Claude Code's .mcp.json. The two formats are
  * documented as JSON-compatible; the only practical difference is the file
  * location and the lack of session-end hook integration on the Cursor side.
  *
@@ -436,19 +438,19 @@ export interface CursorMcpEntry {
  *
  * `useGlobalScope` flips the entry from "committed project-scoped
  * config" semantics to "machine-local global config" semantics. The
- * project-scoped default writes the entry into
- * `<project>/.cursor/mcp.json` which is shared across every engineer
+ * project-scoped default writes the entry into the project's
+ * .cursor/mcp.json which is shared across every engineer
  * with a checkout, so the PnP shape omits machine-specific anchors
  * (`cwd`, `LORE_CONFIG_ROOT`) and trusts Cursor's launch cwd to land
  * inside the PnP project. The global shape writes to
- * `~/.cursor/mcp.json` which is per-machine — Cursor launches the
+ * ~/.cursor/mcp.json which is per-machine — Cursor launches the
  * server from its own process cwd at fire time, which is NOT
  * guaranteed to be inside any PnP project. Under PnP + global, the
  * entry has to anchor itself with `cwd` (so `yarn run -T` finds the
  * right `.pnp.cjs` upward) and keep `LORE_CONFIG_ROOT` (so the
- * spawned MCP child resolves the right `.lore.yaml`); without those
+ * spawned MCP child resolves the right .lore.yaml); without those
  * anchors, the global launcher fires from Cursor's process cwd and
- * neither yarn nor `.lore.yaml` discovery succeeds.
+ * neither yarn nor .lore.yaml discovery succeeds.
  *
  * `launchCwd` and `LORE_CONFIG_ROOT` derive from DIFFERENT roots and
  * the function won't conflate them:
@@ -460,16 +462,16 @@ export interface CursorMcpEntry {
  *   directory `detectYarnPnp` was called against, so when it
  *   returned `true`, the directory is at-or-below the PnP root.
  * - `LORE_CONFIG_ROOT` (sourced from `configRoot`) must point at
- *   the `.lore.yaml` directory. `findConfigFile` walks upward, and
- *   `.lore.yaml` can legitimately live ABOVE the PnP workspace —
+ *   the .lore.yaml directory. `findConfigFile` walks upward, and
+ *   .lore.yaml can legitimately live ABOVE the PnP workspace —
  *   for example, a monorepo umbrella containing multiple PnP
- *   workspaces with one shared `.lore.yaml` at the umbrella root.
+ *   workspaces with one shared .lore.yaml at the umbrella root.
  *   In that layout, deriving `cwd` from `configRoot` would anchor
  *   the launcher to a directory OUTSIDE the PnP workspace, and
  *   `yarn run -T` would never walk into `.pnp.cjs` territory.
  *
  * `launchCwd` defaults to `configRoot` when omitted — the safe
- * default for the typical case where `.lore.yaml` lives inside the
+ * default for the typical case where .lore.yaml lives inside the
  * PnP workspace. Production callers (`runCursorInstall`) pass
  * `context.projectDir` explicitly so the split-roots case (config
  * above workspace) doesn't break.
@@ -528,7 +530,7 @@ export function buildCursorMcpEntry(
     if (useGlobalScope) {
       // Anchor `yarn run -T` to a directory inside the PnP
       // workspace. `launchCwd` (typically `context.projectDir`)
-      // can differ from `configRoot` when `.lore.yaml` lives
+      // can differ from `configRoot` when .lore.yaml lives
       // above the workspace. See `BuildCursorMcpEntryOptions`
       // for the split-roots rationale.
       entry.cwd = toPortablePath(options.launchCwd ?? configRoot)
@@ -559,9 +561,9 @@ export function buildLegacyCursorMcpEntry(
 }
 
 /**
- * Resolve the on-disk path for Cursor's `mcp.json`. Cursor reads MCP servers
- * from `<projectDir>/.cursor/mcp.json` (project-scoped, takes precedence) and
- * `~/.cursor/mcp.json` (global, fallback) — mirroring Claude Code's
+ * Resolve the on-disk path for Cursor's mcp.json. Cursor reads MCP servers
+ * from <projectDir>/.cursor/mcp.json (project-scoped, takes precedence) and
+ * ~/.cursor/mcp.json (global, fallback) — mirroring Claude Code's
  * project-vs-user split. `useGlobalScope` opts into the global file (driven
  * by `--cursor-global`).
  */
@@ -597,7 +599,7 @@ function formatTomlArray(values: readonly string[]): string {
 
 /**
  * Build the bin-dispatch `[mcp_servers.lore]` block for
- * `.codex/config.toml`. Codex's MCP launcher resolves `command` against
+ * .codex/config.toml. Codex's MCP launcher resolves `command` against
  * the same PATH the legacy `bash -lc 'node ...'` wrapper relied on for
  * `node` resolution, so the bare form `command = "lore"` works as long
  * as `lore` is on PATH (npm / Yarn 1 consumers via
@@ -631,12 +633,12 @@ export function shellQuoteSingle(value: string): string {
  * 1. **`${HOME}` MUST expand at bash time.** `toPortablePath` rewrites
  *    `/Users/foo/...` into `${HOME}/...` so committed config is
  *    portable across machines — bash receives the literal string
- *    `${HOME}/.lore/dist/mcp.js`, expands `${HOME}` to the runtime
- *    operator's home, then runs `node /Users/runtime/.lore/dist/mcp.js`.
+ *    starting with `${HOME}/`, expands `${HOME}` to the runtime
+ *    operator's home, then runs node against the expanded absolute path.
  *    Wrapping the entire path in single quotes turns `${HOME}` into a
  *    literal four-character string and `node` can't find the file.
  * 2. **Other shell metacharacters MUST NOT expand.** Same hazard
- *    `shellQuoteSingle` already addresses for the static env prefix —
+ *    `shellQuoteSingle` already handles for the static env prefix —
  *    a path containing `$build_dir` or `` `whoami` `` must reach
  *    `node` as a literal, not be re-interpreted by bash.
  *
@@ -644,8 +646,8 @@ export function shellQuoteSingle(value: string): string {
  * **double-quoted** (so bash expands it) and the suffix gets emitted
  * **single-quoted** (so bash treats every other metachar as literal).
  * Bash's adjacent-string concatenation joins the two halves into a
- * single argument, so `node "${HOME}"'/.../$bar/mcp.js'` becomes one
- * argv entry pointing at `/Users/runtime/.../$bar/mcp.js`.
+ * single argument, so the resulting expansion is one argv entry
+ * pointing at the expanded absolute path under the operator's home.
  *
  * Paths that don't carry the `${HOME}` marker (e.g., a Lore install
  * outside the operator's home) fall through to plain
@@ -767,7 +769,7 @@ const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
  * Build the shell-string form of a Codex hook invocation with the
  * `LORE_AGENT_NAME` override baked in.
  *
- * Load-bearing assumption: Codex executes `hooks.json` `type: "command"`
+ * Load-bearing assumption: Codex executes hooks.json `type: "command"`
  * entries through a POSIX shell (`/bin/sh` or equivalent), so a leading
  * `VAR=VALUE ` pair is parsed as a single-command env assignment. That is
  * the same convention `buildCodexMcpSection` relies on when wrapping the
@@ -785,7 +787,7 @@ const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
  */
 /**
  * Build the bin-dispatch shell-string command for a Codex hook event.
- * Codex executes `hooks.json` `type: "command"` entries through `/bin/sh`
+ * Codex executes hooks.json `type: "command"` entries through `/bin/sh`
  * (the env-prefix shape `LORE_AGENT_NAME=Codex ...` depends on it), so
  * the bin-dispatch form keeps the prefix and trades the quoted absolute
  * `.sh` path for a `lore hooks <event>` invocation. PATH must include
@@ -804,17 +806,17 @@ const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
  *   process happens to have at fire time — frequently the binary's
  *   install directory or the user's `~`, NOT the project root. Lore's
  *   hook helpers walk upward from `process.cwd()` to find
- *   `.lore.yaml`; without anchoring, a hook fired from the wrong cwd
+ *   .lore.yaml; without anchoring, a hook fired from the wrong cwd
  *   resolves the wrong vault (or fails entirely on a fresh laptop).
  *   Claude Code exposes the project-root path via `$CLAUDE_PROJECT_DIR`
  *   for exactly this case. The literal `$` in the emitted command
  *   stays unexpanded by Lore's writer (it's a JSON string-valued
- *   field in `settings.json`); Claude's hook shell substitutes it at
+ *   field in settings.json); Claude's hook shell substitutes it at
  *   fire time.
  * - **Yarn-PnP shape.** `yarn run -T lore` (top-level) resolves the
  *   workspace-root binary even when the hook fires from a nested
  *   workspace package's cwd. Bare `yarn lore` resolves only against
- *   the cwd's `package.json` and fails on subdirectory cwds —
+ *   the cwd's package manifest and fails on subdirectory cwds —
  *   exactly the case the `cd "$CLAUDE_PROJECT_DIR"` wrapper exposes.
  */
 export function buildClaudeHookCommand(
@@ -828,7 +830,7 @@ export function buildClaudeHookCommand(
 
 /**
  * Codex hook command. Codex's hook runner already exposes the
- * project root via Codex's own context (`.codex/hooks.json` is
+ * project root via Codex's own context (.codex/hooks.json is
  * trusted-project-scoped, and Codex's hook shell launches with the
  * project as cwd by convention), so the `cd` prefix that Claude
  * needs isn't required here. The yarn-PnP shape uses `yarn run -T`
@@ -1045,8 +1047,8 @@ export interface ClaudeHookEntry {
  * canonical legacy path for the resolved `pkgRoot`
  * (`buildLegacyClaudeMcpEntry`-shaped). `scriptName` is the legacy
  * script-file name (`autosave.sh` / `wakeup.sh` / `session-end.sh`)
- * used to identify Lore-owned legacy entries even when the recorded
- * absolute path no longer matches the current install (a Lore checkout
+ * identifies Lore-owned legacy entries even when the recorded
+ * absolute path does not match the current install (a Lore checkout
  * that moved still classifies as `legacy-current` if the path resolves
  * the same way today, or `stale` otherwise).
  */
@@ -1192,8 +1194,8 @@ export function removeClaudeScriptEntries(
  * along with flags describing what was removed for status / "will remove"
  * messaging.
  *
- * 0.6.0 dropped active SessionEnd registration. Two historical Lore-owned
- * shapes need to be stripped: the post-P2-04 `session-end.sh` registration
+ * Two historical Lore-owned SessionEnd shapes need to be stripped:
+ * the `session-end.sh` registration
  * and the older `autosave.sh`-on-SessionEnd legacy form. Unrelated user
  * hooks on `SessionEnd` are preserved entry-by-entry.
  *
@@ -1546,10 +1548,10 @@ export interface InstallContext {
   projectDir: string
   pkgRoot: string
   /**
-   * Resolved `.lore.yaml` directory — `findConfigFile(projectDir).root`
+   * Resolved .lore.yaml directory — `findConfigFile(projectDir).root`
    * when a config exists, falling back to `projectDir` otherwise. This
    * is the value forwarded into the MCP entry as `LORE_CONFIG_ROOT` so
-   * the spawned MCP server's `resolveAuth` walks the right `.lore.yaml`
+   * the spawned MCP server's `resolveAuth` walks the right .lore.yaml
    * regardless of the host's spawn-time cwd.
    */
   configRoot: string
@@ -1558,20 +1560,20 @@ export interface InstallContext {
   mcpJsPath: string
   skipPrompts: boolean
   /**
-   * `true`/`false` when `.lore.yaml` sets `hooks.wakeUp` explicitly; `null`
+   * `true`/`false` when .lore.yaml sets `hooks.wakeUp` explicitly; `null`
    * when no config exists yet or the flag is unset (hook default applies).
    */
   wakeUpConfig: boolean | null
   /**
    * `--legacy-paths` opt-in. When `true`, the install path emits the
-   * 0.10.x absolute-path shape (`node ${HOME}/.lore/dist/mcp.js`,
-   * `${HOME}/.lore/hooks/wakeup.sh`) and the prerequisite checks verify
-   * `hooks/*.sh` exist. When `false` (default for 0.11.0+), the install
-   * path emits the bin-dispatch shape (`lore mcp`, `lore hooks <event>`)
-   * and the prerequisite checks skip the `.sh` verification entirely
-   * because the bin-dispatch path doesn't depend on the legacy hook
-   * scripts. Removal targeted for 0.12.0 alongside `hooks/*.sh` and the
-   * standalone `dist/mcp.js` tsup entry.
+   * legacy absolute-path shape (an explicit `node` invocation against
+   * the built MCP entry under `${HOME}/.lore/`, plus the matching shell
+   * wakeup wrapper) and the prerequisite checks verify the legacy
+   * shell wrappers exist. When `false` (default), the install path
+   * emits the bin-dispatch shape (`lore mcp`, `lore hooks <event>`)
+   * and the prerequisite checks skip the shell-wrapper verification
+   * entirely because the bin-dispatch path doesn't depend on the
+   * legacy hook scripts.
    */
   legacyPaths: boolean
   /**
@@ -1600,7 +1602,7 @@ export interface InstallContext {
    * `/doctor`'s "Missing environment variables") on every startup
    * after the operator's install-time shell drifts. `undefined` when
    * prereqs hasn't run (tests, `--print-config`) or auth resolution
-   * failed — both cases preserve the pre-fix unconditional-forward
+   * failed — both cases preserve the earlier unconditional-forward
    * behavior so legacy operators never lose access by upgrading.
    */
   authSource?: AuthSource
@@ -1621,13 +1623,13 @@ export interface InstallContext {
 }
 
 /**
- * Read `hooks.wakeUp` from the project's `.lore.yaml`. Returns:
+ * Read `hooks.wakeUp` from the project's .lore.yaml. Returns:
  *   - `true`/`false` when the flag is set explicitly
  *   - `null` when no config exists, the flag is unset, or the file fails to
  *     parse/validate — callers should treat `null` as "fall back to runtime
  *     default" and must not distinguish the three cases
  *
- * Parse/validation failures emit a stderr warning so a broken `.lore.yaml`
+ * Parse/validation failures emit a stderr warning so a broken .lore.yaml
  * does not silently defeat the installer's `(disabled by config)` hint.
  */
 async function readWakeUpConfig(projectDir: string): Promise<boolean | null> {
@@ -1696,12 +1698,12 @@ export async function prepareInstallContext(
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
   // Sanity check that the package was built. The bin-dispatch path
-  // launches the MCP server via lazy-import from `dist/cli.js` (which
-  // tsup also bundles in the same `npm run build`); the legacy path
-  // invokes `dist/mcp.js` directly. Either entry's existence proves the
-  // build ran, so we keep the existing `dist/mcp.js` check as the
-  // tripwire — checking the legacy entry is harmless on the default
-  // path because both files ship together.
+  // launches the MCP server via lazy-import from the CLI bundle (which
+  // tsup also produces in the same `npm run build`); the legacy path
+  // invokes the standalone MCP entry directly. Either entry's
+  // existence proves the build ran, so the existing standalone MCP
+  // entry check remains the tripwire — checking the legacy entry is
+  // harmless on the default path because both files ship together.
   if (!(await fileExists(mcpJsPath))) {
     console.error("Required file not found:")
     console.error("  dist/mcp.js")
@@ -1767,7 +1769,7 @@ export async function ensureHookPrerequisites(context: InstallContext): Promise<
 /**
  * Display name for a `ResolvedAuth.source` discriminator.
  *
- * Local to install.ts even though `--status` (#06) emits a similar
+ * Local to install.ts even though `--status` emits a similar
  * line — the two surfaces evolve separately and consolidation can
  * happen later if their wording converges.
  */
@@ -1848,12 +1850,12 @@ interface NtnLoginRecovery {
   /**
    * Paste-ready shell command. The full prefix
    * (`NOTION_KEYRING=0`) is always present so the resulting token
-   * lands in `auth.json` (file mode) rather than the macOS keychain
+   * lands in auth.json (file mode) rather than the macOS keychain
    * — Lore can't read the keychain, so a recovery command without
    * the env-var prefix would write to a place Lore can't see.
    *
    * `NOTION_ENV=<value>` is included when the env can be resolved
-   * (operator's shell or `.lore.yaml`'s `auth.baseUrl` mapped to a
+   * (operator's shell or .lore.yaml's `auth.baseUrl` mapped to a
    * canonical env). When the operator must pick the env themselves
    * (non-canonical baseUrl), the literal string `<env>` appears in
    * the command and `manualEnvNote` carries the explanation.
@@ -1875,7 +1877,7 @@ interface NtnLoginRecovery {
  *
  *   1. **Operator `NOTION_ENV` set** → use it verbatim. Explicit
  *      shell choice always wins.
- *   2. **`.lore.yaml`'s `auth.baseUrl` is canonical** → infer env
+ *   2. **.lore.yaml's `auth.baseUrl` is canonical** → infer env
  *      via `ntnEnvFromBaseUrl` and bake it into the command. The
  *      `manualEnvNote` records the inference source so the operator
  *      sees which signal Lore picked up.
@@ -1926,24 +1928,24 @@ export function ntnLoginRecovery(
  * runtime source of truth — it's the value `createClient` consumes —
  * and `resolveAuth` intentionally branches by auth source so canonical
  * paths (`env-notion-api-token`, `ntn-auth-json`) ignore `.lore.yaml
- * auth.baseUrl` for security. `.lore.yaml` is local-only, but it's
+ * auth.baseUrl` for security. .lore.yaml is local-only, but it's
  * still persistent file state (backed up, synced, pasteable, one
  * `git add -f` away from history), so it's less trusted than
- * operator-controlled env vars — a malicious `.lore.yaml` carrying
+ * operator-controlled env vars — a malicious .lore.yaml carrying
  * `auth.baseUrl: https://attacker.example` could otherwise redirect a
- * bearer token. See `resolveAuth` in `src/config.ts`.
+ * bearer token. `resolveAuth` carries the security contract.
  *
  * The annotation names where the resolved value came from so an
  * operator who forgot they had `LORE_NOTION_BASE_URL` set, or who has
- * a stale ntn `config.json` env, can see it at install time:
+ * a stale ntn config.json env, can see it at install time:
  *
  *   - shell env wins for all auth sources (operator-controlled).
  *   - `ntn-auth-json` otherwise consults ntn's
- *     `~/.config/notion/config.json` (`undefined` baseUrl == prod,
- *     the SDK default; see `resolveNtnBaseUrl`).
+ *     ~/.config/notion/config.json (`undefined` baseUrl == prod,
+ *     the SDK default; `resolveNtnBaseUrl` is the helper).
  *   - `env-notion-api-token`: shell-only; `undefined` baseUrl == prod.
  *   - legacy paths (`env-lore-notion-token` / `config-auth-token`)
- *     honor `.lore.yaml` `auth.baseUrl` directly via
+ *     honor .lore.yaml `auth.baseUrl` directly via
  *     `legacyBaseUrlOverride`.
  *
  * Always returns a line on the auth-resolved branch — operators
@@ -1969,7 +1971,7 @@ function describeNtnEnvSelectors(
  * `Notion environment:` display. Walks the same priority order as
  * `resolveOperatorBaseUrl` for shell vars, then falls back to
  * auth-source-specific knowledge: ntn-auth-json reads ntn's
- * `config.json`; env tokens consult shell only; legacy paths honor
+ * config.json; env tokens consult shell only; legacy paths honor
  * `.lore.yaml auth.baseUrl`. Pure presentation — no further
  * resolution work happens here.
  */
@@ -2021,10 +2023,11 @@ function describeBaseUrlSource(
  * mismatch.
  *
  * Concrete scenario: operator pins `auth.baseUrl: <dev URL>` in
- * `.lore.yaml`, runs `ntn login` with the prod default (no
+ * .lore.yaml, runs `ntn login` with the prod default (no
  * `NOTION_ENV=dev`), the canonical security contract drops the repo
- * config (see `resolveAuth`), and every Notion call goes to prod with
- * a confusing "vault not accessible" trail. Surfacing the mismatch
+ * config (`resolveAuth` enforces the drop), and every Notion call
+ * goes to prod with a confusing "vault not accessible" trail.
+ * Surfacing the mismatch
  * names the actionable next step.
  *
  * Suppressed when:
@@ -2094,10 +2097,10 @@ function describeAuthBaseUrlConfigMismatch(
  *   3. **Auth source**: runs `resolveAuth(config, configRoot)` and
  *      reports the resolved source. On no-source-resolved, offers
  *      `runNtnLogin()` (which forces `NOTION_KEYRING=0` inside its
- *      own spawn so `auth.json` lands in file mode); operator
+ *      own spawn so auth.json lands in file mode); operator
  *      confirms.
  *
- * Post-resolution preflight: when auth resolves AND `.lore.yaml`
+ * Post-resolution preflight: when auth resolves AND .lore.yaml
  * exists, runs `verifyVaultAccess` against the configured vault
  * page. A `not-found` flips `ready` to false so the install action
  * exits without writing MCP config — engineers running `lore
@@ -2111,12 +2114,12 @@ function describeAuthBaseUrlConfigMismatch(
  * `--yes` returns `ready: false` and prints non-interactive
  * guidance.
  *
- * `runNtnLogin()` and `installNtn()` (in `src/auth/ntn.ts`) force
+ * `runNtnLogin()` and `installNtn()` force
  * `NOTION_KEYRING=0` inside their own spawn env, so the operator
  * never has to set the env var themselves for the install path.
  * Operators who later run `ntn login` directly (outside Lore)
- * without the env var hit ntn's keychain default — the runbook
- * (#05) documents this gotcha.
+ * without the env var hit ntn's keychain default — the operator
+ * runbook documents this gotcha.
  */
 /**
  * Name the specific shell variable that conflicts with `--dev` so the
@@ -2149,7 +2152,7 @@ function describeConflictingDevSignal(env: NodeJS.ProcessEnv): string {
  * already verified the env var is set), surfaces the describe lines
  * the ntn path also emits, and runs `preflightAndReport`.
  *
- * On auth-resolution failure (e.g., `.lore.yaml`'s `auth.token`
+ * On auth-resolution failure (e.g., .lore.yaml's `auth.token`
  * shadowing the env var, or a Zod validation error elsewhere in the
  * config), prints PAT-specific recovery guidance. The most common
  * cause of `auth.token` blocking the env PAT is a leftover legacy
@@ -2294,9 +2297,8 @@ export async function ensurePrerequisites(
     }
   }
 
-  // Persona routing. The PAT announcement (2026-05-13) makes external
-  // operators first-class: `lore install` no longer auto-installs `ntn`
-  // by default. Three branches:
+  // Persona routing. External operators are first-class: `lore install`
+  // does not auto-install `ntn` by default. Three branches:
   //
   //   - `--ntn` explicitly set: internal-engineer path; auto-install
   //     `ntn` on miss, run `ntn login`.
@@ -2419,7 +2421,7 @@ export async function ensurePrerequisites(
   // 3. Auth resolution. Offer ntn login on no-source-resolved.
   //
   // The catch around `resolveAuth` is narrow on purpose: a malformed
-  // `.lore.yaml` is a different problem from "no auth token", and
+  // .lore.yaml is a different problem from "no auth token", and
   // offering ntn login won't fix Zod validation errors. So
   // `loadConfig` runs OUTSIDE the catch — its errors bubble up to
   // the install action's outer catch, which renders them via
@@ -2477,7 +2479,7 @@ export async function ensurePrerequisites(
   // No auth resolved — derive the ntn-login env target before
   // offering. Priority: explicit `--dev` flag wins; otherwise
   // operator's `NOTION_ENV` env var (if set in shell); otherwise
-  // infer from `.lore.yaml`'s `auth.baseUrl`. A non-canonical
+  // infer from .lore.yaml's `auth.baseUrl`. A non-canonical
   // `auth.baseUrl` (e.g., a corporate proxy) without `--dev` or an
   // explicit `NOTION_ENV` means we can't safely pick an ntn env —
   // refuse auto-login with a recovery message rather than mint a
@@ -2485,14 +2487,14 @@ export async function ensurePrerequisites(
   // Without this gate, `lore install -y` against a project whose
   // `auth.baseUrl: https://api-dev.notion.com` would mint a prod
   // token and fall into the generic vault-not-accessible path —
-  // exactly the dev-onboarding footgun an early review flagged.
+  // exactly the dev-onboarding footgun this gate exists to prevent.
   const operatorEnv = process.env["NOTION_ENV"]
   const operatorEnvParsed = parseNtnEnv(operatorEnv)
   let resolvedNtnEnv: NtnEnv | undefined
   let resolvedNtnEnvSource: "cli-flag" | "operator-env" | "config-baseurl" | "default" = "default"
   if (opts.dev) {
     // `--dev` is the most explicit signal — wins over both env vars
-    // and `.lore.yaml`'s `auth.baseUrl`. The operator typed it just
+    // and .lore.yaml's `auth.baseUrl`. The operator typed it just
     // now, so honoring it preserves the principle that the most
     // recent explicit operator intent wins.
     resolvedNtnEnv = "dev"
@@ -2571,11 +2573,11 @@ export async function ensurePrerequisites(
       : "    Run `NOTION_KEYRING=0 ntn login` now? [Y/n] "
   const okLogin = opts.yes ?? (await confirmPrompt(promptLabel))
   if (!okLogin) {
-    // `lore auth --login` (issue #06) wraps this same flow with the
-    // version probe and post-login preflight; until it ships, point
-    // operators at the manual ntn invocation that already works. The
-    // `NOTION_KEYRING=0` prefix is required so the token lands in
-    // auth.json (file mode) instead of the macOS keychain.
+    // `lore auth --login` wraps this same flow with the version
+    // probe and post-login preflight; the manual ntn invocation below
+    // is the fallback. The `NOTION_KEYRING=0` prefix is required so
+    // the token lands in auth.json (file mode) instead of the macOS
+    // keychain.
     const manualEnvPrefix = resolvedNtnEnv ? `NOTION_ENV=${resolvedNtnEnv} ` : ""
     console.log(
       `    Skipping. Run \`NOTION_KEYRING=0 ${manualEnvPrefix}ntn login\` directly when you're`,
@@ -2601,7 +2603,7 @@ export async function ensurePrerequisites(
   console.log("")
 
   // Re-resolve after login. The config file location is unchanged
-  // (ntn login doesn't move `.lore.yaml`), so reuse the `config`
+  // (ntn login doesn't move .lore.yaml), so reuse the `config`
   // and `found` values from the pre-login lookup. Same narrow-catch
   // pattern as above — only `resolveAuth`'s no-token throw is
   // swallowed so we can fall through to the "still failed after
@@ -2617,16 +2619,15 @@ export async function ensurePrerequisites(
   }
 
   console.error("    Auth resolution still failed after ntn login.")
-  // `lore auth --status` (issue #06) is the future diagnostic surface
-  // for the ntn-aware path; until it ships, the manual fallback is
-  // checking auth.json contents directly.
+  // `lore auth --status` is the diagnostic surface for the ntn-aware
+  // path; the manual fallback is checking auth.json contents directly.
   console.error("    Inspect `~/.config/notion/auth.json` to confirm a workspace token landed,")
   console.error("    or re-run with `LORE_DEBUG=1` for verbose resolveAuth tracing.")
   return { ready: false }
 }
 
 /**
- * Run the post-resolution vault preflight (#03's `verifyVaultAccess`)
+ * Run the post-resolution vault preflight (`verifyVaultAccess`)
  * and surface the result in install output. Gating policy is
  * per-failure-mode:
  *
@@ -2647,7 +2648,7 @@ export async function ensurePrerequisites(
  *   transients shouldn't block onboarding; the next `lore`
  *   invocation will surface the issue clearly if it persists.
  *
- * Skips entirely when no `.lore.yaml` exists — auth resolved without
+ * Skips entirely when no .lore.yaml exists — auth resolved without
  * a vault config is unusual but acceptable (e.g., post-`lore install`
  * before `lore init`).
  */
@@ -2702,7 +2703,7 @@ async function preflightAndReport(
       }
     } else {
       // ntn-source: env-aware ntn-login recovery. A project whose
-      // `.lore.yaml` says dev (or whose operator has `NOTION_ENV=dev`
+      // .lore.yaml says dev (or whose operator has `NOTION_ENV=dev`
       // exported) gets a paste-ready
       // `NOTION_KEYRING=0 NOTION_ENV=dev ntn login` command.
       const recovery = ntnLoginRecovery(config)
@@ -2887,16 +2888,16 @@ async function runClaudeInstall(
     console.log("  Legacy hook:       SessionEnd/autosave.sh -> will remove")
   if (hasLegacyPreCompact) console.log("  Legacy hook:       PreCompact -> will remove")
   if (hasLegacyMcp) console.log("  Legacy MCP:        settings.json -> will migrate to .mcp.json")
-  // Issue #194: surface background-agent install-time health on Claude
-  // Code installs too. An operator who set `LORE_BACKGROUND_COMMAND` or
+  // Surface background-agent install-time health on Claude Code
+  // installs too. An operator who set `LORE_BACKGROUND_COMMAND` or
   // overrode `hooks.backgroundAgent` on a Claude Code project is just
   // as exposed as a `--client codex` operator — the configuration
   // applies regardless of which host registered the hook.
   printBackgroundAgentSummary(await resolveBackgroundAgentForInstall(context))
-  // Issue #560 / PR #567 round-2: surface hook-side-effects disclosure
-  // at install time, not just at `lore init`. Operators who clone a
-  // teammate's repo or upgrade an existing install pass through here,
-  // and the hooks start firing the moment this install completes.
+  // Surface hook-side-effects disclosure at install time, not just
+  // at `lore init`. Operators who clone a teammate's repo or upgrade
+  // an existing install pass through here, and the hooks start
+  // firing the moment this install completes.
   printHookDisclosure()
 
   const allCurrent =
@@ -2969,9 +2970,9 @@ async function runClaudeInstall(
     mergedHooks["PreToolUse"] = removeClaudeScriptEntries(hooks["PreToolUse"], "wakeup.sh")
     if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
   }
-  // 0.6.0: Lore no longer registers a SessionEnd hook. The pre-computed
-  // cleanup result strips Lore-owned entries (both the `session-end.sh`
-  // shim path and the older `autosave.sh`-on-SessionEnd legacy path) while
+  // Lore does not register a SessionEnd hook. The pre-computed cleanup
+  // result strips Lore-owned entries (both the `session-end.sh` shim
+  // path and the older `autosave.sh`-on-SessionEnd legacy path) while
   // preserving unrelated user hooks on the same event.
   if (hasSessionEndShim || hasLegacySessionEndAutosave) {
     if (sessionEndCleanup.result) {
@@ -3046,7 +3047,7 @@ async function runClaudeInstall(
 }
 
 /**
- * Resolve the background-agent shape the project's `.lore.yaml` would
+ * Resolve the background-agent shape the project's .lore.yaml would
  * use at hook-fire time and probe its install-time health. Returns:
  *
  * - `command` — the resolved binary name, after env > yaml > default
@@ -3064,7 +3065,7 @@ async function runClaudeInstall(
  *   pass the allowlist string through to the spawned agent. When this
  *   is `false`, the agent's allowlist must be configured out-of-band.
  *
- * Issue #194 — Codex installs register Stop hooks that shell out to a
+ * Codex installs register Stop hooks that shell out to a
  * background agent CLI. Without this preflight, operators see hooks
  * fire and silently produce nothing (binary-missing) or fail at first
  * spawn (incompatible flags). The five fields above are what the
@@ -3105,7 +3106,7 @@ export async function resolveBackgroundAgentForInstall(
       const config = await loadConfig(found.path)
       configHooks = config.hooks
     } catch {
-      // Malformed `.lore.yaml` — fall through to defaults. The
+      // Malformed .lore.yaml — fall through to defaults. The
       // wakeUp-config reader (`readWakeUpConfig`) emits a stderr line
       // for this; we don't double-log here.
     }
@@ -3124,10 +3125,10 @@ export async function resolveBackgroundAgentForInstall(
   const command = merged.backgroundAgent.command
   const args = merged.backgroundAgent.args
   const present = findBackgroundBinary(command) !== null
-  // Basename-aware preset match — mirrors the runtime resolver so the
+  // Basename-aware preset match — matches the runtime resolver so the
   // install-time `presetMatched` flag agrees with what `mergeHookDefaults`
   // actually selected for `args`. Without this, an operator on
-  // `command: /opt/homebrew/bin/codex` would see `presetMatched: false`
+  // `command: /opt/homebrew/bin/codex` would observe `presetMatched: false`
   // even though the runtime resolver picked up the codex preset.
   const presetMatched = lookupCommandPreset(command) !== undefined
   const argsContainAllowedToolsPlaceholder = args.some((a) =>
@@ -3255,17 +3256,16 @@ export function printBackgroundAgentSummary(
 }
 
 /**
- * Print the issue #560 hook-disclosure block as part of the install
+ * Print the hook-disclosure block as part of the install
  * preflight summary. Claude Code AND Codex installs both wire Lore's
  * Stop / UserPromptSubmit hooks into the host config, which means the
  * default-`true` hooks listed in `mergeHookDefaults` start firing the
  * moment the install completes — regardless of whether the operator
- * just ran `lore init` (PR #567 round-1 shape) or is upgrading an
- * existing `.lore.yaml` install (PR #567 round-2 review #2).
+ * just ran `lore init` or is upgrading an existing .lore.yaml install.
  *
- * Cursor's MCP runtime doesn't activate these hooks (see
- * `src/cli/AGENTS.md`), so `runCursorInstall` deliberately omits the
- * disclosure — there's nothing to disclose on that host.
+ * Cursor's MCP runtime doesn't activate these hooks, so
+ * `runCursorInstall` deliberately omits the disclosure — there's
+ * nothing to disclose on that host.
  *
  * The block sits between `printBackgroundAgentSummary` and the
  * "Install Lore X integration?" confirm prompt so an operator with
@@ -3372,21 +3372,21 @@ export async function runCodexInstall(
     console.log("  Legacy hook:       SessionStart/wakeup -> will migrate")
   }
 
-  // Issue #194: Stop hooks shell out to a background agent CLI for
-  // autosave / digest synthesis. Default is `claude -p` for Claude Code
+  // Stop hooks shell out to a background agent CLI for autosave /
+  // digest synthesis. Default is `claude -p` for Claude Code
   // installs; Codex installs prefix every hook command with
   // `LORE_AGENT_NAME=Codex` so the runtime resolver derives `command:
   // codex` automatically (no per-project setup required). Pass `"Codex"`
   // explicitly to the resolver here so the install-time status block
-  // mirrors what hook-fire time will produce, even when the operator's
+  // matches what hook-fire time will produce, even when the operator's
   // install-time shell doesn't have `LORE_AGENT_NAME` exported.
   printBackgroundAgentSummary(
     await resolveBackgroundAgentForInstall(context, process.env, "Codex"),
   )
-  // Issue #560 / PR #567 round-2: parity with the Claude install path
-  // — surface the hook-side-effects disclosure on Codex too. The same
-  // Stop / UserPromptSubmit hooks fire under Codex once `features.codex_hooks`
-  // is set and the project is trusted.
+  // Parity with the Claude install path — surface the
+  // hook-side-effects disclosure on Codex too. The same Stop /
+  // UserPromptSubmit hooks fire under Codex once
+  // `features.codex_hooks` is set and the project is trusted.
   printHookDisclosure()
 
   const allCurrent =
@@ -3519,7 +3519,7 @@ export async function runCursorInstall(
   // resolved against, so when `context.yarnPnp === true` it sits
   // at or below the PnP root and `yarn run -T`'s upward walk is
   // guaranteed to reach `.pnp.cjs`. `configRoot` may live ABOVE
-  // the PnP workspace when `.lore.yaml` resolves to a parent
+  // the PnP workspace when .lore.yaml resolves to a parent
   // (monorepo umbrella with shared lore config); using it for
   // `cwd` would anchor the launcher OUTSIDE the workspace and
   // re-introduce the failure mode this fix exists to close. See
@@ -3645,7 +3645,7 @@ export interface DispatchOpts {
  *
  * Splitting this out from `runInstall` lets tests drive orchestration —
  * "did all three runners get called when one threw?" — without needing
- * `dist/mcp.js` and the hook scripts on disk.
+ * the standalone MCP entry and the hook scripts on disk.
  */
 export async function dispatchInstall(
   context: InstallContext,
@@ -3712,7 +3712,7 @@ export async function dispatchInstall(
  * "this install just baked one in." Under ntn-source or PAT-source
  * the install does NOT forward the token (runners pass
  * `context.authSource` into the build helpers), so the note advises
- * shell-rc cleanup independent of whether the committed `.mcp.json`
+ * shell-rc cleanup independent of whether the committed .mcp.json
  * carries the placeholder.
  */
 export function formatLegacyForwardedNoteLines(
@@ -3770,7 +3770,7 @@ export async function runInstall(
   }
   // Stash the resolved auth source onto the install context so per-client
   // runners can pass it into `buildMcpEnv` and suppress auth-token
-  // placeholders on the `ntn-auth-json` path (issue #451). Mutation is
+  // placeholders on the `ntn-auth-json` path. Mutation is
   // intentional: `prepareInstallContext` returns a fresh `InstallContext`,
   // the field is unset until this point, and only `runInstall` (this
   // function) populates it.
@@ -3785,7 +3785,7 @@ export async function runInstall(
   // preflight but silently degraded to prod at runtime. The literal
   // URL is sourced from the same canonical map (`ntnEnvBaseUrl`) the
   // ntn login path uses, so the dev URL is byte-equal to what
-  // `NOTION_ENV=dev ntn login` would write into `auth.json`.
+  // `NOTION_ENV=dev ntn login` would write into auth.json.
   if (opts.dev) {
     context.notionBaseUrlLiteral = ntnEnvBaseUrl("dev")
   }
@@ -3898,8 +3898,8 @@ export function parsePrintConfigFormat(value: string): PrintConfigFormat | null 
  * Pure: takes resolved paths in, returns the snippet out. Reuses
  * `buildClaudeMcpEntry` / `buildCodexMcpSection` (or their `Legacy`
  * counterparts when `legacyPaths === true`) so the snippet stays
- * byte-identical to what `--client claude` writes to `.mcp.json` and
- * what `--client codex` writes to `.codex/config.toml` for the same
+ * byte-identical to what `--client claude` writes to .mcp.json and
+ * what `--client codex` writes to .codex/config.toml for the same
  * `--legacy-paths` flag value. Drift between the printed shape and the
  * on-disk shape is the failure mode this reuse exists to prevent.
  *
@@ -3961,12 +3961,12 @@ export function buildPrintConfigOutput(
 
 /**
  * `--print-config` runtime path. Resolves `pkgRoot` and `mcpJsPath` via the
- * same helpers the install paths use, validates `dist/mcp.js` exists (the
- * printed `args[0]` would otherwise point at a non-existent file), and
- * writes the snippet to stdout. No filesystem writes — but `--project`
- * (when present) resolves the configRoot embedded in the snippet's
- * `LORE_CONFIG_ROOT` static so the printed entry points the spawned MCP
- * server at the right `.lore.yaml`.
+ * same helpers the install paths use, validates the standalone MCP entry
+ * exists (the printed `args[0]` would otherwise point at a non-existent
+ * file), and writes the snippet to stdout. No filesystem writes — but
+ * `--project` (when present) resolves the configRoot embedded in the
+ * snippet's `LORE_CONFIG_ROOT` static so the printed entry points the
+ * spawned MCP server at the right .lore.yaml.
  *
  * On a legacy-forwarded source (operator has `LORE_NOTION_TOKEN` set),
  * a one-line stderr note surfaces a deprecation reminder so the
@@ -4034,13 +4034,14 @@ async function runPrintConfig(
       console.error("  1. Unset the conflicting shell variable, then re-run.")
       console.error("  2. Drop --dev and re-run to print the prod snippet.")
       // `process.exit(1)` + defensive `return` matches the standing
-      // pattern documented in `src/cli/AGENTS.md`'s "Testing exit
-      // paths" subsection, AND avoids the double-print that a
-      // thrown error would produce: the action handler's outer
-      // try/catch renders `Install failed: <msg>` on any thrown
-      // Error, which would re-emit a trailing line after the four
-      // diagnostic lines we already wrote. The install-time guard
-      // at line 2274 uses `return { ready: false }` for the same
+      // exit-test pattern used across the CLI: a `trapProcessExit`
+      // spy records the exit code without throwing, and the
+      // defensive `return` keeps execution from falling through
+      // into the outer try/catch. Throwing instead would produce a
+      // double-print — the action handler's outer try/catch renders
+      // `Install failed: <msg>` on any thrown Error, re-emitting a
+      // trailing line after the four diagnostic lines we already
+      // wrote. The install-time guard above uses `return { ready: false }` for the same
       // reason; this exit-1 path is the print-config analog.
       process.exit(1)
       return
@@ -4052,14 +4053,13 @@ async function runPrintConfig(
   const configRoot = found?.root ?? projectRoot
 
   // Best-effort auth-source resolution so the printed snippet matches
-  // what `--client claude` / `--client codex` would write to disk
-  // (issue #451): under `ntn-auth-json`, suppress the auth-token
-  // placeholders that produce host-validator warnings. Note that
-  // `resolveAuth` also has the side effect of emitting deprecation
-  // warnings to stderr for the legacy paths (`config-auth-token`,
-  // `env-lore-notion-token`); print-config now surfaces those warnings
-  // where it didn't pre-#451, which keeps the messaging consistent with
-  // the file-write path's behavior. The two cadences differ (#484):
+  // what `--client claude` / `--client codex` would write to disk:
+  // under `ntn-auth-json`, suppress the auth-token placeholders that
+  // produce host-validator warnings. Note that `resolveAuth` also has
+  // the side effect of emitting deprecation warnings to stderr for
+  // the legacy paths (`config-auth-token`, `env-lore-notion-token`);
+  // print-config surfaces those warnings the same way the file-write
+  // path does. The two cadences differ:
   // `env-lore-notion-token` warns once per 24h per config root and is
   // silenceable via `LORE_SUPPRESS_DEPRECATIONS=1`; `config-auth-token`
   // fires once per process and is NOT silenceable. Operators piping
@@ -4068,8 +4068,8 @@ async function runPrintConfig(
   // shell redirection (`2>/dev/null`) suppresses the stderr noise for
   // pipelines that don't want it, but the warning's whole point is to
   // be visible until the operator removes `auth.token` from
-  // `.lore.yaml`. Print-config is intentionally non-interactive —
-  // auth resolution failure (no `.lore.yaml`, no token resolved) is
+  // .lore.yaml. Print-config is intentionally non-interactive —
+  // auth resolution failure (no .lore.yaml, no token resolved) is
   // silently treated as "no opinion" and the legacy unconditional-
   // forward shape stands. The catch is narrow: print-config exists for
   // unsupported hosts and a hard failure here would break the very
@@ -4081,7 +4081,7 @@ async function runPrintConfig(
       const auth = await resolveAuth(config, found.root)
       printConfigAuthSource = auth.source
     } catch {
-      // Auth unresolvable — fall through to undefined (pre-fix shape).
+      // Auth unresolvable — fall through to undefined (earlier shape).
     }
   }
 
@@ -4112,7 +4112,7 @@ async function runPrintConfig(
   // Probes the unfiltered shape (no `authSource`) for the same reason
   // `runInstall` does: an ntn-source OR PAT-source operator with a
   // stray `LORE_NOTION_TOKEN` in their shell rc gets the cleanup
-  // nudge, even though the printed snippet itself no longer forwards
+  // nudge even though the printed snippet itself does not forward
   // the token.
   //
   // Print-config writes the note to **stderr** (not stdout) so a
@@ -4122,10 +4122,9 @@ async function runPrintConfig(
   // same reason: stderr in a pipe context is best kept short, while
   // the multi-line stdout-friendly variant in `runInstall` has room
   // for the full elaboration. Both surfaces name BOTH `lore auth
-  // --migrate` branches under the post-2026-05-13 contract — the
-  // PAT default and the `--ntn` opt-in — and avoid the pre-
-  // announcement "switch via NOTION_KEYRING=0 ntn login" wording
-  // that silently routed legacy operators to the wrong contract.
+  // --migrate` branches — the PAT default and the `--ntn` opt-in —
+  // and avoid wording that routes operators through
+  // `NOTION_KEYRING=0 ntn login` to the wrong contract.
   const build = buildMcpEnv(configRoot)
   if (build.forwarded.includes("LORE_NOTION_TOKEN")) {
     process.stderr.write(

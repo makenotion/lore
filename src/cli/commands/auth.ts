@@ -170,7 +170,7 @@ export const authCommand = new Command("auth")
 // ---------------------------------------------------------------------------
 
 /**
- * Run the `--status` body. Routes on whether `.lore.yaml` is reachable
+ * Run the `--status` body. Routes on whether .lore.yaml is reachable
  * upward from cwd:
  *
  * - **No vault context**: print general auth state. We still attempt
@@ -299,10 +299,10 @@ export async function runStatus(): Promise<void> {
     console.log(`  Pinned workspace: ${config.auth.workspaceId}`)
   }
   // Surface the active baseUrl so operators on legacy sources see what
-  // host their next preflight call will hit. A `.lore.yaml`-supplied
+  // host their next preflight call will hit. A .lore.yaml-supplied
   // override can silently redirect a token to an arbitrary host on the
-  // legacy paths (see `resolveAuth`'s security note); printing the
-  // value here is one free defense-in-depth line.
+  // legacy paths; printing the value here is one free defense-in-depth
+  // line.
   if (auth.baseUrl) {
     console.log(`  Notion base URL:  ${auth.baseUrl}`)
   }
@@ -510,13 +510,13 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   //
   // Environment selection precedence:
   //   1. `NOTION_ENV` env var (operator-set, wins).
-  //   2. Inferred from `.lore.yaml`'s `auth.baseUrl` (PnP-style dev
+  //   2. Inferred from .lore.yaml's `auth.baseUrl` (PnP-style dev
   //      projects carry `auth.baseUrl: https://api-dev.notion.com`;
   //      threading that into `ntn login --env dev` keeps the
   //      Lore-managed login pointed at the same environment the
   //      operator's vault config already declares).
   //   3. Fall through to ntn's own default (typically prod from its
-  //      `~/.config/notion/config.json`).
+  //      ~/.config/notion/config.json).
   //
   // The inferred form is the load-bearing piece: a dev-environment
   // operator without `NOTION_ENV=dev` in their shell would otherwise
@@ -550,12 +550,11 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
       // spawn-error: the most-common cause is that the ntn binary
       // disappeared between the install probe and the login spawn
       // (uninstalled mid-flow, PATH munged by an interactive shell
-      // change, etc.). Per the spec acceptance criterion this branch
-      // is "handled differently from exit-non-zero" and "offers
-      // re-install if appropriate" — re-install is appropriate when
-      // ntn is no longer on PATH at this point. Probe again and
-      // either offer re-install (TTY/--yes) or surface the install
-      // command as a manual recovery path.
+      // change, etc.). This branch is handled differently from
+      // exit-non-zero — re-install is appropriate when ntn is missing
+      // from PATH at this point. Probe again and either offer
+      // re-install (TTY/--yes) or surface the install command as a
+      // manual recovery path.
       console.error(
         `  ntn could not be spawned: ${formatErrorDetail(loginResult.error)}`,
       )
@@ -727,7 +726,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
  * Mirrors `--status` / `--logout`'s no-vault-context fallback —
  * `whoami` is a script-friendly identity probe and must work
  * outside a Lore project when a `NOTION_API_TOKEN` env or a
- * single-workspace `auth.json` resolves. Inside a vault context
+ * single-workspace auth.json resolves. Inside a vault context
  * we still load the config so the resolver can honor
  * `auth.workspaceId` and the legacy `auth.token` source.
  */
@@ -840,7 +839,7 @@ export async function renderWhoamiIdentity(client: Client): Promise<string> {
 /**
  * Run the `--logout` body. Informational only — Lore doesn't manage
  * ntn's storage, doesn't unset env vars on the operator's behalf, and
- * doesn't edit `.lore.yaml`. The right action depends on the source;
+ * doesn't edit .lore.yaml. The right action depends on the source;
  * this command names it.
  */
 export async function runLogout(): Promise<void> {
@@ -857,8 +856,9 @@ export async function runLogout(): Promise<void> {
     }
   } else {
     try {
-      // homedir() keying — see `runStatus`/`runWhoami` notes; collapses
-      // all no-vault calls onto a single per-operator deprecation marker.
+      // homedir() keying collapses all no-vault calls onto a single
+      // per-operator deprecation marker, matching the keying
+      // `runStatus` / `runWhoami` use when no vault is configured.
       auth = await resolveAuth(undefined, homedir())
     } catch {
       // No active auth — fall through.
@@ -922,29 +922,10 @@ export async function runLogout(): Promise<void> {
  * writes a stderr breadcrumb so a misconfigured caller sees a
  * debuggable failure mode instead of a silent false.
  *
- * **Cross-PR coordination with `0.10.0-07-lore-auth-migrate`
- * (PR #176)**. As of #176's head `4f317fdc`, both PRs export this
- * helper with the same `(message, defaultYes = true)` signature, the
- * same suffix synthesis, and the same non-TTY breadcrumb — and #176's
- * call sites pass plain messages (no in-message `[Y/n]`). The helper
- * itself is byte-equivalent across the two PRs; the late-merger
- * deletes one of the two definitions cleanly.
- *
- * The residual divergence is structural, not in this helper:
- * **#176's dispatcher still uses the OLD `if (opts.migrate) /
- * if (opts.login) / await status()` chain**, while this PR replaces
- * that chain with `pickAuthAction` + switch. The late-merger's task
- * is therefore one well-named integration:
- *
- *   1. Delete one of the two `confirmPrompt` definitions (either is
- *      a clean delete; the helpers are byte-equivalent).
- *   2. Add `migrate?: boolean` to `AuthOpts` (this PR's interface).
- *   3. Add `--migrate` to the `pickAuthAction` ladder at the top
- *      slot the precedence comment already names.
- *   4. Add `case "migrate": await runMigrate(...)` to the dispatch
- *      switch in `authCommand.action(...)`.
- *
- * No call-site rewrites; no behavioral conflicts; one file touched.
+ * `defaultYes = true` accepts a bare Enter as yes; `false` makes Enter
+ * mean no. Refuses to prompt on a non-TTY (script / CI) and writes a
+ * stderr breadcrumb so a misconfigured caller sees a debuggable failure
+ * mode instead of a silent false.
  */
 export async function confirmPrompt(
   message: string,
@@ -981,12 +962,10 @@ function formatErrorDetail(err: unknown): string {
 }
 
 /**
- * Re-export of `auth/oauth.ts:ntnEnvFromBaseUrl` (the single canonical
- * inference helper) under the local name so the `runLogin` call site
- * and its existing tests don't have to migrate import paths in lockstep
- * with the consolidation.
- *
- * See `oauth.ts:ntnEnvFromBaseUrl` for the recognized URL table and the
+ * Re-export of the canonical `ntnEnvFromBaseUrl` inference helper under
+ * the local name so the `runLogin` call site and its existing tests
+ * don't have to migrate import paths in lockstep with the consolidation.
+ * The canonical helper carries the recognized URL table and the
  * exact-match policy rationale.
  */
 export { ntnEnvFromBaseUrl as inferNtnEnvFromBaseUrl } from "../../auth/oauth.js"
@@ -1031,11 +1010,11 @@ export type ShellRcFinder = () => Promise<string | null>
 
 /**
  * Map a `NOTION_ENV` selector to the URL `resolveNtnEnvBaseUrl` /
- * `resolveLoginTargetBaseUrl` should hand back. Delegates to
- * `oauth.ts:ntnEnvBaseUrl` (the single canonical env→URL table). The
- * helper exists for the early-return symmetry — `ntnEnvBaseUrl` already
- * handles `undefined` and unknown env names; this wrapper just names
- * the local intent at the call sites that read `NOTION_ENV` directly.
+ * `resolveLoginTargetBaseUrl` should hand back. Delegates to the
+ * single canonical `ntnEnvBaseUrl` env→URL table. The helper exists
+ * for the early-return symmetry — `ntnEnvBaseUrl` already handles
+ * `undefined` and unknown env names; this wrapper just names the
+ * local intent at the call sites that read `NOTION_ENV` directly.
  *
  * **Explicit `NOTION_ENV=prod` returns the canonical prod URL**
  * (`https://api.notion.so`), NOT `undefined`. The "no override needed
@@ -1057,13 +1036,11 @@ function envNameBaseUrl(envName: string | undefined): string | undefined {
  * priority order:
  *
  *   1. `LORE_NOTION_BASE_URL` — Lore-specific override. Matches the
- *      shape `resolveAuth` uses for its `env-notion-api-token` source
- *      (`src/config.ts:246-253`).
- *   2. `NOTION_BASE_URL` — the env-var name PR #178's
- *      `resolveOperatorBaseUrl` introduces between the Lore-prefixed
- *      and ntn-API names. Including it here keeps migrate's
- *      env-resolution byte-compatible with #178's contract; the
- *      late-merger collapses both helpers cleanly.
+ *      shape `resolveAuth` uses for its `env-notion-api-token` source.
+ *   2. `NOTION_BASE_URL` — the env-var name `resolveOperatorBaseUrl`
+ *      accepts between the Lore-prefixed and ntn-API names.
+ *      Including it keeps migrate's env-resolution aligned with the
+ *      shared operator-base-URL chain.
  *   3. `NOTION_API_BASE_URL` — ntn's native override. Documented in
  *      `ntn --help` as the explicit dev/staging endpoint switch. An
  *      operator following ntn's docs sets this; without consulting it
@@ -1127,7 +1104,7 @@ export function resolveLoginTargetBaseUrl(
  * with so ntn login targets the same Notion host every other migrate
  * site is using.
  *
- * The blind spot this closes: a project with `.lore.yaml` carrying
+ * The blind spot this closes: a project with .lore.yaml carrying
  * `auth.baseUrl: https://api-dev.notion.com` (or with only
  * `NOTION_API_BASE_URL` / `LORE_NOTION_BASE_URL` set in env) would
  * have Step 1 verify the legacy token against dev, then run a bare
@@ -1177,9 +1154,8 @@ export function computeNtnLoginEnvOverride(
  *   integration-sharing / wrong-workspace / personal-permissions
  *   diagnostic copy.
  * - `auth` — the token itself is invalid or expired (401 / 403).
- *   Routes to a re-auth recommendation. Surfaced by PR #178's 5-arm
- *   refinement of `VaultAccessResult`; dead code under the current
- *   3-arm shape, activates the moment #178 lands.
+ *   Routes to a re-auth recommendation. Reachable through the
+ *   5-arm `VaultAccessResult` refinement.
  * - `throttle` — the request was rate-limited (429). Routes to a
  *   back-off recommendation. Same forward-compat posture as `auth`.
  * - `transient` — 5xx, DNS, proxy, or any other not-explicitly-
@@ -1196,12 +1172,9 @@ type VaultErrorClass = "permission" | "auth" | "throttle" | "transient"
  * site-specific copy.
  *
  * **Takes `kind: string` rather than the typed discriminator** so the
- * helper is forward-compatible with PR #178's 5-arm shape (`ok` /
- * `not-found` / `unauthorized` / `rate-limited` / `unknown-error`).
- * Under the current 3-arm shape on `main` only `permission` and
- * `transient` ever route through; the `auth` and `throttle` branches
- * activate the moment #178 lands. Doing the forward-compat now means
- * the #178 rebase touches zero migrate sites.
+ * helper covers every `VaultAccessResult` arm (`ok` / `not-found` /
+ * `unauthorized` / `rate-limited` / `unknown-error`) without coupling
+ * to a closed discriminator at this seam.
  *
  * The fall-through to `transient` is intentional: any future kind
  * we haven't yet routed lands on the safest non-misleading copy
@@ -1248,10 +1221,9 @@ export interface MigrateDeps {
 }
 
 /**
- * Production wiring of `MigrateDeps`. Threads the live helpers from
- * `auth/ntn.ts`, `auth/oauth.ts`, `config.ts`, and `notion/client.ts`
- * into the orchestrator. Tests replace this with `vi.fn()`-shaped
- * stubs.
+ * Production wiring of `MigrateDeps`. Threads the live auth, config,
+ * and Notion client helpers into the orchestrator. Tests replace
+ * this with `vi.fn()`-shaped stubs.
  */
 export function productionMigrateDeps(): MigrateDeps {
   // `homedir()` resolves once at factory build; the closure below
@@ -1271,7 +1243,7 @@ export function productionMigrateDeps(): MigrateDeps {
     installNtn,
     // Wrap the underlying ntn login spawn so a caller-supplied
     // `envOverride` lands in `process.env` for the duration of the
-    // spawn. `runNtnLogin` (`src/auth/ntn.ts`) reads `process.env`
+    // spawn. `runNtnLogin` reads `process.env`
     // directly via its `...process.env` spread; without this wrapper
     // the override would have no effect. Restored in `finally` so an
     // overridden var doesn't leak past the spawn.
@@ -1450,13 +1422,13 @@ export async function runMigrate(
   } else {
     deps.log("  ✓ ntn is installed")
   }
-  // Note: no NOTION_KEYRING=0 check. `runNtnLogin()` (#02) sets it in
+  // Note: no NOTION_KEYRING=0 check. `runNtnLogin()` sets it in
   // the spawn env so the operator doesn't need it in their shell rc.
   deps.log("")
 
   // Step 3 — shell out to ntn login (interactive).
   //
-  // `runNtnLogin` (`src/auth/ntn.ts`) inherits the full `process.env`
+  // `runNtnLogin` inherits the full `process.env`
   // (plus `NOTION_KEYRING=0`), so ntn's native dev/staging controls
   // (`NOTION_ENV`, `NOTION_BASE_URL` per `ntn login --help`) flow
   // through automatically. An operator running migration in a dev
@@ -1464,7 +1436,7 @@ export async function runMigrate(
   // dev-environment ntn token.
   //
   // `computeNtnLoginEnvOverride` closes the config-driven dev gap:
-  // when `.lore.yaml` carries `auth.baseUrl: <dev URL>` but NO env
+  // when .lore.yaml carries `auth.baseUrl: <dev URL>` but NO env
   // var directs ntn, the override forwards `NOTION_BASE_URL` into
   // the spawn so ntn login targets the same host Step 1's legacy
   // preflight verified. Without this, Step 1 verifies dev and Step 3
@@ -1528,8 +1500,8 @@ export async function runMigrate(
   // `quiet: true` so loadNtnToken's own multi-line stderr hint
   // (multi-workspace ambiguity, requested-workspace-not-present)
   // doesn't fight the migrate flow's user-visible failure copy below.
-  // Same posture `resolveAuth` uses (`src/config.ts:266-269`); the
-  // migrate flow owns the operator-facing error block.
+  // Same posture `resolveAuth` uses when a legacy fallback is
+  // available; the migrate flow owns the operator-facing error block.
   const ntnRecord: NtnTokenRecord | null = await deps.loadNtnToken({
     workspaceId: env["NOTION_WORKSPACE_ID"] ?? config.auth?.workspaceId,
     quiet: true,
@@ -1614,7 +1586,7 @@ export async function runMigrate(
   deps.log(`  ✓ Workspace: ${ntnRecord.workspaceId}`)
   deps.log("")
 
-  // Defensive: per #01's resolver chain, `NOTION_API_TOKEN` env
+  // Defensive: per the auth resolver chain, `NOTION_API_TOKEN` env
   // outranks ntn-resolved auth. If the operator has both set, the
   // next Lore process will use `NOTION_API_TOKEN`, not the ntn token
   // Step 4 just verified. Confirm `NOTION_API_TOKEN` also reaches
@@ -1627,12 +1599,12 @@ export async function runMigrate(
   if (apiTokenEnv) {
     deps.log("NOTION_API_TOKEN is set and ranks above ntn; verifying it reaches the vault...")
     // **Mirror `resolveAuth`'s `env-notion-api-token` source exactly.**
-    // Per `src/config.ts:243-258`, that source resolves the base URL via
-    // `resolveOperatorBaseUrl()`, which honors (in priority order)
-    // `LORE_NOTION_BASE_URL` → `NOTION_BASE_URL` → `NOTION_API_BASE_URL`
-    // → `NOTION_ENV` mapped via `ntnEnvBaseUrl`. The guard MUST use the
-    // same resolver — anything narrower creates a false positive in the
-    // opposite direction:
+    // That source resolves the base URL via `resolveOperatorBaseUrl()`,
+    // which honors (in priority order) `LORE_NOTION_BASE_URL` →
+    // `NOTION_BASE_URL` → `NOTION_API_BASE_URL` → `NOTION_ENV` mapped
+    // via `ntnEnvBaseUrl`. The guard MUST use the same resolver —
+    // anything narrower creates a false positive in the opposite
+    // direction:
     //
     //   - Narrower (only `LORE_NOTION_BASE_URL`): an operator with
     //     `NOTION_API_TOKEN` + `NOTION_BASE_URL=https://api-dev.notion.com`
@@ -1734,7 +1706,7 @@ export async function runMigrate(
  * - `legacySource` — primary source detected at Step 1. Determines
  *   the main copy (shell-rc edit for env, YAML field-removal for
  *   config).
- * - `configPath` — resolved `.lore.yaml` path. Surfaced verbatim in
+ * - `configPath` — resolved .lore.yaml path. Surfaced verbatim in
  *   the config-source branch so the operator knows which file to
  *   edit.
  * - `alsoSetSource` — when set, BOTH legacy sources are present in

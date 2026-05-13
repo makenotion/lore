@@ -10,7 +10,7 @@
  * normalizes apart and flows to the trigram fuzzy probe instead.
  *
  * Why these rules and no more: every transformation here corresponds to a
- * real-world variant pattern observed in the issue #109 internal-vault audit
+ * real-world variant pattern observed during an internal-vault audit
  * (`Eval & Testing` ↔ `Evals & Testing`, `Build & Tooling` ↔
  * `Build &amp; Tooling`, casing-only twins). Adding gerund-strip
  * (`testing` ↔ `test`) or full lemmatization would over-collapse genuinely

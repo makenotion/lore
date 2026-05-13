@@ -9,8 +9,8 @@
  * The service writes only to the Memories DB — it never creates facts or
  * touches other databases. Graph coordination (auto-creating `decided_by` /
  * `supersedes_decision` facts) happens in the MCP tool layer, consistent with
- * how `lore-memory action='save'` orchestrates topics + memories in
- * `src/mcp/tools/memory.ts`.
+ * how `lore-memory action='save'` orchestrates topics + memories at
+ * the MCP boundary.
  */
 
 import type { Client } from "@notionhq/client"
@@ -85,8 +85,8 @@ type DecodedDecisionTextFields = Record<RequiredDecisionTextField, string> & {
  * Doubly-encoded autosave input like `&amp;amp;` lands in Notion as plain
  * text, matching the broader Memory write discipline.
  *
- * Sibling: `decodeMemoryTextFields` in `memory.ts` — keep shared field
- * coverage in lockstep. `rationale` mirrors memory `content`: it
+ * Sibling: `decodeMemoryTextFields` — keep shared field
+ * coverage in lockstep. `rationale` parallels memory `content`: it
  * normalizes missing/falsy body text to `""` so create can skip the
  * markdown write while returning a string-backed Decision.
  *
@@ -154,7 +154,7 @@ export class DecisionService {
   )
 
   /**
-   * Resolved scope context (issue #283). Same posture as
+   * Resolved scope context. Same posture as
    * `MemoryService.scopeCtx` and `TaskService.scopeCtx`. Default
    * `list()` excludes narrow-scope decisions whose `Scope Key` does
    * not match the reader; expired decisions also drop out.
@@ -212,7 +212,7 @@ export class DecisionService {
         keywords: decoded.keywords,
         synopsis: decoded.synopsis,
         session: decoded.session,
-        // Scope / lifetime (issue #283). Decisions default to
+        // Scope / lifetime. Decisions default to
         // broadcast-scoped persistent governance — most callers
         // omit scope. The conventional explicit pairing is
         // `scope: { lifetime: "until-decision-superseded" }` to
@@ -287,11 +287,12 @@ export class DecisionService {
     // `getOrLoad` collapses concurrent cold-start fan-out onto a single
     // retrieve: `resolveCanonicalDecisionLinks` walks supersession DAGs
     // in parallel, and converging root walks hitting the same ancestor
-    // previously each issued their own `pages.retrieve` call. The loader
-    // either returns a Decision or throws on non-decision kinds; the
-    // non-null assertion below is safe because `null` is unreachable on
-    // this path. A throw propagates to every waiter and clears the
-    // pending slot so the next caller retries rather than caching an error.
+    // share one `pages.retrieve` call instead of each issuing their
+    // own. The loader either returns a Decision or throws on
+    // non-decision kinds; the non-null assertion below is safe because
+    // `null` is unreachable on this path. A throw propagates to every
+    // waiter and clears the pending slot so the next caller retries
+    // rather than caching an error.
     const decision = await this.idCache.getOrLoad(id, async () => {
       const page = await this.client.pages.retrieve({ page_id: id })
       if (!isLiveFullPage(page)) {
@@ -358,7 +359,7 @@ export class DecisionService {
     }
 
     const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
-    // Default scope filter (issue #283). Same posture as `MemoryService.list`
+    // Default scope filter. Same posture as `MemoryService.list`
     // and `TaskService.list`. The wake-up Decisions Requiring Attention
     // section reads through this method — without scope filtering, a
     // session-scoped decision would surface across every reader's wake-up.
@@ -418,7 +419,7 @@ export class DecisionService {
    * `withEntityRelationLocks([newId, oldId])` so concurrent supersedes against
    * the same successor (compare-dispatch fan-out from
    * `recordSupersedence`) cannot clobber each other's relation entries.
-   * Without the lock, two callers both observe the pre-merge list and the
+   * Without the lock, two callers both observe the before-the-merge list and the
    * second `pages.update` drops the first's addition. The helper sorts ids
    * before acquisition, so two callers entering with `[target, loser_a]` and
    * `[target, loser_b]` cannot deadlock.
@@ -426,11 +427,11 @@ export class DecisionService {
    * Lock scope: filesystem-backed under `$HOME/.lore/entity-relation-locks/`,
    * so it serializes any lore CLI / MCP / hook process running as the same
    * user against the same vault on a single machine. Same posture as
-   * `entity-merge` and `FactService.createWithDedup` — see the "Concurrency"
-   * notes in `src/core/AGENTS.md`'s Fact Write-Side Dedup section. Writes
+   * `entity-merge` and `FactService.createWithDedup` — the same
+   * Fact Write-Side Dedup concurrency notes apply here. Writes
    * coming from a remote actor (a different user's CLI against the same
    * Notion vault, or the Notion UI itself) are NOT serialized; that
-   * boundary is unchanged from pre-issue-#474 behavior.
+   * boundary is unchanged.
    */
   async supersede(newId: string, oldId: string): Promise<void> {
     await withEntityRelationLocks([newId, oldId], async () => {
@@ -534,7 +535,7 @@ export class DecisionService {
     projectId?: string
     limit?: number
     /**
-     * Issue #283 — opt out of the default-scope filter so audit /
+     * Opt out of the default-scope filter so audit /
      * migration callers can see narrow-scope and expired rows. Both
      * MCP `lore-query action='audit'` and the wake-up "Overdue for
      * Review" section consume this method, so the gate keeps the
@@ -560,7 +561,7 @@ export class DecisionService {
     }
 
     const baseFilter = { and: filters }
-    // Default scope filter (issue #283). Same posture as `list()` above:
+    // Default scope filter. Same posture as `list()` above:
     // server-side narrows to broadcast + reader's narrow kinds (Notion's
     // 2-deep cap), client-side `matchesDefaultScope` threaded as
     // `collectLivePages.extraFilter` enforces the kind+key binding so

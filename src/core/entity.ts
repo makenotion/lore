@@ -57,7 +57,7 @@ import { isSqlValidationError, logRunToolFallback } from "../notion/runtool/erro
 /**
  * Cache TTL is short on purpose. Aliases are mutable (a `merge` or
  * manual edit appends to the list) and a stale alias-list view would
- * silently lose resolution accuracy. 60s mirrors `ProjectService` /
+ * silently lose resolution accuracy. 60s matches `ProjectService` /
  * `TopicService`; tune down if alias drift becomes user-visible.
  */
 const NAME_CACHE_TTL_MS = 60_000
@@ -90,8 +90,8 @@ export function parseAliases(raw: string): string[] {
 
 /**
  * Normalize an alias for index-side comparison. Same shape as
- * `computeSubjectKey` so a fact that was canonicalized via SubjectKey
- * (P3-03 Part A) lines up with an Entity matched via this helper —
+ * `computeSubjectKey` so a fact canonicalized via SubjectKey
+ * lines up with an Entity matched via this helper —
  * one mental model for "two strings collapse to the same key".
  */
 export function normalizeEntityKey(value: string): string {
@@ -371,28 +371,25 @@ export class EntityService {
     if (cached) return cached
 
     return this.nameCache.getOrLoad(key, async () => {
-      // Issue #535: when `LORE_USE_RUNTOOL_FILTER_SQL` is on and a
-      // RunTool wrapper is wired, ask SQL to widen the candidate
-      // pool to every row whose lowercased name contains the
-      // normalized key as a substring (one round-trip, no
-      // pagination). The JS post-filter then narrows to exact
-      // `normalizeEntityKey(rawName) === key` matches — same
-      // contract as the REST path's `title.contains` + post-
-      // filter pipeline. `LOWER()` is ASCII-only so the SQL
-      // alone cannot authoritatively decide a negative match; the
+      // When `LORE_USE_RUNTOOL_FILTER_SQL` is on and a RunTool wrapper
+      // is wired, ask SQL to widen the candidate pool to every row
+      // whose lowercased name contains the normalized key as a
+      // substring (one round-trip, no pagination). The JS post-filter
+      // then narrows to exact `normalizeEntityKey(rawName) === key`
+      // matches — same contract as the REST path's `title.contains` +
+      // post-filter pipeline. `LOWER()` is ASCII-only so the SQL alone
+      // cannot authoritatively decide a negative match; the
       // post-filter side normalizes the stored name with the same
       // helper Lore uses everywhere (NFC + whitespace collapse +
-      // trailing-punct strip + lowercase). Without the post-
-      // filter, a stored `"Memory Service. "` would silently
-      // miss `findByName("memoryservice")` (issue #539 review
-      // blocker #2).
+      // trailing-punct strip + lowercase). Without the post-filter, a
+      // stored `"Memory Service. "` would silently miss
+      // `findByName("memoryservice")`.
       //
       // Archived-row safety: the SQL pool is NOT filtered server-
-      // side because the gateway's `archived` column shape is a
-      // Phase 0 open question. Each candidate is gated by
-      // `pages.retrieve` + `isActiveEntityPage` so an archived
-      // row at substring-rank 1 cannot mask a live row at
-      // substring-rank 2.
+      // side because the gateway has no portable `archived` column
+      // shape. Each candidate is gated by `pages.retrieve` +
+      // `isActiveEntityPage` so an archived row at substring-rank 1
+      // cannot mask a live row at substring-rank 2.
       //
       // Validation errors (`RunToolError.kind === "validation"`)
       // are NOT swallowed — they indicate query-shape drift
@@ -467,15 +464,14 @@ export class EntityService {
         // "Service" can plausibly produce >25 candidate rows on a
         // mature vault. Walking up to `NAME_LOOKUP_MAX_PAGES` pages
         // (cap = 1000 candidates) keeps the recall hole closed without
-        // turning one resolve into a vault-wide scan. Caught by review
-        // on PR #88.
+        // turning one resolve into a vault-wide scan.
         //
         // Pre-filter on the synchronously-available `Name` title before
         // calling `pageToEntity` — `pageToEntity` hydrates the `Project`
         // relation column and can issue `pages.properties.retrieve` per
         // candidate. Hydrating every substring hit collapses the worst
         // case (1000-row scan) into 1000 sequential rate-limited round
-        // trips. Issue #487.
+        // trips.
         let cursor: string | undefined
         let pagesFetched = 0
         while (true) {
@@ -522,12 +518,11 @@ export class EntityService {
     const key = normalizeEntityKey(alias)
     if (!key) return []
 
-    // Issue #535: when `LORE_USE_RUNTOOL_FILTER_SQL` is on and a
-    // RunTool wrapper is wired, ask SQL to widen the candidate
-    // pool to every row whose lowercased Aliases column contains
-    // the normalized key as a substring (one round-trip, no
-    // pagination). The JS post-filter then narrows to exact
-    // alias-token matches via `parseAliases` +
+    // When `LORE_USE_RUNTOOL_FILTER_SQL` is on and a RunTool wrapper
+    // is wired, ask SQL to widen the candidate pool to every row
+    // whose lowercased Aliases column contains the normalized key as
+    // a substring (one round-trip, no pagination). The JS post-filter
+    // then narrows to exact alias-token matches via `parseAliases` +
     // `normalizeEntityKey` — same contract as the REST path's
     // `rich_text contains` + post-filter pipeline.
     //
@@ -591,10 +586,9 @@ export class EntityService {
     // Paginate up to `NAME_LOOKUP_MAX_PAGES` so a high-cardinality
     // alias like "User" stored on many entities (the very ambiguity
     // case the resolver is trying to surface) doesn't get clipped at
-    // page one. Recall hole caught by review on PR #88. Post-filter
-    // the substring hits down to exact normalized-key matches so an
-    // alias like `MemoryService.create` doesn't match a search for
-    // `Service`.
+    // page one. Post-filter the substring hits down to exact
+    // normalized-key matches so an alias like `MemoryService.create`
+    // doesn't match a search for `Service`.
     //
     // Pre-filter on the synchronously-available `Aliases` rich_text
     // cell before calling `pageToEntity`. `pageToEntity` hydrates the
@@ -605,7 +599,7 @@ export class EntityService {
     // matches across pages rather than returning on the first hit,
     // so the substring pre-filter is what bounds the hydration
     // count to actual exact-key aliases rather than every substring
-    // hit on every page. Issue #487.
+    // hit on every page.
     const matches: Entity[] = []
     let cursor: string | undefined
     let pagesFetched = 0
@@ -805,7 +799,7 @@ export class EntityService {
    *
    * **`existing.projectIds` is optional on the exported `Entity` type**
    * (preserved across this PR for source-compat with external
-   * consumers — see `Entity` JSDoc). Service-internal entities flowing
+   * consumers — the `Entity` interface marks it optional). Service-internal entities flowing
    * out of `pageToEntity` always carry a populated array, but the
    * `?? []` normalization here means a partially-constructed external
    * Entity (test fixture, adapter mock) doesn't crash the helper.

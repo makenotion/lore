@@ -20,7 +20,7 @@ import { FACT_PROPS, MEMORY_PROPS } from "./schema.js"
  * Facts — must pass their own `*_PROPS.PROJECT` constant so the rename
  * invariant is locally enforceable per call site rather than relying on
  * the four `*_PROPS.PROJECT` constants staying equal forever. Today they
- * all resolve to `"Project"` and the schema-drift test in `schema.test.ts`
+ * all resolve to `"Project"` and the schema-drift test
  * pins each one to its database's builder; the parameter exists so a
  * future rename touching only one DB cannot silently send the wrong key
  * into the other three's queries through this helper.
@@ -98,8 +98,8 @@ function scopeKeyForKind(
 }
 
 /**
- * Build the default-retrieval scope inclusion filter for the issue
- * #283 contract — server-side, two-level-deep shape only.
+ * Build the default-retrieval scope inclusion filter for the scope
+ * contract — server-side, two-level-deep shape only.
  *
  * Notion's `dataSources.query` filter language caps compound
  * nesting at two levels (top-level `and` → `or` of property
@@ -107,7 +107,7 @@ function scopeKeyForKind(
  * `(Scope Kind = "session" AND Scope Key = "sess-A")` as one
  * candidate inside the OR, which would be `and → or → and` (three
  * levels) and Notion rejects it with `validation_error`. Empirically
- * confirmed during the issue #283 smoke test against a real
+ * confirmed during the scope-rollout smoke test against a real
  * sandbox vault: the SDK reports
  * "body.filter.and[N].or[M].rich_text should be defined" for the
  * nested AND clause because Notion's parser treats it as a property
@@ -144,10 +144,11 @@ function scopeKeyForKind(
  * `team`, `project`, or `global` are kept unconditionally (the
  * server already filtered to those + the reader's narrow kinds).
  *
- * **Migration safety.** Pre-#283 rows have all five columns null, so
- * `Scope Kind is_empty` matches them on the server filter and
- * `matchesDefaultScope`'s `kind === null → true` branch keeps them
- * client-side. Default retrieval is byte-identical to pre-#283.
+ * **Migration safety.** Rows written before the scope columns landed
+ * have all five columns null, so `Scope Kind is_empty` matches them on
+ * the server filter and `matchesDefaultScope`'s `kind === null → true`
+ * branch keeps them client-side. Default retrieval is byte-identical
+ * to unscoped reads.
  *
  * **Pure builder.** Returns a fresh literal on every call so caller
  * mutations (`and: [...]` array growth) cannot leak across in-flight
@@ -195,7 +196,7 @@ export function defaultScopeInclusionFilter(
 
 /**
  * Compose `defaultScopeInclusionFilter` onto an existing filter shape.
- * Mirrors `withCleanupOrphanExclusion` in `core/memory.ts` — three
+ * Mirrors `withCleanupOrphanExclusion` — three
  * input shapes:
  *
  * - `undefined` → returns the bare scope filter.
@@ -208,12 +209,11 @@ export function defaultScopeInclusionFilter(
  * shape flat. Flatness is also a correctness requirement, not just
  * a style preference: Notion's compound-filter language caps
  * compound nesting at TWO levels (`and: [or: [property-filters]]`
- * is the deepest valid shape) — see the docstring on
- * `defaultScopeInclusionFilter` above for the round-3 smoke-test
- * incident where a 3-deep `and→or→and` filter was rejected with
- * `validation_error` against a real vault. Unrolling top-level
- * scope clauses into the caller's outer `and:` keeps every emitted
- * filter at 2 levels deep.
+ * is the deepest valid shape). Unrolling top-level scope clauses
+ * into the caller's outer `and:` keeps every emitted filter at 2
+ * levels deep — `defaultScopeInclusionFilter`'s docstring carries
+ * the smoke-test incident where a 3-deep `and→or→and` filter was
+ * rejected.
  *
  * Returns the input unchanged when `ctx` produces no narrowing — i.e.
  * when the caller wants out-of-scope rows. The caller never needs to
@@ -245,9 +245,8 @@ export function withDefaultScopeFilter(
 /**
  * Filter clause selecting rows whose `Expires At` falls in the
  * inclusive window `[today, until]`. Used by the `lore status`
- * expiring-rows surface (issue #283 acceptance criterion: "`lore
- * status` or audit surfaces expired/expiring scoped memories for
- * cleanup").
+ * expiring-rows surface (the contract: "`lore status` or audit
+ * surfaces expired/expiring scoped memories for cleanup").
  */
 export function expiringWithinFilter(
   today: string,

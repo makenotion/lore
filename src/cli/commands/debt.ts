@@ -1,18 +1,18 @@
 /**
- * `lore debt` — memory debt audit and maintenance workflow (issue #288).
+ * `lore debt` — memory debt audit and maintenance workflow.
  *
- * Two subcommands today, mapped to the staged rollout in the issue:
+ * Two subcommands today:
  *
- * - `scan`         — Phase 1, read-only. Walks the same service methods
+ * - `scan`         — Read-only. Walks the same service methods
  *                    the conflict scan and `lore status` already use,
  *                    classifies findings into debt categories, and
  *                    emits a prioritized markdown / JSON report.
- * - `create-tasks` — Phase 2. Idempotent `lore-task` creation for the
+ * - `create-tasks` — Idempotent `lore-task` creation for the
  *                    surfaced P1/P2 debt items so memory hygiene folds
  *                    into normal task triage.
  *
- * Phase 3 (safe targeted autofix) is deliberately deferred to a future
- * version; the scanner stays strictly read-only by default.
+ * A future safe-targeted-autofix surface is deliberately deferred;
+ * the scanner stays strictly read-only by default.
  */
 
 import { Command } from "commander"
@@ -59,10 +59,9 @@ function parseDebtScanCliOptions(raw: {
 }): { ok: true; value: DebtScanCliOptions } | { ok: false; message: string } {
   // Explicit `--project` and `--all-projects` together is ambiguous —
   // the operator either wants one project's debt or every project's;
-  // silently picking one would violate the
-  // "Treat explicit project-scope misses as fatal" rule in
-  // `src/cli/AGENTS.md`. Reject before parsing the rest so the
-  // operator gets a clear error.
+  // silently picking one would violate the CLI's fail-closed rule for
+  // explicit project-scope misses. Reject before parsing the rest so
+  // the operator gets a clear error.
   if (raw.project !== undefined && raw.allProjects === true) {
     return {
       ok: false,
@@ -220,8 +219,8 @@ export function renderDebtMarkdown(report: DebtReport): string {
     // Honest "partial-clean" wording for both partial-scan branches
     // — capped categories AND degraded scope probe. "The vault is
     // clean" only fires when EVERY probe ran end-to-end. Without
-    // this gate, a pre-#283 vault with zero non-scope debt would
-    // render the same green output as a fully-clean post-#283 vault,
+    // this gate, an un-migrated vault with zero non-scope debt would
+    // render the same green output as a fully-clean migrated vault,
     // masking the migration prerequisite.
     if (cappedCategories.length > 0) {
       lines.push(
@@ -506,9 +505,9 @@ const createTasksSubcommand = new Command("create-tasks")
 
         // Preflight: probe every eligible debt item for an existing
         // audit task with the stable marker token. Skips collapse onto
-        // the existing row instead of creating a duplicate (Phase 2
-        // idempotency contract). The preflight runs even under
-        // --dry-run so the plan-output names reuse outcomes too.
+        // the existing row instead of creating a duplicate (idempotency
+        // contract). The preflight runs even under --dry-run so the
+        // plan output names reuse outcomes too.
         type PlanRow = {
           item: DebtItem
           action: "create" | "reuse"

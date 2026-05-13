@@ -76,14 +76,14 @@ type QueryFactsOpts = {
   includeInvalidated?: boolean
   predicates?: FactPredicate[]
   /**
-   * Transaction-time as-of cutoff in `YYYY-MM-DD` form (issue #284). When
+   * Transaction-time as-of cutoff in `YYYY-MM-DD` form. When
    * set, the read returns the slice of facts Lore knew about at `asOf`
    * (Observed At ≤ asOf) AND had not yet invalidated by `asOf`
-   * (Invalidated At is empty OR > asOf). Pre-migration rows with empty
-   * Observed At are treated as known (the `is_empty` short-circuit on
-   * each clause keeps un-backfilled rows visible during the migration
-   * window so `lore-query action='ask'` doesn't suddenly empty out before
-   * the operator runs `lore migrate --backfill-fact-observed-at`).
+   * (Invalidated At is empty OR > asOf). Rows with empty Observed At
+   * are treated as known (the `is_empty` short-circuit on each clause
+   * keeps un-backfilled rows visible during the migration window so
+   * `lore-query action='ask'` doesn't suddenly empty out before the
+   * operator runs `lore migrate --backfill-fact-observed-at`).
    *
    * Independent of `includeInvalidated` (domain-truth `Valid Until` axis).
    * When `asOf` is set, the legacy `Valid Until is_empty` filter is NOT
@@ -113,7 +113,7 @@ type QueryFactsOpts = {
    */
   allowUnfiltered?: boolean
   /**
-   * Issue #283. When `true`, skip the default scope filter that
+   * When `true`, skip the default scope filter that
    * excludes narrow-scope facts whose `Scope Key` does not match the
    * resolved scope context, and skip the expired-row exclusion.
    * Defaults to `false`. Operator audit paths
@@ -133,7 +133,7 @@ type ListRecentOpts = {
   limit?: number
   includeInvalidated?: boolean
   /**
-   * Issue #283. When `true`, skip the default scope filter that
+   * When `true`, skip the default scope filter that
    * excludes narrow-scope facts whose `Scope Key` doesn't match the
    * resolved scope context, and skip the expired-row exclusion.
    * Defaults to `false`. Operator audit paths opt in.
@@ -145,7 +145,7 @@ type ListRecentOpts = {
 const NOTION_MAX_PAGE_SIZE = 100
 
 /**
- * Issue #283 round-4 — warning emitted once per process when the
+ * Warning emitted once per process when the
  * scope-constrained dedup probe finds more than one live row for
  * the same `(dedupKey, scope bundle)`. Structurally that's a
  * duplicate state Notion permits (no unique constraint on the
@@ -155,7 +155,7 @@ const NOTION_MAX_PAGE_SIZE = 100
  * gap to operators so they know to run the migration.
  */
 /**
- * Issue #284 review item #5 — once-per-process stderr warning when
+ * Once-per-process stderr warning when
  * `FactService.invalidate` drops a missing column on retry. Operators
  * triaging a partially-migrated vault see WHICH column the schema
  * lacks instead of a silent degrade. Sticky across the process so a
@@ -190,7 +190,7 @@ function warnInvalidateMissingColumnOnce(propertyName: string | null): void {
 }
 
 /**
- * Issue #284 review item #7 — once-per-process stderr warning when
+ * Once-per-process stderr warning when
  * `freshCreateAfterDedupMiss` drops a missing column on retry.
  * Symmetric with `warnInvalidateMissingColumnOnce` for the
  * partially-migrated-vault create path: operators triaging "fact
@@ -316,7 +316,7 @@ function predicateFilterClause(
 }
 
 /**
- * Build the server-side as-of filter for a temporal recall (issue #284).
+ * Build the server-side as-of filter for a temporal recall.
  * Returns the AND-of-clauses array the caller pushes flat into its
  * existing filter pipeline (saves a level of nesting when the caller
  * already has 4+ AND clauses).
@@ -331,15 +331,16 @@ function predicateFilterClause(
  *     invalidated it.
  *
  * **Un-migrated-vault correction.** Both transaction-time legs keep
- * an `is_empty` short-circuit so pre-migration rows surface during
- * the `--backfill-fact-observed-at` rollout window. Without further
- * gating, a legacy already-invalidated row (`Valid Until` set,
- * `Observed At` null, `Invalidated At` null) would also surface in an
- * asOf recall because its `Invalidated At is_empty` leg matches —
+ * an `is_empty` short-circuit so rows without the new columns
+ * surface during the `--backfill-fact-observed-at` rollout window.
+ * Without further gating, a legacy already-invalidated row
+ * (`Valid Until` set, `Observed At` null, `Invalidated At` null)
+ * would also surface in an asOf recall because its
+ * `Invalidated At is_empty` leg matches —
  * even though it was invalidated BEFORE asOf. The third clause
  * approximates transaction-time invalidation with domain-truth
  * `Valid Until` to close that asymmetry: when the row has no
- * `Invalidated At` (pre-migration or live), only surface it when
+ * `Invalidated At` (unmigrated or live), only surface it when
  * its `Valid Until` is either empty (still live) or strictly after
  * asOf (became domain-untrue after the cutoff). Once an operator
  * runs `lore migrate --backfill-fact-observed-at`, `Invalidated At
@@ -374,7 +375,7 @@ function asOfFilterClauses(
   if (!opts.includeInvalidated) {
     clauses.push({
       // Either Lore explicitly recorded a transaction-time invalidation
-      // after the cutoff (or none yet), OR — for pre-migration rows
+      // after the cutoff (or none yet), OR — for unmigrated rows
       // missing Invalidated At — domain truth signals the row was still
       // valid at asOf. The second branch keeps un-migrated vaults
       // honest until the backfill lands.
@@ -398,8 +399,8 @@ function asOfFilterClauses(
 }
 
 /**
- * Apply the bitemporal live-or-asOf gate to a filter accumulator
- * (issue #284). Centralizes the four-call-site repeated pattern:
+ * Apply the bitemporal live-or-asOf gate to a filter accumulator.
+ * Centralizes the four-call-site repeated pattern:
  *
  *   if (opts?.asOf) {
  *     filters.push(...asOfFilterClauses(opts.asOf))
@@ -487,7 +488,7 @@ interface RawEntityRelationHit {
 }
 
 /**
- * On a pre-migration vault every `lore-fact action='create'` probe fails with the same
+ * On an unmigrated vault every `lore-fact action='create'` probe fails with the same
  * "DedupKey column missing" error. Autosave fires every 5 messages, so
  * logging per-probe turns the MCP server's stderr into a firehose. The
  * fix is guaranteed by `lore migrate`, so we warn once per process and
@@ -586,9 +587,8 @@ export function classifyTailFallback(err: unknown): TailFallback {
 /**
  * Once-per-process stderr nudge when a flag-on RunTool batch-create
  * call surfaces a 403 RestrictedResource (or any auth-class denial),
- * implementing the README's "loud enough" mandate (issue #533 +
- * security review S2 follow-up). The runtool README explicitly
- * pins:
+ * implementing the README's "loud enough" mandate from the
+ * security follow-up. The runtool README explicitly pins:
  *
  * > silently degrading every legacy-auth caller to "RunTool
  * > unavailable" is the correct behavior, but it must be loud
@@ -644,8 +644,9 @@ export function __resetRunToolBatchCreatesAuthFallbackLogForTests(): void {
  *
  * `Fact.createdAt` is typed as optional on the public boundary so
  * adding the field doesn't break external consumers building
- * `Fact`-shaped object literals (the public type is exported via
- * `src/index.ts`). At runtime, every `Fact` produced by `pageToFact`
+ * `Fact`-shaped object literals (the public type is exported from
+ * the package's main entry). At runtime, every `Fact` produced by
+ * `pageToFact`
  * carries `createdAt` because the field comes from Notion's built-in
  * `created_time` page property — present on every page since the
  * vault was created. So internal helpers (`invalidate`,
@@ -676,26 +677,26 @@ function readFactCreatedAt(
 
 export class FactService {
   /**
-   * Resolved scope context (issue #283). Same posture as
+   * Resolved scope context. Same posture as
    * `MemoryService.scopeCtx`. Default reads filter the Facts DB by
    * the same scope-inclusion rule as the Memories DB.
    */
   private scopeCtx: MemoryScopeContext = {}
 
   /**
-   * Opt-in flag mirroring `MemoryService.scopeFilterEnabled`. Tests
-   * constructing FactService without a scope context get pre-#283
+   * Opt-in flag that parallels `MemoryService.scopeFilterEnabled`. Tests
+   * constructing FactService without a scope context get unscoped
    * retrieval shape; production callers that pass a context (even
-   * empty) get the new filter.
+   * empty) get the scoped filter.
    */
   private scopeFilterEnabled = false
 
   /**
-   * Issue #533: opt-in to batching auto-`mentions` fact creates via
+   * Opt-in to batching auto-`mentions` fact creates via
    * RunTool's `create_pages` tool. When false (default),
-   * `createBatchWithDedup` reproduces the pre-#533 fan-out shape
-   * exactly — `Promise.allSettled(map(createWithDedup))` — so the
-   * flag-off behavior is byte-equivalent to today's emission. When
+   * `createBatchWithDedup` reproduces the fan-out shape
+   * `Promise.allSettled(map(createWithDedup))` — so the
+   * flag-off behavior is byte-equivalent to per-call emission. When
    * true, the batch path probes dedup, accumulates fresh-create
    * candidates, and flushes via one `runTool("create_pages", ...)` call
    * per chunk; on failure it falls back to the per-input `createWithDedup`
@@ -707,8 +708,7 @@ export class FactService {
    * User-facing host root for relation URLs in `create_pages`
    * payloads. Threaded from `services.ts:deriveRelationUrlBase` —
    * dev workspaces need `https://dev.notion.so/`, production needs
-   * `https://www.notion.so/`. Live verification at PR #538 review
-   * time confirmed the server rejects host-mismatched URLs.
+   * `https://www.notion.so/`. The server rejects host-mismatched URLs.
    */
   private relationUrlBase: string | undefined
 
@@ -729,7 +729,7 @@ export class FactService {
   }
 
   /**
-   * Issue #533 — toggle the batch-create path at runtime. Mirrors
+   * Toggle the batch-create path at runtime. Parallels
    * the constructor option so a test can flip the flag without
    * re-instantiating, and `setScopeContext`-style mid-process
    * reconfiguration stays consistent with how other flags are
@@ -749,7 +749,7 @@ export class FactService {
   }
 
   /**
-   * Wrap a caller-built filter with the issue #283 default scope
+   * Wrap a caller-built filter with the default scope
    * inclusion clauses (`Scope Kind` broadcast / narrow-key match,
    * `Expires At` not-past). Threaded through every public read on
    * the Facts DB so a session-scoped fact created by another reader
@@ -760,9 +760,9 @@ export class FactService {
    * No-ops on two paths:
    * - Caller passes `includeOutOfScope: true` (audit / migration paths).
    * - The service was constructed without a scope context (test
-   *   fixtures running on the pre-#283 filter shape).
+   *   fixtures running on the unscoped filter shape).
    *
-   * Mirrors the corresponding helpers on `MemoryService`. Centralized
+   * Parallels the corresponding helpers on `MemoryService`. Centralized
    * so a future contributor adding a new public read on `FactService`
    * threads the same gate by calling this one method rather than
    * re-deriving the scope clause.
@@ -776,8 +776,8 @@ export class FactService {
   }
 
   /**
-   * Companion client-side post-filter for `applyDefaultScope`
-   * (issue #283). Notion's compound-filter language caps nesting
+   * Companion client-side post-filter for `applyDefaultScope`.
+   * Notion's compound-filter language caps nesting
    * at 2 levels, so the server-side filter narrows to "scope kind
    * is broadcast OR one of the reader's narrow kinds" without
    * binding kind+key. The kind+key binding runs here client-side:
@@ -1033,10 +1033,10 @@ export class FactService {
     if (predicateClause) filters.push(predicateClause)
 
     const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
-    // Issue #283 — narrow-scope facts whose Scope Key doesn't match
-    // the reader drop out of default `queryByEntity` recall. The
-    // server-side filter narrows to broadcast + reader's narrow
-    // kinds; the kind+key binding runs in `postScopePredicate`.
+    // Narrow-scope facts whose Scope Key doesn't match the reader
+    // drop out of default `queryByEntity` recall. The server-side
+    // filter narrows to broadcast + reader's narrow kinds; the
+    // kind+key binding runs in `postScopePredicate`.
     const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
     const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
     const results: PageObjectResponse[] = []
@@ -1123,15 +1123,14 @@ export class FactService {
     })
     const subjectKey = computeSubjectKey(relationSafeInput.subject)
 
-    // Issue #283 round-4 — scope/lifetime participates in the merge
-    // contract via a server-side filter. The probe binds every
-    // scope component (`Scope Kind`, `Scope Key`, `Audience`,
-    // `Lifetime`, `Expires At`) plus `DedupKey` and `Valid Until is_empty`,
-    // so the result is exactly the row that should merge or empty.
-    // No client-side walk, no arbitrary cap — Notion does the
-    // bundle-equality match itself. Both directions of the round-2
-    // review's "same-triple-different-scope" test still pass
-    // because every scope column is bound on the server.
+    // Scope/lifetime participates in the merge contract via a
+    // server-side filter. The probe binds every scope component
+    // (`Scope Kind`, `Scope Key`, `Audience`, `Lifetime`, `Expires At`)
+    // plus `DedupKey` and `Valid Until is_empty`, so the result is
+    // exactly the row that should merge or empty. No client-side walk,
+    // no arbitrary cap — Notion does the bundle-equality match itself.
+    // Same-triple-different-scope inputs remain distinct rows because
+    // every scope column is bound on the server.
     //
     // The `lore migrate --dedup-keys --merge` migration uses the
     // matching grouping (`computeFactGroupKey` joins all five
@@ -1141,7 +1140,7 @@ export class FactService {
       dedupKey,
       relationSafeInput.scope
     ).catch((err) => {
-      // Probe failure (e.g. transient network blip, or a pre-migration
+      // Probe failure (e.g. transient network blip, or an unmigrated
       // vault that still lacks the DedupKey column) must not block the
       // write. Log once per process and fall through to the blind-
       // create path — worst case we create a duplicate the next
@@ -1169,7 +1168,7 @@ export class FactService {
   /**
    * Tail half of `createWithDedupLocked`: blind `pages.create` after
    * the dedup probe missed. Extracted so `createBatchWithDedup` can
-   * reuse it on the per-input fallback path (issue #533) without
+   * reuse it on the per-input fallback path without
    * re-running the probe — a fallback after a failed batch already
    * has the probe result in hand and re-issuing the probe would
    * waste a round-trip per fallback.
@@ -1189,7 +1188,7 @@ export class FactService {
       object: relationSafeInput.object,
       projectIds: relationSafeInput.projectIds,
       validFrom,
-      // Issue #284 — `Observed At` is the transaction-time anchor: when
+      // `Observed At` is the transaction-time anchor: when
       // Lore learned about the fact. Defaults to today (matching
       // `validFrom`'s default) so a vanilla create lands with both
       // axes seeded; callers backfilling historical facts can decouple
@@ -1211,13 +1210,12 @@ export class FactService {
       objectEntityId: relationSafeInput.objectEntityId,
       ...factScopeInputToBuilderProps(relationSafeInput.scope),
     }) as Record<string, unknown>
-    // Issue #284 review item #7 — surgical retry on stale-schema vaults.
-    // Before #284, every column on a fresh create existed in the schema
-    // by construction (the migration runner adds new columns before new
-    // code ships writes for them). Adding `Observed At` to the create
-    // payload broke that invariant: a vault that pulled this code but
-    // has not yet run `lore migrate` 400s on every fact write, since
-    // Notion rejects unknown properties before creating the page.
+    // Surgical retry on stale-schema vaults. The migration runner
+    // normally adds new columns before new code ships writes for them.
+    // Adding `Observed At` to the create payload can break that
+    // invariant: a vault that pulled this code but has not yet run
+    // `lore migrate` 400s on every fact write, since Notion rejects
+    // unknown properties before creating the page.
     //
     // Mirror the surgical-drop loop `invalidate` uses on the same
     // partially-migrated failure class: parse the failing property
@@ -1239,24 +1237,23 @@ export class FactService {
   }
 
   /**
-   * Issue #284 review item #7 — pages.create wrapper with iterative
-   * missing-property drop. Identical drop-loop shape to
-   * `invalidate`'s schema-mismatch retry, but with no bare-properties
-   * fallback (create has no minimum-viable degraded write — the dedup
-   * key and identity columns are all load-bearing).
+   * `pages.create` wrapper with iterative missing-property drop.
+   * Identical drop-loop shape to `invalidate`'s schema-mismatch retry,
+   * but with no bare-properties fallback (create has no
+   * minimum-viable degraded write — the dedup key and identity
+   * columns are all load-bearing).
    *
    * **Loop budget.** `MAX_OPTIONAL_DROPS = 4` is the count of optional
-   * columns we might drop on a maximally-stale vault (post-#284
+   * columns we might drop on a maximally-stale vault (transaction-time
    * `Observed At` + `Invalidated At` + `Invalidated By`, plus
-   * DEFERRED-02 `Confidence Score`). The loop runs at most
+   * `Confidence Score`). The loop runs at most
    * `MAX_OPTIONAL_DROPS + 1` iterations: up to MAX missing-column
    * drops followed by a single final retry with the trimmed payload.
    * The +1 is load-bearing — without it, four sequential missing-
    * property errors exhaust the iteration count before the final
    * retry fires and the function falls through to the post-loop
-   * throw without ever issuing a successful create. R5 review caught
-   * this regression: an earlier `<` bound (instead of `<=`) silently
-   * dropped the trailing retry.
+   * throw without ever issuing a successful create. An earlier `<`
+   * bound (instead of `<=`) silently dropped the trailing retry.
    *
    * On parse failure (unrecognized SDK message shape) propagates the
    * original error so the caller surfaces the failure instead of
@@ -1303,15 +1300,15 @@ export class FactService {
 
   /**
    * Batch sibling of `createWithDedup` — same dedup + provenance
-   * semantics applied across many inputs (issue #533).
+   * semantics applied across many inputs.
    *
    * Two execution paths:
    *
-   * 1. **Flag off** (default): byte-equivalent to today's auto-mention
+   * 1. **Flag off** (default): byte-equivalent to the per-call auto-mention
    *    emission shape — `Promise.allSettled(inputs.map(createWithDedup))`.
-   *    The acceptance criterion's "behavioral equivalence under the
-   *    flag-off path" is satisfied by construction: this branch is the
-   *    same fan-out the MCP layer used to issue inline.
+   *    Behavioral equivalence under the flag-off path is satisfied by
+   *    construction: this branch is the same fan-out the MCP layer
+   *    issues inline.
    *
    * 2. **Flag on**: probes dedup for every input in parallel, runs
    *    the merge inline for hits, batches fresh-create candidates
@@ -1333,17 +1330,18 @@ export class FactService {
    *      still leave chunk 2 partially landed on the server, so
    *      the partial-commit tail must re-probe too. Pinned by the
    *      `mid-batch transport drop on chunk 2 → tail re-probes
-   *      via createWithDedup` test in `fact-batch.test.ts`.
+   *      via createWithDedup` test case.
    *
    * Returns `PromiseSettledResult<CreateFactResult>[]` so per-input
    * failures stay isolated — the same shape `Promise.allSettled` gives
-   * the auto-mention caller today, just routed through one method.
+   * the auto-mention caller via the per-call path, just routed through
+   * one method.
    *
    * Empty `inputs` returns `[]` without any Notion call. Single-input
    * `inputs` short-circuits to `createWithDedup` to keep the
    * single-call path on its existing locking discipline.
    *
-   * **Concurrency caveat (PR #538 strong rec #4).** The flag-on
+   * **Concurrency caveat.** The flag-on
    * path runs N dedup probes in parallel for the same `inputs`
    * batch, expanding the cross-process dedup race window from
    * `createWithDedup`'s 1× to N× — between any pair of
@@ -1352,8 +1350,7 @@ export class FactService {
    * batch's probes did not see. The result on a race is at most
    * one extra duplicate row per racing input, collapsed by the
    * authoritative `lore migrate --dedup-keys --merge` pass per
-   * the existing dedup contract documentation in
-   * `src/core/AGENTS.md`. The blast radius is acceptable for
+   * the existing dedup contract. The blast radius is acceptable for
    * auto-mention emission (the documented caller, where mentions
    * facts ship at `confidence: speculative` and the migration
    * sweeps regularly); a higher-stakes future caller adopting
@@ -1414,9 +1411,9 @@ export class FactService {
       reviewBy: string | undefined
     }
 
-    // Phase 1: probe dedup for every input in parallel. Any failure
-    // here (decode / archive-relation drop / probe error path that
-    // throws unexpectedly) becomes a per-input rejection rather
+    // Dedup-probe pass: probe dedup for every input in parallel. Any
+    // failure here (decode / archive-relation drop / probe error path
+    // that throws unexpectedly) becomes a per-input rejection rather
     // than collapsing the whole batch — preserves the per-call
     // isolation the auto-mention emitter relies on.
     const misses: ReadyMiss[] = []
@@ -1471,9 +1468,9 @@ export class FactService {
 
     if (misses.length === 0) return results
 
-    // Phase 2: build the page payloads and dispatch one
-    // `create_pages` call. The wrapper chunks defensively — see
-    // `RUNTOOL_CREATE_PAGES_MAX_CHUNK` — so callers can pass any
+    // Create-dispatch pass: build the page payloads and dispatch one
+    // `create_pages` call. The wrapper chunks defensively at
+    // `RUNTOOL_CREATE_PAGES_MAX_CHUNK` so callers can pass any
     // number of misses without thinking about the server cap.
     const validFromDefault = new Date().toISOString().split("T")[0]
     const observedAtDefault = todayUtc()
@@ -1484,7 +1481,7 @@ export class FactService {
         object: m.relationSafeInput.object,
         projectIds: m.relationSafeInput.projectIds,
         validFrom: m.relationSafeInput.validFrom ?? validFromDefault,
-        // Issue #284 — batch path seeds `Observed At` to mirror the
+        // Batch path seeds `Observed At` to mirror the
         // single-call create's transaction-time anchor.
         observedAt: observedAtDefault,
         reviewBy: m.reviewBy,
@@ -1498,8 +1495,7 @@ export class FactService {
       }) as Record<string, unknown>,
     }))
 
-    // PR #538 review (optional refactor + Round 2 transport-drop fix):
-    // discriminated union over the three terminal states of the batch
+    // Discriminated union over the three terminal states of the batch
     // dispatch. Each terminal state carries a `tailFallback` mode that
     // determines whether per-input fallback re-probes the dedup path:
     //
@@ -1511,7 +1507,7 @@ export class FactService {
     //   Transport-class and 5xx failures fall here on BOTH the
     //   full-failure path AND the partial-commit-tail path,
     //   because chunk-order ALONE doesn't prove the failing chunk
-    //   had no server-side effects (Round 2 review).
+    //   had no server-side effects.
     type BatchOutcome =
       | { kind: "full-success"; ids: string[] }
       | { kind: "partial-commit"; ids: string[]; tailFallback: TailFallback }
@@ -1527,15 +1523,13 @@ export class FactService {
       })
       outcome = { kind: "full-success", ids: batchResult.createdPageIds }
     } catch (err) {
-      // Security review S1 (PR #538) + Round 2: classify the
-      // underlying cause to decide whether the tail fallback
-      // must re-probe. Transport-class failures (no HTTP
-      // status — network drop, read timeout) and 5xx server
-      // errors might have committed before we lost the
-      // response, so the tail must re-probe via
-      // `createWithDedup` to absorb the orphan commit.
-      // Pre-commit 4xx validation errors cannot have committed,
-      // so the tail safely uses `freshCreateAfterDedupMiss`
+      // Classify the underlying cause to decide whether the tail
+      // fallback must re-probe. Transport-class failures (no HTTP
+      // status — network drop, read timeout) and 5xx server errors
+      // might have committed before we lost the response, so the
+      // tail must re-probe via `createWithDedup` to absorb the orphan
+      // commit. Pre-commit 4xx validation errors cannot have
+      // committed, so the tail safely uses `freshCreateAfterDedupMiss`
       // and skips a wasted probe per input.
       if (isBatchCreateError(err)) {
         // Partial-commit failures expose the underlying SDK error
@@ -1720,7 +1714,7 @@ export class FactService {
    * is mechanical. No user-visible change — no downstream renderer
    * relies on the order — but the test suite pins it via the
    * `bundles entity backfill with review/project/source merges`
-   * fixture in `fact.test.ts`, so a future refactor that flips the
+   * fixture, so a future refactor that flips the
    * order must update that fixture. Worth noting so a future reader
    * doesn't read it as an accidental invariant.
    *
@@ -1758,20 +1752,19 @@ export class FactService {
     const mergedProjectIds =
       missingProjectIds.length > 0 ? [...existing.projectIds, ...missingProjectIds] : null
     // First-writer-wins on Source: if the existing row already has a
-    // source memory we don't clobber it (PR #44's "no orphans" contract
+    // source memory we don't clobber it (the "no orphans" contract
     // only cares about filling the gap, not re-pointing a linked row).
     // Same posture below for the entity relations.
     const fillingSource = Boolean(!existing.sourceMemoryId && decodedInput.sourceMemoryId)
     // First-writer-wins on the entity relations, mirroring Source's
     // posture. Cold creates already populate `SubjectEntity` /
-    // `ObjectEntity` from `decodedInput` via `buildFactProps`; the dedup
-    // path used to drop them on the floor, leaving canonical relations
-    // absent on rows that match a legacy (pre-PF3-01) or partially
-    // migrated row even though the current write already resolved the
-    // ids. We fill only when the existing relation is empty AND the
-    // incoming write resolved one — preserving an existing relation
-    // matches the no-clobber rule on Source. Concurrency analysis vs
-    // `lore migrate --build-entities` lives in `src/core/AGENTS.md`.
+    // `ObjectEntity` from `decodedInput` via `buildFactProps`; on a
+    // dedup hit we fill those relations only when the existing row
+    // has them empty AND the incoming write resolved an id. Without
+    // the fill, canonical relations would stay absent on rows that
+    // match a legacy or partially migrated row even when the current
+    // write already resolved the ids. Preserving an existing relation
+    // matches the no-clobber rule on Source.
     const fillingSubjectEntity = Boolean(
       !existing.subjectEntityId && decodedInput.subjectEntityId
     )
@@ -1861,7 +1854,7 @@ export class FactService {
    * filter binds every scope component, so two rows that pass it
    * are duplicates the migration would collapse.
    *
-   * Issue #283 round-4 review — the pre-fix walker paginated through
+   * An earlier candidate walker paginated through
    * up to `MAX_DEDUP_CANDIDATE_PAGES * MAX_DEDUP_CANDIDATES` (250)
    * mismatched rows and gave up at the cap. In a high-cardinality
    * vault where the same triple legitimately spans many sessions /
@@ -1874,15 +1867,15 @@ export class FactService {
    *
    * The filter is a flat 1-deep `and:` of property filters — well
    * inside Notion's 2-level compound-filter limit and aligned with
-   * the round-3 follow-on shape `defaultScopeInclusionFilter`
-   * adopted elsewhere in the codebase. Scope columns that are
+   * the `defaultScopeInclusionFilter` shape used
+   * elsewhere in the codebase. Scope columns that are
    * `null` / empty on the incoming write get `is_empty` clauses on
    * the corresponding column so a broadcast write doesn't match a
    * narrow-scoped row (or vice versa). The scope-bundle equality
-   * the previous candidate walker enforced via
-   * `scopesMatchForMerge` is now structurally enforced by the
-   * filter itself; both directions of the round-2 review's
-   * "same-triple-different-scope" test still pass because the
+   * an earlier candidate walker enforced via
+   * `scopesMatchForMerge` is structurally enforced by the
+   * filter itself; the `same-triple-different-scope` test still
+   * passes because the
    * filter binds kind+key+audience+lifetime+expiresAt all on the
    * server.
    *
@@ -2018,11 +2011,12 @@ export class FactService {
   }
 
   async queryBySubject(subject: string, opts?: QueryFactsOpts): Promise<Fact[]> {
-    // Strict-empty subject (`""`) used to silently fall through to "list
-    // every fact in scope" — a quiet way for an MCP caller or a future
-    // internal caller to enumerate the entire vault. Gate that branch
-    // behind an explicit `allowUnfiltered: true` opt-in (issue #481).
-    // Internal callers that genuinely want vault-wide enumeration (the
+    // Strict-empty subject (`""`) is gated behind an explicit
+    // `allowUnfiltered: true` opt-in. Without the flag, this method
+    // returns `[]` rather than silently falling through to "list every
+    // fact in scope" — preventing an MCP caller or future internal
+    // caller from quietly enumerating the entire vault. Internal
+    // callers that genuinely want vault-wide enumeration (the
     // `--build-entities` migration scan) pass the flag.
     //
     // DO NOT tighten this to `subject.trim() === ""`. Whitespace-only
@@ -2030,7 +2024,7 @@ export class FactService {
     // substring `Subject contains <raw>` fallback below — same posture
     // as the punctuation-only case (`"."`, `"!!!"`) pinned by the
     // `falls back to raw Subject when input normalizes to empty
-    // (punctuation/whitespace only)` test in `fact.test.ts`. The agent-
+    // (punctuation/whitespace only)` test. The agent-
     // facing surface guards empty / whitespace at the `queryByEntity`
     // and MCP boundaries (which is where typoed /
     // `expandEntityQueryVariants`-empty values reach the system) so
@@ -2042,22 +2036,21 @@ export class FactService {
     // Allow empty subject to list all facts in scope (only reachable
     // via `allowUnfiltered: true` per the guard above).
     if (subject) {
-      // Case-insensitive match via the normalized SubjectKey column
-      // (P3-03 Part A) so `MemoryService` and `memoryservice` resolve to
-      // the same fact set. The OR with a raw Subject `contains` keeps
-      // pre-migration rows reachable until `lore migrate --dedup-keys`
-      // backfills SubjectKey on every fact — once the backfill lands the
-      // raw-side branch becomes redundant, but it costs one cheap clause
-      // and avoids a window where queries silently lose results.
+      // Case-insensitive match via the normalized SubjectKey column so
+      // `MemoryService` and `memoryservice` resolve to the same fact
+      // set. The OR with a raw Subject `contains` keeps un-backfilled
+      // rows reachable until `lore migrate --dedup-keys` backfills
+      // SubjectKey on every fact — once the backfill lands the
+      // raw-side branch becomes redundant, but it costs one cheap
+      // clause and avoids a window where queries silently lose results.
       //
       // Punctuation/whitespace-only inputs (`"."`, `"   "`, `"!!!"`) all
       // normalize to `""`. Notion's `rich_text contains ""` matches every
       // row with a non-null SubjectKey value — i.e., it broadens the
       // query to "every fact in scope" rather than restricting it. Skip
       // the SubjectKey clause when the normalized form is empty and fall
-      // back to the raw `Subject contains <input>` filter, which
-      // preserves pre-P3-03 literal-substring semantics for these edge
-      // inputs.
+      // back to a raw `Subject title contains <input>` filter, which
+      // gives literal-substring semantics for these edge inputs.
       const normalizedKey = computeSubjectKey(subject)
       if (normalizedKey) {
         filters.push({
@@ -2103,9 +2096,9 @@ export class FactService {
           ? filters[0]
           : undefined
 
-    // Issue #283 — apply the default scope filter before pagination so
-    // narrow-scope facts whose Scope Key doesn't match the reader drop
-    // out of `lore-query action='ask'` Subject substring recall.
+    // Apply the default scope filter before pagination so narrow-scope
+    // facts whose Scope Key doesn't match the reader drop out of
+    // `lore-query action='ask'` Subject substring recall.
     const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
     const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
 
@@ -2144,11 +2137,10 @@ export class FactService {
     const filters: Array<Record<string, unknown>> = []
 
     if (object) {
-      // Case-sensitive `contains` on the raw Object column — symmetric
-      // with the pre-P3-03 `queryBySubject` semantics. P3-03 Part A only
-      // canonicalizes Subject because Part A's spec adds `SubjectKey`
-      // alone; an `ObjectKey` mirror is Part B work (Entities DB) and
-      // intentionally out of scope. Until then, `queryByEntity` is
+      // Case-sensitive `contains` on the raw Object column. The
+      // canonical SubjectKey column has no `ObjectKey` mirror — that
+      // surface lives in the Entities DB instead. Until an Object-
+      // side normalization column exists, `queryByEntity` is
       // half-canonical: case-folded against Subject, raw against Object.
       filters.push({ property: FACT_PROPS.OBJECT, rich_text: { contains: object } })
     }
@@ -2182,8 +2174,8 @@ export class FactService {
           ? filters[0]
           : undefined
 
-    // Issue #283 — apply default scope filter on Object substring recall
-    // so narrow-scope facts referenced in another reader's session
+    // Apply default scope filter on Object substring recall so
+    // narrow-scope facts referenced in another reader's session
     // don't surface here.
     const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
     const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
@@ -2252,9 +2244,9 @@ export class FactService {
 
     const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
 
-    // Issue #283 — narrow-scope facts whose Scope Key doesn't match
-    // the reader drop out of `queryBySourceMemory` recall by default.
-    // The auto-mentions diff path in `MemoryService.update` opts out
+    // Narrow-scope facts whose Scope Key doesn't match the reader
+    // drop out of `queryBySourceMemory` recall by default. The
+    // auto-mentions diff path in `MemoryService.update` opts out
     // (`includeOutOfScope: true`) because the diff must see every
     // fact the row sourced regardless of scope, otherwise the
     // re-emission would leave orphan facts whose source memory was
@@ -2320,7 +2312,7 @@ export class FactService {
           ? filters[0]
           : undefined
 
-    // Default scope filter (issue #283). The wake-up Active Facts
+    // Default scope filter. The wake-up Active Facts
     // section reads through this method — without scope filtering,
     // a session-scoped fact would surface in every other session's
     // wake-up, which is the load-bearing acceptance-criterion failure
@@ -2341,11 +2333,10 @@ export class FactService {
     })
 
     let pages = response.results.filter(isFullPage) as PageObjectResponse[]
-    // Issue #283 — kind+key binding via client-side post-filter.
-    // `listRecent` is single-page by design (the wake-up hot
-    // path), so dropped narrow-key-mismatch rows just shrink the
-    // result; we do NOT paginate to backfill, mirroring the
-    // pre-#283 single-page contract.
+    // Kind+key binding via client-side post-filter. `listRecent` is
+    // single-page by design (the wake-up hot path), so dropped
+    // narrow-key-mismatch rows just shrink the result; we do NOT
+    // paginate to backfill — this method is a single-page contract.
     const postScopePredicate = this.postScopeFilterPredicate(opts.includeOutOfScope)
     if (postScopePredicate) {
       pages = pages.filter(postScopePredicate)
@@ -2372,12 +2363,11 @@ export class FactService {
    * `Subject`/`Object` text would have matched. The substring path is
    * filtered to rows where BOTH relation columns are empty so we
    * don't double-count rows that the relation path already returned.
-   * Caught by review on PR #88.
    *
    * **Unresolved-entity fallback.** When `entityId` is null/undefined
    * (the caller's resolver couldn't pick a canonical row), falls back
    * to text matching: Subject side is case-folded via
-   * `queryBySubject` (P3-03 Part A), Object side stays case-sensitive
+   * `queryBySubject`, Object side stays case-sensitive
    * `contains`. Asymmetric on the Object side — callers should
    * normalize input or accept the asymmetry.
    *
@@ -2401,13 +2391,13 @@ export class FactService {
        */
       limit?: number
       /**
-       * Issue #283. Forwarded into both underlying branches so the
+       * Forwarded into both underlying branches so the
        * scope filter applies symmetrically across the relation and
        * substring legs. Audit / migration paths set `true`.
        */
       includeOutOfScope?: boolean
       /**
-       * Issue #284 — transaction-time as-of cutoff in `YYYY-MM-DD` form.
+       * Transaction-time as-of cutoff in `YYYY-MM-DD` form.
        * Forwarded into every underlying branch so the bitemporal filter
        * applies symmetrically across the relation and substring legs.
        * Independent of `includeInvalidated`; the asOf clause replaces the
@@ -2415,7 +2405,7 @@ export class FactService {
        */
       asOf?: string
       /**
-       * Issue #284 — when true, drop the default `Valid Until is_empty`
+       * When true, drop the default `Valid Until is_empty`
        * filter so invalidated rows surface alongside live ones. Useful
        * when an agent is asking for a full history of facts about an
        * entity. Independent of `asOf` — pass `asOf` for "at point T",
@@ -2544,9 +2534,9 @@ export class FactService {
     )
     baseFilters.push({ or: textOr })
 
-    // Issue #283 — apply default scope filter on the unmigrated-text
-    // branch. Symmetric with the relation branch via `queryByEntityId`,
-    // so a session-scoped fact does not surface in this reader's
+    // Apply default scope filter on the unmigrated-text branch.
+    // Symmetric with the relation branch via `queryByEntityId`, so a
+    // session-scoped fact does not surface in this reader's
     // `queryByEntity` result regardless of which branch finds it.
     const scopedFilter = this.applyDefaultScope(
       { and: baseFilters },
@@ -2649,12 +2639,12 @@ export class FactService {
     projectId?: string
     limit?: number
     /**
-     * Issue #283 — opt out of the default-scope filter so audit /
+     * Opt out of the default-scope filter so audit /
      * migration callers can see narrow-scope and expired rows. The
      * MCP `lore-query action='audit'` surface keeps this `false`
      * (default): a session-scoped overdue fact must not surface to
      * a different reader through audit any more than it does
-     * through `queryBySubject` / `queryByObject`. Mirrors the
+     * through `queryBySubject` / `queryByObject`. Matches the
      * other public reads on this service.
      */
     includeOutOfScope?: boolean
@@ -2670,10 +2660,10 @@ export class FactService {
     }
 
     const baseFilter = { and: filters }
-    // Issue #283 — narrow-scope and expired-row filtering. Server-side
-    // clauses come from `applyDefaultScope`; the kind+key binding runs
-    // client-side via `postScopeFilterPredicate` because Notion's
-    // compound-filter language caps nesting at 2 levels (see
+    // Narrow-scope and expired-row filtering. Server-side clauses come
+    // from `applyDefaultScope`; the kind+key binding runs client-side
+    // via `postScopeFilterPredicate` because Notion's compound-filter
+    // language caps nesting at 2 levels (see
     // `defaultScopeInclusionFilter`'s docstring for the empirical
     // confirmation). The audit surface (`lore-query action='audit'`,
     // wake-up's "Overdue for Review") consumes this method, so the
@@ -2720,7 +2710,7 @@ export class FactService {
    * invalidate write — invalidating first would leave the handler with no
    * fact shape to read the source from.
    *
-   * **Archived-row guarantee (issue #497).** This gate prevents archived
+   * **Archived-row guarantee.** This gate prevents archived
    * fact rows from deserializing as live `Fact` objects. The downstream
    * effect is that `handleInvalidate` reads `sourceMemoryId` as `null`
    * and skips the contradiction-decrement branch — no
@@ -2795,7 +2785,7 @@ export class FactService {
   /**
    * Run the HTML-entity decode pass against this service's Facts DB.
    * Same shape as `backfillDedupKeys` — thin wrapper over the standalone
-   * migration function in `fact-encoding.ts` so the CLI doesn't need to
+   * migration function so the CLI doesn't need to
    * reach past the service boundary for the client + DatabaseRef.
    */
   async fixEncoding(
@@ -2823,7 +2813,7 @@ export class FactService {
    * posture as `createWithDedup`'s dedup race). Two concurrent
    * invalidates of the same fact — cross-process autosaves, a
    * `lore-correct` racing a `lore-fact action='invalidate'` in the
-   * same session, or (post-#491) a `lore-memory action='update'`
+   * same session, or a `lore-memory action='update'`
    * computing the same `staleFacts` list as a parallel explicit
    * invalidate — can land EITHER one OR two confidence decrements
    * depending on interleaving:
@@ -2845,13 +2835,10 @@ export class FactService {
    * invalidate contract (`Valid Until = today`) holds because the
    * final `pages.update` is atomic, but the score lands somewhere
    * in `[s * 0.25, s * 0.5]` for two parallel invalidators on the
-   * same row. Mirror of `MemoryService.decrementConfidence`'s
+   * same row. Matches `MemoryService.decrementConfidence`'s
    * concurrency posture; both ship under the same contract.
-   * `src/core/AGENTS.md`'s "Concurrent invalidate against the same
-   * fact id" block is the cross-reference; same description in two
-   * places.
    *
-   * **Archived rows short-circuit (issue #497).** The helper retrieves
+   * **Archived rows short-circuit.** The helper retrieves
    * the row directly (rather than via `getById`, which collapses the
    * archived / partial / tracking-predicate cases into a single `null`)
    * so it can distinguish archived from the other null reasons. Notion
@@ -2861,15 +2848,16 @@ export class FactService {
    * active queries — leaving an audit-visible contradictory
    * `archived: true` plus `Valid Until: <date>` combination. The
    * confidence-decrement branch is also skipped because `Confidence`
-   * on an archived row is no longer load-bearing for retrieval.
+   * on an archived row is not load-bearing for retrieval.
    *
    * The historical-tracking-predicate filter in `pageToFact` returns
    * `null` for legacy rows whose Predicate is `needs_action` /
    * `waiting_on` / `blocked_by`. Those rows still need to be invalidated
    * (operators running cleanup expect the call to land), but there's no
    * `Fact` shape from which to read the score, so the helper degrades
-   * to a `Valid Until`-only write — the same pre-DEFERRED-02 behavior
-   * for those rows. The score column stays untouched.
+   * to a `Valid Until`-only write — the same behavior the original
+   * pre-decrement implementation used for those rows. The score
+   * column stays untouched.
    *
    * Failure modes:
    * - `pages.retrieve` 5xx / 404: the catch routes to a `Valid Until`-only
@@ -2885,7 +2873,7 @@ export class FactService {
     id: string,
     opts: {
       /**
-       * Memory id that prompted the invalidation (issue #284). Written to
+       * Memory id that prompted the invalidation. Written to
        * the `Invalidated By` relation column alongside `Invalidated At`.
        * Optional — operators may invalidate without structured provenance,
        * in which case only `Invalidated At` is set. Caller is responsible
@@ -2933,7 +2921,7 @@ export class FactService {
 
     const properties: Record<string, unknown> = {
       [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
-      // Issue #284 — transaction-time invalidation timestamp lands in the
+      // Transaction-time invalidation timestamp lands in the
       // same atomic update as `Valid Until` so the bitemporal axis stays
       // consistent. `Invalidated By` is optional; only populated when the
       // caller threads an explicit `sourceMemoryId`.
@@ -2970,27 +2958,27 @@ export class FactService {
       properties[FACT_PROPS.LAST_REFERENCED_AT] = { date: { start: today } }
     }
 
-    // Issue #284 review item #5 — surgical retry on partially-migrated
-    // vaults. The earlier shape ("any validation_error → drop everything
-    // and bare-Valid-Until write") silently dropped `Invalidated At` /
-    // `Invalidated By` AND `Confidence Score` / `Last Referenced At`
-    // even when the schema only lacked ONE of them. Parsing the failing
-    // property name lets the retry drop ONLY the missing column, so a
-    // vault that has `Invalidated At` but is still missing
-    // `Confidence Score` (or vice versa) keeps the transaction-time
-    // write that its schema DOES support.
+    // Surgical retry on partially-migrated vaults. A coarser
+    // "any validation_error → drop everything and bare-Valid-Until
+    // write" shape silently drops `Invalidated At` / `Invalidated By`
+    // AND `Confidence Score` / `Last Referenced At` even when the
+    // schema only lacks ONE of them. Parsing the failing property
+    // name lets the retry drop ONLY the missing column, so a vault
+    // that has `Invalidated At` but is still missing `Confidence
+    // Score` (or vice versa) keeps the transaction-time write that
+    // its schema DOES support.
     //
-    // **Loop budget.** `MAX_OPTIONAL_DROPS = 4` is the count of optional
-    // columns this method might be writing on top of the load-bearing
-    // `Valid Until` (`Invalidated At` + `Invalidated By` + `Confidence
-    // Score` + `Last Referenced At`). The loop runs at most
-    // `MAX_OPTIONAL_DROPS + 1` iterations: up to MAX missing-column
-    // drops followed by a single final retry with the trimmed payload.
-    // The +1 is load-bearing for the invalidate contract — without it,
-    // four sequential missing-property errors exhaust the iteration
-    // count BEFORE the final retry fires, the loop falls through, and
-    // the function returns without ever issuing a `Valid Until` write.
-    // R5 review caught this regression: an earlier `<` bound silently
+    // **Loop budget.** `MAX_OPTIONAL_DROPS = 4` is the count of
+    // optional columns this method might be writing on top of the
+    // load-bearing `Valid Until` (`Invalidated At` + `Invalidated By`
+    // + `Confidence Score` + `Last Referenced At`). The loop runs at
+    // most `MAX_OPTIONAL_DROPS + 1` iterations: up to MAX
+    // missing-column drops followed by a single final retry with the
+    // trimmed payload. The +1 is load-bearing for the invalidate
+    // contract — without it, four sequential missing-property errors
+    // exhaust the iteration count BEFORE the final retry fires, the
+    // loop falls through, and the function returns without ever
+    // issuing a `Valid Until` write. An earlier `<` bound silently
     // dropped the trailing retry, so a maximally-stale vault saw zero
     // visible state change after a "successful" invalidate call.
     const MAX_OPTIONAL_DROPS = 4
@@ -3012,7 +3000,7 @@ export class FactService {
           // and drops it too. Valid Until is load-bearing for the
           // invalidate contract — under normal usage Notion will not
           // surface it as missing because the column ships with the
-          // pre-#284 schema; this guard is defense-in-depth for a
+          // base schema; this guard is defense-in-depth for a
           // pathologically corrupted vault where even the legacy
           // columns are gone.
           if (Object.keys(properties).length === 0) throw err
@@ -3114,15 +3102,15 @@ export class FactService {
             },
           })
           // Mirror the post-write state onto the caller's `Fact`
-          // reference (issue #495). `loadWakeUpData`'s wake-up cache
-          // hands the same `Fact[]` reference back on subsequent
-          // hits within the 30s TTL; without this mutation, the
-          // once-per-day gate above keys on the cached row's stale
-          // `lastReferencedAt` and `pages.update` re-fires for every
-          // Active Fact on every cache hit. Same posture as
-          // `MemoryService.touchOnRead` — the picked fields are
-          // mutable on `Fact` and `ReadonlyArray<Pick<...>>` only
-          // freezes the array shape, not element properties.
+          // reference. `loadWakeUpData`'s wake-up cache hands the same
+          // `Fact[]` reference back on subsequent hits within the 30s
+          // TTL; without this mutation, the once-per-day gate above
+          // keys on the cached row's stale `lastReferencedAt` and
+          // `pages.update` re-fires for every Active Fact on every
+          // cache hit. Same posture as `MemoryService.touchOnRead` —
+          // the picked fields are mutable on `Fact` and
+          // `ReadonlyArray<Pick<...>>` only freezes the array shape,
+          // not element properties.
           fact.lastReferencedAt = today
           fact.confidenceScore = nextScore
         } catch (error) {
@@ -3138,17 +3126,17 @@ export class FactService {
    * project. Yields `Fact` objects in created-time-ascending order so
    * the migration's plan output is deterministic.
    *
-   * Used by `runBuildFactConfidenceScoresMigration` (DEFERRED-02). Mirrors
+   * Used by `runBuildFactConfidenceScoresMigration` (DEFERRED-02). Matches
    * `MemoryService.listAllForBackfill` shape — same projection, same
    * project-scope semantics, same `null`-tolerant `pageToFact` filter.
    *
    * Tracking-predicate facts (filtered by `pageToFact`) are skipped so
    * the migration doesn't try to seed scores onto historical rows whose
-   * domain shape we no longer recognize.
+   * domain shape is not part of the current `FactPredicate` union.
    */
   /**
    * Operator-facing counters for the `lore status` expiring/expired
-   * scoped-facts surface (issue #283). Mirrors
+   * scoped-facts surface. Matches
    * `MemoryService.expiringScopedStats` exactly — single paginated
    * walk over live (non-invalidated) facts, classifying each by
    * `Expires At` and by narrow-scope context match.
@@ -3209,9 +3197,9 @@ export class FactService {
       projectId?: string
       /**
        * When true, drop the default `Valid Until is_empty` filter so
-       * invalidated rows surface alongside live ones. Used by issue
-       * #284's `--backfill-fact-observed-at` migration so the walker
-       * sees historical invalidations (whose `Invalidated At` needs
+       * invalidated rows surface alongside live ones. Used by the
+       * `--backfill-fact-observed-at` migration so the walker sees
+       * historical invalidations (whose `Invalidated At` needs
        * backfilling from `Valid Until`). Defaults to false — the
        * confidence-score migration only needs live rows.
        */
@@ -3251,7 +3239,7 @@ export class FactService {
 
   /**
    * Single `pages.update` writing both `Confidence Score` and
-   * `Last Referenced At` (DEFERRED-02). Mirrors
+   * `Last Referenced At` (DEFERRED-02). Matches
    * `MemoryService.applyBackfillScore`: the migration sets
    * `Last Referenced At` to the fact's `createdAt` (sliced YYYY-MM-DD),
    * not today — the migration's contract is "treat creation as the
@@ -3278,17 +3266,16 @@ export class FactService {
 
   /**
    * Single `pages.update` writing the transaction-time provenance
-   * columns (`Observed At` / `Invalidated At`) — issue #284. Either
-   * argument may be `null` to skip writing that column; both `null`
-   * issues no Notion call. Callers
-   * (`runBackfillFactObservedAtMigration`) compute the values from
-   * `page.created_time` (for `Observed At`) and `Valid Until` (for
-   * `Invalidated At`) and hand them in. `Invalidated By` is NOT
-   * written by this path — the relation column requires an explicit
-   * source memory id, which pre-#284 historical invalidations don't
-   * carry; operators wanting to backfill provenance retroactively use
-   * `lore-fact action='invalidate'` with `sourceMemoryId` on a per-row
-   * basis.
+   * columns (`Observed At` / `Invalidated At`). Either argument may be
+   * `null` to skip writing that column; both `null` issues no Notion
+   * call. Callers (`runBackfillFactObservedAtMigration`) compute the
+   * values from `page.created_time` (for `Observed At`) and
+   * `Valid Until` (for `Invalidated At`) and hand them in.
+   * `Invalidated By` is NOT written by this path — the relation
+   * column requires an explicit source memory id, which historical
+   * invalidations don't carry; operators wanting to backfill
+   * provenance retroactively use `lore-fact action='invalidate'` with
+   * `sourceMemoryId` on a per-row basis.
    */
   async applyObservedAtBackfill(
     factId: string,
@@ -3316,30 +3303,29 @@ export class FactService {
    *
    * **Deliberate double back door** — do not refactor either asymmetry:
    *
-   * 1. `string[]` over `FactPredicate[]`. The 0.6.0 deprecation purge
-   *    (#23) contracts the `FactPredicate` union to drop
+   * 1. `string[]` over `FactPredicate[]`. The `FactPredicate` union
+   *    does not include the historical tracking strings
    *    `needs_action` / `waiting_on` / `blocked_by`. A typed-predicate
-   *    signature would refuse to compile against those literals once
-   *    they leave the union, breaking the preflight that exists
-   *    precisely to detect them. Raw strings let the `lore status`
-   *    preflight keep recognizing historical Notion `Predicate` values
-   *    after the type contraction.
+   *    signature would refuse to compile against those literals,
+   *    breaking the preflight that exists precisely to detect them.
+   *    Raw strings let the `lore status` preflight keep recognizing
+   *    historical Notion `Predicate` values.
    *
-   * 2. `Promise<number>` over `Promise<Fact[]>`. The same #23 PR adds a
-   *    filter inside `pageToFact` that returns `null` for rows whose
-   *    predicate is no longer in the typed union, so a `Fact[]`-shape
+   * 2. `Promise<number>` over `Promise<Fact[]>`. `pageToFact` returns
+   *    `null` for rows whose
+   *    predicate is not in the typed union, so a `Fact[]`-shape
    *    method would silently drop every historical tracking row from
-   *    its result set on 0.6.0 — and the preflight count would regress
+   *    its result set — and the preflight count would regress
    *    to zero even when the vault still carries the rows in Notion.
    *    Walking `response.results.length` directly never instantiates
    *    `Fact` objects, so the count remains correct across the
-   *    `pageToFact` filter change.
+   *    `pageToFact` filter contract.
    *
    * Routing this through `pageToFact`, or wrapping a `queryBy*`
    * accessor and converting back to a count, silently breaks the
-   * preflight on the next release. The `Raw` suffix marks the
-   * intentional bypass — same convention as the `raw` paths under
-   * `src/notion/`.
+   * preflight. The `Raw` suffix marks the
+   * intentional bypass — same convention as the `raw` paths
+   * elsewhere in the SDK layer.
    *
    * Empty input returns 0 without issuing a query.
    */
@@ -3395,7 +3381,7 @@ export class FactService {
    * them on `Fact` would invite callers to read the cached normalized
    * form instead of recomputing it from the source-of-truth fields, and
    * a stale cache (e.g. mid-encoding-fix) would silently diverge from
-   * the canonical value. The repo `AGENTS.md` rule that adding a DB
+   * the canonical value. The repo-wide rule that adding a DB
    * property requires updating `Fact` + `pageToFact` is intentionally
    * waived for these two columns; the next contributor should not
    * "fix" the asymmetry by exposing them.
@@ -3462,7 +3448,7 @@ export class FactService {
     // Fact only ever points at one canonical Entity per side).
     const subjectEntityIds = extractRelationIds(props[FACT_PROPS.SUBJECT_ENTITY])
     const objectEntityIds = extractRelationIds(props[FACT_PROPS.OBJECT_ENTITY])
-    // Issue #284 — transaction-time provenance. `Observed At` /
+    // Transaction-time provenance. `Observed At` /
     // `Invalidated At` are `null` on rows the backfill migration hasn't
     // touched yet; the read-side filters in `applyTransactionTimeFilter`
     // tolerate that absence (`is_empty` short-circuit for the migration
@@ -3484,7 +3470,7 @@ export class FactService {
       sourceMemoryId: sourceIds[0] ?? null,
       confidence: extractSelect(props[FACT_PROPS.CONFIDENCE], "certain") as FactConfidence,
       // DEFERRED-02 — system-managed numeric mirror of the categorical
-      // `Confidence` select. `null` on pre-migration rows; populated by
+      // `Confidence` select. `null` on unmigrated rows; populated by
       // `touchOnRead` / `decrementConfidence` / the build-fact-confidence-
       // scores migration. `extractNumber` returns `null` for missing
       // columns so legacy vaults that haven't run schema migration deserialize
@@ -3501,8 +3487,9 @@ export class FactService {
 
 /**
  * Read the five scope columns on a Facts DB row into a `MemoryScope`
- * bundle. Mirrors `extractMemoryScope` in `core/memory.ts` — same
- * "all-empty → null" rule so pre-#283 rows deserialize as null.
+ * bundle. Matches `extractMemoryScope` — same
+ * "all-empty → null" rule so rows without scope columns deserialize
+ * as null.
  */
 function extractFactScope(
   props: PageObjectResponse["properties"]
@@ -3533,13 +3520,13 @@ function extractFactScope(
 }
 
 /**
- * Raw Notion `Predicate` select values that the 0.6.0 deprecation purge
- * removed from `FactPredicate`. Notion rows still exist for vaults that
+ * Raw Notion `Predicate` select values not in the current
+ * `FactPredicate` union. Notion rows still exist for vaults that
  * skipped the `--migrate-tracking-to-tasks` migration (the schema is
- * additive-only — see `src/notion/setup.ts`), so `pageToFact` filters
+ * additive-only), so `pageToFact` filters
  * them at the deserialization boundary. Inlined as a plain set rather
- * than re-exported from `types.ts` because the `FactPredicate` union
- * itself no longer includes these values.
+ * than re-exported from the public types module because the
+ * `FactPredicate` union does not include these values.
  */
 const HISTORICAL_TRACKING_PREDICATE_VALUES: ReadonlySet<string> = new Set([
   "needs_action",
@@ -3549,16 +3536,15 @@ const HISTORICAL_TRACKING_PREDICATE_VALUES: ReadonlySet<string> = new Set([
 
 /**
  * Decide whether `createWithDedup`'s probe hit on an existing row
- * should merge into that row, or fall through to a blind create
- * (issue #283).
+ * should merge into that row, or fall through to a blind create.
  *
  * Returns `true` only when the existing row's scope deep-equals the
  * incoming write's scope. The match is exact:
  *
- * - Both null (or absent): match — pre-#283 rows or untouched-scope
- *   writes coalesce as before.
- * - One null, one populated: NO match — adding scope to a previously-
- *   broadcast row, or vice versa, must not silently merge. The
+ * - Both null (or absent): match — un-migrated rows or untouched-scope
+ *   writes coalesce as broadcast.
+ * - One null, one populated: NO match — adding scope to a broadcast row,
+ *   or vice versa, must not silently merge. The
  *   narrow-scope write needs its own row; the broadcast write also
  *   needs its own row so default team reads can see it.
  * - Both populated: must match on every component (`kind`, `key`,
@@ -3576,7 +3562,7 @@ const HISTORICAL_TRACKING_PREDICATE_VALUES: ReadonlySet<string> = new Set([
  * destructured and the destructure-rest pattern is `{ ...rest } =
  * input` — any leftover key blocks the same-shape assertion. (The
  * destructure-rest pattern is itself the test fixture's
- * regression detector; see scope-builder.test.ts.)
+ * regression detector.)
  */
 export function scopesMatchForMerge(
   existing: import("../types.js").MemoryScope | null,
@@ -3625,9 +3611,9 @@ function isMeaningful(value: string | undefined): boolean {
 
 /**
  * Translate the agent-facing `MemoryScopeInput` shape into the flat
- * primitive arguments `buildFactProps` consumes (issue #283). Mirrors
- * `scopeInputToBuilderProps` in `core/memory.ts` — see that helper's
- * docstring for the rationale on keeping the bundle-to-primitive
+ * primitive arguments `buildFactProps` consumes. Matches
+ * `scopeInputToBuilderProps` — that helper's
+ * docstring carries the rationale on keeping the bundle-to-primitive
  * translation outside the builder.
  */
 function factScopeInputToBuilderProps(
@@ -3651,14 +3637,15 @@ function factScopeInputToBuilderProps(
 
 /**
  * Synthesize a `Fact` shape from a freshly-created page id + the
- * `CreateFactInput` that produced it (issue #533, batch path).
+ * `CreateFactInput` that produced it (batch path).
  *
  * The batch `create_pages` response carries only `{ id }` per page,
  * so the caller cannot route through `pageToFact`'s
  * `PageObjectResponse` extractor. Re-fetching every created row
  * via `pages.retrieve` would give back the N round-trips the batch
- * call just saved (see `FactService.createBatchWithDedupRunToolLocked`'s
- * "load-bearing batching win" note). Synthesizing from the input
+ * call just saved (the `createBatchWithDedupRunToolLocked`
+ * "load-bearing batching win" note carries the rationale).
+ * Synthesizing from the input
  * preserves the wall-clock win at the cost of leaving the
  * system-managed read-side fields (`confidenceScore`,
  * `lastReferencedAt`) at their fresh-row default of `null`, which
@@ -3685,8 +3672,7 @@ function factScopeInputToBuilderProps(
  * (e.g. adding a new historical-only predicate to the null-return
  * set) MUST mirror that change here, otherwise the batch path
  * would silently surface filtered rows that the single-input path
- * would drop. Audited at PR-#538 review time; pinned only by
- * documentation, not test scaffolding.
+ * would drop. Pinned only by documentation, not test scaffolding.
  */
 function synthesizeFactFromCreateInput(
   id: string,
@@ -3702,7 +3688,7 @@ function synthesizeFactFromCreateInput(
     projectIds: input.projectIds ? [...input.projectIds] : [],
     validFrom: input.validFrom ?? validFromDefault,
     validUntil: null,
-    // Issue #284 — `observedAt` is bitemporally distinct from `validFrom`:
+    // `observedAt` is bitemporally distinct from `validFrom`:
     // `validFrom` is domain truth (when the fact started being true in
     // the world), `observedAt` is transaction time (when Lore learned
     // about it). The caller passes both defaults explicitly so a future

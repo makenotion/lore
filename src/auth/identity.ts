@@ -6,7 +6,7 @@
  * Two sources, in priority order:
  *
  * 1. **`LORE_USER_NAME` env var** — operator-controlled escape hatch,
- *    parallel to `LORE_AGENT_NAME` (see `src/hooks/agent-identity.ts`).
+ *    parallel to `LORE_AGENT_NAME`.
  *    Synchronous, no API call. Wins over `users.me` so an engineer
  *    who wants a different display name than their Notion identity —
  *    or who is running against a workspace bot whose `users.me`
@@ -17,7 +17,7 @@
  * 2. **`client.users.me().bot.owner.user.name`** — the engineer's
  *    Notion identity for ntn-issued tokens. Same shape as the OAuth
  *    response and as the bot identity surfaced by `lore auth
- *    --whoami` (see `src/cli/commands/auth.ts:renderWhoamiIdentity`);
+ *    --whoami` via `renderWhoamiIdentity`;
  *    we walk to the deeper `bot.owner.user.name` field rather than
  *    short-circuiting on `bot.workspace_name`, because the workspace
  *    name is the same for every engineer in a team and would
@@ -58,7 +58,7 @@ export interface ResolvedIdentity {
    * Human-readable display name to stamp on Memory `Author`. `null`
    * when neither the env override nor `users.me` produced a usable
    * value; callers omit the `Author` write rather than stamping a
-   * confident-but-wrong placeholder (mirrors `deriveAgentName`'s
+   * confident-but-wrong placeholder (matches `deriveAgentName`'s
    * undefined-on-no-signal contract).
    */
   author: string | null
@@ -230,7 +230,7 @@ function authorPresence(author: string | null): "present" | "missing" {
 
 function logIdentityFailure(message: string | undefined): void {
   // Route the SDK-derived message through the shared `LORE_DEBUG`
-  // redactor (issue #488) before it lands in the operator's stderr.
+  // redactor before it lands in the operator's stderr.
   // `users.me` failures are exactly the path where the Notion SDK is
   // most likely to interpolate request-scoped detail (per-token
   // base-URL, response shape) into `Error.message`; the redactor

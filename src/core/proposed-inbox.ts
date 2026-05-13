@@ -1,9 +1,9 @@
 /**
- * Proposed-memory review inbox status surface (issue #281, AC #5).
+ * Proposed-memory review inbox status surface.
  * Shared between `lore status` (CLI) and `lore-context action='status'`
  * (MCP) so the two operator-facing surfaces emit byte-identical lines
  * for the same vault state — same parity contract as `taskStats` /
- * `formatTaskSummary` in `src/core/task.ts`.
+ * `formatTaskSummary`.
  *
  * The data layer (`MemoryService.countProposed`) does the paginated
  * `dataSources.query` walk and produces a `{ total, bySource, byAgent }`
@@ -25,7 +25,7 @@ import type { MemoryService } from "./memory.js"
  * Sources include `MemorySource` enum values plus the literal
  * `"unknown"` fallback for rows whose `Source` column is missing.
  * Agents are free-form rich_text strings canonicalized at write time
- * (`canonicalizeAgentName` in `src/hooks/agent-identity.ts`); empty /
+ * (`canonicalizeAgentName`); empty /
  * missing Agent values bucket under `"unknown"`.
  *
  * The `Record<string, number | undefined>` shape (rather than

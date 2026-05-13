@@ -1,5 +1,5 @@
 /**
- * Memory debt scanner (issue #288).
+ * Memory debt scanner.
  *
  * Read-only inventory of maintainability problems across a Lore vault.
  * Walks the same services the conflict scan / wake-up / overdue surfaces
@@ -8,10 +8,10 @@
  * and turns the union of their results into prioritized `DebtItem`s with
  * category-specific reasons and suggested remediation commands.
  *
- * Phase 1 is strictly read-only: the module does not mutate any Notion
- * row. Phase 2 (`lore debt create-tasks`) layers idempotent task creation
- * on top of this report; phase 3 (safe autofix candidates) is deliberately
- * deferred — see the issue for the staged rollout.
+ * The scanner itself is strictly read-only: this module does not mutate
+ * any Notion row. `lore debt create-tasks` layers idempotent task
+ * creation on top of this report; a future safe-autofix surface is
+ * deliberately deferred.
  *
  * Scoring formula (per issue):
  *
@@ -70,7 +70,7 @@ export type DebtPriority = "P1" | "P2" | "P3"
  * Stable marker token written into a debt-derived task's `keywords`
  * (and body) so a subsequent `lore debt create-tasks` run can locate
  * the existing row via a contains search and skip recreation
- * (Phase 2 idempotency contract).
+ * (the `lore debt create-tasks` idempotency contract).
  *
  * Format: `lore-debt-id-<debt-id-with-double-colons-flattened>`. The
  * `::` separators in raw debt ids (e.g. `duplicate_cluster::<lo>::<hi>`)
@@ -110,7 +110,7 @@ export function priorityForScore(score: number): DebtPriority {
 export interface DebtItem {
   /**
    * Stable, idempotent identifier composed of the category and entity
-   * id. Phase 2's `create-tasks` keys on this so re-runs don't mint
+   * id. `create-tasks` keys on this so re-runs don't mint
    * duplicate task rows.
    */
   id: string
@@ -136,14 +136,15 @@ export interface DebtItem {
    */
   suggestedActions: string[]
   /**
-   * Phase 3 forward-compatibility flag. Always `false` in Phase 1/2
-   * because the read-only scanner has no autofix path. Phase 3 will
-   * flip selected categories (empty-`rejected` rows older than N
-   * days, explicit-operator-input review-date extensions, etc.) to
-   * `true`. Callers MUST NOT key behavior off this flag in Phase
-   * 1/2 — it would be a no-op signal. Documented as part of the
-   * stable JSON schema so the field's appearance in `--json` output
-   * doesn't mislead a future consumer that learns about Phase 3.
+   * Forward-compatibility flag for the deferred safe-autofix surface.
+   * Always `false` today because the read-only scanner has no autofix
+   * path. A future autofix surface will flip selected categories
+   * (empty-`rejected` rows older than N days, explicit-operator-input
+   * review-date extensions, etc.) to `true`. Callers MUST NOT key
+   * behavior off this flag today — it would be a no-op signal.
+   * Documented as part of the stable JSON schema so the field's
+   * appearance in `--json` output doesn't mislead a future consumer
+   * that learns about the autofix surface.
    */
   safeToAutoFix: boolean
   /** Optional project label(s) for the row, when known. */
@@ -169,7 +170,7 @@ export interface DebtReport {
   /**
    * Diagnostic counters surfaced in `--json` so an operator can tell
    * "no items reported" apart from "the scanner couldn't probe that
-   * category" (e.g., a pre-#283 vault with no scope columns).
+   * category" (e.g., a vault with no scope columns).
    */
   stats: DebtStats
 }
@@ -208,8 +209,8 @@ export interface DebtStats {
    *  - **`number`** — probe ran successfully (including `0` for "no
    *    anomalies found").
    *  - **`null`** — probe was attempted AND degraded against a
-   *    pre-#283 vault (Scope Kind / Expires At columns missing). The
-   *    renderer surfaces a `lore migrate` prompt in this case.
+   *    vault without scope columns (Scope Kind / Expires At missing).
+   *    The renderer surfaces a `lore migrate` prompt in this case.
    *  - **`0` with `scopeAnomalyProbeSkipped: true`** — probe was
    *    skipped by a category filter (e.g.
    *    `--category orphan_fact`); the `null` value would collide
@@ -326,7 +327,7 @@ export async function scanDebt(
     // than `null`. Only the explicit "probe ran and degraded" path
     // below sets `null` so the renderer's `lore migrate` prompt
     // never fires on a category-filtered scan that excluded
-    // `scope_anomaly` (issue #585 round-7 review).
+    // `scope_anomaly`.
     scopeAnomalies: 0,
     scopeAnomalyProbeSkipped: !wantCategory("scope_anomaly"),
     truncated: false,
@@ -545,8 +546,8 @@ export async function scanDebt(
   // ---------------------------------------------------------------
   if (wantCategory("topic_sprawl")) {
     // Thread `projectId` so a project-scoped audit does not surface
-    // similar-topic groups from unrelated projects (issue #585
-    // review). When the operator runs `lore debt scan --project Mail`,
+    // similar-topic groups from unrelated projects. When the operator
+    // runs `lore debt scan --project Mail`,
     // a Calendar-only topic group must not appear; otherwise a
     // subsequent `lore debt create-tasks --project Mail` would mint a
     // Mail-scoped audit task for Calendar debt.
@@ -562,7 +563,7 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 6. Scope and lifetime anomalies (issue #283)
+  // 6. Scope and lifetime anomalies
   //    expiringScopedStats already aggregates expired / expiringSoon /
   //    narrow-scope-out-of-context counters. We synthesize one debt
   //    item per non-zero counter (not per-row, because the counters
@@ -572,7 +573,7 @@ export async function scanDebt(
   if (wantCategory("scope_anomaly")) {
     const scope = await safeLoadExpiringScopedStatus(services, opts.projectId)
     if (scope === null) {
-      // Pre-#283 vault — scope columns missing. Leave the counter at
+      // Scope columns missing on this vault. Leave the counter at
       // null so JSON consumers can distinguish "couldn't probe" from
       // "no anomalies."
       stats.scopeAnomalies = null
@@ -621,7 +622,7 @@ export async function scanDebt(
   //    rows whose Topic is null in a project with topics. The signal
   //    is intentionally narrow in phase 1: empty Topic where peers
   //    have one. Empty Project on a multi-project vault is already
-  //    surfaced by the issue-#283 scope anomaly category.
+  //    surfaced by the scope-anomaly category.
   // ---------------------------------------------------------------
   if (wantCategory("ownerless")) {
     // Paginate via `nextCursor` so a vault with many memories does
@@ -1137,13 +1138,13 @@ function daysBetween(iso: string | null | undefined, today: string): number | nu
 
 /**
  * Wrap `loadExpiringScopedStatus` with an **explicit schema probe**
- * so pre-#283 vaults degrade to a `null` counter instead of silently
- * reporting a clean scan.
+ * so vaults without scope columns degrade to a `null` counter instead
+ * of silently reporting a clean scan.
  *
  * **Why the schema probe matters.** `MemoryService.expiringScopedStats`
  * and `FactService.expiringScopedStats` walk `listAllForBackfill`
  * and deserialize each row via the extractor pipeline. On a vault
- * whose data source predates issue #283, the extractors see missing
+ * whose data source has no scope columns, the extractors see missing
  * `Scope Kind` / `Expires At` properties as empty values and return
  * `scope: null` without throwing. Counters land at all-zero,
  * `loadExpiringScopedStatus` returns successfully, and the renderer
@@ -1156,7 +1157,7 @@ function daysBetween(iso: string | null | undefined, today: string): number | nu
  * `dataSources.retrieve` per DB — caller-cached at init time in
  * production) BEFORE walking. If the columns are absent on either
  * the Memories or Facts DB, return null without burning the walk.
- * The shared `isMissingPropertyError` from `src/notion/errors.ts`
+ * The shared `isMissingPropertyError`
  * remains as a defensive secondary fallback for any service that
  * does throw — but the load-bearing detection is the explicit
  * schema probe.
@@ -1185,7 +1186,7 @@ async function safeLoadExpiringScopedStatus(
     )
   } catch (err) {
     // Defensive fallback: a service that DOES throw a missing-
-    // property error on a pre-#283 vault still degrades cleanly.
+    // property error on a legacy vault still degrades cleanly.
     // The shared helper checks `code === "validation_error"` AND
     // the message shape, so unrelated "could not find page / data
     // source" errors don't get recast as a migration hint.

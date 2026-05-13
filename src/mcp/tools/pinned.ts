@@ -1,5 +1,5 @@
 /**
- * `lore-pinned` polymorphic dispatcher (issue #282).
+ * `lore-pinned` polymorphic dispatcher.
  *
  * Pinned context blocks are an always-visible, shareable, optionally
  * read-only memory surface that Lore renders in `lore-context
@@ -12,15 +12,13 @@
  * coherent as a sub-surface: every action targets the pinned-block
  * facet of an existing memory. Splitting them onto a separate
  * polymorphic tool keeps the agent-visible `lore-memory`
- * description lean (the surface was already at 1368 chars; +4
- * actions would have busted the `polymorphic.test.ts` per-tool
- * description budget) and surfaces "pinned blocks" as a
- * first-class concept in the MCP tool surface.
+ * description lean and surfaces "pinned blocks" as a first-class
+ * concept in the MCP tool surface.
  *
  * Audit trail: every pin / unpin / update operation appends a
  * `> Pinned/Unpinned/... <date> by <author>: <reason>` line to the
- * memory body so the change is recoverable from the row itself
- * (AC #4). Operators forcing a read-only update see a distinct
+ * memory body so the change is recoverable from the row itself.
+ * Operators forcing a read-only update see a distinct
  * `> Forced read-only update` line so the override is visible
  * inline.
  */
@@ -44,7 +42,7 @@ import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.js"
 
 /**
- * Soft cap on the user-supplied audit `reason` field (issue #282).
+ * Soft cap on the user-supplied audit `reason` field.
  * The Zod boundary clamps before write; the audit-line builder
  * additionally scrubs ASCII control chars (newlines, tab,
  * carriage return, etc.) so a malicious reason cannot forge an
@@ -99,10 +97,10 @@ const pinnedDispatchSchema = z.discriminatedUnion("action", [
     memoryId: z.string().max(64),
     priority: z.number().min(PINNED_PRIORITY_MIN).max(PINNED_PRIORITY_MAX).optional(),
     // Audience writes the `Audience` rich_text column shared with
-    // issue #283. Cap mirrors `scopeInputSchema.audience` (2000 char
-    // Notion limit). Without this, a 1999-char comma-bomb would run
-    // through the audience-match split+lowercase pipeline on every
-    // wake-up across every reader.
+    // the scope filter. Cap matches `scopeInputSchema.audience` (2000
+    // char Notion limit). Without this, a 1999-char comma-bomb would
+    // run through the audience-match split+lowercase pipeline on
+    // every wake-up across every reader.
     audience: z.string().max(RICH_TEXT_PROPERTY_MAX_LEN).optional(),
     mutability: z.enum(MEMORY_MUTABILITIES).optional(),
     reason: z.string().max(PIN_AUDIT_REASON_MAX).optional(),
@@ -258,8 +256,8 @@ type PinAuditAction =
   | "Forced read-only update"
 
 /**
- * Normalize a user-supplied audience string at the write boundary
- * (issue #282). Whitespace-only audience writes are
+ * Normalize a user-supplied audience string at the write boundary.
+ * Whitespace-only audience writes are
  * collapsed to the empty string so the on-disk column doesn't
  * carry an unprintable "broadcast-via-spaces" signal — operators
  * see either an empty cell (broadcast) or non-whitespace tokens,
@@ -286,7 +284,7 @@ export function normalizeAudienceWrite(audience: string): string {
  * adjacent blockquote line, and so bidi-override / zero-width
  * payloads cannot render an audit line that looks one way to a
  * human triaging Notion and another way to a model scanning the
- * markdown body (issue #282).
+ * markdown body.
  *
  * Stripped:
  * - C0 controls and DEL (0x00–0x1F, 0x7F) — line terminators,
@@ -321,7 +319,7 @@ function scrubAuditField(value: string): string {
  * audit-line append fails. Distinguishes the partial state ("the
  * change persisted but provenance is missing") from a clean
  * pre-mutation rejection so callers can retry-recover instead of
- * silently losing AC #4 on a transient blip.
+ * silently losing the audit trail on a transient blip.
  *
  * Mirrors `RekeyAuditError` in shape and contract. The error
  * carries the memory id, the action that landed, and the
@@ -354,7 +352,7 @@ export class PinnedAuditError extends Error {
 
 /**
  * Thrown when `handlePin` would push the active-pin count past
- * `PINNED_BLOCKS_HARD_CAP` (issue #282). Closes the
+ * `PINNED_BLOCKS_HARD_CAP`. Closes the
  * defense-in-depth gap where a malicious or runaway caller pins
  * many narrow-audience rows, exhausting `collectLivePages`'s
  * refill ceiling before the audience filter can backfill matching
@@ -425,7 +423,7 @@ export function bodyContainsPinAuditLine(
 /**
  * Return the verb of the LAST `> Pinned <date>` / `> Unpinned <date>`
  * audit line in the body, or `null` when no pin/unpin transition has
- * been recorded (issue #282).
+ * been recorded.
  *
  * Used by the retry-recovery branches in `handlePin` / `handleUnpin`
  * to decide whether the most recent state transition was audited.
@@ -451,8 +449,7 @@ export function bodyContainsPinAuditLine(
 // Module-level regex (no `g` flag) so concurrent calls can't race
 // on `lastIndex`. The hot pin/unpin retry path uses
 // `String.prototype.matchAll` against a freshly-flagged copy via
-// the helper below — review flagged the stateful-regex
-// sharp edge.
+// the helper below to sidestep the stateful-regex sharp edge.
 const PIN_TRANSITION_RE =
   /(^|\n)> (Pinned|Unpinned) \d{4}-\d{2}-\d{2}(?:[ \t][^\n]*)?(?:\n|$)/
 
@@ -472,20 +469,20 @@ export function latestPinnedTransition(body: string): "Pinned" | "Unpinned" | nu
 
 /**
  * Append an audit line to a memory's body documenting a pin /
- * unpin / pin-update operation (issue #282 AC #4). Author / date /
- * reason land inline so the change is recoverable from the row
- * itself without consulting an external audit log.
+ * unpin / pin-update operation. Author / date / reason land inline
+ * so the change is recoverable from the row itself without
+ * consulting an external audit log.
  *
  * The line shape is a Markdown blockquote — distinct rendering in
  * Notion and in wake-up's `expand: true` body view. Audit lines
  * accumulate verbatim across operations; the latest lands at the
- * end of the body. Mirrors the topic-key re-key
+ * end of the body. Same posture as the topic-key re-key
  * `## Re-keyed (date)` append pattern.
  *
  * **Always appends** — no same-day dedupe gate. Every successful
- * mutation deserves its own audit line so AC #4 captures repeated
- * operations on the same date (e.g. two `update` calls in one
- * day, or a same-day `pin → unpin → pin` sequence). The
+ * mutation deserves its own audit line so the trail captures
+ * repeated operations on the same date (e.g. two `update` calls in
+ * one day, or a same-day `pin → unpin → pin` sequence). The
  * retry-recovery branches in `handlePin` / `handleUnpin` route
  * through `tryRecoverMissingAudit` below — that's where the
  * "don't stack a duplicate on retry of a partial audit append"
@@ -575,8 +572,8 @@ async function handlePin(services: LoreServices, args: PinArgs): Promise<ToolRes
         ],
       }
     }
-    // Hard active-pin cap at the write boundary (issue #282
-    // ). Closes the defense-in-depth gap where a
+    // Hard active-pin cap at the write boundary. Closes the
+    // defense-in-depth gap where a
     // malicious caller spam-pins narrow-audience rows and
     // starves matching pins for other audiences past
     // `collectLivePages`'s refill ceiling. The cap is checked
@@ -731,7 +728,7 @@ async function handleUnpin(services: LoreServices, args: UnpinArgs): Promise<Too
  * audit line. Returns `true` on recovery (audit line appended),
  * `false` when the latest transition already matches (true no-op).
  *
- * State-transition-aware (issue #282): the retry
+ * State-transition-aware: the retry
  * check compares the LATEST pin/unpin audit line in the body
  * against the row's current `Pinned` state. The naive
  * `(action, today)` predicate could not distinguish "this retried
@@ -811,7 +808,7 @@ async function handleUpdate(
       // Rich_text columns treat `""` as the clear value; `null` here
       // maps to that. Non-null audiences are normalized at the
       // write boundary so whitespace-only writes don't masquerade
-      // as broadcast — see `normalizeAudienceWrite`.
+      // as broadcast (handled by `normalizeAudienceWrite`).
       update.scope = {
         audience: args.audience === null ? "" : normalizeAudienceWrite(args.audience),
       }

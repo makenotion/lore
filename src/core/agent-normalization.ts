@@ -1,7 +1,7 @@
 /**
  * Agent identity normalization migration (PF3-02).
  *
- * Companion to `fact-encoding.ts` and `memory-encoding.ts` — same shape, same
+ * Companion to the fact-encoding migration — same shape, same
  * plan-then-apply posture, different column. `lore migrate --normalize-agents`
  * uses the functions in this module to scan every memory's `Agent` field,
  * route the stored value through `canonicalizeAgentName`, and rewrite rows

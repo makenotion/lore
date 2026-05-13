@@ -38,7 +38,7 @@ const OAUTH_REDIRECT_HOST = "127.0.0.1"
 
 /**
  * Canonical Notion API base URLs per ntn environment selector. ntn's
- * own `config.json` records env as `prod` / `dev` / `stg`, and these
+ * own config.json records env as `prod` / `dev` / `stg`, and these
  * are the URLs ntn itself routes against. Mapping is shared between
  * `resolveOperatorBaseUrl` (NOTION_ENV → URL) and ntn's own
  * `resolveNtnBaseUrl` (config.json env → URL) so the two surfaces
@@ -55,7 +55,7 @@ const NTN_ENV_BASE_URLS: Record<NtnEnv, string> = {
  * Map a `NOTION_ENV` selector to its canonical base URL. Returns
  * `undefined` for unrecognized values (including empty string) so
  * the caller can fall through to the next priority level. Exported
- * for unit tests and for `auth/ntn.ts` to share the mapping table.
+ * for unit tests and for the ntn module to share the mapping table.
  */
 export function ntnEnvBaseUrl(env: string | undefined): string | undefined {
   if (!env) return undefined
@@ -68,7 +68,7 @@ export function ntnEnvBaseUrl(env: string | undefined): string | undefined {
 /**
  * Aliases beyond the canonical `NTN_ENV_BASE_URLS` table that resolve
  * to the same env. Notion is migrating public surfaces from `.so` to
- * `.com`; both forms hit prod, so a `.lore.yaml` carrying either one
+ * `.com`; both forms hit prod, so a .lore.yaml carrying either one
  * must infer prod. The alias lives in its own table (rather than
  * duplicating values inside `NTN_ENV_BASE_URLS`) so `ntnEnvBaseUrl`
  * keeps returning ONE canonical URL per env — the inverse direction
@@ -86,13 +86,13 @@ const NTN_ENV_BASE_URL_ALIASES: Record<string, NtnEnv> = {
  * (e.g., a corporate proxy or a future env Lore doesn't know about).
  *
  * Single canonical helper for every Lore-managed ntn login surface
- * (#06 `lore auth --login`, #07 `lore auth --migrate`, #08 `lore
- * install`, #09 `lore init`). Centralized here so a future
+ * (`lore auth --login`, `lore auth --migrate`, `lore install`,
+ * `lore init`). Centralized here so a future
  * canonical-URL change (Notion shipping a new env, retiring an old
  * one, adding another `.com` alias) lands in one place — surfaces
  * MUST NOT hand-roll their own URL → env mapping.
  *
- * Used to derive the ntn-login env target from `.lore.yaml`'s
+ * Used to derive the ntn-login env target from .lore.yaml's
  * `auth.baseUrl` when the operator hasn't set `NOTION_ENV` in their
  * shell — without this inference, an `lore install -y` (or
  * `lore auth --login`) against a dev project would mint a prod token
@@ -126,12 +126,12 @@ export function ntnEnvFromBaseUrl(url: string | undefined): NtnEnv | undefined {
  *
  * Returns `undefined` when no recognized signal is present so
  * callers can apply their own fallback (`getBaseUrl` defaults to
- * prod; `loadNtnToken` reads ntn's `config.json` for the env-derived
+ * prod; `loadNtnToken` reads ntn's config.json for the env-derived
  * default).
  *
  * Why so many fallbacks? `ntn login` writes auth.json based on
  * `NOTION_ENV` at login time, so the env state IS encoded in
- * `~/.config/notion/config.json` for the ntn-resolved path. But
+ * ~/.config/notion/config.json for the ntn-resolved path. But
  * operators on the direct `NOTION_API_TOKEN` path bypass ntn
  * entirely, and they frequently use the ntn-native names because
  * that's what `ntn --help` documents — so any of the four signals
@@ -165,8 +165,8 @@ export function getBaseUrl(): string {
  * flow is obsolete now that public PATs (issued at
  * `notion.so/developers/tokens` and pasted into `NOTION_API_TOKEN`)
  * give external operators a supported path. New code MUST NOT
- * construct or persist `OAuthCredentials`. See
- * `docs/authentication.md` for the recommended PAT flow.
+ * construct or persist `OAuthCredentials`. The authentication doc
+ * carries the recommended PAT flow.
  */
 export interface OAuthCredentials {
   access_token: string
@@ -195,8 +195,8 @@ export interface OAuthConfig {
  *
  * @deprecated Removal targeted for 0.14.0. Use a Personal Access Token
  * issued at `notion.so/developers/tokens` and pasted into
- * `NOTION_API_TOKEN` instead. See `docs/authentication.md` for the
- * PAT operator flow.
+ * `NOTION_API_TOKEN` instead. The authentication doc carries the PAT
+ * operator flow.
  */
 export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredentials> {
   const port = config.redirectPort ?? 0 // 0 = OS picks a free port
@@ -526,13 +526,13 @@ export type VaultAccessResult =
  * enough to call on every login without being a startup-tax concern.
  *
  * The page title is returned on success so the caller can confirm the
- * operator picked the *right* vault. `lore init`'s no-arg flow (#09)
+ * operator picked the *right* vault. `lore init`'s no-arg flow
  * shows the title back so an operator who creates a vault in the
  * wrong workspace catches the discrepancy and can re-run.
  *
  * The helper takes a `Client`, not a token, matching the rest of
  * Lore's discipline: every Notion-touching path uses the rate-limited
- * proxy from `services.ts`. A caller with only a raw token wraps via
+ * proxy. A caller with only a raw token wraps via
  * `createLimitedClient(createClient(token, baseUrl))` first.
  */
 export async function verifyVaultAccess(
@@ -549,8 +549,8 @@ export async function verifyVaultAccess(
     // Notion's v5 SDK throws `APIResponseError` with a `code` field
     // drawn from the `APIErrorCode` enum. We check both `status` and
     // `code` so the helper is robust against future SDK shape
-    // changes — the same defense pattern as
-    // `notion/errors.ts:isMissingPropertyError`.
+    // changes — the same defense pattern the SDK-error classifiers
+    // use elsewhere.
     if (status === 404 || code === "object_not_found") {
       return {
         kind: "not-found",
@@ -609,12 +609,12 @@ export async function verifyVaultAccess(
  * Used for the success-branch message; not load-bearing — the
  * preflight already succeeded by the time we extract the title.
  *
- * Deliberately does NOT delegate to `notion/extractors.ts:extractTitle`.
- * That extractor expects a property under a *named* key (`Name`,
- * `Title`, etc.) inside a query-result row; `pages.retrieve` against a
- * regular page returns the title at the well-known key `title`. The
- * shapes diverge enough that sharing extraction logic would couple
- * unrelated concerns.
+ * Deliberately does NOT delegate to the property-tier `extractTitle`
+ * helper. That extractor expects a property under a *named* key
+ * (`Name`, `Title`, etc.) inside a query-result row; `pages.retrieve`
+ * against a regular page returns the title at the well-known key
+ * `title`. The shapes diverge enough that sharing extraction logic
+ * would couple unrelated concerns.
  */
 export function extractPageTitle(page: unknown): string | null {
   if (!page || typeof page !== "object") return null

@@ -60,7 +60,7 @@ export interface TagClassification {
   /**
    * Tags that belong to the closed vocabulary, emitted in their canonical
    * (lowercase) form. A case variant like `iOS` → `ios` is normalized here
-   * so the post-migration tag list is internally consistent.
+   * so the migrated tag list is internally consistent.
    */
   vocab: string[]
   /** Non-vocab tags that look like free-form labels — move to Keywords. */
@@ -98,7 +98,7 @@ export interface MemoryTagPlan {
 }
 
 /**
- * Compute the post-migration `Tags` + `Keywords` for a single memory without
+ * Compute the migrated `Tags` + `Keywords` for a single memory without
  * writing anything. Returns `null` when no change is needed — the caller
  * can skip the Notion update call entirely.
  *

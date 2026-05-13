@@ -1,9 +1,8 @@
 /**
  * Shared key derivation for filesystem state under `src/hooks/`.
  *
- * Every hook-state filename (debounce markers in `digest-marker.ts` /
- * `drift-marker.ts`, per-session lock + log + count files in `lock.ts` /
- * `helpers.ts`, the synthetic digest lock key in `digest-scheduler.ts`)
+ * Every hook-state filename (the digest and drift debounce markers,
+ * per-session lock + log + count files, the synthetic digest lock key)
  * lands inside `getStateDir()` and is built by string-concatenating a
  * free-form key with a fixed suffix. Without one shared sanitizer that
  * policy drifts the moment two callers re-implement the regex, and a
@@ -21,7 +20,7 @@
  * The module intentionally depends only on `node:crypto` and `node:path` so
  * it never creates an import cycle with the marker / lock modules that
  * consume it, and so it stays orthogonal to the state-dir resolution that
- * lives in `lock.ts`.
+ * lives.
  */
 
 import { createHash } from "node:crypto"

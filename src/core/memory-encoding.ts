@@ -1,15 +1,16 @@
 /**
  * Memory HTML-entity decode migration.
  *
- * Companion to `fact-encoding.ts` and `topic-merge.ts:fixTopicEncoding` for
- * the Memories DB. `lore migrate --fix-memory-encoding` uses the functions
+ * Companion to the fact-encoding migration and `fixTopicEncoding`
+ * for the Memories DB. `lore migrate --fix-memory-encoding` uses the
+ * functions
  * here to scan every memory, flag rows whose `Title` — and optionally body
  * markdown — differ from their decoded form, then rewrite them.
  *
  * Scope and exclusions:
  * - Archived memories are skipped (no need to fix data the agent can't read).
  * - Memory body markdown is rewritten by one of two paths depending on the
- *   `LORE_USE_RUNTOOL_BLOCK_EDIT` flag (issue #534 AC #5):
+ *   `LORE_USE_RUNTOOL_BLOCK_EDIT` flag (via the RunTool block-edit flag):
  *   - **Flag off (default)**: bodies above `BODY_SIZE_CAP_BYTES` are
  *     skipped and surfaced in `oversizedSkipped` so the operator can
  *     fix them manually. The full body would otherwise need to be
@@ -51,22 +52,23 @@ import { MEMORY_PROPS } from "../notion/schema.js"
  * `pages.updateMarkdown` is technically possible but introduces long
  * round-trips and extra partial-failure surface area that this migration
  * is deliberately scoped to avoid. Title-only fix still runs on oversize
- * rows — that's the value driver for `P2-03` / `P3-03` / `P3-04`.
+ * rows — that's the value driver for near-duplicate detection /
+ * entity canonicalization / DS-scoped search.
  */
 export const BODY_SIZE_CAP_BYTES = 100 * 1024
 
 /** Per-row plan for the memory encoding fix. Title fix is always
  *  required when present; content fix is best-effort and routes
  *  through one of two paths depending on `LORE_USE_RUNTOOL_BLOCK_EDIT`
- *  (issue #534 AC #5).
+ *  (via the RunTool block-edit flag).
  *
  *  Default-off semantics: oversized bodies (`contentTooLargeToFix`)
  *  are skipped on apply.
  *
  *  Flag-on semantics: oversized bodies are eligible for the
  *  RunTool-anchored path when `anchoredPathPlanned === true`, which
- *  mirrors the apply-path's local guards exactly so plan-mode preview
- *  matches what apply-mode would do for that row. */
+ *  matches the apply-path's local guards exactly so plan-mode preview
+ *  reflects what apply-mode would do for that row. */
 export interface EncodedMemoryRow {
   id: string
   /** Raw stored title. */
@@ -99,7 +101,7 @@ export interface EncodedMemoryRow {
    *  re-run the migration to pick up rows whose body fetch was transient. */
   contentFetchFailed: boolean
   /** `true` when the row is eligible for the RunTool-anchored body fix
-   *  path (issue #534 AC #5). Mirrors the apply-path's local guards
+   *  path (via the RunTool block-edit flag). Matches the apply-path's local guards
    *  exactly: flag is on, body has a single-pass entity-substitution
    *  set, and the substitutions list is non-empty. Plan-mode preview
    *  reads this field to label oversized rows truthfully — a row with
@@ -115,7 +117,7 @@ export interface MemoryEncodingFixResult {
   titleFixed: boolean
   contentFixed: boolean
   /** Set on rows whose body was rewritten via the RunTool
-   *  `update_content` anchored path (issue #534 AC #5). When false, the
+   *  `update_content` anchored path (via the RunTool block-edit flag). When false, the
    *  body fix went through the canonical `pages.updateMarkdown` full-body
    *  replace. Surfaced so the migration report can distinguish how a
    *  given fix landed. Defaults to false on rows where `contentFixed`
@@ -140,7 +142,7 @@ export interface MemoryEncodingReport {
    *  is over the cap" as its own bucket. */
   oversizedSkipped: EncodedMemoryRow[]
   /** Rows whose body exceeds `BODY_SIZE_CAP_BYTES` AND will be fixed
-   *  via the RunTool-anchored path on apply (issue #534 AC #5).
+   *  via the RunTool-anchored path on apply (via the RunTool block-edit flag).
    *  Populated only when `LORE_USE_RUNTOOL_BLOCK_EDIT` is on and the
    *  row's local guards predict success. Empty when the flag is off
    *  — the row would land in `oversizedSkipped` instead. Duplicates
@@ -192,9 +194,8 @@ export async function findEncodedMemories(
     // Fetch body markdown in parallel for the whole page batch. On a vault
     // with hundreds of memories the serial round-trip tax exceeds the
     // Notion SDK's default request timeout; the shared rate-limited client
-    // (see `notion/rate-limit.ts`) caps concurrency for us. Mirrors the
-    // pattern in `MemoryService.list` where an N+1 `retrieveMarkdown` fan
-    // is always issued via `Promise.all`.
+    // caps concurrency for us. Same pattern as `MemoryService.list`, which
+    // always fans the N+1 `retrieveMarkdown` work out via `Promise.all`.
     //
     // Per-page fetch failure is isolated — one timed-out `retrieveMarkdown`
     // call must not abort the whole scan. The row is still surfaced with
@@ -247,7 +248,7 @@ export async function findEncodedMemories(
         // apply to this row. Mirrors the apply path's local guards
         // exactly so plan-mode preview is truthful — without this,
         // dry-run output would silently lie about which oversized
-        // rows are about to be fixed (issue #534 AC #5 review).
+        // rows are about to be fixed.
         const anchoredPathPlanned =
           isRunToolBlockEditEnabled() &&
           contentNeedsFix &&
@@ -297,7 +298,7 @@ export async function findEncodedMemories(
  *   new_str } })` rewrites the full body. Idempotent.
  * - **Flag-on, body above the cap, anchored path planned**: RunTool
  *   `update_content` with deterministic per-entity substitutions
- *   (issue #534 AC #5). The wire payload is the substitutions list,
+ *   (via the RunTool block-edit flag). The wire payload is the substitutions list,
  *   not the full body, so a 200KB body ships only the bytes for the
  *   entity strings actually present in it. Idempotent.
  *
@@ -335,16 +336,16 @@ export async function fixMemoryEncoding(
   })
   const contentFetchFailures = encoded.filter((r) => r.contentFetchFailed)
 
-  // Issue #534 AC #5: when the anchored-edit flag is on, oversized
-  // bodies are no longer skipped UNCONDITIONALLY — `update_content`
-  // with deterministic entity-pattern substitutions can fix them
-  // without sending the full body over the wire. The prediction lives
-  // on `EncodedMemoryRow.anchoredPathPlanned` (computed in
+  // When the anchored-edit flag is on, oversized bodies are not
+  // skipped unconditionally — `update_content` with deterministic
+  // entity-pattern substitutions can fix them without sending the
+  // full body over the wire. The prediction lives on
+  // `EncodedMemoryRow.anchoredPathPlanned` (computed in
   // `findEncodedMemories` using the same local guards as the apply
   // path), so plan-mode preview reflects what apply mode will do.
   // Default-off keeps `oversizedSkipped` populated for every oversized
-  // encoded row so existing migration tests / operator reports are
-  // byte-identical.
+  // encoded row so migration reports stay byte-stable when the flag
+  // is unset.
   const oversizedSkipped = encoded.filter(
     (r) => r.contentTooLargeToFix && !r.anchoredPathPlanned
   )
@@ -384,7 +385,7 @@ export async function fixMemoryEncoding(
       row.rawContent !== null &&
       row.decodedContent !== null
     ) {
-      // Anchored-pattern path (issue #534 AC #5): when the flag is on
+      // Anchored-pattern path: when the flag is on
       // AND the row's local guards predict the path will apply
       // (`anchoredPathPlanned`), dispatch the substitutions via
       // `update_content` with `replace_all_matches: true`. The wire
@@ -525,8 +526,9 @@ export function buildEntitySubstitutions(rawContent: string): UpdatePageContentE
  *   `replace_all_matches: true` (the kind exists for the unset
  *   default), but classified anyway so a future server change
  *   doesn't surface as an unhandled error.
- * - `restricted_resource`: token can't pass the actor check (issue
- *   #534 security review B1). Caller falls back; the existing
+ * - `restricted_resource`: token can't pass the actor check (the
+ *   integration-secret operator path cannot satisfy RunTool's
+ *   actor-type gate). Caller falls back; the existing
  *   integration-secret operator path stays available.
  *
  * Multi-pass entity bodies: when `decodeHTML(rawContent) !==

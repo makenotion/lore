@@ -28,10 +28,10 @@ export const PROJECTS_DB_ICON = "🗂️"
 
 /**
  * Notion property names for the Projects DB. The single source of truth for
- * every read and write on this database. AGENTS.md forbids renaming
- * properties; centralizing the names here turns that social rule into a
- * compile-time invariant — a future rename touches one declaration and
- * TypeScript surfaces every drifted call site.
+ * every read and write on this database. Renaming Notion properties
+ * is forbidden; centralizing the names here turns that social rule
+ * into a compile-time invariant — a future rename touches one
+ * declaration and TypeScript surfaces every drifted call site.
  */
 export const PROJECT_PROPS = {
   NAME: "Name",
@@ -132,11 +132,11 @@ export const MEMORY_PROPS = {
   SUPERSEDES: "Supersedes",
   AFFECTS: "Affects",
   COMPARED_WITH: "Compared With",
-  // Scope / lifetime (issue #283). Five columns added together so a
+  // Scope / lifetime. Five columns added together so a
   // schema-drift caller sees the whole feature land or none of it.
   // `Scope Kind` and `Lifetime` are select columns whose options match
-  // the `MEMORY_SCOPE_KINDS` / `MEMORY_LIFETIMES` enums in
-  // `src/types.ts`. `Scope Key` and `Audience` are free-form rich_text
+  // the `MEMORY_SCOPE_KINDS` / `MEMORY_LIFETIMES` enums. `Scope Key`
+  // and `Audience` are free-form rich_text
   // (scope keys are session ids, agent canonical names, role labels —
   // a closed select would force a schema migration on every new
   // session). `Expires At` is a Notion `date` so the retrieval filter
@@ -146,14 +146,14 @@ export const MEMORY_PROPS = {
   AUDIENCE: "Audience",
   LIFETIME: "Lifetime",
   EXPIRES_AT: "Expires At",
-  // Pinned context blocks (issue #282). Three columns added together
+  // Pinned context blocks. Three columns added together
   // so a schema-drift caller sees the whole feature land or none of
   // it — same posture as the scope/lifetime cluster above.
   // `Pinned` discriminates pinned blocks from normal memories;
   // `Pinned Priority` orders them in the wake-up Pinned Context
   // section (higher first); `Mutability` enforces the read-only
-  // contract from AC #3. Audience targeting reuses the existing
-  // `Audience` rich_text column added by #283 — pinned blocks ride
+  // contract. Audience targeting reuses the existing
+  // `Audience` rich_text column — pinned blocks ride
   // atop the same audience plumbing rather than duplicating it.
   PINNED: "Pinned",
   PINNED_PRIORITY: "Pinned Priority",
@@ -248,15 +248,15 @@ export function memoriesProperties(
     },
     // System-managed numeric confidence in [0, 1]. Distinct from the
     // categorical `Confidence` select (agent-curated semantic stance).
-    // Bumped on read-citation via touchOnRead (#03); decremented on
-    // contradiction (#06); decays on neglect. Empty until first touch —
+    // Bumped on read-citation via `touchOnRead`; decremented on
+    // contradiction; decays on neglect. Empty until first touch —
     // `pageToMemory` returns `null` when missing so the RRF integration
-    // (#08) can distinguish "never scored" from "scored zero."
+    // can distinguish "never scored" from "scored zero."
     [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
     // 0.9.0 scalar cluster between `Confidence Score` and `Review By`:
     //   Confidence Score → Topic Key → Revision Count → Compare Notes → Review By
-    // `Topic Key` and `Revision Count` are added by 0.9.0/#01 (Topic-key
-    // upsert workstream). #02 lands `Compare Notes` after them. Tests pin
+    // `Topic Key` and `Revision Count` are part of the Topic-key
+    // upsert workstream. `Compare Notes` lands after them. Tests pin
     // `Compare Notes` precedes `Review By` (loose) rather than
     // "immediately before" (rigid) so a future scalar addition between
     // the two columns doesn't force a test churn.
@@ -264,26 +264,26 @@ export function memoriesProperties(
     // Stable identifier for upsert grouping. Distinct from the `Topic`
     // relation column above (which links to the Topics DB for faceted
     // browsing) — `Topic Key` is *operationally* a per-row identifier
-    // used by `lore-memory action='save'` (0.9.0/#06) to dispatch
-    // between fresh-create and append-revision. Format constraint is
+    // used by `lore-memory action='save'` to dispatch between
+    // fresh-create and append-revision. Format constraint is
     // kebab-case path like `decision/jwt-auth`, enforced at the save-
-    // path validation in #06; stored verbatim. Empty string and missing
+    // path validation; stored verbatim. Empty string and missing
     // both mean "no upsert grouping" (the 0.8.x save behavior).
     [MEMORY_PROPS.TOPIC_KEY]: { rich_text: {} },
     // System-managed counter tracking how many times the memory has
-    // been touched via the topic-key upsert path (0.9.0/#06). Default
-    // for new rows is 1 (the create itself counts as revision 1).
-    // Pre-0.9.0 rows have a null `Revision Count` — `extractNumber`
-    // returns null, which `pageToMemory` coalesces to 1 so
-    // formatMemoryListItem (#10) treats legacy rows as single-revision.
+    // been touched via the topic-key upsert path. Default for new rows
+    // is 1 (the create itself counts as revision 1). Rows from before
+    // the revision-counter column have a null `Revision Count` —
+    // `extractNumber` returns null, which `pageToMemory` coalesces to
+    // 1 so `formatMemoryListItem` treats legacy rows as single-revision.
     [MEMORY_PROPS.REVISION_COUNT]: { number: { format: "number" } },
-    // Append-only NDJSON audit trail for `lore-memory action='compare'`
-    // (0.9.0/#05). One JSON line per verdict — `{"verdict": ...,
-    // "target": ..., "reason": ..., "judgedAt": ..., "promptVersion":
-    // ...}`. Capped via `COMPARE_NOTES_MAX_CHARS` in `src/core/memory.ts`;
-    // append-past-cap throws so over-compared rows surface to the
-    // operator instead of silently truncating. Empty for legacy rows
-    // and for memories that have never been compared.
+    // Append-only NDJSON audit trail for `lore-memory action='compare'`.
+    // One JSON line per verdict — `{"verdict": ..., "target": ...,
+    // "reason": ..., "judgedAt": ..., "promptVersion": ...}`. Capped
+    // via `COMPARE_NOTES_MAX_CHARS`; append-past-cap throws so
+    // over-compared rows surface to the operator instead of silently
+    // truncating. Empty for legacy rows and for memories that have
+    // never been compared.
     [MEMORY_PROPS.COMPARE_NOTES]: { rich_text: {} },
     [MEMORY_PROPS.REVIEW_BY]: { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
@@ -292,14 +292,13 @@ export function memoriesProperties(
     // in the same `pages.update` atom as the state write. Preserved
     // across `update({ state: 'open' })` re-opens as historical fact;
     // null on non-task memories and on tasks that have never reached a
-    // terminal state. Read by `lore status` (#13) for closure-rate
-    // metrics — the only consumer in 0.7.0.
+    // terminal state. Read by `lore status` for closure-rate metrics.
     [MEMORY_PROPS.DONE_AT]: { date: {} },
     [MEMORY_PROPS.DECIDED_AT]: { date: {} },
     // System-managed read-citation timestamp; distinct from
     // `last_edited_time` which tracks writes. Written by
-    // `MemoryService.touchOnRead` (0.8.0/#03), read by the decay function
-    // and the stale-confidence wake-up subsection (0.8.0/#10).
+    // `MemoryService.touchOnRead`, read by the decay function and the
+    // stale-confidence wake-up subsection.
     [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: {} },
     [MEMORY_PROPS.ALTERNATIVES]: { rich_text: {} },
     [MEMORY_PROPS.CONSEQUENCES]: { rich_text: {} },
@@ -317,9 +316,9 @@ export function memoriesProperties(
     // caps at 2000 per block which is the hard ceiling.
     [MEMORY_PROPS.SYNOPSIS]: { rich_text: {} },
     [MEMORY_PROPS.SESSION]: { rich_text: {} },
-    // Scope / lifetime (issue #283). Select option lists must stay in
-    // lockstep with `MEMORY_SCOPE_KINDS` / `MEMORY_LIFETIMES` in
-    // `src/types.ts` — the schema-drift test pins the enum-to-options
+    // Scope / lifetime. Select option lists must stay in
+    // lockstep with the canonical `MEMORY_SCOPE_KINDS` / `MEMORY_LIFETIMES`
+    // enums — the schema-drift test pins the enum-to-options
     // mapping. Adding a new value requires updating both files in the
     // same change so an option missing from Notion doesn't surface as
     // a `validation_error` on first write.
@@ -352,7 +351,7 @@ export function memoriesProperties(
       },
     },
     [MEMORY_PROPS.EXPIRES_AT]: { date: {} },
-    // Pinned context blocks (issue #282). Three columns land in
+    // Pinned context blocks. Three columns land in
     // lockstep with the schema-drift contract `migrateVaultSchema`
     // enforces. `Pinned` is a plain checkbox (cheap server-side
     // filter for `listPinnedBlocks`). `Pinned Priority` is an
@@ -360,11 +359,10 @@ export function memoriesProperties(
     // clamps to `[PINNED_PRIORITY_MIN, PINNED_PRIORITY_MAX]` so a
     // malformed caller can't blow Notion's display formatting.
     // `Mutability` select options must stay in lockstep with the
-    // `MEMORY_MUTABILITIES` enum in `src/types.ts` — the schema-
-    // drift test pins the enum-to-options mapping. A new value
-    // requires updating both files in the same change so an option
-    // missing from Notion doesn't surface as a `validation_error`
-    // on first write.
+    // `MEMORY_MUTABILITIES` enum — the schema-drift test pins the
+    // enum-to-options mapping. A new value requires updating both
+    // declarations in the same change so an option missing from
+    // Notion doesn't surface as a `validation_error` on first write.
     [MEMORY_PROPS.PINNED]: { checkbox: {} },
     [MEMORY_PROPS.PINNED_PRIORITY]: { number: { format: "number" } },
     [MEMORY_PROPS.MUTABILITY]: {
@@ -421,13 +419,13 @@ export function memoriesSelfRelationProperties(memoriesDsId: string): PropertyCo
       },
     },
     // Pairs a memory with every other memory it has been judged against
-    // by `lore-memory action='compare'` (0.9.0/#05). `single_property`
-    // (not `dual_property`) matches the existing self-relations — the
-    // calling code in #05 takes responsibility for symmetric writes
-    // (when memory A names B, #05 issues a parallel update so B names A).
-    // Set membership encodes "have these two been judged?" and the
-    // `lore conflicts scan` (0.9.0/#09) candidate filter consults it
-    // to skip already-judged pairs.
+    // by `lore-memory action='compare'`. `single_property` (not
+    // `dual_property`) matches the existing self-relations — the
+    // calling code takes responsibility for symmetric writes (when
+    // memory A names B, the helper issues a parallel update so B
+    // names A). Set membership encodes "have these two been judged?"
+    // and the `lore conflicts scan` candidate filter consults it to
+    // skip already-judged pairs.
     [MEMORY_PROPS.COMPARED_WITH]: {
       relation: {
         single_property: {},
@@ -533,10 +531,10 @@ export const FACT_PROPS = {
   CONFIDENCE_SCORE: "Confidence Score",
   VALID_FROM: "Valid From",
   VALID_UNTIL: "Valid Until",
-  // Issue #284 — transaction-time provenance. `Valid From` / `Valid Until`
+  // Transaction-time provenance. `Valid From` / `Valid Until`
   // model domain truth (when the fact was true in the world); `Observed At`
   // and `Invalidated At` model what Lore knew and when. Together they
-  // implement the bitemporal axis Zep/Graphiti use for as-of recall.
+  // implement the bitemporal axis used for as-of recall.
   // `Observed At` is written by `FactService.create` at write time;
   // `Invalidated At` is written by `FactService.invalidate` alongside the
   // existing `Valid Until` flip so a single atomic update carries both
@@ -552,7 +550,7 @@ export const FACT_PROPS = {
   SUBJECT_KEY: "SubjectKey",
   SUBJECT_ENTITY: "SubjectEntity",
   OBJECT_ENTITY: "ObjectEntity",
-  // Scope / lifetime (issue #283). Mirrors the Memories DB columns so
+  // Scope / lifetime. Mirrors the Memories DB columns so
   // facts about a session-scoped piece of work can carry the same
   // identity slot — `lore-fact action='create'` accepts a scope bundle
   // that matches the source memory's scope.
@@ -598,7 +596,7 @@ export function factsProperties(
           { name: "decided_by", color: "blue" },
           { name: "supersedes_decision", color: "gray" },
           { name: "informs", color: "pink" },
-          // Auto-emitted by `lore-memory action='save'` (0.8.0/#07).
+          // Auto-emitted by `lore-memory action='save'`.
           // System-managed, regex-derived; not exposed through
           // `lore-fact action='create'`. Distinguished from the
           // agent-curated relationship predicates (uses / depends_on /
@@ -617,7 +615,7 @@ export function factsProperties(
     },
     [FACT_PROPS.VALID_FROM]: { date: {} },
     [FACT_PROPS.VALID_UNTIL]: { date: {} },
-    // Issue #284 — transaction-time provenance columns. System-managed at
+    // Transaction-time provenance columns. System-managed at
     // write boundaries (`FactService.create` seeds `Observed At` from `today`;
     // `FactService.invalidate` writes `Invalidated At` alongside the
     // `Valid Until` flip). Read paths can use these for as-of recall
@@ -647,7 +645,7 @@ export function factsProperties(
       },
     },
     // System-managed numeric confidence in [0, 1] mirroring the Memories
-    // DB column (0.8.0/#01). Distinct from the categorical `Confidence`
+    // DB column. Distinct from the categorical `Confidence`
     // select above (agent-curated semantic stance). Bumped on read-citation
     // via `FactService.touchOnRead`; decremented inside `FactService.invalidate`
     // alongside the `Valid Until` flip so the same atomic write closes the
@@ -667,11 +665,11 @@ export function factsProperties(
     // command backfills it.
     [FACT_PROPS.DEDUP_KEY]: { rich_text: {} },
     // Lowercased + whitespace-collapsed form of `Subject`, used by
-    // `FactService.queryBySubject` for case-insensitive matching (P3-03
-    // Part A). Pre-migration rows have this blank; `lore migrate
-    // --dedup-keys` backfills it. Distinct from `DedupKey` (a hash) because
-    // we need `contains` substring matching, which Notion doesn't run
-    // against hashed values.
+    // `FactService.queryBySubject` for case-insensitive matching.
+    // Pre-migration rows have this blank; `lore migrate --dedup-keys`
+    // backfills it. Distinct from `DedupKey` (a hash) because we need
+    // `contains` substring matching, which Notion doesn't run against
+    // hashed values.
     [FACT_PROPS.SUBJECT_KEY]: { rich_text: {} },
     // Canonical entity relation columns. Filled by the build-entities
     // migration and by `lore-fact action='create'` after the resolver
@@ -690,7 +688,7 @@ export function factsProperties(
         data_source_id: entitiesDsId,
       },
     },
-    // Scope / lifetime (issue #283). Select option lists mirror the
+    // Scope / lifetime. Select option lists mirror the
     // Memories DB columns one-for-one — a scope expansion in
     // `MEMORY_SCOPE_KINDS` / `MEMORY_LIFETIMES` flows to both DBs by
     // updating both schema builders in lockstep. The schema-drift test
@@ -728,19 +726,19 @@ export function factsProperties(
 }
 
 // ---------------------------------------------------------------------------
-// Compare Notes encoder + cap (0.9.0/#02)
+// Compare Notes encoder + cap
 // ---------------------------------------------------------------------------
 //
 // Notion-shape concerns live next to the property builders that consume
 // them. The pure-NDJSON helpers (`appendCompareNote`, `CompareNoteEntry`)
-// live in `src/core/memory.ts` because they have no Notion dependency,
+// live alongside `MemoryService` because they have no Notion dependency,
 // and re-export `COMPARE_NOTES_MAX_CHARS` and `encodeCompareNotesRichText`
-// from there so #05's compare-write path has a single import surface for
+// from there so the compare-write path has a single import surface for
 // the entire compare-notes helper family.
 //
-// The cap lives here (not in `src/core/memory.ts`) so the encoder is the
-// single chokepoint that enforces it. Both `appendCompareNote` (upstream
-// validation on every append) AND any direct caller of
+// The cap lives here (alongside the property builder) so the encoder is
+// the single chokepoint that enforces it. Both `appendCompareNote`
+// (upstream validation on every append) AND any direct caller of
 // `encodeCompareNotesRichText` (including `buildMemoryProps`) hit the
 // same threshold — there is no path that produces an over-cap rich_text
 // payload.
@@ -803,10 +801,10 @@ export interface CompareNotesTextChunk {
  *
  * **Enforces `COMPARE_NOTES_MAX_CHARS` at the chokepoint.** Every
  * write path lands here — `buildMemoryProps({ compareNotes })`,
- * direct callers in #05's compare-write helper, anything else that
+ * direct callers in the compare-write helper, anything else that
  * needs the chunked rich_text shape. Throwing on over-cap input here
- * means `appendCompareNote`'s 8000-char overflow check is no longer
- * the only line of defense; a future caller that builds an audit
+ * means `appendCompareNote`'s 8000-char overflow check is not the
+ * only line of defense; a future caller that builds an audit
  * trail outside `appendCompareNote` (e.g. a one-shot migration that
  * synthesizes a Compare Notes string from external data) is held to
  * the same cap.
@@ -979,7 +977,7 @@ export function buildMemoryProps(input: {
   comparedWith?: string[]
   compareNotes?: string
   /**
-   * Scope / lifetime fields (issue #283). Each carries clear-cell
+   * Scope / lifetime fields. Each carries clear-cell
    * semantics: `undefined` leaves the column untouched, `null` (for
    * select / date columns) clears the column, an empty string (for
    * rich_text columns) clears the column. Service-layer write paths
@@ -992,7 +990,7 @@ export function buildMemoryProps(input: {
   lifetime?: string | null
   expiresAt?: string | null
   /**
-   * Pinned context block fields (issue #282). Each carries
+   * Pinned context block fields. Each carries
    * clear-cell semantics aligned with the existing builder
    * contract: `undefined` leaves the column untouched, `null` (for
    * the number / select columns) clears, a value writes verbatim.
@@ -1026,8 +1024,8 @@ export function buildMemoryProps(input: {
   }
   // Three-state semantics: `undefined` leaves the column untouched,
   // `null` clears the column to "never scored", a number writes the
-  // value verbatim. Production read/write helpers in #03 only emit
-  // numbers; the `null` clear path is the test-fixture / migration path.
+  // value verbatim. Production read/write helpers only emit numbers;
+  // the `null` clear path is the test-fixture / migration path.
   if (input.confidenceScore !== undefined) {
     props[MEMORY_PROPS.CONFIDENCE_SCORE] =
       input.confidenceScore === null
@@ -1041,7 +1039,7 @@ export function buildMemoryProps(input: {
   // surfacing as a Notion-side validation error instead of silently
   // collapsing to a column clear. Documented agent-facing inputs are
   // `null`, `undefined`, and `YYYY-MM-DD` (regex-enforced at the MCP
-  // Zod boundary, see `src/mcp/tools/date-schema.ts`).
+  // Zod boundary).
   if (input.reviewBy !== undefined) {
     props[MEMORY_PROPS.REVIEW_BY] =
       input.reviewBy === null ? { date: null } : { date: { start: input.reviewBy } }
@@ -1109,18 +1107,19 @@ export function buildMemoryProps(input: {
   if (input.entity !== undefined) {
     props[MEMORY_PROPS.ENTITY] = { rich_text: [{ text: { content: input.entity } }] }
   }
-  // `undefined` leaves the column untouched; explicit empty-string writes
-  // through (the agent-facing detach signal — see 0.9.0/#14). Empty
-  // string is structurally distinct from "never set" because Phase 1
-  // ships the schema before #06 wires upsert; until then every save
-  // passes `topicKey: undefined` and the column stays null on new rows.
+  // `undefined` leaves the column untouched; explicit empty-string
+  // writes through (the agent-facing detach signal). Empty string is
+  // structurally distinct from "never set" because vaults can ship
+  // the schema before the upsert path is wired; until then every save
+  // passes `topicKey: undefined` and the column stays null on new
+  // rows.
   if (input.topicKey !== undefined) {
     props[MEMORY_PROPS.TOPIC_KEY] = { rich_text: [{ text: { content: input.topicKey } }] }
   }
   if (input.revisionCount !== undefined) {
     props[MEMORY_PROPS.REVISION_COUNT] = { number: input.revisionCount }
   }
-  // Three-state semantics, mirrors `supersedesIds` / `affectsIds` /
+  // Three-state semantics, matching `supersedesIds` / `affectsIds` /
   // `tags`: `undefined` leaves the column untouched, an empty array
   // explicitly writes an empty relation (clear-cell), a populated
   // array maps each id to a relation entry. The truthy gate matches
@@ -1132,7 +1131,7 @@ export function buildMemoryProps(input: {
       relation: input.comparedWith.map((id) => ({ id })),
     }
   }
-  // 0.9.0/#02 — Compare Notes is an append-only NDJSON cell. Routes
+  // Compare Notes is an append-only NDJSON cell. Routes
   // through `encodeCompareNotesRichText` so any string up to
   // `COMPARE_NOTES_MAX_CHARS` produces a Notion-valid chunked payload,
   // not a single text block that would fail Notion's per-block
@@ -1146,7 +1145,7 @@ export function buildMemoryProps(input: {
       rich_text: encodeCompareNotesRichText(input.compareNotes),
     }
   }
-  // Scope / lifetime (issue #283). Tristate semantics on the select +
+  // Scope / lifetime. Tristate semantics on the select +
   // date columns mirror `confidenceScore` / `reviewBy` / `doneAt`:
   // `undefined` leaves the column untouched, `null` clears, a value
   // writes verbatim. Rich_text columns (`scopeKey`, `audience`) follow
@@ -1174,7 +1173,7 @@ export function buildMemoryProps(input: {
     props[MEMORY_PROPS.EXPIRES_AT] =
       input.expiresAt === null ? { date: null } : { date: { start: input.expiresAt } }
   }
-  // Pinned context blocks (issue #282). Tristate semantics on the
+  // Pinned context blocks. Tristate semantics on the
   // number + select columns mirror `confidenceScore` / `lifetime`:
   // `undefined` leaves the column untouched, `null` clears, a value
   // writes verbatim. The checkbox column has no clear sentinel —
@@ -1246,14 +1245,14 @@ export function buildFactProps(input: {
   reviewBy?: string
   sourceMemoryId?: string
   /**
-   * Transaction-time observation timestamp (issue #284). YYYY-MM-DD form.
+   * Transaction-time observation timestamp. YYYY-MM-DD form.
    * `undefined` leaves the column untouched, `null` clears, a string writes
    * verbatim. `FactService.create` seeds this at the write boundary; the
-   * backfill migration writes it from `created_time` on pre-#284 rows.
+   * backfill migration writes it from `created_time` on rows missing it.
    */
   observedAt?: string | null
   /**
-   * Transaction-time invalidation timestamp (issue #284). YYYY-MM-DD form.
+   * Transaction-time invalidation timestamp. YYYY-MM-DD form.
    * `undefined` leaves the column untouched, `null` clears, a string writes
    * verbatim. `FactService.invalidate` writes this alongside `Valid Until`
    * so a single `pages.update` carries both the domain-truth-ended date
@@ -1261,7 +1260,7 @@ export function buildFactProps(input: {
    */
   invalidatedAt?: string | null
   /**
-   * Memory id that prompted the invalidation (issue #284). Distinct from
+   * Memory id that prompted the invalidation. Distinct from
    * `sourceMemoryId` (the supporting memory at creation time). Optional
    * even when invalidating — operators may invalidate without a structured
    * provenance link, in which case the column stays empty.
@@ -1269,7 +1268,7 @@ export function buildFactProps(input: {
   invalidatedBySourceMemoryId?: string
   confidence?: string
   /**
-   * System-managed numeric confidence (DEFERRED-02). Three-state semantics
+   * System-managed numeric confidence. Three-state semantics
    * mirror the Memories DB `confidenceScore` field: `undefined` leaves the
    * column untouched, `null` clears the column ("never scored"), a number
    * writes the value verbatim. Production callers in `FactService` only
@@ -1278,7 +1277,7 @@ export function buildFactProps(input: {
    */
   confidenceScore?: number | null
   /**
-   * System-managed read-citation timestamp (DEFERRED-02). YYYY-MM-DD form.
+   * System-managed read-citation timestamp. YYYY-MM-DD form.
    * `undefined` leaves the column untouched, `null` clears, a string writes
    * verbatim.
    */
@@ -1287,7 +1286,7 @@ export function buildFactProps(input: {
   subjectKey?: string
   subjectEntityId?: string
   objectEntityId?: string
-  /** Scope / lifetime (issue #283). Same tristate semantics as `buildMemoryProps`. */
+  /** Scope / lifetime. Same tristate semantics as `buildMemoryProps`. */
   scopeKind?: string | null
   scopeKey?: string
   audience?: string
@@ -1309,7 +1308,7 @@ export function buildFactProps(input: {
     props[FACT_PROPS.VALID_UNTIL] =
       input.validUntil === null ? { date: null } : { date: { start: input.validUntil } }
   }
-  // Issue #284 — transaction-time provenance. Same tristate semantics as
+  // Transaction-time provenance. Same tristate semantics as
   // confidenceScore / lastReferencedAt above: undefined leaves untouched,
   // null clears, a string writes verbatim.
   if (input.observedAt !== undefined) {
@@ -1372,7 +1371,7 @@ export function buildFactProps(input: {
       relation: [{ id: input.objectEntityId }],
     }
   }
-  // Scope / lifetime (issue #283). See `buildMemoryProps` for the
+  // Scope / lifetime. See `buildMemoryProps` for the
   // tristate semantics rationale; the Facts DB columns mirror Memories
   // one-for-one so the write path is identical.
   if (input.scopeKind !== undefined) {

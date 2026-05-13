@@ -2,22 +2,21 @@
  * Pinned subset of `RunToolParams` request and response shapes for
  * Lore's RunTool wrapper.
  *
- * Schema source — vendored from the pinned commit in
- * `src/notion/runtool/README.md` (Phase 0 reconnaissance):
+ * Schema source — vendored from the pinned commit documented in
+ * the runtool README:
  *
  * | Item   | Value                                                          |
  * | ------ | -------------------------------------------------------------- |
  * | Source | internal upstream Notion server snapshot                       |
  * | Commit | `69cd144ac1e429229680b6fb24ec29bcea3e37ac` (snapshot 2026-05-05) |
- * | File   | `src/server-publicApi/apis/ai_tools/params/RunToolParams.ts`   |
+ * | File   | upstream `RunToolParams` module under the public-API ai_tools params dir |
  *
- * Issue #533 wired the first runtime tool (`create_pages`); issue
- * #534 extends with `update_page` for anchored markdown edits;
- * issue #535 extends with `query_data_sources` for SQL-mode filter
- * pushdowns. Other tools on `RunToolParams.ALL_TOOLS` (`search`,
- * `move_pages`, etc.) are deliberately out of scope until an
- * explicit issue extends this file with their request and response
- * shapes.
+ * Wired runtime tools: `create_pages`, `update_page` for anchored
+ * markdown edits, `query_data_sources` for SQL-mode filter pushdowns,
+ * and `search` for the semantic-lane consumer. Other tools on
+ * `RunToolParams.ALL_TOOLS` (`move_pages`, etc.) are deliberately
+ * out of scope until an explicit follow-up extends this file with
+ * their request and response shapes.
  *
  * Two structural facts the README pins that this file encodes:
  *
@@ -33,13 +32,13 @@
  * The `create_pages` chunk-size cap (`100` pages per call) is
  * documented in the Notion MCP `notion-create-pages` tool schema —
  * the alias surface that exposes `create_pages` to assistants — as
- * `pages.maxItems = 100`. The `create-pages.ts` wrapper clamps to
+ * `pages.maxItems = 100`. The `create_pages` wrapper clamps to
  * that ceiling rather than hard-coding it deeper in the call site so
  * a future schema update touches one constant.
  */
 
 // ---------------------------------------------------------------------------
-// Issue #533 — `create_pages` request and response shapes
+// `create_pages` request and response shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -67,14 +66,14 @@ export interface RunToolCreatePagesParent {
  * the `create_pages` endpoint actually consumes via
  * `convertNotionRestToSqliteProperties`. The conversion is grounded
  * in the empirical wire format observed live against the production
- * internal vault Facts DB at PR #538 review time. The
+ * internal vault Facts DB during batch-create rollout. The
  * `Record<string, unknown>` typing reflects the input REST shape; the
  * wrapper handles the SQLite expansion before dispatch.
  *
  * On wire-format mismatch (e.g. a REST shape the converter doesn't
  * recognize, or a host-mismatched relation URL), the server returns
  * `400 validation_error` and the wrapper propagates it through the
- * fallback contract (issue #533: "Use the existing create path when
+ * fallback contract ("Use the existing create path when
  * the flag is off or when the batch wrapper rejects the payload").
  * Default-off behavior protects data integrity even if a future
  * schema-pin refresh tightens or loosens what `create_pages` accepts
@@ -84,16 +83,16 @@ export interface RunToolCreatePagesInputPage {
   /**
    * Notion REST property payload (same shape as `pages.create` body).
    * Converted to the SQLite-style flat map by the wrapper before
-   * dispatch — see `convertNotionRestToSqliteProperties`.
+   * dispatch via `convertNotionRestToSqliteProperties`.
    */
   properties: Record<string, unknown>
   /** Optional Notion-flavored Markdown body. */
   content?: string
-  /** Optional emoji / image icon. Mirrors `pages.create`. */
+  /** Optional emoji / image icon. Matches `pages.create`. */
   icon?: string
-  /** Optional cover URL. Mirrors `pages.create`. */
+  /** Optional cover URL. Matches `pages.create`. */
   cover?: string
-  /** Optional template id for database pages. Mirrors `pages.create`. */
+  /** Optional template id for database pages. Matches `pages.create`. */
   template_id?: string
 }
 
@@ -129,7 +128,7 @@ export interface RunToolCreatePagesResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #534 — `update_page` / `update_content` request and response shapes
+// `update_page` / `update_content` request and response shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -146,7 +145,7 @@ export interface RunToolUpdateContentEdit {
 
 /**
  * `update_page` body — the `update_content` command shape.
- * `allow_deleting_content` mirrors the REST `pages.updateMarkdown`
+ * `allow_deleting_content` parallels the REST `pages.updateMarkdown`
  * flag — Notion warns when an edit removes child pages or databases
  * unless the caller acknowledges the deletion.
  */
@@ -171,11 +170,10 @@ export interface RunToolDeletionWarning {
 
 /**
  * Response shape for an `update_page` / `update_content` call. The
- * bare resource (no outer envelope) per Phase 0 reconnaissance.
- * Typed loosely because Phase 0 documented the contract from source
- * without runtime verification of every success body — narrow to a
- * stricter shape only after a real-call sample lands in the
- * wrapper's tests.
+ * bare resource (no outer envelope) per the README. Typed loosely
+ * because the contract was documented from source without runtime
+ * verification of every success body — narrow to a stricter shape
+ * only after a real-call sample lands in the wrapper's tests.
  */
 export interface RunToolUpdatePageResponse {
   /** Echoed page id on success. */
@@ -191,7 +189,7 @@ export interface RunToolUpdatePageResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #535 — `query_data_sources` SQL-mode request and response shapes
+// `query_data_sources` SQL-mode request and response shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -200,9 +198,8 @@ export interface RunToolUpdatePageResponse {
  * Rows in `QueryDataSourcesResource.results` are flat
  * `Record<string, SqlCellValue>` keyed by the SQL output column name.
  * Source: `SQLiteDatabasePropertyValue`, exposed via `unionResource`
- * plus `nullableResource` (see
- * `resources/query_data_sources/QueryDataSourcesResource.ts` at the
- * pinned blob SHA).
+ * plus `nullableResource` (see the upstream
+ * `QueryDataSourcesResource` module at the pinned blob SHA).
  */
 export type SqlCellValue = string | number | boolean | string[] | null
 
@@ -295,16 +292,15 @@ export function isQueryDataSourcesResponse(
 /**
  * Build the `collection://<data_source_id>` URL used by
  * `query_data_sources` as both the `data_source_urls` entry AND
- * the SQL table name (fully quoted in the query). Documented as
- * the public contract in `README.md`'s
- * `query_data_sources Tool — Input/Output Shape` section.
+ * the SQL table name (fully quoted in the query). The wrapper README
+ * documents this as the public contract.
  */
 export function dataSourceUrl(dataSourceId: string): string {
   return `collection://${dataSourceId}`
 }
 
 // ---------------------------------------------------------------------------
-// Issue #541 — `search` request and response shapes
+// `search` request and response shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -366,7 +362,7 @@ export interface RunToolInternalSearchResponse {
  * Memory searches so the workspace-wide post-filter to the Memories
  * data source is unnecessary on the RunTool path.
  *
- * `page_size <= 25` — see `RUNTOOL_SEARCH_MAX_PAGE_SIZE`.
+ * `page_size <= 25` — bounded by `RUNTOOL_SEARCH_MAX_PAGE_SIZE`.
  *
  * `max_highlight_length: 0` is the wrapper's default — Lore never
  * surfaces RunTool's highlight string and the savings on response
@@ -424,9 +420,8 @@ export function isInternalSearchResponse(
 
 /**
  * Map from RunTool API tool name → request params shape.
- * Issue #533 wired `create_pages`; issue #534 extends with
- * `update_page`; issue #535 extends with `query_data_sources`;
- * issue #541 extends with `search`.
+ * Wired tools: `create_pages`, `update_page`, `query_data_sources`,
+ * `search`.
  */
 export interface RunToolRequestMap {
   create_pages: RunToolCreatePagesParams

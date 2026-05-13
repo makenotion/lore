@@ -1,9 +1,9 @@
 /**
- * Topic-key suggester (issue 0.9.0/07).
+ * Topic-key suggester.
  *
  * Pure heuristic over `(title, kind)` that returns a stable kebab-case
- * key suitable for `lore-memory action='save'`'s `topicKey` parameter
- * (issue 0.9.0/06). The function is deliberately deterministic and
+ * key suitable for `lore-memory action='save'`'s `topicKey` parameter.
+ * The function is deliberately deterministic and
  * side-effect free: an agent calling this with the same input twice
  * MUST get the same key, otherwise upsert grouping fragments across
  * sessions.
@@ -48,7 +48,7 @@ const KIND_TO_FAMILY: Record<MemoryKind, string | null> = {
  * report-prefix abbreviations also live here so titles like
  * `"RCA: payment gateway timeout cascade"` keep the meaningful suffix.
  *
- * Same posture as `TITLE_LEAD_STOPLIST` in `near-duplicate.ts` — the
+ * Same posture as `TITLE_LEAD_STOPLIST` — the
  * two lists overlap in spirit but serve different consumers (entity
  * extraction vs. topic-key composition), so they live separately.
  */
@@ -214,7 +214,7 @@ export function suggestTopicKey(input: {
   // (single code point) and a decomposed `e` + combining-acute (two
   // code points) produce the same key. Non-decomposable scripts (CJK,
   // Cyrillic, Greek) survive NFKD unchanged and get dropped by the
-  // alphanumeric filter — see `COMBINING_MARK_PATTERN` doc.
+  // alphanumeric filter.
   const undated = input.title
     .replace(DATE_PATTERN, " ")
     .normalize("NFKD")

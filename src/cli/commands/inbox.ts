@@ -9,7 +9,7 @@ import { notionPageUrl, terminalLink } from "../output.js"
 
 /**
  * `lore inbox` — operator-facing CLI for the proposed-memory review
- * inbox (issue #281, AC #3). Four subcommands:
+ * inbox. Four subcommands:
  *
  * - `lore inbox list [--project <name>] [-n <limit>]` — list memories
  *   awaiting review.
@@ -29,7 +29,7 @@ import { notionPageUrl, terminalLink } from "../output.js"
  * The inbox surface is read-only and append-only — no destructive
  * paths past `archive`, which is already a soft-delete. A future
  * `lore inbox bulk-approve` is plausible follow-up but out of scope
- * for the initial Phase 4 ship.
+ * for the initial ship.
  */
 
 const DEFAULT_LIST_LIMIT = 50
@@ -54,7 +54,7 @@ const listCmd = new Command("list")
       const { items } = await services.memories.list({
         projectId,
         status: "proposed",
-        // `excludeKinds: ["decision"]` mirrors `proposedMemoryFilter()`'s
+        // `excludeKinds: ["decision"]` matches `proposedMemoryFilter()`'s
         // `Kind != decision` clause so the listing surface and the
         // count surface (`lore status`'s Proposed memories line) agree
         // on what counts as inbox memories. Without this, a
@@ -160,7 +160,7 @@ const archiveCmd = new Command("archive")
         process.exit(1)
         return
       }
-      // Kind guard mirrors `proposedMemoryFilter()`'s `Kind != decision`
+      // Kind guard matches `proposedMemoryFilter()`'s `Kind != decision`
       // exclusion and the `MemoryService.recordReview` decision guard.
       // Without it, a pasted decision id with `Status: proposed` would
       // pass the status guard and soft-delete a proposed-state decision

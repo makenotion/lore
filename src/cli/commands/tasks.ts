@@ -41,9 +41,8 @@ const CLOSE_STATES: readonly TaskState[] = ["done", "cancelled"]
 
 /**
  * Default per-section render cap for `lore tasks list`. Matches the MCP
- * `lore-task action='list'` default (`DEFAULT_TASKS_LIMIT` in
- * `src/mcp/tools/tasks.ts`) so an operator and an agent see the same
- * triage window on the same vault.
+ * `lore-task action='list'` `DEFAULT_TASKS_LIMIT` so an operator and
+ * an agent see the same triage window on the same vault.
  */
 const DEFAULT_LIST_LIMIT = 10
 /**
@@ -73,7 +72,7 @@ type CliParseErr = { ok: false; message: string }
 type CliParseResult<T> = CliParseOk<T> | CliParseErr
 
 /**
- * Mirror of `isUnusableBlockerLabel` in `src/mcp/tools/tasks.ts`. A
+ * Parallels the MCP-side `isUnusableBlockerLabel`. A
  * blocker label that is missing, null, or whitespace-only is
  * unactionable: it tells triage "this task is blocked" without naming
  * the blocker, which is the failure mode the cross-field guard exists
@@ -82,8 +81,8 @@ type CliParseResult<T> = CliParseOk<T> | CliParseErr
  * as visually blank — exactly the situation an operator triaging
  * `lore tasks list` cannot act on.
  *
- * Defined as a CLI-local helper rather than imported from
- * `src/mcp/tools/tasks.ts` to avoid a CLI → MCP-tools dependency edge;
+ * Defined as a CLI-local helper rather than imported from the MCP
+ * `lore-task` handler to avoid a CLI → MCP-tools dependency edge;
  * the predicate is small and the parity contract is documented here.
  */
 function isUnusableBlockerLabel(value: string | undefined | null): boolean {
@@ -186,10 +185,10 @@ const reconcileCommand = new Command("reconcile")
     // inside `try` would re-fire `console.error` with the throw-mock's
     // sentinel as the operator-facing message. The new
     // create/update/close/list subcommands below place parse INSIDE
-    // `try` because they use the no-throw mock from
-    // `src/cli/test-helpers.ts`, where `process.exit(1)` returns rather
-    // than throws — the doubled-emission failure mode the lifted-parse
-    // posture protects against cannot occur there.
+    // `try` because they use the no-throw `trapProcessExit` mock,
+    // where `process.exit(1)` returns rather than throws — the
+    // doubled-emission failure mode the lifted-parse posture protects
+    // against cannot occur there.
     const parsed = parseReconcileCliOptions(opts)
     if (!parsed.ok) {
       console.error(`Reconcile failed: ${parsed.message}`)
@@ -355,7 +354,7 @@ function formatTaskListRow(task: TaskSummary, today: string): string {
  * none of those fields took effect, and is pointed at `lore tasks
  * update <id>` for the correction.
  *
- * Mirrors `collectIgnoredReuseFields` in `src/mcp/tools/tasks.ts` so
+ * Parallels the MCP-side `collectIgnoredReuseFields` so
  * the CLI surface and the MCP surface produce the same reuse audit
  * for the same operator-supplied fields. `--project` is excluded
  * because it participates in the reuse-key (project-set), not as
@@ -444,7 +443,7 @@ export function parseCreateCliOptions(
   if (!dueDate.ok) return dueDate
   const tags = parseTagsList(raw.tags, "--tags")
   if (!tags.ok) return tags
-  // Cross-field rule mirrors the MCP handler's `isUnusableBlockerLabel`
+  // Cross-field rule matches the MCP handler's `isUnusableBlockerLabel`
   // guard: a `blocked` task without a meaningful blocker label is
   // unactionable. Whitespace-only blockers (`"   "`) trip the same gate
   // — the column would render as visually blank in `lore tasks list`,
@@ -483,8 +482,8 @@ export function parseCreateCliOptions(
  * `lore tasks create` short-circuits to `Reused existing task: ...`
  * instead of landing a second structurally-identical row in the
  * vault. Idempotency parity with `lore-task action='create'` is the
- * load-bearing rule — `src/core/CLAUDE.md` "Task duplicate probe and
- * assertive reuse" documents the vocabulary the response surfaces.
+ * load-bearing rule — the task-reuse predicate's docstring documents
+ * the vocabulary the response surfaces.
  *
  * Returns `{ text, data }` so the action wrapper can route to either
  * the human-facing text rendering or a JSON dump under `--json`. The
@@ -514,9 +513,9 @@ export async function runTaskCreate(
     projectLabel = "none (repo-wide)"
   }
 
-  // Assertive-reuse probe (issue #265). Mirrors `handleCreate` in
-  // `src/mcp/tools/tasks.ts`: probe for active tasks with the same
-  // entity, then short-circuit when an exact `(subject, entity,
+  // Assertive-reuse probe. Mirrors the `lore-task` MCP handler's
+  // `handleCreate`: probe for active tasks with the same entity,
+  // then short-circuit when an exact `(subject, entity,
   // projectIds)` match exists. The probe runs BEFORE create so a
   // duplicate doesn't leak into Notion before we can detect it. Probe
   // failures degrade silently to "no candidates" and the create
@@ -1034,8 +1033,7 @@ export interface ListCliRow {
 /**
  * Distinguishes WHY the cursor walk stopped while more matching rows
  * remain in Notion. The two saturation cases need different operator
- * nudges and the misleading conflation was the second blocker in PR
- * #523's second review pass:
+ * nudges:
  *
  * - `"user-limit"` — the loop exited because `tasks.length === --limit`
  *   while `nextCursor` was still set. The right nudge is "showed first
@@ -1231,7 +1229,7 @@ export async function runTaskList(
     else activeTasks.push(task)
   }
 
-  // Bound prefix mirrors the MCP shape: `≥` when totals are
+  // Bound prefix matches the MCP shape: `≥` when totals are
   // lower-bound (saturated), bare otherwise. The user-limit and
   // safety-cap cases both use `≥` because both indicate "more rows
   // exist beyond what we returned"; only the footer wording differs.

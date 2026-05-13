@@ -32,7 +32,7 @@ type PropertyValue = PageObjectResponse["properties"][string]
 /**
  * All extractors accept `undefined` so callers can safely pass
  * `page.properties["SomeColumn"]` without guarding against the column being
- * absent from the schema (e.g., on pre-migration pages). When the property
+ * absent from the schema (e.g., on unmigrated pages). When the property
  * is missing or the wrong type, the extractor returns its documented default.
  */
 

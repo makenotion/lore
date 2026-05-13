@@ -1,6 +1,6 @@
 /**
  * Per-upstream read-only service bundles for the vault topology
- * (issue #286, "Read inheritance").
+ * ("Read inheritance").
  *
  * `LoreServices.upstreams` is a list of `UpstreamVaultBundle` entries,
  * one per configured `upstreamVaults` row. Each bundle exposes a
@@ -11,7 +11,7 @@
  * shape but the current type is intentionally narrow.) The shared
  * rate-limited / auth-refreshing Notion client from primary
  * `initServicesFromConfig` is reused — cross-vault fan-out stays
- * under the process-wide rate-limit bucket (issue #286's "reuse the
+ * under the process-wide rate-limit bucket (the "reuse the
  * existing rate limiter posture per process/token" constraint).
  *
  * Load failures degrade gracefully: `loadReaders()` returns `null`
@@ -39,7 +39,7 @@
  * a deliberate write surface (the `lore promote` CLI / promotion MCP
  * action), not a read-orchestration surface. Promotion writes
  * construct their own `VaultManager` per call inside `promoteMemory`
- * — see `src/core/promote.ts`. Including promotion targets in
+ * — the `promoteMemory` helper owns that flow. Including promotion targets in
  * `services.upstreams` would invite read paths to silently fan out
  * to a vault the operator designated for review-gated writes only.
  */
@@ -62,23 +62,23 @@ import { MEMORY_PROPS } from "../notion/schema.js"
  * inheritance surface (the wake-up `Active Facts` section has a
  * natural slot) would extend this shape with `facts: FactService`,
  * but the type is intentionally narrow today so external consumers
- * cannot build against a field whose contract isn't yet committed
- * to (PR #589 review).
+ * cannot build against a field whose contract isn't yet committed to.
  */
 export interface UpstreamReaders {
   memories: MemoryService
 }
 
 export interface UpstreamVaultBundle {
-  /** Configured upstream label (display name from `.lore.yaml`). */
+  /** Configured upstream label (display name from .lore.yaml). */
   readonly label: string
   /** Configured priority — lower fires first in fan-out. */
   readonly priority: number
-  /** Configured page id (whatever shape `.lore.yaml` used). */
+  /** Configured page id (whatever shape .lore.yaml used). */
   readonly pageId: string
   /**
    * Lazy-load the upstream vault and return its read-only
-   * `MemoryService` (see `UpstreamReaders`). Caches the result
+   * `MemoryService` (`UpstreamReaders` is the canonical type).
+   * Caches the result
    * across calls within one process — subsequent calls return the
    * same bundle without re-fetching the upstream vault's child
    * databases. Returns `null` on load failure (e.g. the upstream's
@@ -113,7 +113,7 @@ export interface UpstreamVaultBundle {
  * client. Constructing a second `createLimitedClient` per upstream
  * would split the rate-limit bucket and let cross-vault fan-out
  * exceed the per-token Notion quota — exactly the regression issue
- * #286's "reuse the existing rate limiter posture" rule exists to
+ * the "reuse the existing rate limiter posture" rule exists to
  * prevent.
  */
 export function buildUpstreamVaultBundles(
@@ -173,19 +173,18 @@ function createUpstreamVaultBundle(
           // on every wake-up.
           await vault.load({ driftCheck: false })
 
-          // Migration-safety probe (PR #589 review): the primary
+          // Migration-safety probe: the primary
           // `initServicesFromConfig` path runs the same probe and
-          // passes `undefined` (= filter disabled, pre-#283
-          // retrieval shape) when the vault hasn't yet run
-          // `lore migrate`. Mirror that posture on the upstream so
-          // an unmigrated upstream's wake-up read uses the legacy
-          // retrieval shape instead of failing with a
-          // `validation_error` against the missing `Scope Kind` /
-          // `Expires At` columns. Without this gate, teams
-          // upgrading a fleet to read-inheritance cannot roll out
-          // until every upstream vault is migrated — exactly the
-          // "must be migration-safe per the same posture as
-          // primary" rule the issue calls out.
+          // passes `undefined` (= filter disabled, legacy retrieval
+          // shape) when the vault hasn't yet run `lore migrate`.
+          // Mirror that posture on the upstream so an unmigrated
+          // upstream's wake-up read uses the legacy retrieval shape
+          // instead of failing with a `validation_error` against the
+          // missing `Scope Kind` / `Expires At` columns. Without this
+          // gate, teams upgrading a fleet to read-inheritance cannot
+          // roll out until every upstream vault is migrated —
+          // upstream reads must be migration-safe per the same
+          // posture as primary.
           //
           // Probe-failure (transient 5xx / rate-limit blip) falls
           // back to "columns present" — same conservative posture
@@ -199,8 +198,7 @@ function createUpstreamVaultBundle(
             client,
             vault.databases
           ).catch((probeErr) => {
-            // PR #591 round-3 nit: surface probe failures under
-            // `LORE_DEBUG=1` so an operator triaging
+            // Surface probe failures under `LORE_DEBUG=1` so an operator triaging
             // "why does this upstream surface narrow-scope rows"
             // can see whether the probe was bypassed via
             // conservative fall-back. Same pattern as the
@@ -219,15 +217,14 @@ function createUpstreamVaultBundle(
           })
           // Pass an empty `MemoryScopeContext{}` ONLY when the
           // upstream has the scope columns. Empty-context enables
-          // the issue #283 default-scope filter with the "no
-          // narrow scopes ever surface" branch (PR #589 review
-          // requested this posture). Threading the PRIMARY's
+          // the default-scope filter with the "no narrow scopes
+          // ever surface" branch. Threading the PRIMARY's
           // scope context would be incorrect: scope keys are
           // vault-local, so a session/user/agent key resolved
           // against the operator's primary vault doesn't refer to
           // the same identity in the upstream.
           //
-          // When the upstream is pre-migration, pass `undefined`
+          // When the upstream is unmigrated, pass `undefined`
           // so the upstream `MemoryService` runs with
           // `scopeFilterEnabled === false` and the read paths
           // skip the scope filter clause entirely — same shape
@@ -263,13 +260,15 @@ function createUpstreamVaultBundle(
             //      `redactDebugMessage` (the same scrubber the
             //      capture-side renderer uses), so real Notion page
             //      ids are emitted as `<page-id>` regardless of
-            //      whether the operator opted into LORE_DEBUG.
-            //      Operators who genuinely need the raw page id
-            //      look it up via `lore status` (which surfaces
-            //      labels + page ids verbatim — that's an explicit
-            //      operator-invoked command, not a hot-path
-            //      emitter). Defense-in-depth over the recon-class
-            //      page-id posture documented in `src/debug-redact.ts`.
+            //      whether the operator opted into LORE_DEBUG. Page
+            //      ids are recon-class (operator-config locators,
+            //      not bearer secrets) but redaction here is
+            //      defense-in-depth against leaking vault structure
+            //      into a centralized log aggregator. Operators who
+            //      genuinely need the raw page id look it up via
+            //      `lore status` — labels + page ids surface
+            //      verbatim there as an explicit operator-invoked
+            //      command, not a hot-path emitter.
             if (process.env["LORE_DEBUG"] === "1") {
               const rawLine =
                 `[lore] upstream-vault-unavailable: label=${upstream.label} ` +
@@ -291,25 +290,23 @@ function createUpstreamVaultBundle(
 }
 
 /**
- * Memory-only equivalent of `probeScopeColumnsPresent` in
- * `src/services.ts`. The upstream read path only constructs a
- * `MemoryService` (see `UpstreamReaders`), so probing the Facts DS
- * here would be wasted work — the post-#588 fact-side upstream
- * surface, if/when it ships, can extend this probe with the
+ * Memory-only equivalent of `probeScopeColumnsPresent`. The upstream
+ * read path only constructs a `MemoryService` (via `UpstreamReaders`),
+ * so probing the Facts DS here would be wasted work — a future
+ * fact-side upstream surface can extend this probe with the
  * Facts-DS round-trip.
  *
  * Same migration-safety contract as the primary's probe: returns
  * `true` when the upstream Memories DS carries the load-bearing
- * #283 columns (`Scope Kind` + `Expires At`), `false` otherwise.
+ * scope columns (`Scope Kind` + `Expires At`), `false` otherwise.
  * The two columns are sufficient because Notion's per-DB schema
  * migration is additive-in-lockstep — all five scope columns land
  * or none of them do.
  *
- * Lives in this file rather than re-importing from `src/services.ts`
- * to preserve the `src/core/` → `src/services.ts` import boundary
- * (the services layer is a higher-level init surface; the
- * topology-readers helper would invert layers if it pulled from
- * there).
+ * Lives in this file rather than re-importing from the services
+ * module to preserve the core → services import boundary (the
+ * services layer is a higher-level init surface; this helper would
+ * invert layers if it pulled from there).
  */
 async function probeUpstreamScopeColumns(
   client: Client,

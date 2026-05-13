@@ -62,7 +62,7 @@ const INTENT_DESCRIPTION =
  * directly via `safeParse` — handler-side spies only observe the
  * hand-constructed argument literals each `handleX` builds, which means
  * a regression that re-introduces `intent` on a non-`search` arm of this
- * schema would slip past every handler-level test. See `polymorphic.test.ts`
+ * schema would slip past every handler-level test.
  * for the negative-pin tests on `recall` / `ask` / `audit`.
  */
 export const queryDispatchSchema = z.discriminatedUnion("action", [
@@ -85,9 +85,9 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     topicName: z.string().optional(),
     // Closed-vocab tags here too: the inner discriminated union is the
-    // dispatcher's runtime contract, and the architecture in
-    // src/mcp/AGENTS.md says it must mirror the closed-vocab guarantee
-    // declared at the MCP boundary.
+    // dispatcher's runtime contract, and it must match the closed-vocab
+    // guarantee declared at the MCP boundary so agents can't smuggle
+    // out-of-vocab tags through the polymorphic dispatch path.
     tags: tagsSchema.optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
@@ -103,7 +103,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     // Reject empty / whitespace-only entity at the boundary. An
     // unfiltered call would otherwise reach `FactService.queryByEntity`
     // and trigger a vault-wide scan; the service layer also short-
-    // circuits to `[]` (issue #481), but failing here gives the agent
+    // circuits to `[]`, but failing here gives the agent
     // a clear "entity is required" error instead of an empty result
     // set masquerading as "no facts found".
     entity: z
@@ -113,7 +113,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     limit: z.number().int().min(1).optional(),
     includeContext: z.boolean().optional(),
-    // Issue #284 — transaction-time recall controls.
+    // Transaction-time recall controls.
     asOf: ymdDateSchema.optional(),
     includeHistory: z.boolean().optional(),
   }),
@@ -125,7 +125,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
 
 export function registerQueryTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-query — polymorphic read-path dispatcher (P3-01)
+  // lore-query — polymorphic read-path dispatcher
   //
   // Spans memory and knowledge read paths because they share heavy
   // structural overlap (project scoping, limit/cursor knobs, content-off
@@ -259,7 +259,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .describe(
             "(action='ask') Prepend a project framing block (name, description, siblings, catch-all warning) above the grouped-display sections (default true). Pass `false` when the agent's system prompt already supplies framing, to save output tokens."
           ),
-        // ask only — issue #284 temporal recall
+        // ask only — temporal recall controls
         asOf: ymdDateSchema
           .optional()
           .describe(

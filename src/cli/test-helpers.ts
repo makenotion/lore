@@ -5,15 +5,15 @@ import { vi } from "vitest"
  * without tearing down the test runner. The mock RECORDS the requested
  * exit code and returns `undefined as never` — it does NOT throw. Each
  * command-action `process.exit(1)` site is paired with a defensive
- * `return` (see the "standing pattern" comment in `commands/mine.ts`),
+ * `return` (see the "standing pattern" comment),
  * so under the no-throw mock the action returns cleanly and the test
  * asserts on `exitTrap.exitCodes`.
  *
  * ## Why no-throw, not throw-sentinel
  *
- * The earlier throw-sentinel design (which `init.test.ts` and
- * `auth.test.ts` still use locally) interacts badly with the
- * project-wide outer try/catch in command actions:
+ * The earlier throw-sentinel design (still used locally in the init
+ * and auth command test files) interacts badly with the project-wide
+ * outer try/catch in command actions:
  *
  * ```typescript
  * try {
@@ -29,8 +29,7 @@ import { vi } from "vitest"
  * outer `catch (err)`, which emits a SECOND `console.error` carrying
  * the sentinel string as the error message AND calls `process.exit(1)`
  * a SECOND time. Tests using `expect(exitTrap.exitCodes).toContain(1)`
- * silently accept `[1, 1]` and lock in the doubled-emission bug. See
- * PR #512's review for the full trace.
+ * silently accept `[1, 1]` and lock in the doubled-emission bug.
  *
  * The no-throw design avoids the entire issue. Production behavior is
  * unchanged: real `process.exit(1)` actually terminates, so the catch
@@ -73,11 +72,11 @@ import { vi } from "vitest"
  * Spy cleanup is the project convention via `vi.restoreAllMocks()` in
  * `afterEach`; the helper does NOT expose a `restore()` method.
  *
- * `init.test.ts` and `auth.test.ts` predate this helper and define
- * their own local throw-sentinel versions. They are NOT migrated in
- * PR #512 — both files are well-covered today and a mass rewrite
- * would balloon the diff. Migrate them as a focused follow-up so the
- * CLI surface eventually shares one helper shape.
+ * Two existing CLI test files predate this helper and define
+ * their own local throw-sentinel versions. They have not been migrated
+ * — both files are well-covered today and a mass rewrite would balloon
+ * the diff. Migrate them as a focused follow-up so the CLI surface
+ * eventually shares one helper shape.
  */
 export function trapProcessExit(): {
   exitCodes: number[]
@@ -95,9 +94,8 @@ export function trapProcessExit(): {
  * Shared malformed `--limit` fuzz set used by every CLI parse-failure
  * `it.each`. Centralizing the array means a parse-helper change that
  * narrows or widens what counts as malformed updates every command's
- * test-bed in lockstep — drift between `tasks.test.ts`,
- * `search.test.ts`, `mine.test.ts`, and `conflicts.test.ts` would let
- * the parse helpers diverge silently.
+ * test-bed in lockstep — drift between command-specific test files
+ * would let the parse helpers diverge silently.
  *
  * The list captures three classes of regex-rejected input across seven
  * entries:

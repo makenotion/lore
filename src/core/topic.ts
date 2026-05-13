@@ -197,7 +197,7 @@ export class TopicService {
 
     // Only the global (unscoped) lookup is cached: it's the hot path used
     // by `getOrCreate` and every MCP tool that accepts `topicName`. The
-    // scoped form exists for vaults still carrying pre-migration
+    // scoped form exists for vaults still carrying unmigrated
     // duplicates and is infrequent enough to query live. Key on `decoded`
     // so encoded and decoded inputs share a cache slot.
     //
@@ -248,7 +248,7 @@ export class TopicService {
    *    established by `lore migrate --merge-duplicate-topics`.
    * 2. **Normalized-equivalent match** in any of the resolved projects
    *    (via the slow-path probe) → silently extend that canonical row's
-   *    relation. Closes the issue #109 fan-out where agents drifted
+   *    relation. Closes the fan-out where agents drifted
    *    pluralization / `&` ↔ `and` / casing variants of the same topic.
    * 3. **Trigram-similar candidates ≥ `TOPIC_TRIGRAM_REJECT_THRESHOLD`**
    *    in any of the resolved projects → throw `SimilarTopicError` with

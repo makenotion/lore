@@ -150,7 +150,7 @@ export interface ProcedureCandidate {
   /**
    * Composite score in roughly `[0, 4]`. Higher = stronger
    * candidate. The score combines count + kind diversity +
-   * recency; see `scoreCandidate`.
+   * recency in `scoreCandidate`.
    */
   score: number
   /**
@@ -299,7 +299,7 @@ export async function resolveProcedureSources(
 
   const targetSet = new Set(targetProjectIds)
   // Fan out the lookups in parallel; rate-limit middleware paces them
-  // and the parallel posture mirrors the scan's source fetch.
+  // and the parallel posture matches the scan's source fetch.
   const results = await Promise.allSettled(
     ordered.map((id) => services.memories.getById(id))
   )
@@ -539,7 +539,7 @@ export interface FindExistingProcedureResult {
   /**
    * When `existing != null` and its status is `proposed`, this is the
    * row the propose path should return as a reuse short-circuit
-   * (mirrors `lore-task action='create'`'s `findExactReuseTarget`
+   * (matching `lore-task action='create'`'s `findExactReuseTarget`
    * posture). When the existing status is non-proposed, the propose
    * path throws `ProcedureTopicKeyConflictError` instead.
    */
@@ -638,13 +638,13 @@ function normalizeClusterKey(entity: string): string {
     .replace(NON_ALPHANUMERIC_PATTERN, "-")
     .replace(/^-+|-+$/g, "")
   if (lowered.length === 0) return ""
-  // Reject digit-only keys. The entity extractor emits `#1234` as a
-  // standalone candidate alongside `PR #1234` so a vault-wide
-  // `Entity contains "#1234"` filter can pick up PR-shaped task
-  // entities; for cluster grouping this produces a duplicate
-  // `1234` bucket whose support set is a strict subset of the
-  // `pr-1234` bucket. Suppress here so the procedure scan surfaces
-  // one cluster per conceptual entity.
+  // Reject digit-only keys. The entity extractor emits bare numeric
+  // tokens (like `1234`) as standalone candidates alongside their
+  // prefixed form (`PR-1234`) so a vault-wide entity filter can pick
+  // up PR-shaped task entities; for cluster grouping this produces a
+  // duplicate `1234` bucket whose support set is a strict subset of
+  // the `pr-1234` bucket. Suppress here so the procedure scan
+  // surfaces one cluster per conceptual entity.
   if (DIGITS_ONLY_PATTERN.test(lowered)) return ""
   if (lowered.length <= SLUG_CAP) return lowered
   const head = lowered.slice(0, SLUG_CAP)
@@ -767,9 +767,10 @@ export async function findProcedureCandidates(
   ])
 
   // Cluster bucket carries its own per-memory dedupe so two entity
-  // tokens that normalize to the same cluster key (e.g. "PR #1234"
-  // and "PR-1234" both → `pr-1234`) only count one supporting
-  // memory. Without this, a memory whose title surfaces multiple
+  // tokens that normalize to the same cluster key (e.g. a hashed
+  // and dashed form of the same PR id both folding to `pr-1234`)
+  // only count one supporting memory. Without this, a memory whose
+  // title surfaces multiple
   // shape variants of the same entity inflates the cluster's source
   // count and passes `PROCEDURE_MIN_SOURCES` on its own.
   const clusters = new Map<

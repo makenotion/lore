@@ -1,5 +1,5 @@
 /**
- * Process-local cache for `loadWakeUpData` results (issue #495).
+ * Process-local cache for `loadWakeUpData` results.
  *
  * Wake-up runs ~10 parallel Notion calls per invocation. The MCP tool
  * is invoked more than once per session — at SessionStart, on
@@ -12,7 +12,7 @@
  *
  * **Surface where the cache helps.** This is process-local state, so
  * the only surface that can land repeated cache hits is the
- * long-running MCP server. Hooks (`src/hooks/helpers.ts`) spawn one
+ * long-running MCP server. Hooks spawn one
  * process per Stop / per UserPromptSubmit and exit — every hook
  * invocation starts with an empty cache. The hook wake-up call still
  * threads `services.wakeupCache` through `loadWakeUpData` for type
@@ -59,7 +59,7 @@
  * They do NOT route through `withWakeUpCacheBump` because invalidating
  * the wake-up cache on every render would defeat the whole cache.
  * The trade-off: a cached wake-up may render a `Confidence Score`
- * trust label (0.8.0/#09) that is up to 30 seconds stale relative to
+ * trust label that is up to 30 seconds stale relative to
  * Notion. Within the TTL window this is acceptable — the cache is
  * triage signal, not the authoritative source for trust labels. The
  * hot once-per-day-gate failure (touch re-firing on every cache hit
@@ -99,7 +99,7 @@
  * write landing during a fan-out cannot poison subscribers — the
  * existing in-flight loader's commit is suppressed by the epoch
  * sandwich, and the next caller dispatches a fresh fetch instead of
- * subscribing. Same posture as `LruCache.getOrLoad` in `cache.ts`.
+ * subscribing. Same posture as `LruCache.getOrLoad`.
  */
 
 import type { WakeUpData, WakeUpOptions } from "./wakeup.js"
@@ -199,8 +199,9 @@ export class WakeUpCache {
       this.store.delete(key)
       return undefined
     }
-    // Move to MRU tail — see `set`'s eviction rule for why this is
-    // load-bearing.
+    // Move to MRU tail — `set`'s eviction rule pops the head when the
+    // store is over capacity, so the read must promote this entry to
+    // the tail to avoid being evicted before colder neighbors.
     this.store.delete(key)
     this.store.set(key, entry)
     return entry.data
@@ -241,7 +242,7 @@ export class WakeUpCache {
         // Identity guard: only commit when our pending slot is still
         // the authoritative one. `bumpEpoch` clears `pending`, so a
         // post-write commit attempt against the captured-pre-write
-        // epoch will see `pending.get(key) !== promise` and skip.
+        // epoch observes `pending.get(key) !== promise` and skips.
         if (this.pending.get(key) === tracked) {
           this.set(key, data, startEpoch)
         }
@@ -332,14 +333,12 @@ const KEY_OPTION_FIELDS = [
   "proposedMemoryLimit",
   "includeCoverage",
   "todayDate",
-  // Issue #286 — both inherited-memory options change the
-  // `inheritedMemories` array on `WakeUpData`. Without these
-  // fields, a wake-up with `includeInheritedMemories: false` (hook
-  // posture) and a wake-up with the default (MCP posture) compute
-  // the same key and cross-serve — the second caller sees the
-  // first caller's `inheritedMemories` regardless of their own
-  // opt-out. Pinned by the inherited-options coverage in
-  // `wakeup-cache.test.ts`.
+  // Both inherited-memory options change the `inheritedMemories`
+  // array on `WakeUpData`. Without these fields, a wake-up with
+  // `includeInheritedMemories: false` (hook posture) and a wake-up
+  // with the default (MCP posture) compute the same key and
+  // cross-serve — the second caller sees the first caller's
+  // `inheritedMemories` regardless of their own opt-out.
   "includeInheritedMemories",
   "inheritedMemoryLimit",
   // pinned-block options change BOTH
@@ -354,7 +353,7 @@ const KEY_OPTION_FIELDS = [
   // context renders BEFORE the relevance-ranked sections and
   // carries the abuse-warning gate, this is a correctness/safety
   // issue rather than just stale metadata. Pinned by the
-  // pinned-options coverage in `wakeup-cache.test.ts`.
+  // pinned-options coverage.
   //
   // `pinnedReaderContext` is a nested object; `computeWakeUpCacheKey`
   // normalizes it to a stable string below so two readers with

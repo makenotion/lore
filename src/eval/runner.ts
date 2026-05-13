@@ -348,13 +348,11 @@ const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
     // Fixture-mode caveat: production `queryStaleConfidence` orders
     // results explicitly (by stored confidence score / staleness
     // signal), but the fixture stub just returns rows in the order
-    // they appear in YAML — see `fixtureWakeUpServices.queryStaleConfidence`.
+    // they appear in YAML — the stub lives on `fixtureWakeUpServices`.
     // The post-fetch slice here therefore reflects YAML declaration
     // order, NOT production ranking. A regression test that asserts a
     // specific top-1 id is implicitly testing fixture-load order, not
-    // the production ranking algorithm. Mirroring production order in
-    // the fixture stub is tracked under the same fixture-extraction
-    // TODO as the `fixtureMemoryToMemory` literals below.
+    // the production ranking algorithm.
     extract: (data, limit) => data.staleConfidence.slice(0, limit).map((m) => m.id),
   },
 }
@@ -492,9 +490,8 @@ function buildRetrievalResult(input: {
  * and `client.search` do not filter on the `Status` column), so this is
  * the eval's enforced contract: a status-aware retriever MUST drop
  * superseded/deprecated/rejected rows before they reach an agent.
- * Tracked under #284's temporal-correctness work; the Notion-backed
- * runner exercises whatever production actually does and may report
- * harm > 0 until that lands.
+ * The Notion-backed runner exercises whatever production actually
+ * does and may report harm > 0 until status-aware retrieval lands.
  */
 const SUPPRESSED_RETRIEVAL_STATUSES = new Set(["superseded", "deprecated", "rejected"])
 
@@ -518,7 +515,7 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
         const sourceFiltered = opts.source
           ? memories.filter((memory) => memory.source === opts.source)
           : memories
-        // Status filter mirrors the same suppression applied to search:
+        // Status filter applies the same suppression as search:
         // a status-aware retriever does not surface superseded/deprecated
         // rows on the recents (memories.list) path either.
         const statusFiltered = sourceFiltered.filter(isStatusRetrievable)
@@ -551,12 +548,10 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
   }
 }
 
-// TODO(eval-fixtures-module): extract this and `fixtureMemoryToMemory`
-// into `src/eval/fixtures/` with shared TaskSummary / Memory default
-// builders so the 30+-field literals do not accumulate drift as
-// TaskSummary / Memory evolve. Track alongside the future `orderBy`
-// mirror in `fixtureWakeUpServices.queryStaleConfidence` (see surface-
-// registry caveat for `wake-up.staleConfidence`).
+// Verbose field-by-field literal aligned with the production
+// TaskSummary shape. Kept inline because the fixture suite is the
+// only consumer; if a second fixture surface needs a TaskSummary
+// builder, hoist it then.
 function fixtureTaskToSummary(task: EvalMemoryScenario["tasks"][number]): TaskSummary {
   const createdAt = new Date(Date.UTC(2026, 0, 1)).toISOString()
   return {

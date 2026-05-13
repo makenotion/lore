@@ -1,8 +1,8 @@
 /**
- * Synopsis backfill migration (issue 0.7.0/05).
+ * Synopsis backfill migration.
  *
- * Companion to `memory-encoding.ts` and `agent-normalization.ts` for the
- * Synopsis property added in issue 0.7.0/01. `lore migrate
+ * Companion to the memory-encoding migration for the Synopsis
+ * property. `lore migrate
  * --backfill-synopses` uses the functions here to discover memories whose
  * `Synopsis` is empty, optionally synthesize a 1–2 sentence synopsis from
  * the page's title + body via a pluggable backend, and write it back.
@@ -16,7 +16,7 @@
  *   without consulting body content. Intended for test infrastructure and
  *   for operators who want to flag legacy rows on a large vault. One-way
  *   state: once the sentinel lands, the discovery filter excludes the row
- *   on every subsequent run (see issue 0.7.0/05 "Sentinel choice").
+ *   on every subsequent run.
  *
  * Idempotency contract: discovery filters on `Synopsis is_empty`, so a
  * row whose Synopsis has been written (with synthesized text OR the
@@ -165,9 +165,9 @@ export interface BackfillOptions {
    *  the configured binary is available. */
   pathPreflight?: () => boolean
   /**
-   * Resolved background-agent shape (issue #194). Threads
+   * Resolved background-agent shape. Threads
    * `hooks.backgroundAgent.{command,args}` from the operator's
-   * `.lore.yaml` plus the `LORE_BACKGROUND_COMMAND` env override into
+   * .lore.yaml plus the `LORE_BACKGROUND_COMMAND` env override into
    * the synthesizer spawn so a Codex-only operator running
    * `lore migrate --backfill-synopses` (without `--synopsis-backend
    * placeholder`) gets the same redirected binary the autosave / digest
@@ -179,8 +179,8 @@ export interface BackfillOptions {
 }
 
 /**
- * Default concurrency for the claude apply path. Four is the spec
- * default (see issue 0.7.0/05); operators tune via
+ * Default concurrency for the claude apply path. Four is the
+ * default; operators tune via
  * `--synopsis-batch-size`. The Notion-side write fan-out is governed
  * by the rate-limited client regardless of what value lands here.
  */
@@ -409,7 +409,7 @@ export interface SynopsisCandidateBatch {
 }
 
 /**
- * Phase 1 of the migration: paginate the Memories DS with `Synopsis
+ * Discovery pass of the migration: paginate the Memories DS with `Synopsis
  * is_empty`, narrow to full pages, and split into candidate /
  * archived-skipped buckets. No body fetches, no synthesis — this is the
  * cost-bounded discovery pass that runs in both plan-only AND apply
@@ -440,9 +440,9 @@ export async function findSynopsisCandidates(
     const response = await client.dataSources.query({
       data_source_id: memoriesDb.dataSourceId,
       // Server-side filter: only rows whose Synopsis is empty. Matches
-      // both pre-0.7.0 rows (column never existed at write time, so it
-      // defaults to empty) and rows where an agent omitted the property
-      // on save.
+      // both rows from before the Synopsis column was added (column never
+      // existed at write time, so it defaults to empty) and rows where an
+      // agent omitted the property on save.
       filter: (options.projectId
         ? {
             and: [
@@ -534,8 +534,8 @@ export async function backfillSynopses(
     return report
   }
 
-  // Resolve the configured background-agent shape (issue #194). When
-  // `options.agent` is set the operator's `.lore.yaml` /
+  // Resolve the configured background-agent shape. When
+  // `options.agent` is set the operator's .lore.yaml /
   // `LORE_BACKGROUND_COMMAND` override drives the binary lookup and the
   // arg shape. Falls through to historical claude-shaped defaults when
   // unset so callers that haven't been threaded through the config layer

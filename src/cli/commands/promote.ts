@@ -6,16 +6,16 @@ import { notionPageUrl, terminalLink } from "../output.js"
 
 /**
  * `lore promote <memoryId> --to <name>` — operator-facing CLI for the
- * cross-vault promotion path (issue #286, "Promotion workflow").
+ * cross-vault promotion path ("Promotion workflow").
  *
  * Copies a memory from the primary vault into a configured promotion
- * target defined in `.lore.yaml`'s `promotionTargets`. The promoted
+ * target defined in .lore.yaml's `promotionTargets`. The promoted
  * row carries an origin audit block in its body (per
  * `buildPromotionAuditBlock`) so the target-vault reader can trace
  * the copy back to its source without depending on cross-vault Notion
  * relations (Notion's `relation` column type is database-scoped, so
- * cross-vault links must be stable text/url metadata — see
- * `core/promote.ts` for the full rationale).
+ * cross-vault links must be stable text/url metadata — the
+ * `promoteMemory` helper carries the full rationale).
  *
  * Promoter identity is resolved via `services.identity.resolveAuthor()`
  * (the same lazy `LORE_USER_NAME` → `users.me` chain that authors
@@ -109,7 +109,7 @@ export const promoteCommand = new Command("promote")
           memories: services.memories,
           primaryVaultPageId: services.config.vault.pageId,
           // The primary vault's literal label in topology rendering is
-          // always `Primary` — mirrors `buildVaultTopology`'s primary
+          // always `Primary` — matches `buildVaultTopology`'s primary
           // label so the audit block matches what `lore status` shows.
           primaryVaultLabel: topology.primary.label,
         }

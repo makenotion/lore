@@ -10,8 +10,8 @@
  * triple changes the dedup key, so if another live row already occupies the
  * post-decode key the rewrite would silently introduce a duplicate. The gate
  * refuses to apply until `lore migrate --dedup-keys --merge --yes` has
- * collapsed the pre-existing duplicate, mirroring the posture P1-10 used for
- * `--fix-topic-encoding` / `--merge-duplicate-topics`.
+ * collapsed the pre-existing duplicate, matching the posture
+ * `--fix-topic-encoding` / `--merge-duplicate-topics` uses.
  */
 
 import type { Client } from "@notionhq/client"
@@ -79,8 +79,8 @@ export interface FactEncodingCollision {
  *  "rewrote". */
 export type FactEncodingFixResult = EncodedFactRow
 
-/** Aggregated report for the migrate CLI — mirrors the shape
- *  `topic-merge.ts` produces but extended with the collision gate. */
+/** Aggregated report for the migrate CLI — mirrors the shape the
+ *  topic-merge migration produces but extended with the collision gate. */
 export interface FactEncodingReport {
   /** Rows discovered whose decoded Subject/Object differs from stored. */
   encoded: EncodedFactRow[]
@@ -264,10 +264,10 @@ export async function fixFactEncoding(
   for (const row of encoded) {
     if (blockedIds.has(row.id)) continue
     // Decoding `Subject` changes its canonical SubjectKey too — recompute
-    // and bundle into the same atomic update so a future case-insensitive
-    // `queryBySubject` (P3-03 Part A) matches against the decoded form.
-    // Splitting the write would leave a window where SubjectKey lags and
-    // queries silently miss the just-fixed row.
+    // and bundle into the same atomic update so case-insensitive
+    // `queryBySubject` matches against the decoded form. Splitting the
+    // write would leave a window where SubjectKey lags and queries
+    // silently miss the just-fixed row.
     const decodedSubjectKey = computeSubjectKey(row.decodedSubject)
     await client.pages.update({
       page_id: row.id,

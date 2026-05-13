@@ -1,7 +1,7 @@
 /**
  * Agent identity canonicalization (PF3-02).
  *
- * `deriveAgentName` (in `helpers.ts`) infers the saving agent from runtime
+ * `deriveAgentName` infers the saving agent from runtime
  * markers — `CLAUDECODE=1`, `CLAUDE_CODE_*` env vars, or an explicit
  * `LORE_AGENT_NAME` override. The inference path has produced eight different
  * spellings of the same Claude Code instance in the wild (`Claude Code`,
@@ -54,7 +54,7 @@
  *      `code(...)|opus \d+...|sonnet \d+...|haiku \d+...`. Mirror the
  *      `\d+(?:\.\d+)?(?: \d+)?` shape so dotted and hyphen-split versions
  *      both match.
- *   2. Pin the new variants in `agent-identity.test.ts` under both the
+ *   2. Pin the new variants under both the
  *      collapsing-set and the no-over-match block (e.g. `claude sonnet`
  *      without a version stays passthrough — same rule as `claude opus`).
  *   3. Re-run `lore migrate --normalize-agents --dry-run` against the

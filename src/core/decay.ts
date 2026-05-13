@@ -3,13 +3,13 @@
  *
  * Pure functions only — no `Client`, no Notion calls, no I/O. The I/O
  * wrappers `MemoryService.touchOnRead` and
- * `MemoryService.decrementConfidence` (in `src/core/memory.ts`) call
+ * `MemoryService.decrementConfidence` call
  * these helpers, write the result via a single `pages.update`, and
  * route failures through a caller-supplied `onError`.
  *
  * Design contract: **write-realized lazy decay**. Every mutation of a
  * stored Confidence Score realizes the time-decay accrued since the
- * last touch, then applies its own bump or decrement. RRF (#08) reads
+ * last touch, then applies its own bump or decrement. RRF reads
  * the stored value verbatim via `confidenceFactor` — no decay
  * computation at read time, no observable/stored divergence.
  */
@@ -42,7 +42,7 @@ export function clampConfidenceScore(value: number): number {
  * Initial Confidence Score for a memory whose numeric column is still
  * null. Seeds from the categorical `confidence` column —
  * `certain → 0.9`, `likely → 0.6`, `speculative → 0.3` (see
- * `CONFIDENCE_SEED` in `src/types.ts`). Used by `touchOnRead` (lazy
+ * the `CONFIDENCE_SEED` table). Used by `touchOnRead` (lazy
  * initialization on first cite) and by the bulk-backfill migration.
  */
 export function seedConfidenceScore(confidence: MemoryConfidence): number {
@@ -62,7 +62,7 @@ export function seedConfidenceScore(confidence: MemoryConfidence): number {
  * Asymmetric on purpose: a single citation is weaker evidence than a
  * 30-day stretch of neglect, so the per-citation recovery is
  * intentionally smaller than the per-stale-day decay. Tune via the
- * `BUMP_RATE` constant in `src/types.ts`.
+ * `BUMP_RATE` constant.
  */
 export function bumpConfidenceScore(current: number): number {
   return clampConfidenceScore(current + (1 - current) * BUMP_RATE)
@@ -76,7 +76,7 @@ export function bumpConfidenceScore(current: number): number {
  * on purpose: contradiction is high-quality negative evidence (an
  * explicit human/agent signal that something is wrong), not the
  * diffuse signal that neglect carries. Tune via the
- * `DECREMENT_FACTOR` constant in `src/types.ts`.
+ * `DECREMENT_FACTOR` constant.
  */
 export function decrementConfidenceScore(current: number): number {
   return clampConfidenceScore(current * DECREMENT_FACTOR)
@@ -89,8 +89,7 @@ export function decrementConfidenceScore(current: number): number {
  * score multiplies by `DECAY_RATE` per stale day:
  *   `staleDays = max(0, daysSinceLastReferenced - STALE_CONFIDENCE_DAYS)`
  *   `next = current * (DECAY_RATE ** staleDays)`
- * Tune via the `STALE_CONFIDENCE_DAYS` and `DECAY_RATE` constants in
- * `src/types.ts`.
+ * Tune via the `STALE_CONFIDENCE_DAYS` and `DECAY_RATE` constants.
  *
  * Worked examples (against the current constants — `STALE_CONFIDENCE_DAYS
  * = 60`, `DECAY_RATE = 0.99`): a memory at 0.9 untouched for 60 days
@@ -101,11 +100,11 @@ export function decrementConfidenceScore(current: number): number {
  * `lastReferencedAt: null` is treated as "never touched" — decay does
  * NOT apply (the categorical seed wasn't even written yet). The
  * touch-on-read and decrement paths invoke this against `createdAt`
- * instead when seeding a never-scored row, so post-migration every
- * row participates in decay against a real anchor.
+ * instead when seeding a never-scored row, so once the migration has
+ * run every row participates in decay against a real anchor.
  *
- * Native `Date` math (no `date-fns`) — same shape as `taskDaysOverdue`
- * (`src/core/task.ts`). NaN-resistant: a malformed `lastReferencedAt`
+ * Native `Date` math (no `date-fns`) — same shape as `taskDaysOverdue`.
+ * NaN-resistant: a malformed `lastReferencedAt`
  * returns the input unchanged rather than throwing or producing
  * infinities.
  *
@@ -131,9 +130,9 @@ export function decayConfidenceScore(
 /**
  * Map a Confidence Score to an RRF weighting factor in
  * `[CONFIDENCE_FACTOR_MIN, 1.0]`. `null` (unscored) maps to `1.0` —
- * neutral, pre-migration rows shouldn't be penalized for lack of data.
+ * neutral, unmigrated rows shouldn't be penalized for lack of data.
  * A score of `1.0` maps to `1.0`; a score of `0.0` maps to
- * `CONFIDENCE_FACTOR_MIN` (tunable in `src/types.ts`).
+ * `CONFIDENCE_FACTOR_MIN` (tunable constant).
  *
  * Pure stored-value mapper. This function does NOT apply decay, does
  * NOT read `lastReferencedAt`, and does NOT touch Notion. It exists so
@@ -149,8 +148,8 @@ export function decayConfidenceScore(
  * one — it doesn't disappear from results.
  *
  * **Kill switch.** `LORE_DISABLE_CONFIDENCE_FACTOR=1` returns `1.0`
- * unconditionally — a sustained-failure rollback to pre-0.8.0 ranking,
- * not a default. Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
+ * unconditionally — a sustained-failure rollback to the unweighted
+ * ranking, not a default. Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
  * `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an opt-in defensive lever for an
  * operator whose vault sees pathological ordering under the new signal.
  * The check lives here (not at the RRF call sites) so single-branch

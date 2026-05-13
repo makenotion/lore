@@ -2,7 +2,7 @@
  * Cross-vault memory promotion.
  *
  * Promotion is the deliberate path for copying a memory from the primary
- * vault into a configured promotion target (issue #286). It is NOT a
+ * vault into a configured promotion target. It is NOT a
  * read-orchestration concept — normal save / update / fact / decision /
  * task tools still write only to the primary vault. The only path that
  * fans out beyond the primary is this helper plus its CLI wrapper
@@ -85,8 +85,8 @@ export interface PromoteMemoryServices {
    * Shared Notion client from `initServices()`. The promotion writes
    * through the same auth-refreshing + rate-limited Proxy as primary-
    * vault writes, so cross-vault fan-out stays under the process-wide
-   * Notion rate-limit bucket (issue #286: "reuse the existing rate
-   * limiter posture per process/token").
+   * Notion rate-limit bucket (the "reuse the existing rate limiter
+   * posture per process/token" rule).
    */
   client: Client
   /**
@@ -104,8 +104,8 @@ export interface PromoteMemoryServices {
   /**
    * Display label for the primary vault. Stored verbatim in the audit
    * block as "Source vault" so the operator reading the promoted row
-   * sees the same name they configured in `.lore.yaml`. Defaults to
-   * the literal `Primary` (mirrors `buildVaultTopology`'s primary
+   * sees the same name they configured in .lore.yaml. Defaults to
+   * the literal `Primary` (matches `buildVaultTopology`'s primary
    * label) when omitted.
    */
   primaryVaultLabel?: string
@@ -138,9 +138,9 @@ export interface PromoteMemoryInput {
   promoter: string
   /**
    * Deep-link to the source memory in Notion. The caller builds this
-   * via `cli/output.ts:notionPageUrl` (or equivalent) so the helper
-   * does not duplicate the link-building logic. Optional — the audit
-   * block still renders without it, surfacing only the bare id.
+   * via the shared `notionPageUrl` helper (or equivalent) so this
+   * module does not duplicate the link-building logic. Optional — the
+   * audit block still renders without it, surfacing only the bare id.
    */
   sourceMemoryUrl?: string
   /**
@@ -224,17 +224,15 @@ export async function promoteMemory(
     kind: preview.source.kind,
     status: preview.status,
     confidence: preview.source.confidence,
-    // Tags do NOT cross the vault boundary either — mirrors the
-    // `projectIds: []` treatment for the same reason. The closed
-    // `Tag` vocabulary is enforced at the MCP boundary, not in the
-    // service layer (per `CreateMemoryInput.tags` at
-    // `src/types.ts:874-880`), so target-vault tag vocabularies can
-    // diverge from the source's. A copied tag that's no longer
-    // valid in the target's MCP-boundary Zod schema would commit
-    // here and then reject on the operator's next
-    // `lore-memory action='update'` from the target. Drop tags;
-    // the operator re-tags via `lore-memory action='update'`
-    // against the target-vault MCP boundary if needed.
+    // Tags do NOT cross the vault boundary either — same rationale
+    // as the `projectIds: []` treatment above. The closed `Tag`
+    // vocabulary is enforced at the MCP boundary, not in the service
+    // layer, so target-vault tag vocabularies can diverge from the
+    // source's. A copied tag that isn't valid in the target's
+    // MCP-boundary Zod schema would commit here and then reject on
+    // the operator's next update from the target. Drop tags; the
+    // operator re-tags via `lore-memory action='update'` against the
+    // target-vault MCP boundary if needed.
     tags: [],
     keywords: preview.source.keywords,
     synopsis: preview.source.synopsis,
@@ -375,7 +373,7 @@ export async function preparePromotion(
  * Normalize a Notion page id for equality comparison. Notion accepts
  * the same id in two structurally equivalent shapes: hyphenated UUID
  * (`abc12345-6789-…`) and compact 32-char form (`abc1234567...`).
- * `pageIdSchema` in `src/config.ts` does not normalize on load, so
+ * `pageIdSchema` does not normalize on load, so
  * `vault.pageId` and a `promotionTargets[].pageId` can carry
  * different shapes of the same id. A literal `===` would miss that
  * equivalence and let the same-vault guard pass on a target that

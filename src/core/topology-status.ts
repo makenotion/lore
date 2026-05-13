@@ -199,9 +199,9 @@ async function promotionTargetStatusRow(
 }
 
 // The non-cached probe path. Returns a status with no `checkedAt` /
-// `freshness` so `formatHealthFreshness` emits no marker — the
-// markerless render is the documented direct-caller carve-out in
-// `docs/topology.md`'s "Freshness markers" section.
+// `freshness` so `formatHealthFreshness` emits no marker — direct
+// callers (CLI/MCP one-shot probes) deliberately render markerless
+// because they have no cache to anchor a freshness timestamp on.
 async function safeProbeVault(
   pageId: string,
   probe: (pageId: string) => Promise<VaultHealthStatus>
@@ -218,11 +218,11 @@ async function safeProbeVault(
 
 /**
  * Operator-facing health string contract for `lore status`'s topology
- * section: `docs/topology.md`. This function and the two it delegates
- * to (`formatVaultHealth`, `formatHealthFreshness`) compose the line
+ * section. This function and the two it delegates to
+ * (`formatVaultHealth`, `formatHealthFreshness`) compose the line
  * shape operators triage by — change either the field separator, field
- * order, or any health-prefix string and the doc must move in the same
- * patch.
+ * order, or any health-prefix string and the operator-facing topology
+ * documentation must move in the same patch.
  */
 function formatTopologyRow(row: TopologyStatusRow, now: Date): string {
   const parts = [row.label, `mode ${row.mode}`]
@@ -231,10 +231,10 @@ function formatTopologyRow(row: TopologyStatusRow, now: Date): string {
   return parts.join(" · ")
 }
 
-// Operator-contract: docs/topology.md "Health states". The three
-// prefixes (`ok`, `missing databases`, `unavailable`) are grepped by
-// operators triaging degraded vaults — bump the doc on any prefix or
-// parenthetical-shape change.
+// Operator-contract. The three prefixes (`ok`, `missing databases`,
+// `unavailable`) are grepped by operators triaging degraded vaults —
+// any prefix or parenthetical-shape change is a breaking surface
+// change to that grep contract.
 function formatVaultHealth(health: VaultHealthStatus, now: Date): string {
   const freshness = formatHealthFreshness(health, now)
   if (health.kind === "ok") {
@@ -405,10 +405,11 @@ function withFreshness(
   return { ...stripFreshness(health), checkedAt, freshness }
 }
 
-// Operator-contract: docs/topology.md "Freshness markers". The three
-// markers (`checked`, `cached`, `debounced`) and the missing-marker
-// case (no `checkedAt`) are documented verbatim. Bump the doc on any
-// marker addition, removal, or rename.
+// Operator-contract. The three markers (`checked`, `cached`,
+// `debounced`) and the missing-marker case (no `checkedAt`) are
+// the visible vocabulary operators key off when triaging vault
+// freshness — any marker addition, removal, or rename is a
+// breaking change to that surface.
 function formatHealthFreshness(health: VaultHealthStatus, now: Date): string | undefined {
   if (!health.checkedAt) return undefined
   const age = formatCheckedAge(health.checkedAt, now)

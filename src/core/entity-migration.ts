@@ -13,7 +13,7 @@
  * substring-fallback path keeps working for any callers that bypass
  * the relation.
  *
- * Idempotent. A second run on a post-migration vault sees existing
+ * Idempotent. A second run on a migrated vault sees existing
  * Entity rows for every key and either no-ops (everything already
  * pointed) or extends aliases for stray strings the first pass didn't
  * see. The migration never demotes — an entity that's been manually
@@ -113,7 +113,7 @@ export interface EntityMigrationResult {
 export interface BuildEntitiesOptions {
   /**
    * Apply gate. When false, the migration computes the plan and returns
-   * without writing. The CLI default mirrors the dedup-merge / fact-
+   * without writing. The CLI default matches the dedup-merge / fact-
    * encoding posture: bare invocation prints the plan; `--yes` applies.
    */
   apply: boolean
@@ -265,8 +265,9 @@ export async function buildEntities(
     // needs the full graph to compute accurate alias coverage.
 
     // Vault-wide enumeration is the explicit point here; opt into the
-    // `queryBySubject` empty-subject branch that the agent-facing
-    // surface no longer reaches (issue #481).
+    // `queryBySubject` empty-subject branch. The agent-facing surface
+    // gates the same branch on `allowUnfiltered`; internal migrations
+    // pass the flag to bypass that gate.
     allowUnfiltered: true,
   })
 
@@ -419,14 +420,14 @@ export async function buildEntities(
 }
 
 /**
- * PF3-01 orphan-rate metric (issue #542).
+ * Orphan-rate metric for the entity-build migration.
  *
- * The PF3-01 spec's flagship acceptance criterion is "post-migration,
- * the orphan-rate metric (`subjects appearing in exactly 1 fact`)
- * drops from 79.6% to <50% on an internal vault." The methodology lives
- * in `src/core/AGENTS.md` ("Measuring whether `--build-entities`
- * collapsed the orphan graph"); this report is the wired computation
- * site.
+ * The flagship acceptance criterion is "after the migration the orphan-rate
+ * metric (`subjects appearing in exactly 1 fact`) drops from 79.6% to
+ * <50% on an internal vault." The methodology is "group by
+ * `subjectEntityId ?? computeSubjectKey(subject)` over every fact and
+ * compute `1 - (groups_with_count >= 2 / total_groups)"; this report
+ * is the wired computation site.
  *
  * @field orphanRate The metric itself: `1 - (groupsWithPeer / totalGroups)`.
  *   Zero when every subject has at least one peer fact (no orphans).
@@ -472,7 +473,7 @@ export function orphanMetricKey(
  * Fold a list of `(subjectEntityId, subject, count)` aggregate
  * rows into the PF3-01 orphan-rate report.
  *
- * Two pre-migration rows whose Subject text differs only in case
+ * Two unmigrated rows whose Subject text differs only in case
  * (`MemoryService` and `memoryservice`) arrive as two separate
  * input rows from the SQL aggregate — `GROUP BY` keys on the raw
  * Subject text, and SQLite's `LOWER()` cannot reproduce
@@ -546,7 +547,7 @@ export function computeOrphanRateFromFacts(
  * `computeOrphanRateFromFacts` produces — both paths key entity-
  * present rows on `entity:<dashed-uuid>` and entity-absent rows on
  * `key:<computeSubjectKey(subject)>`. Equivalence is
- * fixture-pinned in `entity-migration.test.ts`.
+ * fixture-pinned.
  */
 export function computeOrphanRateFromAggregateRows(
   rows: ReadonlyArray<SqlSubjectGroupCount>,

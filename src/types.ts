@@ -77,9 +77,9 @@ export type Tag = (typeof TAG_VOCABULARY)[number]
  * design-doc update — agents that have learned to write 500-char
  * synopses would silently see truncation without one.
  *
- * Lives in `src/types.ts` because the cap is structural to the
- * property, not specific to any one consumer. The write-side Zod, the
- * renderer, and the backfill synthesizer all import it.
+ * Lives here because the cap is structural to the property, not specific
+ * to any one consumer. The write-side Zod, the renderer, and the backfill
+ * synthesizer all import it.
  */
 export const SYNOPSIS_MAX = 500
 
@@ -88,14 +88,12 @@ export const SYNOPSIS_MAX = 500
  * stale and surfaces with a "consider closing" prompt in wake-up.
  * Conservative: 30 days is long enough to absorb a vacation or a
  * context-switched project, short enough to flag truly-forgotten work.
- * Read by `src/core/task.ts` (`taskDaysStale` helper), the wake-up
- * Tasks rendering in `src/mcp/tools/context.ts` (issue 0.7.0/12), and
- * the `lore status` / `lore-context action='status'` task summary
- * line (issue 0.7.0/13).
+ * Read by the `taskDaysStale` helper, the wake-up Tasks rendering, and
+ * the `lore status` / `lore-context action='status'` task summary line.
  *
- * A future operator-tuning knob (`hooks.staleTaskDays` in `.lore.yaml`)
+ * A future operator-tuning knob (`hooks.staleTaskDays` in .lore.yaml)
  * is the next step if real-vault feedback shows 30 is wrong; the const
- * is the single source of truth in 0.7.0.
+ * is the single source of truth.
  */
 export const STALE_TASK_DAYS = 30
 
@@ -189,7 +187,7 @@ export interface CreateTopicInput {
  * production vaults still carry historical `agent_diary` rows, so the
  * value stays in the union to keep recall paths (`lore-query
  * action='recall'` with `source: "agent_diary"`, the digest grouping
- * in `core/digest.ts`, and the Notion `Source` select option) working
+ *, and the Notion `Source` select option) working
  * over legacy data. New memories should pick from the four live
  * sources — `conversation`, `file`, `manual`, `digest`.
  */
@@ -271,9 +269,8 @@ export type MemoryConfidence = "certain" | "likely" | "speculative"
 /**
  * Confidence Score is constrained to [CONFIDENCE_SCORE_MIN,
  * CONFIDENCE_SCORE_MAX] inclusive. Out-of-range writes are clamped by
- * `clampConfidenceScore` in `src/core/decay.ts`. Notion's number column
- * has no native range constraint, so the clamp is the single
- * enforcement point.
+ * `clampConfidenceScore`. Notion's number column has no native range
+ * constraint, so the clamp is the single enforcement point.
  */
 export const CONFIDENCE_SCORE_MIN = 0
 export const CONFIDENCE_SCORE_MAX = 1
@@ -335,25 +332,24 @@ export const CONFIDENCE_FACTOR_MIN = 0.5
  * Threshold below which `formatMemoryListItem` renders an italic trust
  * indicator between the heading and the synopsis. Pinned at 0.5 to match
  * `CONFIDENCE_FACTOR_MIN` — a row whose RRF factor has bottomed out IS
- * the row that needs the visible signal. Above this threshold, listings
- * render byte-identically to pre-0.8.0 (modulo the synopsis line that
- * 0.7.0 introduced); a `null` Confidence Score never renders the
- * indicator either, so pre-migration vaults look unchanged until
- * `lore migrate --build-confidence-scores` populates scores.
+ * the row that needs the visible signal. A `null` Confidence Score never
+ * renders the indicator either, so vaults without populated scores look
+ * unchanged until `lore migrate --build-confidence-scores` populates them.
  *
- * Single source of truth for the per-row trust indicator (#09) AND the
- * low-score branch of the Stale Confidence wake-up subsection (#10).
+ * Single source of truth for the per-row trust indicator AND the
+ * low-score branch of the Stale Confidence wake-up subsection.
  * Diverging the two would mean a row could surface in Stale Confidence's
  * low-score branch AND fail to flag in Recent Memories (or vice versa),
  * which is incoherent for a score-driven signal. The neglect branch of
- * #10 is governed by `STALE_CONFIDENCE_DAYS` instead and is allowed to
- * surface rows whose stored score is above this threshold.
+ * the Stale Confidence subsection is governed by `STALE_CONFIDENCE_DAYS`
+ * instead and is allowed to surface rows whose stored score is above
+ * this threshold.
  */
 export const CONFIDENCE_DISPLAY_THRESHOLD = 0.5
 
 /**
  * Map a numeric Confidence Score to the human-readable label rendered
- * below the heading on recall / search / wake-up listings (#09). Three
+ * below the heading on recall / search / wake-up listings. Three
  * empirical buckets:
  *
  * `score < 0.2` → `"very low confidence"`
@@ -372,7 +368,7 @@ export const CONFIDENCE_DISPLAY_THRESHOLD = 0.5
  *
  * Returns `null` only above the display threshold — never on a valid
  * in-range score. The caller's `null` check on `Memory.confidenceScore`
- * (the "no score yet / pre-migration row" case) stays at the call site
+ * (the "no score yet / unmigrated row" case) stays at the call site
  * because `null` there is structurally different from "scored above
  * the indicator threshold."
  */
@@ -384,13 +380,12 @@ export function formatTrustLabel(score: number): string | null {
 }
 
 /**
- * Maximum rows surfaced in the Stale Confidence wake-up subsection
- * (0.8.0/#10). Default 5 — tight enough to keep the subsection a
- * triage prompt rather than an exhaustive list. When the section is
- * saturated (returned exactly STALE_CONFIDENCE_LIMIT rows), the heading
- * prefixes the count with `≥` (e.g. `≥5`) to signal "at least this
- * many"; no exact total is computed (one query, no inventory). See
- * 0.8.0/#10 spec for the design-decision rationale.
+ * Maximum rows surfaced in the Stale Confidence wake-up subsection.
+ * Default 5 — tight enough to keep the subsection a triage prompt
+ * rather than an exhaustive list. When the section is saturated
+ * (returned exactly STALE_CONFIDENCE_LIMIT rows), the heading prefixes
+ * the count with `≥` (e.g. `≥5`) to signal "at least this many"; no
+ * exact total is computed (one query, no inventory).
  */
 export const STALE_CONFIDENCE_LIMIT = 5
 
@@ -400,14 +395,14 @@ export const STALE_CONFIDENCE_LIMIT = 5
  * `MemoryService.queryStaleConfidence`, the wake-up renderer's
  * `Last referenced: Nd ago` builder, `task-reconcile`'s age scoring,
  * `loadWakeUpData`'s digest-freshness window, `dateBucket`) divides
- * by this value. Pinned in `src/types.ts` rather than a per-module
- * local so a future tweak (or the inevitable contributor who writes
+ * by this value. Pinned here rather than a per-module local so a
+ * future tweak (or the inevitable contributor who writes
  * `1000 * 60 * 60 * 24` from muscle memory) finds one source of truth.
  */
 export const MS_PER_DAY = 86_400_000
 
 // ---------------------------------------------------------------------------
-// Scope and lifetime (issue #283)
+// Scope and lifetime
 // ---------------------------------------------------------------------------
 
 /**
@@ -423,7 +418,7 @@ export const MS_PER_DAY = 86_400_000
  *
  * Existing rows have no `scopeKind` (column null). The retrieval default
  * treats null as "broadcast" — equivalent to `team`/`project`/`global` —
- * so the migration is safe: pre-#283 vaults render byte-identically.
+ * so vaults without the Scope columns render byte-identically.
  */
 export type MemoryScopeKind =
   | "team"
@@ -538,15 +533,15 @@ export interface MemoryScopeContext {
 
 /**
  * Bundle of scope-related fields surfaced on `Memory` and `Fact` rows.
- * Mirrors the five Notion columns added by issue #283: `Scope Kind`,
- * `Scope Key`, `Audience`, `Lifetime`, `Expires At`. Bundled into a
- * single optional `scope` slot rather than five top-level fields so a
- * `null` from a pre-#283 row collapses to "no scope declared" in one
+ * Mirrors the five Notion Scope columns: `Scope Kind`, `Scope Key`,
+ * `Audience`, `Lifetime`, `Expires At`. Bundled into a single optional
+ * `scope` slot rather than five top-level fields so a `null` from a
+ * row without Scope columns collapses to "no scope declared" in one
  * place.
  *
- * `null` on the parent type means the row predates #283 (or was
- * written without scope) — retrieval treats this as broadcast scope
- * with `persistent` lifetime, matching the legacy behavior.
+ * `null` on the parent type means the row was written without scope —
+ * retrieval treats this as broadcast scope with `persistent` lifetime,
+ * matching the legacy behavior.
  */
 export interface MemoryScope {
   kind: MemoryScopeKind | null
@@ -566,7 +561,7 @@ export interface MemoryScope {
  * `lore-decision action='create'`, `supersedes_decision` on
  * `lore-decision action='supersede'`, and `decided_by` retargets
  * during decision-graph reachability sync — to propagate the source
- * row's scope onto every emitted fact (issue #283 review).
+ * row's scope onto every emitted fact.
  *
  * Without this propagation, an auto-emitted fact written from a
  * session-scoped memory or decision lands with `Scope Kind = null`
@@ -577,9 +572,9 @@ export interface MemoryScope {
  * across sessions even when the memory/decision itself is hidden
  * from recall.
  *
- * Returns `undefined` when the source row predates #283 (scope is
- * absent or null) so the fact create call sites can pass the
- * result through unchanged via spread / direct assignment without
+ * Returns `undefined` when the source row has no scope declared (scope
+ * is absent or null) so the fact create call sites can pass the result
+ * through unchanged via spread / direct assignment without
  * re-implementing the same null-collapse rule each time.
  */
 export function memoryScopeToInput(
@@ -601,8 +596,7 @@ export function memoryScopeToInput(
 /**
  * Decide whether a system-managed fact derived from a PAIR of
  * memories (compare-dispatch `conflicts_with` / `supersedes_decision`)
- * can be safely emitted, and if so what scope it should carry
- * (issue #283 review).
+ * can be safely emitted, and if so what scope it should carry.
  *
  * The rule is "same scope on both sides → emit with that scope; any
  * mismatch → skip emission." Reasoning:
@@ -625,20 +619,18 @@ export function memoryScopeToInput(
  * Returns:
  * - `{ ok: true, scope: MemoryScopeInput | undefined }` when the
  * two rows share a scope. `scope` is the bundle to pass to
- * `createWithDedup`; `undefined` means both rows are pre-#283 /
- * broadcast (legacy passthrough preserved — the fact lands with
- * no scope, exactly as it did before #283).
+ * `createWithDedup`; `undefined` means both rows have no scope
+ * declared (legacy passthrough — the fact lands with no scope).
  * - `{ ok: false, reason: string }` when the rows have different
  * scopes. The caller skips fact emission and includes `reason`
  * in operator-facing output / debug logs so the gap is
  * diagnosable.
  *
- * This helper is intentionally narrower than `scopesMatchForMerge`
- * in `core/fact.ts`: the merge predicate compares an existing
- * Fact's scope against an incoming `MemoryScopeInput`, while this
- * pair predicate compares two `Memory.scope` values directly. The
- * two implementations stay aligned via shared tests in
- * `scope-coverage.test.ts`.
+ * This helper is intentionally narrower than `scopesMatchForMerge`:
+ * the merge predicate compares an existing Fact's scope against an
+ * incoming `MemoryScopeInput`, while this pair predicate compares two
+ * `Memory.scope` values directly. The two implementations stay aligned
+ * via shared scope-coverage tests.
  */
 export function pairScopeForFactEmission(
   a: MemoryScope | null | undefined,
@@ -710,11 +702,11 @@ function describeScope(scope: MemoryScope | null | undefined): string {
 export const EXPIRING_SOON_DAYS = 7
 
 // ---------------------------------------------------------------------------
-// Pinned context blocks (issue #282)
+// Pinned context blocks
 // ---------------------------------------------------------------------------
 
 /**
- * Mutability for a pinned context block (issue #282).
+ * Mutability for a pinned context block.
  *
  * - `mutable` (default) — pinned block can be updated via the normal
  * `lore-memory action='update'` and `lore-pinned action='update'`
@@ -752,11 +744,11 @@ export const MEMORY_MUTABILITIES: readonly [MemoryMutability, ...MemoryMutabilit
  * - `mutability` — `read-only` rows reject normal save/update; see
  * `MemoryMutability`.
  *
- * Reused columns from issue #283: project relation (project scoping)
- * and `Audience` rich_text (audience targeting — comma-separated tokens
+ * Reused scope columns: project relation (project scoping) and
+ * `Audience` rich_text (audience targeting — comma-separated tokens
  * compared against the reader's scope context). Both stay on the
  * top-level `scope` slot rather than being duplicated here so the
- * scope/lifetime contract from #283 keeps one source of truth.
+ * scope/lifetime contract keeps one source of truth.
  */
 export interface MemoryPinned {
   priority: number
@@ -783,7 +775,7 @@ export const PINNED_PRIORITY_MIN = -1_000_000
 
 /**
  * Active-pinned-block count above which the wake-up Pinned Context
- * section appends an operator-facing abuse warning (issue #282).
+ * section appends an operator-facing abuse warning.
  *
  * A malicious agent that runs `lore-pinned action='pin'` in a loop
  * can exhaust the wake-up Pinned Context render budget for every
@@ -805,7 +797,7 @@ export const PINNED_BLOCKS_ABUSE_THRESHOLD = 100
 
 /**
  * Hard cap on the total active-pinned-block count enforced at the
- * `lore-pinned action='pin'` write boundary (issue #282).
+ * `lore-pinned action='pin'` write boundary.
  *
  * The render-time abuse warning above is operator-facing but does
  * not prevent the underlying defense-in-depth gap: a malicious or
@@ -814,7 +806,7 @@ export const PINNED_BLOCKS_ABUSE_THRESHOLD = 100
  * (`LIVE_PAGE_REFILL_MAX_PAGES * LIVE_PAGE_QUERY_SIZE` = 500 rows)
  * before the walker reaches a matching pin for a different
  * audience. The matching reader then sees zero pinned context,
- * AND — because the renderer used to gate the warning on
+ * AND — when the renderer gates the warning on
  * `pinnedBlocks.length > 0` — no abuse signal either.
  *
  * The cap closes that gap structurally. Sitting at 200 (2× the
@@ -850,9 +842,9 @@ export interface Memory {
   /**
    * System-managed numeric confidence in [0, 1]. `null` until the memory
    * has been touched once by a read path (or backfilled by `lore migrate
-   * --build-confidence-scores`). RRF reads this as a weighting factor
-   * (#08); rendering surfaces a trust indicator when below
-   * `CONFIDENCE_DISPLAY_THRESHOLD` (#09). Distinct from the agent-curated
+   * --build-confidence-scores`). RRF reads this as a weighting factor;
+   * rendering surfaces a trust indicator when below
+   * `CONFIDENCE_DISPLAY_THRESHOLD`. Distinct from the agent-curated
    * `confidence` categorical above.
    */
   confidenceScore: number | null
@@ -872,14 +864,13 @@ export interface Memory {
   /**
    * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
    * memory has been touched once by a read path (or backfilled by
-   * `lore migrate --build-confidence-scores`, #11). Distinct from
-   * `updatedAt` (Notion built-in, edit timestamp) and from `createdAt`
-   * (Notion built-in, creation timestamp).
+   * `lore migrate --build-confidence-scores`). Distinct from `updatedAt`
+   * (Notion built-in, edit timestamp) and from `createdAt` (Notion
+   * built-in, creation timestamp).
    *
-   * Decay (#03) reads this; the stale-confidence wake-up subsection (#10)
-   * reads this. RRF (#08) does NOT read this directly — the decay
-   * function mediates between `lastReferencedAt` and the confidence
-   * score.
+   * Decay reads this; the stale-confidence wake-up subsection reads this.
+   * RRF does NOT read this directly — the decay function mediates between
+   * `lastReferencedAt` and the confidence score.
    */
   lastReferencedAt: string | null
   supersedesIds: string[]
@@ -927,27 +918,27 @@ export interface Memory {
    */
   entity: string
   /**
-   * Stable identifier for upsert grouping (0.9.0/#01). Empty string
-   * when unset (legacy rows and pre-#06 saves). Distinct from the
+   * Stable identifier for upsert grouping. Empty string when unset
+   * (legacy rows and saves without an explicit key). Distinct from the
    * `Topic` relation column — Topic is a faceted-browsing axis,
    * Topic Key groups revisions of the same canonical concept so
    * `lore-memory action='save'` can append-revision instead of
    * creating a new row. Format is kebab-case path like
-   * `decision/jwt-auth`, enforced at #06's save-path validation.
+   * `decision/jwt-auth`, enforced at save-path validation.
    */
   topicKey: string
   /**
-   * System-managed counter incremented on every topic-key upsert
-   * (0.9.0/#06). Defaults to 1 for fresh rows and for legacy rows
+   * System-managed counter incremented on every topic-key upsert.
+   * Defaults to 1 for fresh rows and for legacy rows
    * (`extractNumber` returns null, coalesced to 1 by `pageToMemory`).
-   * #10 surfaces the count on listings when ≥2.
+   * Listings surface the count when ≥2.
    */
   revisionCount: number
   /**
    * Memory page IDs this memory has been judged against by
-   * `lore-memory action='compare'` (0.9.0/#05). Empty for legacy rows
-   * and for memories that have never been compared. The relation is
-   * `single_property` on the Notion side, so #05's calling code is
+   * `lore-memory action='compare'`. Empty for legacy rows and for
+   * memories that have never been compared. The relation is
+   * `single_property` on the Notion side, so the calling code is
    * responsible for symmetric writes (A→B and B→A).
    */
   comparedWith: string[]
@@ -958,15 +949,14 @@ export interface Memory {
    * "promptVersion": ...}`. Actionable verdicts may also append
    * internal `{"entryType":"compare_dispatch", ...}` ledger lines
    * so retries can prove a Confidence Score decrement already landed.
-   * Empty string for legacy rows. Capped via `COMPARE_NOTES_MAX_CHARS`
-   * in `src/core/memory.ts`; the append helpers throw on overflow
-   * rather than truncating so over-compared memories surface to the
-   * operator.
+   * Empty string for legacy rows. Capped via `COMPARE_NOTES_MAX_CHARS`;
+   * the append helpers throw on overflow rather than truncating so
+   * over-compared memories surface to the operator.
    */
   compareNotes: string
   /**
-   * Scope and lifetime declaration (issue #283). `null` on rows
-   * predating #283 — retrieval treats null as broadcast scope with
+   * Scope and lifetime declaration. `null` on rows without a scope
+   * declared — retrieval treats null as broadcast scope with
    * `persistent` lifetime, preserving legacy behavior. Bundle of
    * five Notion columns: `Scope Kind`, `Scope Key`, `Audience`,
    * `Lifetime`, `Expires At`.
@@ -981,10 +971,9 @@ export interface Memory {
    */
   scope?: MemoryScope | null
   /**
-   * Pinned-block declaration (issue #282). `null` when the memory is
-   * not a pinned context block — the common case. Populated with
-   * `priority` and `mutability` when `Pinned = true` on the Notion
-   * row.
+   * Pinned-block declaration. `null` when the memory is not a pinned
+   * context block — the common case. Populated with `priority` and
+   * `mutability` when `Pinned = true` on the Notion row.
    *
    * Audience targeting and project scoping reuse the existing
    * `scope.audience` rich_text and `projectIds` relation respectively,
@@ -1009,17 +998,17 @@ export interface CreateMemoryInput {
   confidence?: MemoryConfidence
   /**
    * Optional initial Confidence Score. Production callers leave this
-   * unset — the column is system-managed via `touchOnRead` (#03) / decay
-   * (#03) / contradiction signals (#06). Test fixtures and migrations may
-   * set it explicitly. `null` clears the column to "never scored".
+   * unset — the column is system-managed via `touchOnRead` / decay /
+   * contradiction signals. Test fixtures and migrations may set it
+   * explicitly. `null` clears the column to "never scored".
    */
   confidenceScore?: number | null
   reviewBy?: string
   decidedAt?: string
   /**
    * Service-layer-only field. Not exposed on the MCP tool surface — the
-   * column is system-managed by `MemoryService.touchOnRead` (#03) and the
-   * `--build-confidence-scores` migration (#11), not by agents.
+   * column is system-managed by `MemoryService.touchOnRead` and the
+   * `--build-confidence-scores` migration, not by agents.
    */
   lastReferencedAt?: string
   supersedesIds?: string[]
@@ -1069,10 +1058,10 @@ export interface CreateMemoryInput {
   /** Normalized subject. Only meaningful on `kind === "task"`. */
   entity?: string
   /**
-   * Stable identifier for upsert grouping (0.9.0/#01). Format is
-   * kebab-case path like `decision/jwt-auth`. Validation lives at the
-   * MCP boundary; the service layer only enforces the rich_text length
-   * cap so internal migrations can re-write existing keys without
+   * Stable identifier for upsert grouping. Format is kebab-case path
+   * like `decision/jwt-auth`. Validation lives at the MCP boundary;
+   * the service layer only enforces the rich_text length cap so
+   * internal migrations can re-write existing keys without
    * re-validating the format.
    */
   topicKey?: string
@@ -1083,8 +1072,8 @@ export interface CreateMemoryInput {
    */
   revisionCount?: number
   /**
-   * Scope and lifetime declaration (issue #283). Omitted means "no
-   * scope declared" — retrieval treats the resulting null column as
+   * Scope and lifetime declaration. Omitted means "no scope
+   * declared" — retrieval treats the resulting null column as
    * broadcast scope. Caller is responsible for keeping `kind` and
    * `key` consistent with the resolver context (e.g. `kind: "session"`
    * pairs with `key` set to the same `session` field the autosave
@@ -1092,19 +1081,18 @@ export interface CreateMemoryInput {
    */
   scope?: MemoryScopeInput
   /**
-   * Pinned-block declaration (issue #282). Omitted means "not a
-   * pinned context block" — the common case. Pass an object with
-   * `priority` / `mutability` to create a pinned row in one step;
-   * the more common path is to create the memory normally and then
-   * call `lore-pinned action='pin'` to convert.
+   * Pinned-block declaration. Omitted means "not a pinned context
+   * block" — the common case. Pass an object with `priority` /
+   * `mutability` to create a pinned row in one step; the more common
+   * path is to create the memory normally and then call
+   * `lore-pinned action='pin'` to convert.
    */
   pinned?: MemoryPinnedInput
 }
 
 /**
- * Write-side shape for the pinned-block bundle (issue #282). Mirrors
- * `MemoryPinned` but with every field optional and clear-aware
- * semantics:
+ * Write-side shape for the pinned-block bundle. Mirrors `MemoryPinned`
+ * but with every field optional and clear-aware semantics:
  *
  * - `pinned` — `true` flips the row into a pinned block; `false`
  * un-pins; omitted leaves untouched.
@@ -1114,8 +1102,7 @@ export interface CreateMemoryInput {
  * column (defaults to mutable).
  *
  * `audience` is NOT carried here — it lives on `MemoryScopeInput.audience`
- * (reused from issue #283) so the audience-targeting contract has one
- * source of truth.
+ * so the audience-targeting contract has one source of truth.
  */
 export interface MemoryPinnedInput {
   pinned?: boolean
@@ -1165,9 +1152,9 @@ export interface UpdateMemoryInput {
   confidence?: MemoryConfidence
   /**
    * Optional Confidence Score update. Production callers leave this unset —
-   * the column is system-managed via `touchOnRead` (#03) / decay (#03) /
-   * contradiction signals (#06). Test fixtures and migrations may set it
-   * explicitly. `null` clears the column to "never scored".
+   * the column is system-managed via `touchOnRead` / decay / contradiction
+   * signals. Test fixtures and migrations may set it explicitly. `null`
+   * clears the column to "never scored".
    */
   confidenceScore?: number | null
   reviewBy?: string | null
@@ -1176,8 +1163,8 @@ export interface UpdateMemoryInput {
    * Service-layer-only field. Pass `null` to clear; `undefined` (the
    * default) leaves the column untouched. Not exposed on the MCP tool
    * surface — `Last Referenced At` is system-managed by
-   * `MemoryService.touchOnRead` (#03) and the `--build-confidence-scores`
-   * migration (#11).
+   * `MemoryService.touchOnRead` and the `--build-confidence-scores`
+   * migration.
    */
   lastReferencedAt?: string | null
   supersedesIds?: string[]
@@ -1188,14 +1175,14 @@ export interface UpdateMemoryInput {
   blockedBy?: string
   entity?: string
   /**
-   * Scope/lifetime update (issue #283). Same `MemoryScopeInput` write
-   * shape as `CreateMemoryInput`; absent fields leave the columns
-   * untouched, explicit `null` clears the select / date columns, and
-   * empty strings clear the rich_text columns.
+   * Scope/lifetime update. Same `MemoryScopeInput` write shape as
+   * `CreateMemoryInput`; absent fields leave the columns untouched,
+   * explicit `null` clears the select / date columns, and empty
+   * strings clear the rich_text columns.
    */
   scope?: MemoryScopeInput
   /**
-   * Pinned-block update (issue #282). Mirrors
+   * Pinned-block update. Mirrors
    * `MemoryPinnedInput` write semantics. When the target row has
    * `Mutability = read-only`, every update path rejects with
    * `MemoryReadOnlyError` unless `allowReadOnlyUpdate` is set; the
@@ -1217,7 +1204,7 @@ export interface UpdateMemoryInput {
    */
   allowReadOnlyUpdate?: boolean
   /**
-   * Internal flag (issue #282). When `true`, the
+   * Internal flag. When `true`, the
    * service-layer `PINNED_BLOCKS_HARD_CAP` check inside
    * `MemoryService.update` is skipped. The MCP `handlePin` handler
    * sets this after verifying the cap itself so the update path
@@ -1279,8 +1266,8 @@ export interface SearchMemoriesInput {
    * When `true`, do NOT exclude `Status = proposed` rows from the
    * search result set. Defaults to `false` — proposed-memory inbox
    * rows are filtered out of default recall paths so a noisy
-   * autosave-as-proposed flow cannot pollute search (issue #281,
-   * AC #2). Explicit `status: "proposed"` short-circuits this
+   * autosave-as-proposed flow cannot pollute search.
+   * Explicit `status: "proposed"` short-circuits this
    * default and surfaces the inbox directly.
    *
    * Mirrors `MemoryService.list`'s `includeProposed` flag with the
@@ -1329,7 +1316,7 @@ export interface SearchMemoriesInput {
    * Operator-facing audit paths (`lore status`'s expiring-rows surface,
    * triage tooling) opt in. Agent-facing recall paths leave it unset so
    * a session-scoped note from a different session never leaks into
-   * default retrieval — the load-bearing acceptance criterion of #283.
+   * default retrieval — the load-bearing acceptance criterion of scope.
    *
    * Server-side filter clause in `"contains"` (and the contains leg of
    * `"hybrid"`); client-side post-filter in `"semantic"` because
@@ -1378,14 +1365,14 @@ export interface SearchExplain {
   branch: "contains-only" | "semantic-only" | "contains-saturated" | "rrf"
   /**
    * The confidence-weighting factor applied to this row's per-branch RRF
-   * score. `1.0` for unscored (pre-migration `Confidence Score = null`)
+   * score. `1.0` for unscored (unmigrated `Confidence Score = null`)
    * or fully-trusted rows; `CONFIDENCE_FACTOR_MIN` (default `0.5`) for
    * fully-decayed rows. Multiplied into the score in
    * `MemoryService.searchByHybridPages` and the single-branch
    * `searchByContainsPages` / `searchBySemanticPages` paths.
    *
-   * 0.8.0+. Older traces (pre-0.8.0 fixtures) have this field absent;
-   * deserialize-aware consumers tolerate the missing field.
+   * Older traces may have this field absent; deserialize-aware
+   * consumers tolerate the missing field.
    */
   confidenceFactor: number
 }
@@ -1406,10 +1393,9 @@ export type DecisionStatus = Exclude<MemoryStatus, "informational">
  * inactive and should never surface as a current/governing decision via
  * `resolveCurrentDecisions` or the near-duplicate probe pool.
  *
- * Single source of truth — both the BFS leaf filter in
- * `src/mcp/decision-graph.ts` and the near-duplicate probe in
- * `src/mcp/tools/decisions.ts` consult this list, so a status added or
- * removed here flows to both surfaces in lockstep.
+ * Single source of truth — both the decision-graph BFS leaf filter and
+ * the decisions near-duplicate probe consult this list, so a status
+ * added or removed here flows to both surfaces in lockstep.
  */
 export const ACTIVE_DECISION_STATUSES: DecisionStatus[] = ["accepted", "proposed"]
 
@@ -1463,7 +1449,7 @@ export interface CreateDecisionInput {
   agent?: string
   session?: string
   /**
-   * Scope and lifetime declaration (issue #283). Decisions default to
+   * Scope and lifetime declaration. Decisions default to
    * broadcast-scoped persistent governance; the `until-decision-superseded`
    * lifetime label is the conventional marker for "this decision should
    * drop out of default reads when the row's `Status` becomes
@@ -1487,9 +1473,9 @@ export interface ListDecisionsOpts {
    */
   startCursor?: string
   /**
-   * Issue #283. When `true`, skip the default scope filter that
-   * excludes narrow-scope decisions whose `Scope Key` does not match
-   * the resolved scope context, and skip the expired-row exclusion.
+   * When `true`, skip the default scope filter that excludes
+   * narrow-scope decisions whose `Scope Key` does not match the
+   * resolved scope context, and skip the expired-row exclusion.
    * Defaults to `false`. Operator audit paths opt in.
    */
   includeOutOfScope?: boolean
@@ -1564,10 +1550,10 @@ export interface CreateTaskInput {
   agent?: string
   session?: string
   /**
-   * Scope and lifetime declaration (issue #283). The conventional
-   * lifetime for tracked work is `until-task-closed`; pairing that
-   * with `scopeKind: "session"` declares a per-session task that
-   * stops being broadcast once the session ends.
+   * Scope and lifetime declaration. The conventional lifetime for
+   * tracked work is `until-task-closed`; pairing that with
+   * `scopeKind: "session"` declares a per-session task that stops
+   * being broadcast once the session ends.
    */
   scope?: MemoryScopeInput
 }
@@ -1584,7 +1570,7 @@ export interface UpdateTaskInput {
   keywords?: string
   synopsis?: string
   affectsIds?: string[]
-  /** Scope/lifetime update (issue #283). Same `MemoryScopeInput` shape as create. */
+  /** Scope/lifetime update. Same `MemoryScopeInput` shape as create. */
   scope?: MemoryScopeInput
 }
 
@@ -1601,8 +1587,7 @@ export interface ListTasksOpts {
    * one user-facing string into a one-element array; alias-expanding
    * call sites (`lore-query action='ask'`) hand in the canonical name
    * plus aliases from `EntityService`. Caps live at the boundary that
-   * owns the expansion (see `expandEntityQueryVariants` in
-   * `core/entity.ts`).
+   * owns the expansion in `expandEntityQueryVariants`.
    */
   entities?: string[]
   /** Filter by state. Omit to use `ACTIVE_TASK_STATES`. */
@@ -1619,8 +1604,8 @@ export interface ListTasksOpts {
   limit?: number
   startCursor?: string
   /**
-   * Issue #283. When `true`, skip the default scope filter that
-   * excludes narrow-scope tasks whose `Scope Key` does not match the
+   * When `true`, skip the default scope filter that excludes
+   * narrow-scope tasks whose `Scope Key` does not match the
    * resolved scope context, and skip the expired-row exclusion.
    * Defaults to `false`. Operator audit paths opt in.
    */
@@ -1628,7 +1613,7 @@ export interface ListTasksOpts {
 }
 
 // ---------------------------------------------------------------------------
-// Entity (Canonical entity registry — PF3-01)
+// Entity (Canonical entity registry)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1750,7 +1735,7 @@ export type FactPredicate =
   | "decided_by"
   | "supersedes_decision"
   | "informs"
-  // Auto-emitted by `lore-memory action='save'` (0.8.0/#07) — one fact
+  // Auto-emitted by `lore-memory action='save'` — one fact
   // per entity surfaced by `extractEntityCandidates` over the saved
   // memory's title / keywords / synopsis. Lower-quality (regex-derived,
   // confidence: speculative) than agent-curated `uses` / `depends_on`
@@ -1799,10 +1784,10 @@ export interface Fact {
    * build-fact-confidence-scores migration as the decay anchor when
    * `lastReferencedAt` is null (the row has never been touched).
    *
-   * Optional on the public type (`Fact` is exported from
-   * `src/index.ts`) so adding the field is not a TypeScript source-
-   * compat break for external consumers building `Fact`-shaped object
-   * literals or fixtures. Internal `pageToFact` always populates the
+   * Optional on the public type (the `Fact` interface is exported) so
+   * adding the field is not a TypeScript source-compat break for
+   * external consumers building `Fact`-shaped object literals or
+   * fixtures. Internal `pageToFact` always populates the
    * field — every domain-internal callsite reads `fact.createdAt`
    * after a fresh `pageToFact` deserialization — so the runtime
    * guarantee is "always present" even though the type permits
@@ -1831,17 +1816,17 @@ export interface Fact {
   /** Mirror of `subjectEntityId` for the Object side of the triple. */
   objectEntityId?: string | null
   /**
-   * Scope and lifetime declaration (issue #283). Optional on the public
-   * type (same backward-compat reason as `subjectEntityId` / `createdAt`)
-   * so deserializing pre-#283 `Fact` JSON does not fail validation.
+   * Scope and lifetime declaration. Optional on the public type (same
+   * backward-compat reason as `subjectEntityId` / `createdAt`) so
+   * deserializing older `Fact` JSON does not fail validation.
    * Internal `pageToFact` always populates the field; reads should
    * normalize via `?? null` so a partially-constructed external Fact
    * doesn't blow up the consumer.
    */
   scope?: MemoryScope | null
   /**
-   * Transaction-time observation timestamp in `YYYY-MM-DD` form (issue
-   * #284). `null` on pre-#284 rows that have not yet been backfilled by
+   * Transaction-time observation timestamp in `YYYY-MM-DD` form.
+   * `null` on rows whose vault has not yet been backfilled by
    * `lore migrate --backfill-fact-observed-at`. Distinct from `validFrom`
    * (domain-truth start) — `observedAt` answers "when did Lore learn this
    * fact?" while `validFrom` answers "when did the fact start being true
@@ -1850,17 +1835,17 @@ export interface Fact {
    */
   observedAt?: string | null
   /**
-   * Transaction-time invalidation timestamp in `YYYY-MM-DD` form (issue
-   * #284). `null` for live facts and for invalidated facts on pre-#284
-   * vaults. Distinct from `validUntil` (domain-truth end) — `invalidatedAt`
-   * answers "when did Lore learn this fact stopped being true?" while
-   * `validUntil` answers "when did the fact stop being true in the world?".
-   * `FactService.invalidate` writes this alongside `validUntil` in a single
-   * atomic update.
+   * Transaction-time invalidation timestamp in `YYYY-MM-DD` form.
+   * `null` for live facts and for invalidated facts on vaults without
+   * the column. Distinct from `validUntil` (domain-truth end) —
+   * `invalidatedAt` answers "when did Lore learn this fact stopped
+   * being true?" while `validUntil` answers "when did the fact stop
+   * being true in the world?". `FactService.invalidate` writes this
+   * alongside `validUntil` in a single atomic update.
    */
   invalidatedAt?: string | null
   /**
-   * Memory id that prompted the invalidation (issue #284). Distinct from
+   * Memory id that prompted the invalidation. Distinct from
    * `sourceMemoryId` (the supporting memory at creation time). `null` when
    * the row was invalidated without an explicit provenance link.
    */
@@ -1887,7 +1872,7 @@ export interface CreateFactInput {
   subjectEntityId?: string
   objectEntityId?: string
   /**
-   * Scope and lifetime declaration (issue #283). Same `MemoryScopeInput`
+   * Scope and lifetime declaration. Same `MemoryScopeInput`
    * shape as `CreateMemoryInput` — facts about a session-scoped fact
    * (e.g. `agent uses temporary-token-123`) declare `kind: "session"`
    * + `key: <session>` so they don't leak into team-wide retrieval.
@@ -1949,7 +1934,7 @@ export interface LoreConfig {
     token?: string
     baseUrl?: string
     /**
-     * Workspace id to pick when ntn's `auth.json` carries multiple
+     * Workspace id to pick when ntn's auth.json carries multiple
      * workspaces. Optional; falls back to `NOTION_WORKSPACE_ID` env, then
      * to single-workspace auto-pick. Has no effect on the
      * `NOTION_API_TOKEN` / `LORE_NOTION_TOKEN` / `auth.token` paths —
@@ -2000,40 +1985,40 @@ export interface LoreConfig {
      */
     autoDigest?: boolean
     /**
-     * Atomic-learning extraction inside the Stop-spawn autosave sub-agent
-     * (0.9.0/08). When true (default) the sub-agent is asked to identify
+     * Atomic-learning extraction inside the Stop-spawn autosave sub-agent.
+     * When true (default) the sub-agent is asked to identify
      * single-fact discoveries and save each as its own `note` memory, in
      * addition to the session synopsis it already writes. When false, the
-     * autosave reproduces the 0.8.x synopsis-only shape. Honors
+     * autosave reproduces the synopsis-only shape. Honors
      * `LORE_DISABLE_LEARNING_EXTRACTION=1` env override — either knob set
      * to disabled wins (AND-of-permissive).
      */
     learningExtraction?: boolean
     /**
      * Whether the Stop-spawn autosave sub-agent should write atomic
-     * learnings as `status: "proposed"` (issue #281, AC #1). Default
-     * is `false` — the historical "auto-extracted learnings land
-     * directly in the shared vault" posture is preserved. When `true`,
-     * the prompt instructs the sub-agent to set `status: "proposed"`
-     * on every atomic-learning save, routing the row into the review
-     * inbox surfaced by `lore status`'s `Proposed memories` line and
-     * the wake-up `Proposed Memories` section. Has no effect when
+     * learnings as `status: "proposed"`. Default is `false` — the
+     * historical "auto-extracted learnings land directly in the shared
+     * vault" posture is preserved. When `true`, the prompt instructs
+     * the sub-agent to set `status: "proposed"` on every
+     * atomic-learning save, routing the row into the review inbox
+     * surfaced by `lore status`'s `Proposed memories` line and the
+     * wake-up `Proposed Memories` section. Has no effect when
      * `learningExtraction` is `false` — there are no learning saves
      * to gate.
      *
      * The trust boundary this knob enables: a fleet of agents
      * managed by many engineers can opt into review-before-share so
      * a noisy session cannot pollute recall for everyone before a
-     * human or authorized agent approves it. Phase 1 / 2 / 4 of the
-     * #281 epic ship the inbox-count surface, the default-recall
-     * exclusion, and the approve / reject actions respectively;
-     * this flag is the corresponding write-side opt-in.
+     * human or authorized agent approves it. The inbox-count surface,
+     * default-recall exclusion, and approve / reject actions all read
+     * the proposed `Status`; this flag is the corresponding
+     * write-side opt-in.
      */
     proposeAutosaveLearnings?: boolean
     /** Real user messages between structured AI-driven saves. Default: 5. */
     saveInterval?: number
     /**
-     * Background-agent worker configuration (issue #194). Lore's autosave
+     * Background-agent worker configuration. Lore's autosave
      * and auto-digest paths shell out to a detached agent CLI to do the
      * structured save / digest synthesis. Defaults to `claude -p` with the
      * shape Claude Code installs assume. Codex-only operators (or anyone
@@ -2043,7 +2028,7 @@ export interface LoreConfig {
      * tool allowlist string — operators whose CLI does not accept an
      * allowlist flag should omit the placeholder. Honors
      * `LORE_BACKGROUND_COMMAND` env override on `command` for ad-hoc
-     * experimentation without editing `.lore.yaml`.
+     * experimentation without editing .lore.yaml.
      */
     backgroundAgent?: {
       /** Binary name (resolved on PATH) or absolute path. Default: "claude". */

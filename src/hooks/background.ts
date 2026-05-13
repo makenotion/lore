@@ -2,23 +2,23 @@
  * Background `claude -p` spawn primitive.
  *
  * Both the Stop autosave path and the digest scheduler call into here, so
- * the helper carries the post-#66 concurrency machinery (per-session lock,
- * global cap, per-session stderr log) plus the digest extensions: a
- * configurable allowlist (so the digest can run against a narrower tool
- * surface than the catch-all save) and a configurable log label (so
- * `[lore]` stderr lines tell a background-save failure apart from a
- * digest failure without having to grep the PID).
+ * the helper carries the concurrency machinery (per-session lock, global
+ * cap, per-session stderr log) plus the digest extensions: a configurable
+ * allowlist (so the digest can run against a narrower tool surface than
+ * the catch-all save) and a configurable log label (so `[lore]` stderr
+ * lines tell a background-save failure apart from a digest failure
+ * without having to grep the PID).
  *
  * The spawned binary defaults to `claude -p` for Claude Code installs and
  * to `codex exec --full-auto` for Codex installs via the hook config
  * resolver. Operators can override the command/args through
  * `hooks.backgroundAgent` or `LORE_BACKGROUND_COMMAND`.
  *
- * Lives in its own module because `helpers.ts` runs `main()` when the file
- * is the Node entry point, which would happen at import time for any test
- * or CLI that referenced the spawn directly. Keeping the spawn here lets
- * `cli/commands/digest.ts` and the digest scheduler import it without
- * triggering hook routing as a side effect.
+ * Lives in its own module because the hook-helpers entry runs `main()`
+ * when invoked as the Node entry point, which would happen at import
+ * time for any test or CLI that referenced the spawn directly. Keeping
+ * the spawn here lets the digest CLI command and the digest scheduler
+ * import it without triggering hook routing as a side effect.
  */
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process"
@@ -57,8 +57,8 @@ import {
  * The save prompt teaches the polymorphic surface, so the spawned subagent
  * calls these names directly.
  *
- * `lore-query` is included so the atomic-learning extraction path (0.9.0/08)
- * can dedup candidate learnings against the existing vault before saving —
+ * `lore-query` is included so the atomic-learning extraction path can
+ * dedup candidate learnings against the existing vault before saving —
  * the prompt instructs the sub-agent to probe `lore-query action='search'`
  * for each candidate (memory-shaped near-matches scoped to the project);
  * the allowlist is what makes that probe callable.
@@ -75,8 +75,8 @@ export const DEFAULT_SAVE_ALLOWLIST = [
  * Tool allowlist for the digest synthesizer. Narrower than the background
  * save allowlist so a bad synthesizer prompt violation (e.g. trying to
  * call `lore-fact` action='create') becomes a tool-call error, not a
- * silent extra write. The prompt at `prompts.ts:buildDigestPrompt` already
- * instructs this; the allowlist is defense in depth.
+ * silent extra write. The `buildDigestPrompt` builder already instructs
+ * this; the allowlist is defense in depth.
  */
 export const DIGEST_ALLOWLIST = ["mcp__lore__lore-memory"].join(",")
 
@@ -137,21 +137,20 @@ export interface SpawnBackgroundSaveOptions {
   agent?: BackgroundAgentConfig
   /**
    * Auth source the foreground resolved through. Mirrors the
-   * `lore install` partition (`buildMcpEnv` in
-   * `cli/commands/install.ts`): under `ntn-auth-json` the spawned
-   * child's `resolveAuth` re-reads `~/.config/notion/auth.json`
-   * directly (priority 2), so forwarding bearer tokens via env is
-   * dead weight that increases blast radius without changing the
-   * child's auth contract.
+   * `lore install` partition `buildMcpEnv` applies for MCP config:
+   * under `ntn-auth-json` the spawned child's `resolveAuth` re-reads
+   * ntn's on-disk auth file directly (priority 2), so forwarding
+   * bearer tokens via env is dead weight that increases blast radius
+   * without changing the child's auth contract.
    *
-   * **The realistic pre-#475 leak surface** (issue #475 PR review,
-   * Suggestion 2). The four-priority chain in `resolveAuth` makes
-   * `NOTION_API_TOKEN` (priority 1) and `ntn-auth-json` (priority
-   * 2) mutually exclusive at resolution time — a foreground that
-   * landed on ntn-auth-json had `NOTION_API_TOKEN` unset, so the
-   * existing `if (length > 0)` filter in the safeEnv loop already
-   * dropped it on its own. The actual risk this partition closes
-   * is `LORE_NOTION_TOKEN`-when-ntn-wins: an operator with both
+   * **The realistic leak surface this closes.** The four-priority
+   * chain in `resolveAuth` makes `NOTION_API_TOKEN` (priority 1) and
+   * `ntn-auth-json` (priority 2) mutually exclusive at resolution
+   * time — a foreground that landed on ntn-auth-json had
+   * `NOTION_API_TOKEN` unset, so the existing `if (length > 0)`
+   * filter in the safeEnv loop already dropped it on its own. The
+   * actual risk this partition closes is
+   * `LORE_NOTION_TOKEN`-when-ntn-wins: an operator with both
    * `LORE_NOTION_TOKEN` set in shell rc (transition state, dual
    * shell-rc setups, copy-pasted onboarding script) AND ntn login
    * preferred (priority 2 wins over priority 3) would still see
@@ -162,9 +161,10 @@ export interface SpawnBackgroundSaveOptions {
    * debug log / crash dump the third-party agent CLI Lore does
    * not control happens to emit. Under ntn-first the legacy
    * `LORE_NOTION_TOKEN` resolves the same workspace token the
-   * child would land on via auth.json anyway, so suppressing the
-   * forward is functionally equivalent — and tightens the
-   * blast-radius envelope for the dual-shell-rc operator class.
+   * child would land on via the on-disk ntn auth file anyway, so
+   * suppressing the forward is functionally equivalent — and
+   * tightens the blast-radius envelope for the dual-shell-rc
+   * operator class.
    *
    * For non-ntn sources (`env-notion-api-token`,
    * `env-lore-notion-token`, `config-auth-token`) the legacy
@@ -172,12 +172,13 @@ export interface SpawnBackgroundSaveOptions {
    * as part of their contract and the child has no other way to
    * land on the same source.
    *
-   * Omitted callers (the back-compat path; e.g. test fixtures, ad-hoc
-   * one-shot invocations without a resolved foreground auth) preserve
-   * pre-#475 behavior: every key in `RUNTIME_FORWARDED_KEYS` forwards
-   * conditionally regardless of source. The detached child still
-   * re-resolves auth at startup, so the worst case is the same
-   * pre-#475 surface — no regression, just no upgrade either.
+   * Omitted callers (the back-compat path; e.g. test fixtures,
+   * ad-hoc one-shot invocations without a resolved foreground auth)
+   * fall through to the legacy unconditional forward: every key in
+   * `RUNTIME_FORWARDED_KEYS` forwards conditionally regardless of
+   * source. The detached child still re-resolves auth at startup,
+   * so the worst case is the same legacy surface — no upgrade, but
+   * no regression either.
    */
   authSource?: AuthSource
 }
@@ -216,7 +217,7 @@ export type SpawnResult =
    * back optimistically-claimed state (digest marker freshness) and record
    * a background-failure marker. The next trigger will hit the same
    * structural failure until the operator shortens the state dir, but the
-   * Stop hook still exits cleanly. (Issue #485.)
+   * Stop hook still exits cleanly.
    */
   | {
       kind: "lock-path-too-long"
@@ -248,9 +249,9 @@ export function isBenignRace(result: SpawnResult): boolean {
   )
   // `lock-path-too-long` is intentionally NOT here. There is no peer doing
   // the work when the lock path exceeds the syscall limit; classifying it
-  // as benign would silently feed `digest-scheduler.ts`'s peer-active
+  // as benign would silently feed the digest scheduler's peer-active
   // branch (leaving the digest marker fresh) and the `lore digest` CLI's
-  // "Digest already in flight" message. See issue #485.
+  // "Digest already in flight" message.
 }
 
 /**
@@ -363,9 +364,9 @@ export function spawnBackgroundSave(
   // workspace / environment selectors flow through `buildSafeEnv`,
   // the single source of truth shared by every Lore-spawned-child
   // path. Under `authSource: "ntn-auth-json"` the auth-token subset
-  // is dropped because the child re-reads `auth.json` directly;
-  // workspace + base-URL + attribution selectors still forward so
-  // multi-workspace resolution agrees with the foreground.
+  // is dropped because the child re-reads ntn's on-disk auth file
+  // directly; workspace + base-URL + attribution selectors still
+  // forward so multi-workspace resolution agrees with the foreground.
   const safeEnv = buildSafeEnv(options.authSource)
 
   // Redirect stderr to a per-key log so crashes are recoverable without
@@ -393,8 +394,7 @@ export function spawnBackgroundSave(
   // as `LockPathTooLongError`, which the inline acquire block below
   // catches and maps to a `lock-path-too-long` SpawnResult. This hoist is
   // the symmetric fix that holds for any other post-spawn throw the lock
-  // layer doesn't classify (see issue #485 for the specific
-  // ENAMETOOLONG/ENOENT path the lock layer now classifies).
+  // layer doesn't classify.
   let child: ChildProcess | undefined
   try {
     child = spawn(binary, args, {
@@ -429,10 +429,10 @@ export function spawnBackgroundSave(
           }
           // logLabel-aware so the operator sees the right surface:
           // autosave Stop hooks emit `[lore] background save: ...`,
-          // digest spawns emit `[lore] digest: ...`, etc. The hardcoded
-          // "autosave" framing the lock layer used pre-#485 was wrong on
-          // every non-autosave caller. Truncate the lockKey preview so a
-          // hostile multi-kilobyte payload can't itself swamp stderr.
+          // digest spawns emit `[lore] digest: ...`, etc. A hardcoded
+          // "autosave" framing would be wrong on every non-autosave
+          // caller. Truncate the lockKey preview so a hostile
+          // multi-kilobyte payload can't itself swamp stderr.
           const previewLen = 64
           const preview =
             err.lockKey.length > previewLen

@@ -161,7 +161,7 @@ export function parseConfigAllowingInvalidHooks(raw: string): LoadedConfigResult
 }
 
 /**
- * Search upward from `startDir` for a `.lore.yaml` file.
+ * Search upward from `startDir` for a .lore.yaml file.
  * Returns the path to the file and the directory it was found in.
  */
 export async function findConfigFile(
@@ -185,7 +185,7 @@ export async function findConfigFile(
 }
 
 /**
- * Load and validate a `.lore.yaml` config from disk.
+ * Load and validate a .lore.yaml config from disk.
  */
 export async function loadConfig(configPath: string): Promise<LoreConfig> {
   const raw = await readFile(configPath, "utf-8")
@@ -194,7 +194,7 @@ export async function loadConfig(configPath: string): Promise<LoreConfig> {
 }
 
 /**
- * Load a `.lore.yaml` while treating any broken `hooks` section as absent.
+ * Load a .lore.yaml while treating any broken `hooks` section as absent.
  *
  * Used by shell hooks so `hooks.wakeUp: false` can fail open: a malformed
  * `hooks` section should not suppress session-start context injection.
@@ -214,18 +214,18 @@ export async function loadConfigAllowingInvalidHooks(
  *
  * `env-notion-api-token` is the canonical injection source: ntn itself
  * reads the same env var, so operators who export `NOTION_API_TOKEN`
- * (e.g. from a secret manager) bypass `auth.json` entirely.
+ * (e.g. from a secret manager) bypass auth.json entirely.
  * `ntn-auth-json` is the read path for operators who use `ntn login`;
  * the public ntn CLI does not expose a token-export command, so the
  * direct file read is the contract rather than a temporary bridge
- * (see `src/auth/AGENTS.md`). The remaining two sources are
- * soft-deprecated and continue to work but surface deprecation warnings
- * on different cadences (#484).
+ * (the auth-layer agent guide carries the full rationale). The
+ * remaining two sources are soft-deprecated and continue to work but
+ * surface deprecation warnings on different cadences.
  * `LORE_NOTION_TOKEN` warns when selected, debounced to once per 24h per
  * config root, and silenceable via `LORE_SUPPRESS_DEPRECATIONS=1`. Config
  * `auth.token` warns on field presence (even when masked by a higher-
  * priority source), every invocation, and is NOT silenceable —
- * `.lore.yaml` is local-only but still persistent (backed up, synced,
+ * .lore.yaml is local-only but still persistent (backed up, synced,
  * pasted, and one `git add -f` away from history), so the warning
  * tracks the static file condition rather than session state.
  */
@@ -246,7 +246,7 @@ export interface ResolvedAuth {
    * Workspace id this token authorizes. Populated by the `ntn-auth-json`
    * source; absent on the env / config sources because there's no way to
    * know without an API call. Consumed by `lore auth --status` /
-   * `--whoami` (#06); `resolveAuth` itself does not depend on it.
+   * `--whoami`; `resolveAuth` itself does not depend on it.
    */
   workspaceId?: string
 }
@@ -257,7 +257,7 @@ export interface ResolvedAuth {
  * (`config-auth-token` per-process gate and the
  * `env-lore-notion-token` 24h debounced warning). Used by
  * synthetic-resolution call sites (e.g. the Stop-hook auth-source
- * derivation in `helpers.ts:deriveStopAuthSource`, issue #475)
+ * derivation via `deriveStopAuthSource`)
  * where the warning has already fired through the foreground
  * host's primary `resolveAuth` call (MCP server init, CLI
  * preflight) and the synthetic call is the SECOND emission for
@@ -274,9 +274,9 @@ export interface ResolvedAuth {
  * semantics are unaffected — the resolved `source` is identical
  * with or without `quiet`.
  *
- * Note: per #484, `emitConfigAuthTokenWarning` is intentionally
+ * Note: `emitConfigAuthTokenWarning` is intentionally
  * NOT silenceable via `LORE_SUPPRESS_DEPRECATIONS=1` because
- * `.lore.yaml` is local-only but a token written there still rides
+ * .lore.yaml is local-only but a token written there still rides
  * every backup, sync, and `git add -f`, so the warning is a
  * second-line defense against tokens slipping into git. `quiet` is a
  * narrower mechanism — it suppresses ONE specific synthetic
@@ -295,26 +295,26 @@ export interface ResolveAuthOptions {
  * 1. **`NOTION_API_TOKEN` env** — canonical injection. Operators export
  *    it explicitly (often from a secret manager). ntn itself reads the
  *    same env var, so this path is also how an operator who'd rather
- *    not have Lore read `auth.json` opts out — exporting
+ *    not have Lore read auth.json opts out — exporting
  *    `NOTION_API_TOKEN` short-circuits the file read entirely.
- * 2. **ntn-resolved (`auth.json` via `loadNtnToken`)** — picks a workspace
+ * 2. **ntn-resolved (auth.json via `loadNtnToken`)** — picks a workspace
  *    token via `NOTION_WORKSPACE_ID` env / `auth.workspaceId` config /
  *    single-workspace auto-pick. The public `ntn` CLI does not expose a
  *    token-export command, so the direct file read is the contract for
- *    the `ntn login` flow (see `src/auth/AGENTS.md`).
+ *    the `ntn login` flow.
  * 3. **`LORE_NOTION_TOKEN` env** — soft-deprecated. Returns
  *    `source: "env-lore-notion-token"` and emits a debounced deprecation
  *    warning on first call per session.
- * 4. **`config.auth.token` in `.lore.yaml`** — soft-deprecated. Emits
+ * 4. **`config.auth.token` in .lore.yaml** — soft-deprecated. Emits
  *    a warning as soon as the field is present, even when a higher-priority
- *    source masks it, because `.lore.yaml` is local-only but still
+ *    source masks it, because .lore.yaml is local-only but still
  *    persistent (backed up, synced, pasted, one `git add -f` away
  *    from history). Unlike the env-var path, this warning fires on
  *    every invocation and is NOT silenceable by
  *    `LORE_SUPPRESS_DEPRECATIONS=1` — `auth.token` is static file
  *    state, not session state, so the cross-CI-run silencing the
  *    env-var debounce produced was hiding a
- *    committed-secret class of mistake (#484).
+ *    committed-secret class of mistake.
  *
  * Throws when no source produces a token. The error message recommends
  * `lore auth --login` (the canonical wrapper that auto-installs ntn,
@@ -322,17 +322,17 @@ export interface ResolveAuthOptions {
  * bare `ntn login` — the wrapper handles the env var that makes the
  * resulting token Lore-readable.
  *
- * `configRoot` is the directory containing `.lore.yaml` (or
+ * `configRoot` is the directory containing .lore.yaml (or
  * `process.cwd()` when no config has been loaded yet — e.g. the no-arg
  * `lore init` flow). Used as the keying input for the
  * `LORE_NOTION_TOKEN` debounce marker so multiple worktrees pointing at
- * the same vault share one 24-hour window. The `auth.token in .lore.yaml`
- * warning fires every invocation and never reads the marker (#484), so
+ * the same vault share one 24-hour window. The auth.token in .lore.yaml
+ * warning fires every invocation and never reads the marker, so
  * `configRoot` is irrelevant on that path.
  *
- * `options.quiet` (issue #475) suppresses both deprecation-warning
- * emissions for synthetic-resolution call sites; see
- * `ResolveAuthOptions` above for the full rationale.
+ * `options.quiet` suppresses both deprecation-warning emissions for
+ * synthetic-resolution call sites; `ResolveAuthOptions` above carries
+ * the full rationale.
  */
 export async function resolveAuth(
   config: LoreConfig | undefined,
@@ -344,21 +344,21 @@ export async function resolveAuth(
     emitConfigAuthTokenWarning()
   }
 
-  // `auth.baseUrl` from `.lore.yaml` is **only** honored on the
+  // `auth.baseUrl` from .lore.yaml is **only** honored on the
   // soft-deprecated paths (`env-lore-notion-token`, `config-auth-token`),
   // never on the canonical 0.10.0 paths (`env-notion-api-token`,
-  // `ntn-auth-json`). Reason: `.lore.yaml` is persistent file state
+  // `ntn-auth-json`). Reason: .lore.yaml is persistent file state
   // beside the repo. Even though the file is local-only, it can still
   // be copied, synced, pasted, or force-added into history, which is
   // less trusted than operator-controlled env vars set in shell rc.
-  // A `.lore.yaml` carrying `auth.baseUrl: https://attacker.example`
+  // A .lore.yaml carrying `auth.baseUrl: https://attacker.example`
   // would otherwise redirect an engineer's ntn-issued bearer token to
   // an arbitrary host on the first Notion call. For canonical sources,
   // the only base-URL override is `LORE_NOTION_BASE_URL` env
   // (operator-controlled, set in shell rc), which `loadNtnToken` honors
   // directly when populating `fromNtn.baseUrl`. Legacy paths preserve
   // the existing `auth.baseUrl` semantics for backward compat —
-  // operators on those paths are already trusting `.lore.yaml` for
+  // operators on those paths are already trusting .lore.yaml for
   // their token.
   const legacyBaseUrlOverride = config?.auth?.baseUrl
 
@@ -379,7 +379,7 @@ export async function resolveAuth(
     }
   }
 
-  // 2. ntn-resolved (reads ~/.config/notion/auth.json via #02). Lazy
+  // 2. ntn-resolved (reads ~/.config/notion/auth.json). Lazy
   // import preserves the no-ntn-needed paths from paying the import
   // cost. ESM caches the imported binding after the first call, so
   // warm-path lookups are amortized — do NOT lift this to a top-level
@@ -398,7 +398,7 @@ export async function resolveAuth(
     return {
       token: fromNtn.token,
       // ntn's own `fromNtn.baseUrl` is operator-derived (env override
-      // or ntn's `config.json`) — no repo-config override is layered on
+      // or ntn's config.json) — no repo-config override is layered on
       // top, see the security note above.
       baseUrl: fromNtn.baseUrl,
       source: "ntn-auth-json",
@@ -431,16 +431,15 @@ export async function resolveAuth(
 
   // No source resolved. Now we surface the ntn ambiguity hint that we
   // suppressed above, IF it applies — that's what gives operators
-  // hitting "no auth" the right next step. If `auth.json` carries
+  // hitting "no auth" the right next step. If auth.json carries
   // multiple workspaces, recommend setting a selector. If the
   // requested selector wasn't found, recommend logging in against the
   // right workspace. Otherwise drop the hint.
   const ntnHint = await buildNtnAmbiguityHint(ntnModule, ntnSelector)
   // The thrown message is forwarded to the operator by `lore auth
-  // --status` / `--login` / `--whoami`; it must not contain stale
-  // "Phase 2 will ship" copy now that `lore auth --login` is the
-  // canonical wrapper. The ntn ambiguity hint is the actionable
-  // piece — keep it; otherwise point at the wrapper.
+  // --status` / `--login` / `--whoami`. `lore auth --login` is the
+  // canonical wrapper; the ntn ambiguity hint is the actionable
+  // piece when it applies, otherwise point at the wrapper.
   throw new Error(
     "No Notion auth configured.\n" +
       (ntnHint ? ntnHint + "\n" : "") +
@@ -459,7 +458,7 @@ export async function resolveAuth(
  * - A hint naming the requested-but-missing workspace and listing the
  *   available ones (selector miss case).
  * - `undefined` when there's nothing actionable about ntn (no
- *   `auth.json`, single-workspace already auto-picked, etc.).
+ *   auth.json, single-workspace already auto-picked, etc.).
  *
  * Best-effort — uses the public `listNtnWorkspaces` surface rather
  * than re-implementing the parse path. If the file walked fine on the
@@ -507,8 +506,8 @@ async function buildNtnAmbiguityHint(
  * the prompt within one working day of running Lore, long enough that an
  * operator who runs `lore` ten times in a session sees the warning once.
  *
- * The `auth.token in .lore.yaml` warning intentionally does NOT use this
- * debounce — see `emitConfigAuthTokenWarning` for the rationale.
+ * The auth.token in .lore.yaml warning intentionally does NOT use this
+ * debounce — `emitConfigAuthTokenWarning` carries the rationale.
  */
 const DEPRECATION_DEBOUNCE_MS = 24 * 60 * 60 * 1000
 
@@ -535,9 +534,9 @@ const DEPRECATION_DEBOUNCE_MS = 24 * 60 * 60 * 1000
  * in a session sees the warning once, and a CI run that has migrated to
  * a different auth source can opt out cleanly. Compare with
  * `emitConfigAuthTokenWarning`, which deliberately does neither because
- * `auth.token` in `.lore.yaml` is persistent file state (local but
+ * `auth.token` in .lore.yaml is persistent file state (local but
  * still backed up, synced, and easy to force into git), not session
- * state, and behaves differently under the same threat model (#484).
+ * state, and behaves differently under the same threat model.
  */
 async function emitLoreNotionTokenDeprecationWarningOnce(configRoot: string): Promise<void> {
   if (process.env["LORE_SUPPRESS_DEPRECATIONS"] === "1") return
@@ -581,22 +580,22 @@ async function emitLoreNotionTokenDeprecationWarningOnce(configRoot: string): Pr
 /**
  * Per-process gate for the `auth.token` deprecation warning. Set on the
  * first emission within this Node process; subsequent calls within the
- * same process short-circuit. See `emitConfigAuthTokenWarning` for the
- * rationale; see `_resetConfigAuthTokenWarningStateForTests` for the
+ * same process short-circuit. `emitConfigAuthTokenWarning` carries the
+ * rationale; `_resetConfigAuthTokenWarningStateForTests` exposes the
  * test-only escape hatch.
  */
 let configAuthTokenWarningEmittedThisProcess = false
 
 /**
- * Emit the `auth.token in .lore.yaml` deprecation warning to stderr,
+ * Emit the auth.token in .lore.yaml deprecation warning to stderr,
  * gated to one emission per Node process. NOT silenceable via
  * `LORE_SUPPRESS_DEPRECATIONS=1`. NOT debounced across processes.
  *
  * The asymmetry with `emitLoreNotionTokenDeprecationWarningOnce` is
- * deliberate; see #484 for the original report. `LORE_NOTION_TOKEN` is
+ * deliberate. `LORE_NOTION_TOKEN` is
  * ephemeral session state that dies with the shell; debouncing + a
  * silence env is appropriate noise management for that case.
- * `.lore.yaml` is local-only, but a token pasted there still rides
+ * .lore.yaml is local-only, but a token pasted there still rides
  * every backup, sync, and is one `git add -f` away from history. That
  * is a different class of misconfiguration than an ephemeral env var.
  * Treating both with the same noise budget hides the persistent-secret
@@ -616,7 +615,7 @@ let configAuthTokenWarningEmittedThisProcess = false
  * second-line defense.
  *
  * The warning intentionally does NOT mention `LORE_SUPPRESS_DEPRECATIONS=1`
- * since the env var no longer silences this source — pointing operators
+ * because the env var does not silence this source — pointing operators
  * at it would be misleading. The remediation is removing the field, not
  * silencing the signal.
  *
@@ -625,10 +624,10 @@ let configAuthTokenWarningEmittedThisProcess = false
  * `resolveAuth` is called within that process." Different processes
  * always re-emit (no cross-process marker file). The gate exists so
  * that long-running MCP servers — where `createNtnAuthRefresh`
- * (`src/services.ts`) re-calls `resolveAuth` on every 401-driven token
- * refresh — don't fan out per-401 stderr noise. Per-CLI-invocation
- * semantics are preserved: a CLI process resolves auth at most a handful
- * of times during its lifetime, all collapsing to one emission.
+ * re-calls `resolveAuth` on every 401-driven token refresh — don't fan
+ * out per-401 stderr noise. Per-CLI-invocation semantics are preserved:
+ * a CLI process resolves auth at most a handful of times during its
+ * lifetime, all collapsing to one emission.
  */
 function emitConfigAuthTokenWarning(): void {
   if (configAuthTokenWarningEmittedThisProcess) return
@@ -647,7 +646,7 @@ function emitConfigAuthTokenWarning(): void {
  * Reset the per-process `auth.token` warning gate. Test-only — production
  * callers must NOT use this.
  *
- * Vitest runs every test in `src/config.test.ts` inside the same Node
+ * Vitest runs every test in this file's companion test suite inside the same Node
  * process, so the module-level `configAuthTokenWarningEmittedThisProcess`
  * flag would carry across test cases and silently break isolation
  * (the second test would never see the warning). Each `resolveAuth`
@@ -655,8 +654,7 @@ function emitConfigAuthTokenWarning(): void {
  * `beforeEach` restores that mental model.
  *
  * Underscore-prefixed export name signals "internal/test-only" — the
- * convention `auth/ntn.ts`'s test-isolation contract notes elsewhere
- * in this codebase.
+ * standing convention for test-isolation helpers in this codebase.
  */
 export function _resetConfigAuthTokenWarningStateForTests(): void {
   configAuthTokenWarningEmittedThisProcess = false
@@ -665,7 +663,7 @@ export function _resetConfigAuthTokenWarningStateForTests(): void {
 /**
  * Convenience wrapper that returns just the token string. `configRoot`
  * threads through to `resolveAuth` for the deprecation-warning marker —
- * pass the directory containing `.lore.yaml`, or `process.cwd()` when no
+ * pass the directory containing .lore.yaml, or `process.cwd()` when no
  * config has been loaded yet.
  */
 export async function resolveToken(

@@ -1,5 +1,5 @@
 /**
- * End-to-end task-eval runner — the agent-execution half of #287's eval
+ * End-to-end task-eval runner — the agent-execution half of the eval
  * spec, gated by deterministic verifiers. Distinct from the retrieval
  * runner: where retrieval mode scores which memories surface, task mode
  * scores whether an agent actually produced the desired workspace state
@@ -114,7 +114,7 @@ const taskEvalTaskSchema = z
      * Map from memory condition (`no-lore`, `helpful`, `noisy`,
      * `stale`) to a fixture path. Each condition listed here runs
      * the task once with that condition's fixture seeded into the
-     * workspace's `.lore-memories.json`. Empty matrix means the task
+     * workspace's .lore-memories.json. Empty matrix means the task
      * runs once with no memory seeded — the agent's tools see whatever
      * the workspace fixture itself includes (typically nothing).
      */
@@ -451,8 +451,9 @@ async function seedMemoryCondition(input: {
 }): Promise<void> {
   const absolute = resolve(input.suiteRoot, input.fixturePath)
   // Path-escape guard. Production memory fixtures live next to the
-  // suite root in a sibling directory (e.g., `evals/task-suites/x.yaml`
-  // reads `evals/task-memory/y.json`), so the legitimate read scope is
+  // suite root in a sibling directory (e.g., a YAML suite reading a
+  // JSON memory fixture in a peer subdirectory), so the legitimate
+  // read scope is
   // "under the suite root's parent" — NOT the suite root itself, and
   // NOT a broader `evals/` ancestor. The boundary intentionally allows
   // sibling-directory reads (task-memory/, baselines/) but rejects
@@ -471,7 +472,7 @@ async function seedMemoryCondition(input: {
     )
   }
   const contents = await readFile(absolute, "utf-8")
-  // Conventional drop point: `.lore-memories.json` at the workspace
+  // Conventional drop point: .lore-memories.json at the workspace
   // root. Agent prompts that are matrix-aware reference this path.
   await writeFile(
     join(input.workspace, ".lore-memories.json"),

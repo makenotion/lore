@@ -1,19 +1,18 @@
 /**
- * Backfill the transaction-time provenance columns on every fact (issue
- * #284).
+ * Backfill the transaction-time provenance columns on every fact.
  *
  * `lore migrate --backfill-fact-observed-at` walks every fact row,
  * including invalidated rows, and writes:
  *
  * - `Observed At = page.created_time` (YYYY-MM-DD) on rows whose
  *   `Observed At` is empty. The Notion `created_time` is the best
- *   available proxy for "when Lore learned this fact" on rows that
- *   pre-date #284 — the write side now seeds `Observed At` at
- *   create time, but every row created before this PR landed needs
- *   the backfill.
+ *   available proxy for "when Lore learned this fact" on rows
+ *   without the column populated — the write side seeds `Observed
+ *   At` at create time, but every row written before the
+ *   transaction-time columns existed needs the backfill.
  * - `Invalidated At = Valid Until` on rows where `Valid Until` is set
  *   AND `Invalidated At` is empty. Conservative best-effort fallback:
- *   for pre-#284 invalidations, the operator didn't separately record
+ *   on historical invalidations the operator didn't separately record
  *   the transaction-time invalidation date. Using `Valid Until` is the
  *   closest signal we have — and on the common path
  *   (`FactService.invalidate` flips both today), the two dates align
@@ -26,9 +25,9 @@
  * `lore migrate --backfill-fact-observed-at --yes`; bare invocation
  * prints the plan and exits.
  *
- * Mirrors `fact-confidence-migration.ts` line-for-line on structure —
- * the two are deliberately parallel so an operator running the
- * Phase-3 migrations sees a consistent shape across surfaces.
+ * Mirrors the fact-confidence-baseline migration line-for-line on
+ * structure — the two are deliberately parallel so an operator
+ * running both migrations sees a consistent shape across surfaces.
  */
 
 import type { LoreServices } from "../services.js"
@@ -209,13 +208,13 @@ async function executePlan(
   plan: BackfillFactObservedAtPlan,
   opts: BackfillFactObservedAtOptions
 ): Promise<{ written: number; failures: BackfillFactObservedAtFailure[] }> {
-  // Issue #284 review item #4 — per-row error isolation. The earlier
-  // shape (`Promise.all` per batch) aborted the entire migration on
-  // the first rejection, so an operator hitting a transient 429 or a
-  // schema-mismatch on a single row had to re-run after every failure.
-  // `Promise.allSettled` per chunk lets the run complete, distinguishes
-  // the failed rows from the successful ones, and surfaces a per-row
-  // failure list the caller can render. The rate-limit middleware
+  // Per-row error isolation. A `Promise.all` per batch would abort
+  // the entire migration on the first rejection, so an operator
+  // hitting a transient 429 or a schema-mismatch on a single row
+  // would have to re-run after every failure. `Promise.allSettled`
+  // per chunk lets the run complete, distinguishes the failed rows
+  // from the successful ones, and surfaces a per-row failure list
+  // the caller can render. The rate-limit middleware
   // paces individual requests; the chunk loop bounds in-flight count
   // (memory) and gives us a natural cadence for the per-100-rows
   // stderr progress line.

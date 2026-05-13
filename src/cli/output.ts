@@ -98,10 +98,9 @@ export function terminalLink(text: string, url: string): string {
 
 /**
  * Re-export `notionPageUrl` for CLI callers that historically imported
- * it from `src/cli/output.ts`. The canonical implementation lives in
- * `src/notion/url.ts` so non-CLI surfaces (MCP, core service helpers,
- * the promotion audit-block builder) can import the helper without
- * crossing the `src/mcp/` → `src/cli/` import boundary documented in
- * `src/mcp/AGENTS.md` (PR #589 review nit).
+ * it from this module. The canonical implementation lives in the notion
+ * URL helper so non-CLI surfaces (MCP, core service helpers, the
+ * promotion audit-block builder) can import the helper without
+ * crossing the MCP → CLI import boundary.
  */
 export { notionPageUrl } from "../notion/url.js"

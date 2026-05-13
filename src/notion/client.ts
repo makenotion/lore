@@ -52,8 +52,8 @@ export interface AuthRefreshingClientDeps {
  *
  * Both `message` and `extraInfo` are routed through the same
  * `redactDebugMessage` / `redactDebugExtraInfo` defenses every other
- * `LORE_DEBUG`-gated emitter uses (issue #488). This is the strictly-
- * worst leak vector covered by #488 because the SDK's INFO-level
+ * `LORE_DEBUG`-gated emitter uses. This is the strictly-worst leak
+ * vector covered by the redaction defenses: the SDK's INFO-level
  * "Retrying request" trace passes `path` like `/v1/pages/<32-hex>` on
  * every retry — a structurally-guaranteed page-id leak that the per-
  * call-site failure-message redaction would not catch on its own. The
@@ -70,7 +70,7 @@ export interface AuthRefreshingClientDeps {
  * try/catch is now load-bearing only for non-circular `JSON.stringify`
  * failures (functions, BigInts, symbols).
  *
- * Exported so `client.test.ts` can pin the format without instantiating
+ * Exported so unit tests can pin the format without instantiating
  * a real `Client`.
  */
 export const stderrSdkLogger: Logger = (level, message, extraInfo) => {
@@ -96,7 +96,7 @@ export const stderrSdkLogger: Logger = (level, message, extraInfo) => {
  * `Retry-After`-induced sleep from a genuine hang. Any other value (or
  * unset) returns `null` so the SDK keeps its default `LogLevel.WARN`.
  *
- * Exported so `client.test.ts` can drive the env-resolution branch
+ * Exported so unit tests can drive the env-resolution branch
  * without constructing a `Client`.
  */
 export function resolveSdkDebugOptions(
@@ -150,14 +150,13 @@ export function createClient(token: string, baseUrl?: string): Client {
  * never engage:
  *
  * - `createLimitedClient`'s 429 backoff fires only inside its `catch`
- *   around the underlying SDK method (`src/notion/rate-limit.ts`).
+ *   around the underlying SDK method.
  *   A 200-wrapped `{ status: 429 }` envelope skips the bucket pause,
  *   so flagged-on RunTool callers under throttling can keep sending
  *   traffic at normal pace while each call falls back to REST.
  * - `createAuthRefreshingClient`'s 401 retry fires only inside its
- *   `catch` around the underlying SDK method
- *   (`src/notion/client.ts:235`). A 200-wrapped `{ status: 401 }`
- *   envelope skips the one-shot ntn refresh.
+ *   `catch` around the underlying SDK method. A 200-wrapped
+ *   `{ status: 401 }` envelope skips the one-shot ntn refresh.
  *
  * The fix is to throw at the innermost `client.request` layer — same
  * place a non-2xx HTTP response would surface — so the rate-limit and
@@ -170,9 +169,8 @@ export function createClient(token: string, baseUrl?: string): Client {
  *
  * Wrapping happens at `createClient` so every consumer (the
  * authoritative one being the auth-refreshing + rate-limited stack
- * built in `services.ts`) inherits the protection without
- * call-site work. Surfaced by the issue #535 vault-validation harness
- * on 2026-05-06.
+ * built) inherits the protection without
+ * call-site work. Surfaced by the SQL-filter vault-validation harness.
  */
 export function wrapWithRunToolEnvelopeNormalizer(client: Client): Client {
   return new Proxy(client, {
@@ -390,8 +388,8 @@ function defaultOnRefresh(event: AuthRefreshEvent): void {
   const reason = event.reason === "unchanged" ? "token unchanged" : "auth unavailable"
   // The auth-resolver's failure surface is the same SDK / network /
   // config-walk path that produces the messages every other LORE_DEBUG
-  // emitter scrubs (issue #488). Route the suffix through the shared
-  // redactor so an `auth.json` read failure that surfaces a path or a
+  // emitter scrubs. Route the suffix through the shared
+  // redactor so an auth.json read failure that surfaces a path or a
   // `users.me` error carrying a workspace id doesn't bypass the helper
   // just because this emitter sits in src/notion/ rather than src/mcp/.
   const suffix = event.errorMessage ? `: ${redactDebugMessage(event.errorMessage)}` : ""

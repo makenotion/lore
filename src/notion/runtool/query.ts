@@ -1,8 +1,8 @@
 /**
  * Domain-level adapters for `query_data_sources` SQL queries.
  *
- * Issue #535's contract: keep arbitrary SQL out of `src/core/`
- * services. Services call typed adapters (`fetchEntityByNormalizedName`,
+ * Contract: keep arbitrary SQL out of the domain services.
+ * Services call typed adapters (`fetchEntityByNormalizedName`,
  * `fetchNearDuplicateCandidatePageIds`) that accept structural
  * inputs and return structural outputs. The adapters own:
  *
@@ -13,9 +13,9 @@
  *    inline next to each query.
  *
  * Each helper takes a `Client` and dispatches through the shared
- * `runTool(client, "query_data_sources", params)` dispatcher in
- * `client.ts`, which routes via the SDK's `client.request<T>(...)`
- * surface so RunTool calls share the same rate-limit gate, auth-
+ * `runTool(client, "query_data_sources", params)` dispatcher, which
+ * routes via the SDK's `client.request<T>(...)` surface so RunTool
+ * calls share the same rate-limit gate, auth-
  * refreshing proxy, and User-Agent as every other Notion call.
  *
  * The core services (`EntityService`, `findNearDuplicates`) check
@@ -54,7 +54,7 @@ import { dataSourceUrl, type SqlCellValue } from "./types.js"
  *
  * **Substring filter.** The query becomes
  * `LOWER(Name) LIKE '%key%'` (with the key as the SQL parameter,
- * `%`-wrapped at compose time). This mirrors the REST path's
+ * `%`-wrapped at compose time). This matches the REST path's
  * `title.contains` substring sweep but in one round-trip with no
  * cursor pagination. Notion's title column commonly contains
  * single-token names so the substring pool is small in practice;
@@ -70,8 +70,8 @@ import { dataSourceUrl, type SqlCellValue } from "./types.js"
  * JS-post-filter is the safe shape.
  *
  * **Archived rows are NOT excluded server-side.** The Notion SQL
- * gateway's `archived` column shape was deferred (Phase 0 open
- * questions); rather than guessing the column name, the SQL
+ * gateway's `archived` column shape is an open question;
+ * rather than guessing the column name, the SQL
  * returns every row that survives the substring pool and the
  * caller (`EntityService.findByName`) drops archived rows via
  * `pages.retrieve` + `isActiveEntityPage`, the same gate the
@@ -119,11 +119,11 @@ export async function fetchEntityByNormalizedName(
       params: [`%${opts.normalizedName}%`],
     },
   })
-  // F6 saturation handling — see `fetchNearDuplicateCandidatePageIds`
-  // for the contract. Throwing `SqlPartialResultError` routes the
-  // call site (`EntityService.findByName`) through its per-call
+  // F6 saturation handling. Throwing `SqlPartialResultError` routes
+  // the call site (`EntityService.findByName`) through its per-call
   // REST fallback so a saturated SQL window can never be mistaken
-  // for an authoritative negative.
+  // for an authoritative negative. `fetchNearDuplicateCandidatePageIds`
+  // applies the same contract on its consumer.
   if (response.has_more) {
     throw new SqlPartialResultError("entity-find-by-name")
   }
@@ -153,7 +153,7 @@ export async function fetchEntityByNormalizedName(
  * existing REST `findByAlias` uses Notion's `rich_text contains`
  * with the same false-positive risk and post-filters via
  * `parseAliases(...).some((a) => normalizeEntityKey(a) === key)`.
- * The SQL path mirrors that exactly: substring narrower, then JS
+ * The SQL path matches that exactly: substring narrower, then JS
  * exact-token check.
  *
  * **`LIMIT 100` cap.** Matches the entity-name SQL helper and
@@ -165,7 +165,7 @@ export async function fetchEntityByNormalizedName(
  *
  * **Archived rows are NOT excluded server-side** for the same
  * reason as `fetchEntityByNormalizedName`: the Notion SQL
- * gateway's `archived` column shape is a Phase 0 open question.
+ * gateway's `archived` column shape is an open question.
  * The caller drops archived rows via `pages.retrieve` +
  * `isActiveEntityPage`.
  *
@@ -249,11 +249,11 @@ export async function fetchEntitiesByAliasSubstring(
  *
  * **`LIKE '%<id>%'` decomposition.** Notion's relation column
  * surfaces as a textual representation of the related ids in
- * SQLite. The SQL gateway's exact representation is a Phase 0
- * open question, but every other relation-column predicate Lore
- * issues uses substring matching (see
- * `fetchNearDuplicateCandidatePageIds`'s
- * `Project LIKE %projectId%`). Same posture here: select rows
+ * SQLite. The SQL gateway's exact representation is an open
+ * question, but every other relation-column predicate Lore
+ * issues uses substring matching (the
+ * `fetchNearDuplicateCandidatePageIds` `Project LIKE %projectId%`
+ * shape is the canonical example). Same posture here: select rows
  * whose `Compared With` is non-empty AND whose project relation
  * matches.
  *
@@ -331,10 +331,10 @@ export function comparedPairKey(idA: string, idB: string): string {
  * / decision probes via SQL with `Status IN (...)` and
  * `Kind NOT IN (...)` predicates pushed BEFORE the row limit.
  *
- * Acceptance criterion #3 of issue #535: "Near-duplicate status
- * and kind filters move before candidate-pool truncation, so
- * `limit` means SQL-filtered candidates rather than candidates
- * later pruned in JS." The REST path in `MemoryService.list`
+ * Contract: "Near-duplicate status and kind filters move before
+ * candidate-pool truncation, so `limit` means SQL-filtered
+ * candidates rather than candidates later pruned in JS." The REST
+ * path in `MemoryService.list`
  * supports `excludeKinds` server-side already (Notion's `select
  * does_not_equal` array filter), but `statuses` (`accepted |
  * proposed`) is not expressible in one `dataSources.query` call
@@ -356,7 +356,7 @@ export function comparedPairKey(idA: string, idB: string): string {
  * - Optional `Status IN (?, ?, ...)` (decision probe passes
  *   `["accepted", "proposed"]`).
  * - Always-on cleanup-orphan exclusion via `Keywords NOT LIKE
- *   '%__lore-cleanup-orphan%'` (mirrors the REST path's
+ *   '%__lore-cleanup-orphan%'` (matches the REST path's
  *   sentinel-substring filter).
  * - Archived rows are filtered by the SQL gateway by default
  *   (verified 2026-05-05: the `archived` column does not exist
@@ -383,8 +383,8 @@ export function comparedPairKey(idA: string, idB: string): string {
  * id through `pages.retrieve` + `pageToMemory` to reuse the
  * existing Notion → `Memory` extractor. SQL-side hydration of
  * every Memory column would couple this query to the schema's
- * relation-property hydration discipline (`src/notion/AGENTS.md`'s
- * "Property Extractors Pattern"); page ids + REST hydration
+ * relation-property hydration discipline (the property-extractor
+ * pattern); page ids + REST hydration
  * keeps the SQL surface narrow and the materialized `Memory`
  * shape identical to the REST path.
  */
@@ -407,7 +407,7 @@ export interface NearDuplicateSqlOpts {
    * path's `MemoryService.list` uses `projectOrUnscopedFilter`
    * by default (`Project contains id OR Project is_empty`), so
    * unscoped (vault-wide) memories surface in project-scoped
-   * probes. The SQL path mirrors this with
+   * probes. The SQL path matches this with
    * `(Project LIKE %id% OR Project IS NULL OR Project = '')`.
    * Pin `includeUnscoped: false` to drop the unscoped clause —
    * matches `MemoryService.list({ includeUnscoped: false })`.
@@ -415,7 +415,7 @@ export interface NearDuplicateSqlOpts {
   projectId: string
   /**
    * When false, exclude unscoped (no-project) rows. Defaults to
-   * true to mirror `MemoryService.list`'s default behavior.
+   * true to match `MemoryService.list`'s default behavior.
    */
   includeUnscoped?: boolean
   /** Optional topic relation must contain this id. */
@@ -428,12 +428,11 @@ export interface NearDuplicateSqlOpts {
    * strings (verified 2026-05-05 on the production vault), so a
    * `%"<tag>"%` pattern matches only when `<tag>` appears as a
    * complete token — `"refactor"` does NOT match
-   * `"refactor-old"`, `"refactor-trade-off"`, etc. Issue #539
-   * review iteration 4 verified the exact-token shape against
-   * production data.
+   * `"refactor-old"`, `"refactor-trade-off"`, etc. The exact-token
+   * shape was verified against production data.
    *
-   * Tag values must be drawn from `TAG_VOCABULARY` (closed
-   * vocabulary; `src/types.ts`) — none contain `"`, `%`, `_`,
+   * Tag values must be drawn from `TAG_VOCABULARY` (a closed
+   * vocabulary) — none contain `"`, `%`, `_`,
    * or `\`, so SQL LIKE special characters are not a concern.
    * The helper validates each tag against a kebab-case regex as
    * defense in depth.
@@ -449,11 +448,11 @@ export interface NearDuplicateSqlOpts {
   statuses?: readonly string[]
   /**
    * Status blacklist (server-side `Status NOT IN (...)`). Used by
-   * `MemoryService.listForNearDuplicates` to mirror `MemoryService.list`'s
+   * `MemoryService.listForNearDuplicates` to match `MemoryService.list`'s
    * default `Status != proposed` filter when no `statuses` whitelist
    * narrows the candidate pool — without this, the SQL path surfaces
    * proposed rows the REST path drops by default, breaking A/B
-   * equivalence (acceptance criterion #6 of issue #535).
+   * equivalence.
    *
    * Like {@link excludeKinds}, the predicate explicitly OR's
    * `Status IS NULL` so a row with no Status passes — matches
@@ -474,7 +473,7 @@ export async function fetchNearDuplicateCandidatePageIds(
   const params: Array<string | number | null> = []
   const predicates: string[] = []
 
-  // Project filter mirrors `projectOrUnscopedFilter`: by default,
+  // Project filter matches `projectOrUnscopedFilter`: by default,
   // both project-scoped rows AND unscoped rows surface.
   //
   // **Production-vault verification (2026-05-05).** The Notion SQL
@@ -620,7 +619,7 @@ export async function fetchNearDuplicateCandidatePageIds(
       params,
     },
   })
-  // Issue #535 F6: `has_more: true` means the gateway clamped
+  // `has_more: true` means the gateway clamped
   // LIMIT and returned only the first page of the filtered
   // candidate set. The Notion request envelope exposes no
   // cursor / offset / page-size, so the helper cannot fetch the
@@ -642,17 +641,15 @@ export async function fetchNearDuplicateCandidatePageIds(
 }
 
 /**
- * Server-side aggregate over the Facts data source for the PF3-01
- * orphan-rate metric (issue #542).
+ * Server-side aggregate over the Facts data source for the
+ * orphan-rate metric.
  *
  * **What it does.** Issues a single `query_data_sources` SQL query
  * that groups every fact by its raw `SubjectEntity` relation value
  * AND its raw `Subject` title, then counts rows per group. The
- * caller (`computeOrphanRateFromAggregateRows` in
- * `src/core/entity-migration.ts`) folds the rows into the
- * canonical metric key — `subjectEntityId ?? computeSubjectKey(subject)`
- * — and computes the orphan rate per the PF3-01 methodology in
- * `src/core/AGENTS.md`.
+ * caller (`computeOrphanRateFromAggregateRows`) folds the rows into
+ * the canonical metric key — `subjectEntityId ?? computeSubjectKey(subject)`
+ * — and computes the orphan rate.
  *
  * **Why group by both columns.** The metric key is a JS expression
  * that depends on `computeSubjectKey`'s Unicode NFC + lowercase +
@@ -662,7 +659,7 @@ export async function fetchNearDuplicateCandidatePageIds(
  * server-side: GROUP BY emits one row per `(SubjectEntity, raw
  * Subject)` distinct pair, and the JS folder applies
  * `computeSubjectKey` over the raw Subject before merging groups
- * that share a canonical key. Two pre-migration rows whose raw
+ * that share a canonical key. Two unmigrated rows whose raw
  * Subjects differ only in case (`MemoryService` and `memoryservice`)
  * therefore arrive as two SQL rows; the JS fold collapses them onto
  * the same canonical key. This is the same posture as
@@ -671,26 +668,24 @@ export async function fetchNearDuplicateCandidatePageIds(
  * canonicalizer.
  *
  * **Counts both live AND invalidated facts.** Notion's SQL gateway
- * does not expose date columns: production-vault verification on
- * 2026-05-06 against the dogfood vault confirmed `"Valid Until"`,
- * `validUntil`, `valid_until`, and `ValidUntil` all fail with
- * `no such column`. Same shape as the README's pre-existing
- * `last_edited_time` / `lastEditedTime` finding. With no way to
- * filter invalidated facts server-side, the SQL aggregate counts
- * EVERY fact in scope. The migrate-time call site
- * (`runOrphanRateReport` in `src/cli/commands/migrate.ts`) keeps
- * the two paths semantically equivalent by passing
- * `includeInvalidated: true` to the JS enumeration fallback —
- * both paths produce the same metric on the same fact corpus.
+ * does not expose date columns: production-vault verification
+ * confirmed `"Valid Until"`, `validUntil`, `valid_until`, and
+ * `ValidUntil` all fail with `no such column` (same shape as the
+ * README's `last_edited_time` / `lastEditedTime` finding). With no
+ * way to filter invalidated facts server-side, the SQL aggregate
+ * counts EVERY fact in scope. The migrate-time call site
+ * (`runOrphanRateReport`) keeps the two paths semantically
+ * equivalent by passing `includeInvalidated: true` to the JS
+ * enumeration fallback — both paths produce the same metric on
+ * the same fact corpus.
  *
  * The semantic shift from "live facts only" to "all facts" is
- * documented in `src/core/AGENTS.md` ("Measuring whether
- * `--build-entities` collapsed the orphan graph"); operationally
- * the orphan-rate question (does case-folding canonicalization
- * collapse the graph below 50%?) is unchanged because invalidated
- * facts contributed subjects to the canonical grouping just like
- * live ones did. Invalidated facts on the dogfood vault are a
- * single-digit percentage of the corpus.
+ * operationally inconsequential: the orphan-rate question (does
+ * case-folding canonicalization collapse the graph below 50%?)
+ * is unchanged because invalidated facts contributed subjects to
+ * the canonical grouping just like live ones did. Invalidated
+ * facts on the dogfood vault are a single-digit percentage of
+ * the corpus.
  *
  * **Filters applied server-side.**
  *
@@ -733,9 +728,9 @@ export async function fetchNearDuplicateCandidatePageIds(
  * **Capability gate.** `query_data_sources` is gated behind
  * `hasAdvancedTools` (Enterprise + AI workspace tier). On a
  * workspace below that tier, the call returns 403
- * `RestrictedResource` and the call site falls back to JS — see
- * `error-helpers.ts:logRunToolFallback` and the parent
- * `LORE_USE_RUNTOOL_AGGREGATE` flag's docstring.
+ * `RestrictedResource` and the call site falls back to JS — the
+ * `logRunToolFallback` helper and the parent
+ * `LORE_USE_RUNTOOL_AGGREGATE` flag's docstring carry the recipe.
  */
 export interface SqlSubjectGroupCount {
   subjectEntityRaw: string | null
@@ -820,8 +815,8 @@ export async function querySubjectGroupCountsViaRunTool(
  *
  * **URL-anchored.** The regex requires the id to follow `://<host>/`
  * — i.e. it must appear in the documented JSON-array-of-URLs shape,
- * not as a free-floating 32-hex run anywhere in the cell. PR #547
- * principal-engineer review surfaced the looser shape: a cell whose
+ * not as a free-floating 32-hex run anywhere in the cell. A looser
+ * shape is a real correctness hazard: a cell whose
  * Subject value happened to contain `garbage 11111111111111111111111111111111
  * trailing` (32 contiguous hex chars from any source) would have
  * been silently treated as a populated `SubjectEntity` and the
@@ -907,7 +902,7 @@ function sqlNumber(value: SqlCellValue | undefined): number | null {
  * Hydrate a list of memory page ids into full `Memory` rows by
  * issuing one `pages.retrieve` per id through the supplied
  * fetcher. Provided here (rather than inline at the call site)
- * so the SQL-branch ergonomics mirror the REST branch's
+ * so the SQL-branch ergonomics match the REST branch's
  * `MemoryService.list` semantics — the call site stays a single
  * function call.
  *
@@ -953,8 +948,8 @@ function quoteTable(url: string): string {
 
 /**
  * Defensive bound on the SQL `LIMIT` clause. The runtime cap on
- * `query_data_sources` is documented as "needs runtime verification"
- * in Phase 0; we cap at 1000 here so a caller passing
+ * `query_data_sources` is documented as "needs runtime verification";
+ * we cap at 1000 here so a caller passing
  * `Number.MAX_SAFE_INTEGER` doesn't generate a query the gateway
  * rejects with a 400. Real callers (`findNearDuplicates`)
  * already pass small bounded values (default 50).
@@ -986,7 +981,7 @@ function undash(id: string): string {
  * because those would let an attacker (or a buggy caller
  * bypassing `TAG_VOCABULARY`) forge unintended matches.
  *
- * `TAG_VOCABULARY` (closed vocabulary in `src/types.ts`) holds
+ * `TAG_VOCABULARY` (a closed vocabulary) holds
  * only kebab-case identifiers — alphanumeric + hyphen. The
  * regex enforces that shape as defense in depth.
  */

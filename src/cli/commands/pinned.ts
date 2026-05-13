@@ -1,6 +1,6 @@
 /**
- * `lore pinned` — operator-facing CLI for pinned context blocks
- * (issue #282 AC #5). One subcommand today:
+ * `lore pinned` — operator-facing CLI for pinned context blocks.
+ * One subcommand today:
  *
  * - `lore pinned list [--project <name>] [--audience <token>]
  *                     [--all-audiences] [-n <limit>]`

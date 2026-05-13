@@ -19,17 +19,17 @@ import type {
  *   re-pointed by `--build-entities` or written through
  *   `lore-fact action='create'` after the resolver), the relation id
  *   is the canonical key.
- * - When the relation column is empty (pre-migration row), fall back
+ * - When the relation column is empty (unmigrated row), fall back
  *   to `computeSubjectKey(subject)` — the same case/whitespace fold
  *   `SubjectKey` uses. Two facts with cosmetic Subject variants still
  *   collapse to one key so the existing dedup contract holds; two
  *   facts with structurally different Subjects still produce different
  *   keys.
  *
- * Caught by review on PR #88: without this, two facts about the same
- * entity but with cosmetically different Subject strings produced
- * duplicate `decided_by` rows in `syncDecisionReachability` and
- * duplicate canonical links in `resolveCanonicalDecisionLinks`.
+ * Without this, two facts about the same entity but with cosmetically
+ * different Subject strings produce duplicate `decided_by` rows in
+ * `syncDecisionReachability` and duplicate canonical links in
+ * `resolveCanonicalDecisionLinks`.
  */
 function factSubjectKey(fact: Fact): string {
   if (fact.subjectEntityId) return `entity:${fact.subjectEntityId}`
@@ -131,9 +131,9 @@ export interface ReachabilitySyncResult {
  * following `supersedes_decision` edges forward through the graph.
  *
  * `opts.caches` lets the caller share `decisionCache` / `successorCache`
- * across multiple invocations (see `resolveCanonicalDecisionLinks`). When
- * omitted, a fresh pair is allocated per call — same behaviour as before
- * the cache was lifted.
+ * across multiple invocations (the canonical consumer is
+ * `resolveCanonicalDecisionLinks`). When omitted, a fresh pair is
+ * allocated per call.
  *
  * ### Rejection semantics (part of the contract, not an impl detail)
  *
@@ -154,8 +154,8 @@ export interface ReachabilitySyncResult {
  * as 2+ failures in the bucket. The fully-bounded variant (race a
  * `null`-sentinel so subscribers see null rather than a throw) is
  * deferred — the current shape matches `LruCache.getOrLoad`'s contract
- * and the sequential-retry case is the common one. Pinned by
- * `decision-graph.test.ts`'s concurrent-cascade test.
+ * and the sequential-retry case is the common one. Pinned by the
+ * concurrent-cascade test.
  */
 export async function resolveCurrentDecisions(
   services: DecisionGraphServices,
@@ -397,7 +397,7 @@ export async function syncDecisionReachability(
   // without) collapse to one slot. Pre-PF3-01 the set was keyed on raw
   // `fact.subject`, which would create a duplicate retarget when the
   // new and old facts had cosmetically different subject strings for
-  // the same entity. PR #88 review.
+  // the same entity.
   const existingKeys = new Set(existingNewFacts.map((fact) => factSubjectKey(fact)))
   let invalidated = 0
   let created = 0
@@ -427,7 +427,7 @@ export async function syncDecisionReachability(
       // fact lands as a text-only row that the next `--build-entities`
       // pass can re-point.
       subjectEntityId: fact.subjectEntityId ?? undefined,
-      // Issue #283 review — retargeted decided_by facts inherit the
+      // Retargeted `decided_by` facts inherit the
       // new decision's scope. The previous fact (now invalidated)
       // carried the OLD decision's scope; the retarget rebuilds the
       // edge under the governing decision's identity slot.

@@ -122,7 +122,7 @@ export { buildUpstreamVaultBundles } from "./core/topology-readers.js"
 // surface would extend it, but external consumers building against
 // the current shape would have to migrate. Keep the public surface
 // to the bundle interface (which is the actually-stable shape) and
-// the builder function. (PR #589 review.)
+// the builder function.
 export type { UpstreamVaultBundle } from "./core/topology-readers.js"
 export type { VaultAccessResult } from "./auth/oauth.js"
 
@@ -134,14 +134,13 @@ export type { VaultAccessResult } from "./auth/oauth.js"
 // propagates through goto-definition.
 //
 // Removal target: 0.14.0, aligning with `LORE_NOTION_TOKEN` /
-// `auth.token` hard-removal. See `docs/authentication.md` for the
-// public-API removal contract.
+// `auth.token` hard-removal.
 
 /**
  * @deprecated Removal targeted for 0.14.0. PATs (issued at
  * https://www.notion.so/developers/tokens) replace the BYO-integration
- * OAuth path; new code MUST NOT use this export. See
- * `docs/authentication.md` for the PAT operator flow.
+ * OAuth path; new code MUST NOT use this export. The authentication
+ * doc carries the PAT operator flow.
  */
 export { runOAuthFlow } from "./auth/oauth.js"
 

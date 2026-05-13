@@ -15,7 +15,7 @@ import { z } from "zod"
  * Notion's SDK accepts either form, in any case. Normalizing at the
  * MCP boundary to a single canonical shape (lowercase, dashed) means
  * downstream consumers — per-call dedup `Set<string>`s, the
- * `MemoryService.titleCache` keyed by id, the `render.ts` title-resolver
+ * `MemoryService.titleCache` keyed by id, the render layer's title-resolver
  * which already lowercases before lookup — see one shape regardless of
  * which form the caller pasted. Without lowercasing, `AaBb…` and
  * `aabb…` (the same Notion page) hash to two distinct strings and the

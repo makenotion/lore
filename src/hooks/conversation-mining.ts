@@ -133,10 +133,10 @@ export interface RunConversationMiningOptions {
    * Auth source the foreground resolved through. **Callers MUST
    * thread this from `resolveAuth`'s return value.** Under
    * `ntn-auth-json` the auth-token subset is dropped from the
-   * spawned child's env because the child re-reads `auth.json`
-   * directly; under any other source the partition is a no-op
-   * because the auth-token forward is the only resolution path.
-   * Omitting under `ntn-auth-json` silently re-leaks
+   * spawned child's env because the child re-reads ntn's on-disk
+   * auth file directly; under any other source the partition is a
+   * no-op because the auth-token forward is the only resolution
+   * path. Omitting under `ntn-auth-json` silently re-leaks
    * `LORE_NOTION_TOKEN` into the spawned MCP child's env.
    */
   authSource?: AuthSource
@@ -270,9 +270,10 @@ export function runConversationMining(
 
   const binary = findBackgroundBinary(agentConfig.command)
   if (!binary) {
-    // Operator-facing stderr hint mirrors the hook-path's
-    // `[lore] background save: ...` shape so engineers triaging a
-    // missing binary see one consistent surface across paths.
+    // Operator-facing stderr hint uses the same
+    // `[lore] background save: ...` shape as the hook spawn path
+    // so engineers triaging a missing binary see one consistent
+    // surface across paths.
     process.stderr.write(
       `[lore] conversation-mining: background command ` +
         `"${agentConfig.command}" not found on PATH. ` +
@@ -333,7 +334,7 @@ export function runConversationMining(
 
     // Spawn duped the stderr-sink fd into the child's stdio when
     // we passed it as the `stdio[2]` slot. The parent's copy of the
-    // fd is no longer needed; closing it now keeps fd usage bounded
+    // fd is now redundant; closing it here keeps fd usage bounded
     // at one per active mining run rather than growing without
     // bound across runs. Closing the parent copy does not affect
     // the child's view of the fd — Node's `spawn` performs the dup

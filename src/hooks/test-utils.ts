@@ -1,15 +1,12 @@
 /**
  * Shared test-only helpers for the hook test suite.
  *
- * Exported per-file: keep this surface minimal. The first
- * extraction (review iteration 3, Nit N2) was driven by three call
- * sites carrying the same `RUNTIME_FORWARDED_KEYS`-shaped env
- * save/restore pattern: `background.test.ts`,
- * `derive-stop-auth-source.test.ts`, and `digest-scheduler.test.ts`'s
- * `authSource env partition` describe block. Keeping the helper
- * here (not in `lock.ts` / `marker-key.ts` / etc.) avoids dragging
- * test machinery into production-import surfaces — the file's name
- * signals "not for runtime callers."
+ * Exported per-file: keep this surface minimal. The original
+ * extraction was driven by three call sites carrying the same
+ * `RUNTIME_FORWARDED_KEYS`-shaped env save/restore pattern across the
+ * hook test suite. Keeping the helper alongside the other test-only
+ * code avoids dragging test machinery into production-import surfaces
+ * — the file's name signals "not for runtime callers."
  */
 
 /**
@@ -30,12 +27,12 @@
  * `RUNTIME_FORWARDED_KEYS` so callers see the exact surface they
  * own. Current call sites scope independently; the count is
  * intentionally not asserted in this docstring so future
- * additions / removals can't drift the documentation. As of
- * writing: `background.test.ts`'s safeEnv suite passes the full
- * forwarded list, `derive-stop-auth-source.test.ts` passes the
- * auth-relevant subset, and `digest-scheduler.test.ts`'s partition
- * suite passes a narrower auth + workspace + base-URL subset
- * tailored to the partition contract it tests.
+ * additions / removals can't drift the documentation. The
+ * background safeEnv suite passes the full forwarded list, the
+ * stop-auth-source suite passes the auth-relevant subset, and the
+ * digest-scheduler partition suite passes a narrower auth +
+ * workspace + base-URL subset tailored to the partition contract
+ * it tests.
  */
 export function withClearedRuntimeEnv<K extends string>(
   keys: readonly K[],

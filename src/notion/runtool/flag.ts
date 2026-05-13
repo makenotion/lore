@@ -4,25 +4,21 @@
  * `LORE_USE_RUNTOOL` is the parent kill-switch / opt-out. Sub-flags
  * inherit from it unless the operator sets them explicitly:
  *
- * - `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534) — gates anchored markdown
+ * - `LORE_USE_RUNTOOL_BLOCK_EDIT` — gates anchored markdown
  *   edits via `update_page` / `update_content`. Inherits from parent.
- * - `LORE_USE_RUNTOOL_FILTER_SQL` (#535) — gates `query_data_sources`
+ * - `LORE_USE_RUNTOOL_FILTER_SQL` — gates `query_data_sources`
  *   SQL filter helpers. Inherits from parent.
- * - `LORE_USE_RUNTOOL_SEARCH` (#541) — gates the semantic-lane
+ * - `LORE_USE_RUNTOOL_SEARCH` — gates the semantic-lane
  *   `search` consumer in `MemoryService.search` /
  *   `searchWithMeta` / `searchWithExplain`. Inherits from parent.
- * - `LORE_USE_RUNTOOL_AGGREGATE` (#542) — gates `query_data_sources`
+ * - `LORE_USE_RUNTOOL_AGGREGATE` — gates `query_data_sources`
  *   SQL-mode aggregate helpers (server-side `GROUP BY` / `COUNT(*)`).
  *   Inherits from parent.
  *
  * **Default state is ON** for the parent kill-switch and every
- * inheriting sub-flag. The `LORE_USE_RUNTOOL_BATCH_CREATES` (#533)
- * sub-flag does NOT inherit and stays default-OFF — see its file for
- * the partial-commit security carve-out. Flipped to default-ON in
- * issue #543 (Phase 4) per the human lead's directive overriding the
- * 4-week-harness / 3-dogfood-operator gate from the original #532
- * "Default-On Criteria"; see `src/notion/runtool/README.md` "Issue
- * #543 Phase 4 evidence log" for the recorded decision.
+ * inheriting sub-flag. The `LORE_USE_RUNTOOL_BATCH_CREATES`
+ * sub-flag does NOT inherit and stays default-OFF — its file carries
+ * the partial-commit security carve-out rationale.
  *
  * Operators can disable any consumer with an explicit `=0` (parent
  * disables every inheriting sub-flag at once; per-consumer disable
@@ -34,11 +30,11 @@
  *
  * Each consumer has its own fall-back-shape contract:
  *
- * - **Block-edit (#534)** — flagged-on consumers fall back to the
+ * - **Block-edit** — flagged-on consumers fall back to the
  *   existing REST/SDK path on the structured `RunToolBlockEditError`
  *   kinds (`no_match` / `multiple_matches` / `deletion_warning` /
  *   `restricted_resource`). Transient transport errors propagate.
- * - **Filter-SQL (#535)** — flagged-on consumers fall back per-call
+ * - **Filter-SQL** — flagged-on consumers fall back per-call
  *   on `SqlPartialResultError` (saturated `has_more: true` window)
  *   and on every non-`isSqlValidationError(err)` SDK error (401,
  *   429, 5xx, network blip, malformed body). Validation errors
@@ -50,19 +46,14 @@
  *
  * 200-wrapped `{ object: "error" }` envelopes from the `tools/run`
  * gateway are normalized into thrown `APIResponseError`s at the
- * SDK-`request` layer (`wrapWithRunToolEnvelopeNormalizer` in
- * `src/notion/client.ts`) so the proxy chain catches the throw
- * exactly as it would a native non-2xx error. Without that
- * normalization, the rate-limit and auth-refresh hooks would never
- * engage on gateway-shaped errors. See
- * `src/notion/runtool/client.ts` and the "Canonical
- * Error-Classification Vocabulary" section in
- * `src/notion/runtool/README.md` for the full contract.
+ * SDK-`request` layer (`wrapWithRunToolEnvelopeNormalizer`) so the
+ * proxy chain catches the throw exactly as it would a native non-2xx
+ * error. Without that normalization, the rate-limit and auth-refresh
+ * hooks would never engage on gateway-shaped errors.
  *
- * Same posture as the existing `LORE_DISABLE_*` switches in
- * `src/core/` — env-var checked at the call site, not threaded
- * through `.lore.yaml`, so an operator can flip behavior without
- * editing config.
+ * Same posture as the existing `LORE_DISABLE_*` switches — env-var
+ * checked at the call site, not threaded through .lore.yaml, so
+ * an operator can flip behavior without editing config.
  */
 
 const FLAG_TRUTHY = new Set(["1", "true", "yes", "on"])
@@ -79,11 +70,11 @@ const warnedUnrecognizedValues = new Set<string>()
  * Names the documented default for a given flag so the warning
  * line is self-contained — an incident operator at 3 AM doesn't
  * need to consult the README to know whether their typo'd disable
- * landed on the safe path. Per PR #549 review iteration 2 nit.
+ * landed on the safe path.
  *
  * Every flag in `RUNTOOL_FLAGS` (the test-side hermetic list)
- * defaults ON post-#543, EXCEPT `LORE_USE_RUNTOOL_BATCH_CREATES`
- * which carves out per #533's security review.
+ * defaults ON, EXCEPT `LORE_USE_RUNTOOL_BATCH_CREATES`
+ * which carves out per the batch-creates security review.
  */
 function describeFlagDefault(name: string): string {
   if (name === "LORE_USE_RUNTOOL_BATCH_CREATES") {
@@ -100,12 +91,12 @@ function emitUnrecognizedValueWarning(name: string, raw: string): void {
   const key = `${name}=${raw}`
   if (warnedUnrecognizedValues.has(key)) return
   warnedUnrecognizedValues.add(key)
-  // Post-#543 the unrecognized-value resolution silently changed
-  // (was OFF, now ON) for the parent and inheriting sub-flags.
-  // The warning fires on the first read so an incident-time
-  // rollback that types `LORE_USE_RUNTOOL=fasle` doesn't quietly
-  // leave the operator on the default-on path. Mirrors
-  // `error-helpers.ts:warnRunToolIntegrationSecretOnce` posture.
+  // The unrecognized-value resolution defaults to ON for the parent
+  // and inheriting sub-flags. The warning fires on the first read so
+  // an incident-time rollback that types `LORE_USE_RUNTOOL=fasle`
+  // doesn't quietly leave the operator on the default-on path.
+  // Mirrors `warnRunToolIntegrationSecretOnce`'s
+  // once-per-process posture.
   process.stderr.write(
     `[lore] notion-runtool warn: ignoring unrecognized ${name} value ` +
       `${JSON.stringify(raw)}; falling through to ${describeFlagDefault(name)}. ` +
@@ -133,10 +124,9 @@ function readFlag(env: NodeJS.ProcessEnv, name: string): boolean | null {
 }
 
 /**
- * True when `LORE_USE_RUNTOOL` is opted in. **Default ON** as of
- * issue #543 Phase 4 (2026-05-06). An explicit `LORE_USE_RUNTOOL=0`
- * disables; an unrecognized value (e.g. `"maybe"`) falls back to the
- * default ON.
+ * True when `LORE_USE_RUNTOOL` is opted in. **Default ON.**
+ * An explicit `LORE_USE_RUNTOOL=0` disables; an unrecognized value
+ * (e.g. `"maybe"`) falls back to the default ON.
  */
 export function isRunToolEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return readFlag(env, "LORE_USE_RUNTOOL") !== false
@@ -145,7 +135,7 @@ export function isRunToolEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
 /**
  * True when the block-edit sub-flag is on. An explicit
  * `LORE_USE_RUNTOOL_BLOCK_EDIT` setting wins; otherwise the value
- * inherits from `LORE_USE_RUNTOOL`. **On by default** (#543 flip).
+ * inherits from `LORE_USE_RUNTOOL`. **On by default.**
  *
  * The inheritance lets an operator opting out of RunTool flip the
  * parent once and disable every inheriting sub-flag, while leaving
@@ -161,9 +151,9 @@ export function isRunToolBlockEditEnabled(
 }
 
 /**
- * True when the issue #535 SQL filter sub-flag is on. An explicit
+ * True when the SQL filter sub-flag is on. An explicit
  * `LORE_USE_RUNTOOL_FILTER_SQL` setting wins; otherwise the value
- * inherits from `LORE_USE_RUNTOOL`. **On by default** (#543 flip).
+ * inherits from `LORE_USE_RUNTOOL`. **On by default.**
  *
  * Gates the `query_data_sources` SQL filter helpers in
  * `EntityService.findByName` / `findByAlias`,
@@ -180,9 +170,9 @@ export function isRunToolFilterSqlEnabled(
 }
 
 /**
- * True when the issue #541 search sub-flag is on. An explicit
+ * True when the search sub-flag is on. An explicit
  * `LORE_USE_RUNTOOL_SEARCH` setting wins; otherwise the value
- * inherits from `LORE_USE_RUNTOOL`. **On by default** (#543 flip).
+ * inherits from `LORE_USE_RUNTOOL`. **On by default.**
  *
  * Gates the RunTool `search` consumer in
  * `MemoryService.fetchSemanticPages`'s flag-on branch. The branch
@@ -201,9 +191,9 @@ export function isRunToolSearchEnabled(
 }
 
 /**
- * True when the issue #542 SQL aggregate sub-flag is on. An explicit
+ * True when the SQL aggregate sub-flag is on. An explicit
  * `LORE_USE_RUNTOOL_AGGREGATE` setting wins; otherwise the value
- * inherits from `LORE_USE_RUNTOOL`. **On by default** (#543 flip).
+ * inherits from `LORE_USE_RUNTOOL`. **On by default.**
  *
  * Gates the `query_data_sources` SQL aggregate helpers — currently
  * the build-entities orphan-rate metric (`querySubjectGroupCountsViaRunTool`).
@@ -217,8 +207,8 @@ export function isRunToolSearchEnabled(
  * see this flag silently fall back per-call. Operators rolling out
  * RunTool need to be able to flip filter-SQL on while leaving
  * aggregate off (and vice-versa) until both paths are independently
- * verified on their target workspace tier. See `README.md`'s
- * "Capability gate is the bigger risk" subsection.
+ * verified on their target workspace tier — the capability-gate
+ * subsection of the runtool README covers the operator runbook.
  */
 export function isRunToolAggregateEnabled(
   env: NodeJS.ProcessEnv = process.env

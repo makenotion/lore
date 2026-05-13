@@ -64,8 +64,7 @@ import { FACT_PROPS, MEMORY_PROPS } from "./notion/schema.js"
 
 /**
  * Build the per-process `MemoryScopeContext` that `MemoryService` and
- * `FactService` use to filter narrow-scope rows out of default reads
- * (issue #283).
+ * `FactService` use to filter narrow-scope rows out of default reads.
  *
  * Slots are populated from environment variables exported by the
  * caller — the same env-driven posture as the existing
@@ -93,8 +92,8 @@ import { FACT_PROPS, MEMORY_PROPS } from "./notion/schema.js"
  * `setScopeContext`.
  */
 /**
- * Probe the live Memories and Facts data sources for the issue #283
- * scope columns. Returns `true` when both DBs declare `Scope Kind` and
+ * Probe the live Memories and Facts data sources for the scope
+ * columns. Returns `true` when both DBs declare `Scope Kind` and
  * `Expires At`; returns `false` when either column is missing on
  * either DB.
  *
@@ -102,7 +101,7 @@ import { FACT_PROPS, MEMORY_PROPS } from "./notion/schema.js"
  * is safe to enable. A vault that hasn't yet run `lore migrate` has
  * no scope columns, so threading the filter through every read would
  * fail with `validation_error` on the first call; the probe lets us
- * gracefully degrade to pre-#283 retrieval shape until migration
+ * gracefully degrade to unscoped retrieval shape until migration
  * runs.
  *
  * The probe is one fan-out of `dataSources.retrieve` calls (already
@@ -136,21 +135,19 @@ export async function probeScopeColumnsPresent(
 }
 
 /**
- * Resolve the issue #533 batch-creates feature flag from the
+ * Resolve the batch-creates feature flag from the
  * environment.
  *
  * **The write-path flag does NOT inherit from the parent
  * `LORE_USE_RUNTOOL` quarantine knob.** Parity with the read-path
- * sub-flags (search / aggregate, parked under issue #532) was the
- * original sketch in #533's "Approach," but the security review on
- * PR #538 (S2) flagged that as a footgun: an operator setting
- * `LORE_USE_RUNTOOL=1` to dogfood a future Phase-2 read path would
+ * sub-flags (search / aggregate) would be a footgun: an operator
+ * setting `LORE_USE_RUNTOOL=1` to dogfood a future read path would
  * silently enable a write-path experiment with a partial-commit
- * failure mode. The runtool README's quarantine framing also paints
- * the parent flag as a read-path knob ("two read-path cleanup
- * wins"), which is at odds with implicit write-path enablement.
- * Write-path sub-flags should be loud — operators must opt in
- * explicitly with `LORE_USE_RUNTOOL_BATCH_CREATES=1`.
+ * failure mode. The runtool quarantine framing also paints the
+ * parent flag as a read-path knob ("two read-path cleanup wins"),
+ * which is at odds with implicit write-path enablement. Write-path
+ * sub-flags should be loud — operators must opt in explicitly with
+ * `LORE_USE_RUNTOOL_BATCH_CREATES=1`.
  *
  * Resolution table:
  *
@@ -159,18 +156,15 @@ export async function probeScopeColumnsPresent(
  * | `"1"`                            | (any)              | true   |
  * | (anything else)                  | (any)              | false  |
  *
- * Default-off is the safety contract: an operator running 0.13.x
- * with no env vars set sees byte-identical pre-#533 behavior on the
- * auto-mention emission path, and `lore migrate --dedup-keys --merge`
- * is the authoritative collapse path for any duplicates a future
- * flag-on rollout might leak (same posture as the existing dedup
- * race documentation in `src/core/AGENTS.md`).
+ * Default-off is the safety contract: an operator with no env vars
+ * set sees the non-batched auto-mention emission path, and
+ * `lore migrate --dedup-keys --merge` is the authoritative collapse
+ * path for any duplicates a future flag-on rollout might leak.
  *
  * The fail-loud-on-typo posture matters here because malformed
- * sub-flag strings (`"true"`, `"yes"`, `"on"`) used to silently
- * fall through to the parent flag — pinned by the principal review
- * on PR #538 (Strong rec #2). The sub-flag now reads strictly:
- * any value other than `"1"` is treated as "off."
+ * sub-flag strings (`"true"`, `"yes"`, `"on"`) would silently
+ * fall through to the parent flag if accepted. The sub-flag reads
+ * strictly: any value other than `"1"` is treated as "off."
  *
  * Read the env once at services-init time so the flag does not flip
  * mid-process. Tests that need to flip should call
@@ -187,7 +181,7 @@ export function resolveRunToolBatchCreatesFlag(
  * Derive the user-facing host root that RunTool's `create_pages`
  * relation property values must use, given the resolved API host.
  *
- * **Empirical findings (PR #538 live verification, May 2026):**
+ * **Empirical findings (live verification):**
  * the server validates the relation URL host against the
  * workspace's user-facing domain and rejects mismatches with
  * `400 validation_error: Invalid page URL ... for property X`.
@@ -312,14 +306,13 @@ export interface LoreServices {
    */
   identity: AuthorIdentityResolver
   /**
-   * Which 0.10.0 source produced the resolved token (issue #475).
+   * Which source produced the resolved token.
    * Surfaced here so downstream paths — notably the autosave / digest
    * background spawns — can apply the auth-source-aware env partition
    * (skip bearer-token forwarding when the child can re-resolve from
-   * `~/.config/notion/auth.json` directly) without re-running
-   * `resolveAuth`. Mirrors the install-path partition in
-   * `cli/commands/install.ts:buildMcpEnv`. See `AuthSource` in
-   * `src/config.ts`.
+   * ~/.config/notion/auth.json directly) without re-running
+   * `resolveAuth`. Matches the install-path partition in
+   * `buildMcpEnv`.
    *
    * Required (not optional) so a future refactor that forgets to
    * populate it in a new init seam fails the typecheck rather than
@@ -329,14 +322,14 @@ export interface LoreServices {
    */
   authSource: AuthSource
   /**
-   * Process-local wake-up aggregator cache (issue #495). The
+   * Process-local wake-up aggregator cache. The
    * long-running MCP server threads this into `loadWakeUpData` so
    * back-to-back wake-ups within one user turn skip the ~10-call
    * fan-out. Every MCP write action calls `wakeupCache.bumpEpoch()`
    * so a save followed by a wake-up re-fetches; the 30s TTL is the
    * cross-process staleness ceiling.
    *
-   * Hooks (`src/hooks/helpers.ts`) and CLI commands construct
+   * Hooks and CLI commands construct
    * services per invocation and exit, so they never observe a cache
    * hit. They still thread the cache for type uniformity. See
    * `WakeUpCache`'s header docstring for the surface picture and the
@@ -348,7 +341,7 @@ export interface LoreServices {
    */
   wakeupCache: WakeUpCache
   /**
-   * Resolved scope context for the current process (issue #283).
+   * Resolved scope context for the current process.
    * `MemoryService` and `FactService` already hold their own copies
    * via `setScopeContext`; this snapshot is exposed on the services
    * bundle so MCP audit responses, the `lore status` rendering, and
@@ -358,19 +351,18 @@ export interface LoreServices {
    */
   scopeContext: MemoryScopeContext
   /**
-   * Per-upstream read-only service bundles (issue #286, "Read
+   * Per-upstream read-only service bundles ("Read
    * inheritance"). One entry per configured `upstreamVaults` row in
-   * `.lore.yaml`, sorted by priority ascending. `[]` on single-vault
-   * configs — single-vault behavior is byte-identical to pre-#286
-   * because no fan-out branch reaches this surface when the list is
-   * empty.
+   * .lore.yaml, sorted by priority ascending. `[]` on single-vault
+   * configs — single-vault behavior collapses to the unchanged
+   * single-vault read path because no fan-out branch reaches this
+   * surface when the list is empty.
    *
    * Each bundle lazy-loads the upstream on first access via
    * `loadReaders()`, returning `{ memories }` for read paths to fan
    * out across. (A future fact-side inheritance surface would
-   * extend the readers shape — `UpstreamReaders` in
-   * `src/core/topology-readers.ts` is the canonical type today.)
-   * The shared primary client is reused so the process-wide
+   * extend the readers shape — `UpstreamReaders` is the canonical type
+   * today.) The shared primary client is reused so the process-wide
    * rate-limit bucket governs the combined fan-out.
    * Load failures degrade gracefully: `loadReaders()` returns `null`
    * and `bundle.lastError` carries the error; wake-up renders only
@@ -384,8 +376,7 @@ export interface LoreServices {
    *
    * `readonly` on the array is defense-in-depth — callers that
    * mutate the upstream list at runtime would silently re-shape
-   * inheritance for every subsequent `loadWakeUpData` call (PR
-   * #589 review).
+   * inheritance for every subsequent `loadWakeUpData` call.
    */
   upstreams: readonly UpstreamVaultBundle[]
 }
@@ -407,7 +398,7 @@ export async function initServicesFromConfig(
   // stays under Notion's per-token rps ceiling without per-call-site work.
   // The wrapper governs concurrency (fan-out memory), request rate (token
   // bucket), and 429 shared backoff; defaults match Notion's ~3 rps
-  // public guidance. The RunTool wrapper (`src/notion/runtool/client.ts`)
+  // public guidance. The RunTool wrapper
   // dispatches through `client.request()`, which IS proxied here, so
   // RunTool calls automatically share this gate.
   const client = authRefresh
@@ -421,11 +412,10 @@ export async function initServicesFromConfig(
       })
     : createLimitedClient(createClient(auth.token, auth.baseUrl), rateLimitOptions)
 
-  // Issue #535 F5: warn-once if a RunTool feature flag is on AND
-  // the resolved auth source is a known integration-secret path
-  // that RunTool will reject with 403. Without this, every
-  // flagged-on call silently falls back to REST and the operator
-  // sees zero RunTool traffic.
+  // Warn-once if a RunTool feature flag is on AND the resolved auth
+  // source is a known integration-secret path that RunTool will
+  // reject with 403. Without this, every flagged-on call silently
+  // falls back to REST and the operator sees zero RunTool traffic.
   if (
     isRunToolEnabled() ||
     isRunToolBlockEditEnabled() ||
@@ -446,22 +436,22 @@ export async function initServicesFromConfig(
   const db = vault.databases
   const projects = new ProjectService(client, db.projects)
   const topics = new TopicService(client, db.topics)
-  // Resolve the per-process scope context (issue #283). Populated
-  // from environment variables that callers (CLI commands, MCP host
-  // wrappers, hooks) export deliberately. Empty defaults are safe —
-  // the default scope filter falls back to "broadcast-only" when an
-  // identity slot is missing, so retrieval is consistent with
-  // pre-#283 behavior on a vault that never declares scope.
+  // Resolve the per-process scope context. Populated from environment
+  // variables that callers (CLI commands, MCP host wrappers, hooks)
+  // export deliberately. Empty defaults are safe — the default scope
+  // filter falls back to "broadcast-only" when an identity slot is
+  // missing, so retrieval is consistent on a vault that never declares
+  // scope.
   //
   // Migration safety: the scope filter references `Scope Kind` and
   // `Expires At` columns. If those columns are missing on a legacy
   // vault that hasn't yet run `lore migrate`, every default read
-  // would fail with a `validation_error`. We probe the live
-  // schema once at startup and disable the filter when the columns
-  // are absent — recall on legacy vaults stays byte-identical to
-  // pre-#283 until the operator runs migration. A one-line stderr
-  // notice surfaces the gap so the operator knows to run
-  // `lore migrate`.
+  // would fail with a `validation_error`. We probe the live schema
+  // once at startup and disable the filter when the columns are
+  // absent — recall on legacy vaults stays byte-identical to the
+  // non-scoped retrieval shape until the operator runs migration. A
+  // one-line stderr notice surfaces the gap so the operator knows to
+  // run `lore migrate`.
   const scopeCtx = resolveMemoryScopeContext()
   const scopeColumnsReady = await probeScopeColumnsPresent(client, db).catch(
     () => {
@@ -477,18 +467,18 @@ export async function initServicesFromConfig(
   if (!scopeColumnsReady) {
     process.stderr.write(
       "[lore] scope/lifetime columns missing on this vault — recall " +
-        "is using pre-#283 retrieval shape. Run `lore migrate` to add " +
-        "Scope Kind / Scope Key / Audience / Lifetime / Expires At and " +
-        "enable scope-aware retrieval.\n"
+        "is using pre-#283 retrieval shape. Run `lore migrate` " +
+        "to add Scope Kind / Scope Key / Audience / Lifetime / Expires " +
+        "At and enable scope-aware retrieval.\n"
     )
   }
   const effectiveScopeCtx = scopeColumnsReady ? scopeCtx : undefined
-  // Issue #535: MemoryService and EntityService route through
+  // MemoryService and EntityService route through
   // `runTool(client, "query_data_sources", params)` — the same shared
   // SDK client they already hold, dispatched via `client.request()`
   // which is proxied by `createLimitedClient` and (when applicable)
-  // `createAuthRefreshingClient`. No separate runtool object,
-  // no parallel rate-limit gate.
+  // `createAuthRefreshingClient`. No separate runtool object, no
+  // parallel rate-limit gate.
   const memories = new MemoryService(client, db.memories, effectiveScopeCtx)
   const facts = new FactService(client, db.facts, effectiveScopeCtx, {
     useRunToolBatchCreates: resolveRunToolBatchCreatesFlag(),
@@ -501,7 +491,7 @@ export async function initServicesFromConfig(
   // Decisions Requiring Attention section apply the same default
   // scope filter as `lore-memory` reads.
   const decisions = new DecisionService(client, db.memories, effectiveScopeCtx)
-  // Tasks (P3-02) are likewise Memories-DB backed via the `Kind = task`
+  // Tasks are likewise Memories-DB backed via the `Kind = task`
   // discriminator. Tasks are the canonical surface for tracked work.
   // Scope context threads through so `lore-task action='list'`
   // applies the same default scope filter.
@@ -607,8 +597,9 @@ function errorMessage(err: unknown): string | undefined {
  * Initialize all services from config. Shared by both MCP server and CLI.
  *
  * `options.driftCheck` controls whether the post-load schema drift scan
- * fires; see `DriftCheckMode`. Defaults to skipping the scan, which keeps
- * narrow CLI surfaces (search / mine / digest) off the scan path.
+ * fires; the `DriftCheckMode` union enumerates the modes. Defaults to
+ * skipping the scan, which keeps narrow CLI surfaces (search / mine /
+ * digest) off the scan path.
  */
 export async function initServices(
   cwd?: string,
@@ -617,16 +608,16 @@ export async function initServices(
   const workDir = cwd ?? process.cwd()
 
   // 0.10.0: honor LORE_CONFIG_ROOT for MCP-spawned children.
-  // The install path (`buildMcpEnv` in `cli/commands/install.ts`)
+  // The install path (`buildMcpEnv`)
   // forwards this static value into the MCP entry so the spawned
-  // child resolves the right `.lore.yaml` without re-walking up
+  // child resolves the right .lore.yaml without re-walking up
   // from the host's spawn-time cwd (which may not match the
   // operator's vault directory). Falls back to the upward search
   // when the env var is unset, preserving the original CLI /
   // hooks paths.
   //
   // Surface a friendly error when the env var points at a
-  // directory that lacks `.lore.yaml` so the operator sees
+  // directory that lacks .lore.yaml so the operator sees
   // guidance rather than the raw `ENOENT` from `loadConfig`.
   //
   // Whitespace-only values (e.g., `LORE_CONFIG_ROOT="   "` from a

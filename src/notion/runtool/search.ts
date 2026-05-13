@@ -1,6 +1,5 @@
 /**
- * High-level wrapper for the `search` consumer (issue #541, Phase 2 of
- * issue #532).
+ * High-level wrapper for the `search` consumer.
  *
  * The wrapper sits between `MemoryService.fetchSemanticPages`'s
  * flag-on branch and the shared `runTool(client, "search", params)`
@@ -16,7 +15,7 @@
  * 2. **Data-source scoping.** Lore's only `search` consumer scopes to
  *    the Memories data source; the wrapper requires `dataSourceId`
  *    and builds the canonical `collection://<id>` URL exactly the
- *    way `query_data_sources` (#535) does. The semantic post-filter
+ *    way `query_data_sources` does. The semantic post-filter
  *    pipeline in `MemoryService` does NOT need to re-scope because
  *    `data_source_url` does it server-side.
  *
@@ -28,7 +27,7 @@
  *    observable. Validation 400s, 401, 429, and 5xx propagate
  *    verbatim so the rate-limit and auth-refresh proxies stay
  *    authoritative on those classes (canonical vocabulary pinned
- *    by the `update_page` wrapper in `client.ts`).
+ *    by the `update_page` wrapper).
  *
  * Response materialization is the consumer's job. RunTool's `search`
  * returns `{ id, title, url, type, ... }` per hit; the consumer
@@ -281,7 +280,7 @@ function isRestrictedResourceError(err: unknown): boolean {
 
 /** Test seam — reset the once-per-process warning latch so individual
  *  test cases can independently exercise the warning path. The latch
- *  itself lives in `error-helpers.ts` so all RunTool consumers share
+ *  itself lives so all RunTool consumers share
  *  one warning per process; the seam is re-exported under the
  *  per-consumer name for legacy test-fixture compatibility. */
 export function __resetRunToolSearchWarningsForTest(): void {

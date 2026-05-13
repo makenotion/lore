@@ -3,47 +3,47 @@
  * endpoint via the Notion SDK's public `Client.request()` method.
  *
  * Why route through `client.request()` rather than a fresh `fetch()`:
- * the existing `createLimitedClient` Proxy in `src/notion/rate-limit.ts`
+ * the existing `createLimitedClient` Proxy
  * recursively wraps every method on the SDK client, including
  * `request`, so calls dispatched here automatically inherit the same
  * token-bucket pacing, concurrency cap, and shared 429 backoff every
- * other Notion call observes. Likewise the auth-refreshing Proxy in
- * `src/notion/client.ts:createAuthRefreshingClient` walks `request` as
- * a top-level method and applies its 401-retry hook, so a stale
- * ntn-resolved token rotates here exactly the way it does for
- * `pages.create`.
+ * other Notion call observes. Likewise the auth-refreshing Proxy
+ * (`createAuthRefreshingClient`) walks `request` as a top-level method
+ * and applies its 401-retry hook, so a stale ntn-resolved token rotates
+ * here exactly the way it does for `pages.create`.
  *
  * That composition is the load-bearing reason this wrapper does NOT
- * open its own fetch path or its own rate-limit gate. Issue #532's
- * non-goals list pins it: "RunTool calls must compose with the same
- * configured request pacing/backoff used by the Notion client wrapper.
- * No parallel rate-limit gate." A future contributor reaching for
- * `axios` / `node:https` directly would silently double the effective
- * outbound rps and is forbidden.
+ * open its own fetch path or its own rate-limit gate. The RunTool
+ * quarantine contract pins it: "RunTool calls must compose with the
+ * same configured request pacing/backoff used by the Notion client
+ * wrapper. No parallel rate-limit gate." A future contributor reaching
+ * for `axios` / `node:https` directly would silently double the
+ * effective outbound rps and is forbidden.
  *
  * The wrapper is intentionally narrow. Three consumers are wired today:
  *
- * - `create_pages` (issue #533, PR #538) — `runTool(client,
+ * - `create_pages` — `runTool(client,
  *   "create_pages", params)` consumed by `FactService.createBatchWithDedup`
- *   for batched auto-`mentions` fact emission. Implementation in
- *   `create-pages.ts`.
- * - `update_page` (issue #534, PR #537) — `runTool(client, "update_page",
+ *   for batched auto-`mentions` fact emission. Implementation in the
+ *   create-pages wrapper.
+ * - `update_page` — `runTool(client, "update_page",
  *   params)` consumed by `MemoryService.upsertByTopicKey`,
- *   `MemoryService.rekeyTopicKey`, and `memory-encoding.ts`'s anchored
- *   large-body fix. Implementation in `runUpdatePageContent` below
+ *   `MemoryService.rekeyTopicKey`, and the anchored large-body memory
+ *   encoding fix. Implementation in `runUpdatePageContent` below
  *   (with `RunToolBlockEditError` and the once-per-process
- *   `restricted_resource` warning); high-level wrapper in
- *   `update-page.ts`.
- * - `query_data_sources` (issue #535, PR #539) — `runTool(client,
+ *   `restricted_resource` warning); high-level wrapper in the
+ *   update-page module.
+ * - `query_data_sources` — `runTool(client,
  *   "query_data_sources", params)` consumed by `EntityService.findByName`
  *   / `findByAlias`, `MemoryService.listForNearDuplicates`, and
  *   `lore conflicts scan`'s already-judged pre-filter. Implementation in
- *   `query.ts` (with `SqlPartialResultError` for saturated `has_more`
- *   windows and `isSqlValidationError` to escalate query-shape drift).
+ *   the query module (with `SqlPartialResultError` for saturated
+ *   `has_more` windows and `isSqlValidationError` to escalate
+ *   query-shape drift).
  *
- * Phase 1 of issue #532 still has `search` outstanding; that consumer
- * will extend `RunToolRequestMap` / `RunToolResponseMap` in a follow-up
- * PR without touching this dispatcher.
+ * Additional consumers (`search`, future write tools) extend
+ * `RunToolRequestMap` / `RunToolResponseMap` without touching this
+ * dispatcher.
  */
 
 import type { Client } from "@notionhq/client"
@@ -72,21 +72,21 @@ import type {
  * fall-back-able via `RunToolBlockEditError`, so flagged-on calls
  * would hard-fail end-to-end.
  *
- * The integration test in `update-page.test.ts` instantiates a real
+ * The integration test instantiates a real
  * `Client` with a stub `fetch` and asserts the URL the SDK actually
  * builds, so a future regression that re-introduces the leading
  * `/v1/` (or any other path-prefix mistake) fails loudly.
  *
- * The `runtool/README.md` documents the HTTP endpoint as
+ * The runtool README documents the HTTP endpoint as
  * `POST /v1/tools/run` because that's the operator-facing wire form;
  * the SDK constant is necessarily relative.
  */
 export const RUNTOOL_PATH = "tools/run"
 
 /**
- * Backwards-compatible alias for `RUNTOOL_PATH`. Retained because
- * issue #534's wrapper landed with this spelling before the cross-PR
- * normalization with #538 — preserved as an export so any external
+ * Backwards-compatible alias for `RUNTOOL_PATH`. Retained because an
+ * earlier wrapper used this spelling before the cross-consumer
+ * normalization — preserved as an export so any external
  * consumer reading the constant doesn't break on the rename. The
  * canonical spelling is `RUNTOOL_PATH`.
  */
@@ -97,21 +97,21 @@ export const RUN_TOOL_PATH = RUNTOOL_PATH
  *
  * The body envelope is built here (`{ type, [type]: params }`) so
  * callers cannot mis-spell the discriminator or the inner key. The
- * response is returned bare — per the Phase 0 README's "asymmetric
+ * response is returned bare — per the README's "asymmetric
  * envelope" rule, the response is the per-tool resource directly,
  * NOT wrapped in `{ type, [type]: ... }`.
  *
  * Errors propagate verbatim from the SDK so the caller can branch on
  * the surfaced status / code (a 403 actor-type rejection vs a 429
  * vs a 5xx) and decide whether to fall back to the legacy REST
- * path. Per issue #532's "fallback contract": if a RunTool call
+ * path. The "fallback contract": if a RunTool call
  * fails while the flag is on, fall back per-call to the existing
  * REST/SDK path and increment a fallback counter. Default-off
  * behavior remains canonical, so a RunTool failure never harms a
  * non-flagged caller.
  *
  * @param client The shared rate-limited, auth-refreshing Notion client.
- * @param tool The RunTool API tool name (`"create_pages"` for #533).
+ * @param tool The RunTool API tool name (`"create_pages"`, etc.).
  * @param params The per-tool request shape from `RunToolRequestMap`.
  */
 export async function runTool<T extends RunToolName>(
@@ -134,14 +134,14 @@ export async function runTool<T extends RunToolName>(
 
   // 200-wrapped `{ object: "error" }` bodies surfaced by the `tools/run`
   // gateway are normalized into a thrown `APIResponseError` inside
-  // `wrapWithRunToolEnvelopeNormalizer` (`src/notion/client.ts`), which
+  // `wrapWithRunToolEnvelopeNormalizer`, which
   // sits BELOW the rate-limit and auth-refresh proxies. Throwing at the
   // SDK-`request` layer is what lets `createLimitedClient`'s 429 catch
   // pause the shared bucket and `createAuthRefreshingClient`'s 401 catch
   // run its one-shot retry. A guard at this seam (after the proxy
   // chain has already resolved) would skip both. Tests pin the layering
-  // in `runtool.test.ts` (envelope-rejection contract) and
-  // `client.test.ts` (proxy composition under envelope errors).
+  // (envelope-rejection contract and proxy composition under envelope
+  // errors).
   return await client.request<RunToolResponseMap[T] & object>({
     method: "post",
     path: RUNTOOL_PATH,
@@ -150,7 +150,7 @@ export async function runTool<T extends RunToolName>(
 }
 
 // ---------------------------------------------------------------------------
-// Issue #534 — `update_page` / `update_content` block-edit wrapper
+// `update_page` / `update_content` block-edit wrapper
 // ---------------------------------------------------------------------------
 
 /**
@@ -184,7 +184,7 @@ export async function runTool<T extends RunToolName>(
  *   different capability surface and is already known to work for the
  *   operator. The wrapper emits a single once-per-process warning so the
  *   operator sees why the flagged-on call is silently downgrading; the
- *   `runtool/README.md`'s "silently degrade … but loud enough" mandate
+ *   runtool README's "silently degrade … but loud enough" mandate
  *   pins this posture.
  */
 export type RunToolBlockEditFailureKind =
@@ -216,7 +216,7 @@ export class RunToolBlockEditError extends Error {
  *
  * Network-shaped failures (transport errors, malformed JSON) are also
  * re-thrown verbatim. The wrapper does not classify them as "fall back"
- * because issue #532's fallback contract draws the line at "RunTool
+ * because the fallback contract draws the line at "RunTool
  * call failed for any reason while the flag is on" — the consumer's
  * try/catch decides whether to escalate or use the REST/SDK path.
  */
@@ -331,7 +331,7 @@ function isRestrictedResourceError(err: unknown): boolean {
  *  test cases can independently exercise the warning path. NOT for
  *  production use; production callers want the once-per-process
  *  semantics so a sustained 403 doesn't spam stderr. The latch itself
- *  lives in `error-helpers.ts` so every RunTool consumer shares a
+ *  lives so every RunTool consumer shares a
  *  single warning per process. */
 export function __resetRunToolWarningsForTest(): void {
   __resetWarnRunToolRestrictedResourceOnceForTest()

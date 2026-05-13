@@ -72,29 +72,29 @@ import { notionPageUrl } from "../../notion/url.js"
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
-  /** Issue #495 — see `withWakeUpCacheBump`'s docstring for the marker contract. */
+  /** The `withWakeUpCacheBump` docstring carries the marker contract. */
   noopWrite?: boolean
 }
 
 /**
  * Trigram threshold for the `lore-memory action='save'` near-duplicate
- * probe. Matches the P2-03 spec's initial guess — tune after rollout if
+ * probe. Initial guess — tune after rollout if
  * we see false positives flooding the response footer on legitimately-
  * distinct memories sharing boilerplate title wording.
  */
 const MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7
 
-/** Cap the probe candidate pool. See `findNearDuplicates` docstring. */
+/** Cap the probe candidate pool. The `findNearDuplicates` docstring carries the rationale. */
 const NEAR_DUPLICATE_POOL_LIMIT = 50
 
 /** Cap the session-scoped duplicate pool for Stop-spawn atomic learnings. */
 const AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT = 50
 
 /**
- * Topic-key format (0.9.0/#06): kebab-case path like `decision/jwt-auth`.
+ * Topic-key format: kebab-case path like `decision/jwt-auth`.
  * Requires a `family/key` shape — at least one slash separator —
  * because the `suggest-topic-key` heuristic always emits
- * `${family}/${slug}` (per `src/core/topic-key.ts`'s `KIND_TO_FAMILY`)
+ * `${family}/${slug}` (per the `KIND_TO_FAMILY` table)
  * and the upsert grouping is meaningful only when the family prefix is
  * present. Single-segment tokens (e.g. `decision` alone) are rejected
  * at the Zod boundary so the contract between suggester and upsert
@@ -255,10 +255,9 @@ const KINDS = [
  * back to `KINDS` for save / update.
  *
  * `satisfies readonly MemoryKind[]` plus `_SuggestKindExhaustive` below
- * mirror the `Record<MemoryKind, string | null>` exhaustiveness contract
- * in `src/core/topic-key.ts` at this MCP boundary: adding a new
- * `MemoryKind` without adding it here is a compile error, not a silent
- * runtime rejection from Zod.
+ * enforce the `Record<MemoryKind, string | null>` exhaustiveness contract
+ * at this MCP boundary: adding a new `MemoryKind` without adding it
+ * here is a compile error, not a silent runtime rejection from Zod.
  */
 const SUGGEST_KIND_VALUES = [
   "note",
@@ -383,8 +382,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // lifecycle records owned by `lore-task`, so neither forms a
     // recurring topic — the suggester (`action='suggest-topic-key'`)
     // returns null for `kind: 'note'` and `kind: 'task'` for the same
-    // reason. The contract is documented in AGENTS.md ("Topic keys for
-    // evolving memories").
+    // reason.
     //
     // **Position is load-bearing**: this guard runs BEFORE
     // `resolveProjectIds`, BEFORE `topics.getOrCreate` (which CREATES
@@ -536,7 +534,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
 
     const authorPromise = resolveAuthorForWrite(args.author, services.identity)
 
-    // Active-task cross-reference probe (issue 0.7.0/11). Starts only
+    // Active-task cross-reference probe. Starts only
     // after the blocking autosave-learning dedup gate clears: duplicate
     // early returns avoid this advisory read entirely because no new memory
     // exists to cross-reference. This intentionally trades a small non-duplicate
@@ -591,7 +589,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       )
     }
 
-    // Topic-key upsert dispatch (0.9.0/#06). When `topicKey` is set,
+    // Topic-key upsert dispatch. When `topicKey` is set,
     // the save path looks for an existing memory with that key +
     // identical project-set and appends a revision block instead of
     // creating a fresh row. The lookup (`findByTopicKey`) is the first
@@ -636,7 +634,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
             decidedAt: args.decidedAt,
             // Scope / lifetime — fresh-create branch lands the scope
             // verbatim; append-revision branch silently preserves the
-            // existing row's scope. Issue #283.
+            // existing row's scope.
             scope: args.scope,
           })
           .then((result) => ({
@@ -661,7 +659,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           author: resolvedAuthor,
           agent: args.agent,
           session: args.session,
-          // Scope / lifetime (issue #283). The Zod schema accepts the
+          // Scope / lifetime. The Zod schema accepts the
           // `MemoryScopeInput` shape verbatim; pass through as-is so the
           // service layer translates it onto the Notion column writes.
           scope: args.scope,
@@ -720,7 +718,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       { memoryId: memory.id, projectIds: memory.projectIds }
     )
 
-    // Auto-emit `mentions` facts (issue 0.8.0/#07). Two non-obvious
+    // Auto-emit `mentions` facts. Two non-obvious
     // choices the spec pins:
     //
     // 1. Post-create placement. The `Source` relation needs the
@@ -739,8 +737,8 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     let autoMentionsAttempted = 0
     if (!autoMentionsDisabled) {
       // `decodeTextEntities` matches what `createWithDedup` applies
-      // internally (`src/core/fact.ts`'s decode-at-write-boundary
-      // step). Decoding here as well keeps the on-the-wire `Object`
+      // internally inside `FactService` at the decode-at-write
+      // boundary. Decoding here as well keeps the on-the-wire `Object`
       // value byte-identical between the input the dedup-key probe
       // hashes and the input the update-time covered-set check
       // compares against — without it, an entity name surfaced by
@@ -775,19 +773,19 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         // `.status === 'fulfilled'` filter at the consumer; the
         // current shape lets the success/failure callbacks return
         // typed booleans the count operation can sum directly.
-        // Issue #283 review — system-managed `mentions` facts must
-        // carry the saved memory's scope so a session-scoped memory
+        // System-managed `mentions` facts must carry the saved
+        // memory's scope so a session-scoped memory
         // does not silently emit broadcast facts that surface to
         // every reader via `lore-query action='ask'`. The conversion
         // from `Memory.scope` (read shape) to `MemoryScopeInput`
         // (write shape) lives in `types.ts:memoryScopeToInput`.
         const factScope = memoryScopeToInput(memory.scope)
-        // Issue #533 — route the per-entity fan-out through
-        // `createBatchWithDedup` so the auto-mention emission can opt
-        // into RunTool's `create_pages` batch primitive when
+        // Route the per-entity fan-out through `createBatchWithDedup`
+        // so the auto-mention emission can opt into RunTool's
+        // `create_pages` batch primitive when
         // `LORE_USE_RUNTOOL_BATCH_CREATES=1`. Flag-off, the method
-        // is byte-equivalent to the pre-#533 `Promise.all(map(...))`
-        // shape via `Promise.allSettled(inputs.map(createWithDedup))`.
+        // is byte-equivalent to `Promise.all(map(...))` shape via
+        // `Promise.allSettled(inputs.map(createWithDedup))`.
         // The per-entity failure-isolation (a 400 on one mentions
         // fact must not sink the surviving creates) is preserved by
         // mapping the settled-result kind back into the boolean
@@ -827,7 +825,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // Header line distinguishes upsert-append from fresh-create so the
     // agent knows which path fired without parsing for revision count.
     // "Created (revision 1, topic key 'X')" / "Appended as revision N
-    // (topic key 'X')" wording matches the spec footer for #06.
+    // (topic key 'X')" wording matches the upsert spec.
     const headerLine = args.topicKey
       ? writeResult.upserted
         ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${args.topicKey}')`
@@ -858,7 +856,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} attempted`
       )
     }
-    // Promotion advisory (0.9.0/#15). Renders only when the upsert
+    // Promotion advisory. Renders only when the upsert
     // path returned a non-null advisory — fresh-create upserts and
     // non-topicKey saves both surface as null upstream and produce no
     // footer. The `<this-memory-id>` placeholder in the suggestion is
@@ -867,7 +865,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     //
     // Loose `!= null` rather than strict `!== null`: the runtime type
     // contract guarantees `PromotionAdvisory | null` (the writePromise
-    // type pin above is authoritative), but #06-era test fixtures cast
+    // type pin above is authoritative), but older test fixtures cast
     // through `as never` and don't supply `promotionAdvisory` at all,
     // so they observe `undefined` here. Treating both as "no advisory"
     // is correct under both shapes; production callers cannot supply
@@ -886,7 +884,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
 }
 
 /**
- * Render the promotion advisory footer (issue 0.9.0/#15) for the
+ * Render the promotion advisory footer for the
  * upsert response. Surfaces "this topic chain is getting long,
  * consider promoting" when revision count or body length crosses
  * threshold. Informational only — never blocks the save, never
@@ -916,10 +914,10 @@ function formatPromotionAdvisory(
 }
 
 /**
- * Render the active-task cross-reference footer (issue 0.7.0/11).
+ * Render the active-task cross-reference footer.
  *
- * Mirrors the duplicate-task footer on `lore-task action='create'`
- * (issue 0.7.0/10) — heading line + one bulleted line per task with
+ * Matches the duplicate-task footer on `lore-task action='create'` —
+ * heading line + one bulleted line per task with
  * title, state, and a copy-paste closure CTA. Heading wording differs
  * deliberately: the duplicate-task footer says "close any that are
  * obsolete" because it surfaces *competing* trackers; this footer says
@@ -1326,7 +1324,7 @@ async function handleUpdate(
           affectsIds: args.affectsIds,
           alternatives: args.alternatives,
           consequences: args.consequences,
-          // Scope / lifetime update (issue #283). Same `MemoryScopeInput`
+          // Scope / lifetime update. Same `MemoryScopeInput`
           // shape as save; absent fields leave columns untouched, explicit
           // `null` clears select / date columns, empty strings clear
           // rich_text columns.
@@ -1443,25 +1441,24 @@ async function handleUpdate(
       updated = await loadCurrent()
     }
 
-    // Diff-driven re-emission of `mentions` facts (DEFERRED-03,
-    // issue #491). An update that surfaces a fresh entity in title
-    // / keywords / synopsis emits a new `mentions` fact for it; an
-    // update that REMOVES an entity invalidates the corresponding
-    // existing fact. Symmetric contract — without invalidate-on-
-    // remove, every entity rename (e.g. `MemoryService` →
-    // `MemoryService.create`) would ratchet up the orphan-fact
-    // count for the source memory, polluting `lore-query
-    // action='ask'` and the entity-graph wake-up surface with
-    // labels the memory no longer references.
+    // Diff-driven re-emission of `mentions` facts. An update that
+    // surfaces a fresh entity in title / keywords / synopsis emits a
+    // new `mentions` fact for it; an update that REMOVES an entity
+    // invalidates the corresponding existing fact. Symmetric contract
+    // — without invalidate-on-remove, every entity rename (e.g.
+    // `MemoryService` → `MemoryService.create`) would ratchet up the
+    // orphan-fact count for the source memory, polluting `lore-query
+    // action='ask'` and the entity-graph wake-up surface with labels
+    // the memory does not reference.
     //
     // Pre-query existing `mentions` facts sourced from this memory
     // so per-entity `createWithDedup` only fires for entities the
     // graph doesn't already cover (current − previous), and
     // `services.facts.invalidate` only fires for facts whose Object
-    // is no longer surfaced (previous − current). The covered /
-    // stale check is by Object alone, deliberately: a title-only
-    // update that leaves the entity set untouched changes every
-    // existing fact's subject text but emits zero new rows AND
+    // is missing from the current surface (previous − current). The
+    // covered / stale check is by Object alone, deliberately: a
+    // title-only update that leaves the entity set untouched changes
+    // every existing fact's subject text but emits zero new rows AND
     // zero invalidates. `createWithDedup`'s dedup-key probe is the
     // second-line defense against a concurrent autosave landing
     // the same triple between our pre-query and our writes.
@@ -1482,7 +1479,7 @@ async function handleUpdate(
     // The query runs unconditionally inside the gate (no
     // `mentionedEntities.length > 0` short-circuit), because an
     // update that drops every entity from the extraction surface
-    // (e.g. retitling `Investigated PR #1234 latency regression`
+    // (e.g. retitling `Investigated auth-service latency regression`
     // to `Generic refactor notes`) must still invalidate the now-
     // stale facts, and we cannot know whether existing facts are
     // present without querying.
@@ -1517,7 +1514,7 @@ async function handleUpdate(
           // Filtering by reader scope here would silently leave
           // out-of-scope mentions facts orphaned when the memory is
           // re-titled, defeating the whole point of the invalidate
-          // half (issue #283 + #491).
+          // half of the auto-mentions diff.
           includeOutOfScope: true,
         })
       } catch (err) {
@@ -1552,33 +1549,31 @@ async function handleUpdate(
       // row's `Confidence Score` for no operator-visible reason.
       // Decoding here keeps the diff in one namespace and lets the
       // create-side `createWithDedup` triple-hash absorb the
-      // post-migration row naturally rather than via destructive
+      // migrated row naturally rather than via destructive
       // replacement. `decodeTextEntities` is idempotent so already-
       // decoded rows pass through unchanged.
       const decodedExisting = existing.map((fact) => ({
         fact,
         decodedObject: decodeTextEntities(fact.object),
       }))
-      // Issue #283 review — covered/stale must split on BOTH Object
-      // identity AND scope match. An existing fact whose decoded
-      // Object is still surfaced but whose scope no longer matches
-      // the post-update memory scope (because the operator
-      // re-scoped the source memory via `lore-memory action='update'`
-      // with `scope: { ... }`) needs to be invalidated AND re-emitted
-      // under the new scope, otherwise the fact stays at its
-      // original scope indefinitely and either leaks or hides under
-      // the new reader context. Without this branch, scope-only
-      // updates produce zero fact writes for Object-stable
-      // entities and the source memory's mentions facts become
-      // structurally desynchronized from the memory's identity slot.
+      // Covered/stale must split on BOTH Object identity AND scope
+      // match. An existing fact whose decoded Object is still
+      // surfaced but whose scope does not match the post-update
+      // memory scope (because the operator re-scoped the source
+      // memory via `lore-memory action='update'` with `scope: { ... }`)
+      // needs to be invalidated AND re-emitted under the new scope,
+      // otherwise the fact stays at its original scope indefinitely
+      // and either leaks or hides under the new reader context.
+      // Without this branch, scope-only updates produce zero fact
+      // writes for Object-stable entities and the source memory's
+      // mentions facts become structurally desynchronized from the
+      // memory's identity slot.
       const updatedScopeBundle = memoryScopeToInput(updated.scope)
-      // Issue #283 round-4 — reuse `scopesMatchForMerge` directly so
-      // the auto-mentions diff and `createWithDedup` cannot drift on
-      // the equality rule. Pre-fix the diff branch had a local
-      // `factScopeMatchesUpdate` helper duplicating the same
-      // contract; the round-3 review's "lockstep promise" called
-      // out the duplication, and round-4 collapses it onto the
-      // single shared helper.
+      // Reuse `scopesMatchForMerge` directly so the auto-mentions
+      // diff and `createWithDedup` cannot drift on the equality
+      // rule. A duplicate local helper would silently diverge from
+      // the shared contract; sharing the helper keeps the rule in
+      // lockstep.
       const factScopeMatchesUpdate = (fact: import("../../types.js").Fact): boolean =>
         scopesMatchForMerge(fact.scope ?? null, updatedScopeBundle)
       const covered = new Set(
@@ -1589,8 +1584,8 @@ async function handleUpdate(
       const currentSet = new Set(mentionedEntities)
       const newCandidates = mentionedEntities.filter((entity) => !covered.has(entity))
       // Stale = existing facts whose decoded Object isn't surfaced
-      // by the post-update extraction OR whose scope no longer
-      // matches the post-update memory scope. The set difference is
+      // by the post-update extraction OR whose scope does not
+      // match the post-update memory scope. The set difference is
       // structurally the inverse of the new-candidate filter; both
       // are derived from the same `covered` / `currentSet` pair —
       // both built in the decoded namespace — so a future refactor
@@ -1616,7 +1611,7 @@ async function handleUpdate(
       // doesn't mask an otherwise-successful diff. Creates and
       // invalidates fan out together via one `Promise.all` so
       // the writes overlap on the wire — the shared Notion client
-      // wrapper's rate-limit middleware (`src/notion/rate-limit.ts`)
+      // wrapper's rate-limit middleware
       // bounds in-flight count to `notion.rateLimit.concurrency`
       // (default 3) regardless of which branch the call came from.
       // An aggressive rename (e.g. 5 stale facts + 3 fresh
@@ -1628,8 +1623,8 @@ async function handleUpdate(
       autoMentionsAttempted = newCandidates.length
       staleInvalidatedAttempted = staleFacts.length
       if (newCandidates.length > 0 || staleFacts.length > 0) {
-        // Issue #283 review — propagate the post-update scope onto
-        // newly-emitted mentions facts. A `lore-memory action='update'`
+        // Propagate the post-update scope onto newly-emitted mentions
+        // facts. A `lore-memory action='update'`
         // call that re-titles a session-scoped memory must produce
         // mentions facts with the SAME session scope; otherwise the
         // re-emit would land broadcast facts that leak across
@@ -1637,21 +1632,20 @@ async function handleUpdate(
         //
         // Re-scoping reconciliation: when scope itself changes on
         // update, the diff branch above already invalidates every
-        // existing mentions fact whose Object no longer matches and
-        // re-emits with the post-update scope. For Object-stable
-        // entities, the dedup probe below sees the existing
-        // (broadcast or otherwise-scoped) fact and falls through to
-        // a fresh row under the new scope — see
-        // `scopesMatchForMerge`. The invalidate+create pair is what
-        // makes this work without an explicit "re-scope existing
-        // facts" pass.
+        // existing mentions fact whose Object is missing from the
+        // post-update extraction and re-emits with the post-update
+        // scope. For Object-stable entities, the dedup probe below
+        // sees the existing (broadcast or otherwise-scoped) fact
+        // and falls through to a fresh row under the new scope —
+        // `scopesMatchForMerge` is the predicate that gates this.
+        // The invalidate+create pair is what makes this work without
+        // an explicit "re-scope existing facts" pass.
         const updatedFactScope = memoryScopeToInput(updated.scope)
-        // Issue #533 — split the create branch onto
-        // `createBatchWithDedup` so flag-on saves issue one
-        // `create_pages` call instead of N. Run the batched creates
-        // and the per-fact invalidates in parallel (`Promise.all` of
-        // a tagged tuple) so the wall-clock parity with the pre-#533
-        // shape is preserved when the flag is off — the rate-limit
+        // Split the create branch onto `createBatchWithDedup` so
+        // flag-on saves issue one `create_pages` call instead of N.
+        // Run the batched creates and the per-fact invalidates in
+        // parallel (`Promise.all` of a tagged tuple) so the wall-clock
+        // parity is preserved when the flag is off — the rate-limit
         // middleware paces the union without the handler choosing
         // ordering. Failure isolation per entity is preserved: the
         // batch wrapper returns `PromiseSettledResult[]` and the
@@ -1773,8 +1767,8 @@ interface SuggestTopicKeyArgs {
 }
 
 /**
- * Render a `TopicKeySuggestion` as the two-line tool response
- * documented in 0.9.0/07. Distinguishes "suggestion" from "no
+ * Render a `TopicKeySuggestion` as a two-line tool response.
+ * Distinguishes "suggestion" from "no
  * suggestion" cleanly so the agent can branch on the first line
  * (`Suggested topic key:` vs `No suggestion`) without parsing the
  * reason.
@@ -1818,10 +1812,10 @@ async function handleArchive(
 }
 
 // -------------------------------------------------------------------------
-// Compare verdict (issue 0.9.0/05) — frozen vocabulary, mirrors the locked
-// judgment prompt in `src/core/prompts/conflict-judge.ts`. Adding a verdict
-// requires bumping `CONFLICT_JUDGE_PROMPT_VERSION` in lockstep so historical
-// stored verdicts remain interpretable.
+// Compare verdict — frozen vocabulary, matches the locked judgment
+// prompt rendered by `renderConflictJudgePrompt`. Adding a verdict
+// requires bumping `CONFLICT_JUDGE_PROMPT_VERSION` in lockstep so
+// historical stored verdicts remain interpretable.
 // -------------------------------------------------------------------------
 
 const COMPARE_VERDICTS = [
@@ -1883,7 +1877,7 @@ function validateAffectedMemoryId(input: CompareArgs): void {
 
 /**
  * Compose the tool-error message body for a post-dispatch
- * `recordCompared` failure. `toolError` (`src/mcp/helpers.ts`) only
+ * `recordCompared` failure. `toolError` only
  * forwards `error.message`, so every diagnostic field the operator
  * needs to manually reconcile lives in the message text itself —
  * structured `readonly` properties on a custom Error class would be
@@ -1909,9 +1903,9 @@ function validateAffectedMemoryId(input: CompareArgs): void {
  * same Notion-side failure and an operator needs to inspect manually.
  */
 function inconsistentCompareStateMessage(args: {
-  // Issue #283 round-3 — `null` is the new "pair-scope rejected
-  // emission" sentinel; same render as the legacy `undefined`
-  // ("not-yet-set"). Both collapse to `"(none)"` in the message.
+  // `null` is the "pair-scope rejected emission" sentinel; same render
+  // as the legacy `undefined` ("not-yet-set"). Both collapse to
+  // `"(none)"` in the message.
   dispatchedFactId: string | null | undefined
   decrementedMemoryId: string
   compareNotesEntryToWriteA: string
@@ -1986,8 +1980,8 @@ interface CompareResultInput {
   memoryB: { id: string; title: string }
   affectedMemoryId?: string
   /**
-   * Issue #283 round-3 — `null` is the new "pair-scope rejected
-   * fact emission" signal. The compare verdict landed in Compare
+   * `null` is the "pair-scope rejected fact emission" signal.
+   * The compare verdict landed in Compare
    * Notes on both rows but no broadcast-able derived fact was
    * created. The renderer surfaces a one-line note when this
    * fires so the operator knows the audit state is intact even
@@ -2040,7 +2034,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
           ].join("\n"),
         },
       ],
-      // Issue #495: idempotency gate short-circuited before any
+      // Idempotency gate short-circuited before any
       // `recordCompared` / dispatch path ran — Notion was not
       // mutated and the wake-up cache should NOT be invalidated.
       // See `withWakeUpCacheBump`'s docstring for the marker
@@ -2260,8 +2254,8 @@ async function handleCompare(
     //    affected target throws" — runs BEFORE the dispatch helper so
     //    a non-decision pair never hits `decisions.supersede`.
     let dispatchResult: {
-      // Issue #283 round-3 — `factId` may be `null` when the
-      // pair-scope rule rejected fact emission. The compare verdict
+      // `factId` may be `null` when the pair-scope rule rejected
+      // fact emission. The compare verdict
       // still landed in Compare Notes; the broadcast-able derived
       // fact was skipped to avoid leaking the narrower row's title
       // across the broader reader context. `factEmissionSkippedReason`
@@ -2526,7 +2520,7 @@ export async function handleExpand(
       content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n---\n\n")}` }],
     }
 
-    // Citation-as-evidence (issue 0.8.0/05). `expand` fetches a
+    // Citation-as-evidence. `expand` fetches a
     // memory's body for the agent to read directly — that is a cite.
     // Touches only the rows that hydrated successfully; rows that
     // 404'd / errored are already reported as `(unresolved: ...)` and
@@ -2629,7 +2623,7 @@ export async function handleRecall(
       ],
     }
 
-    // Citation-as-evidence (issue 0.8.0/05). Touch fires AFTER the
+    // Citation-as-evidence. Touch fires AFTER the
     // response is composed — write latency cannot block the agent's
     // read. Failure handling and contract details live in
     // `fireTouchOnRead`'s docstring.
@@ -2642,7 +2636,7 @@ export async function handleRecall(
 }
 
 // -------------------------------------------------------------------------
-// Inbox review (issue #281, AC #3 + AC #4) — flip a Status: proposed
+// Inbox review — flip a Status: proposed
 // memory to accepted (`approve`) or rejected (`reject`) and append a
 // Reviewed audit block recording the verdict, reviewer, and timestamp.
 // -------------------------------------------------------------------------
@@ -2672,7 +2666,7 @@ async function handleReview(
     // and surface as the bare service-layer "reviewer must be a
     // non-empty string" error instead of the friendly
     // "set LORE_USER_NAME or pass `--reviewer`" guidance. Mirrors
-    // the CLI's resolver-trim posture (`src/cli/commands/inbox.ts`)
+    // the CLI's resolver-trim posture
     // for surface parity.
     const trimmedExplicit = args.reviewer?.trim()
     const resolved =
@@ -2724,7 +2718,7 @@ interface PromoteArgs {
 }
 
 /**
- * MCP equivalent of `lore promote` (issue #286). Resolves the named
+ * MCP equivalent of `lore promote`. Resolves the named
  * promotion target from `config.promotionTargets`, resolves the
  * promoter identity via the standard `LORE_USER_NAME` → `users.me`
  * chain (NO client-supplied override on this surface — see below),
@@ -2733,19 +2727,19 @@ interface PromoteArgs {
  * **No client-supplied promoter.** The MCP surface is agent-driven;
  * a client-supplied `promoter` string would let any caller forge
  * the `**Promoter:**` line of the cross-vault audit block,
- * defeating the audit gap the topology design exists to close
- * (issue #286 / PR #589 review). The promoter is the server-
- * resolved identity exclusively; operators wanting an override use
+ * defeating the audit gap the topology design exists to close.
+ * The promoter is the server-resolved identity exclusively;
+ * operators wanting an override use
  * the CLI's `--promoter` flag instead.
  *
- * **`dryRun: true`** mirrors the CLI's `--dry-run` flag. Returns a
+ * **`dryRun: true`** matches the CLI's `--dry-run` flag. Returns a
  * preview of the audit block + resolved status without paying any
  * target-vault round-trip. Mis-resolved targets, missing identity,
  * and same-vault rejection all surface BEFORE the source read so a
  * runaway loop cannot burn target-vault quota before discovering
  * its inputs are wrong.
  *
- * Defaults mirror the CLI for surface parity: targets with
+ * Defaults match the CLI for surface parity: targets with
  * `requireReview: true` land the promoted row as `Status: proposed`,
  * the source's status passes through otherwise. The MCP action is
  * the agent-facing equivalent of the CLI; both call into the same
@@ -2980,7 +2974,7 @@ export async function handleSearch(
       ],
     }
 
-    // Citation-as-evidence (issue 0.8.0/05). Touches every surfaced
+    // Citation-as-evidence. Touches every surfaced
     // row, not just the slice the agent might read — surfacing alone
     // is the signal that the row passed the filter and is contextually
     // relevant. Fires post-response composition.
@@ -3016,10 +3010,10 @@ function formatScoreTrace(explain: SearchExplain[]): string {
     // decimals covers RRF_K up to ~100000 without information loss.
     const rrf = e.rrfScore === null ? "—" : e.rrfScore.toFixed(6)
     // Three decimals matches the resolution of `confidenceFactor`'s
-    // [0.5, 1.0] range (the floor controlled by `CONFIDENCE_FACTOR_MIN`
-    // in `src/types.ts`). 0.500 / 0.750 / 1.000 are the operationally
-    // meaningful values; deeper precision would surface arithmetic
-    // noise without diagnostic value.
+    // [0.5, 1.0] range (the floor controlled by `CONFIDENCE_FACTOR_MIN`).
+    // 0.500 / 0.750 / 1.000 are the operationally meaningful values;
+    // deeper precision would surface arithmetic noise without
+    // diagnostic value.
     const cf = e.confidenceFactor.toFixed(3)
     return `${e.memoryId} branch=${e.branch} contains=${contains} semantic=${semantic} rrf=${rrf} confidenceFactor=${cf}`
   })
@@ -3082,8 +3076,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     consequences: richTextPropertySchema("consequences").optional(),
     // Same kebab-case regex as `lore-memory action='save'`'s
     // (forthcoming) topic-key parameter — the format contract is
-    // identical across save and update. See 0.9.0/#14 for the
-    // re-key semantics.
+    // identical across save and update.
     topicKey: z.string().regex(TOPIC_KEY_REGEX).optional(),
     scope: scopeInputSchema,
   }),
@@ -3151,7 +3144,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-memory — polymorphic dispatcher (P3-01)
+  // lore-memory — polymorphic dispatcher
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-memory",
