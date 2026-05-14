@@ -12,12 +12,14 @@
  * - `FactService.touchOnRead` matches `MemoryService.touchOnRead`: same-
  *   day short-circuit, seed-decay-bump on null, decay-bump on stale,
  *   per-row onError isolation.
- * - `FactService.invalidate` reads + decrements + writes Valid Until
- *   atomically (one `pages.update`).
+ * - `FactService.invalidate` serializes per fact id, then reads +
+ *   decrements + writes Valid Until atomically (one `pages.update`).
  * - `runBuildFactConfidenceScoresMigration` plan + execute, with the
  *   `confidenceScore !== null` skip rule.
  */
 
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { FactService } from "./fact.js"
@@ -388,6 +390,49 @@ describe("FactService.invalidate", () => {
     })
     // 0.8 halved by DECREMENT_FACTOR = 0.5, no decay because today === lastReferencedAt
     expect(args.properties["Confidence Score"]).toEqual({ number: 0.4 })
+  })
+
+  it("serializes concurrent confidence decrements for the same fact id", async () => {
+    const stateDir = mkdtempSync(
+      join(process.env["TMPDIR"] ?? "/tmp", "lore-fact-lock-test-")
+    )
+    vi.stubEnv("HOME", stateDir)
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      const factId = "f-concurrent"
+      let confidenceScore = 0.8
+      const retrieveSpy = vi.fn(async () =>
+        pageWithConfidence({
+          id: factId,
+          confidenceScore,
+          lastReferencedAt: today,
+          createdAt: "2026-04-01T00:00:00.000Z",
+        })
+      )
+      const updateSpy = vi.fn(async (args: UpdateArgs) => {
+        const next = args.properties["Confidence Score"] as { number?: number }
+        if (typeof next.number === "number") confidenceScore = next.number
+        return {}
+      })
+      const client = {
+        pages: { update: updateSpy, retrieve: retrieveSpy, create: vi.fn() },
+        dataSources: { query: vi.fn() },
+      } as unknown as Client
+      const service = new FactService(client, DB)
+
+      await Promise.all([service.invalidate(factId), service.invalidate(factId)])
+
+      expect(retrieveSpy).toHaveBeenCalledTimes(2)
+      expect(updateSpy).toHaveBeenCalledTimes(2)
+      const scores = updateSpy.mock.calls.map(
+        ([args]) => (args.properties["Confidence Score"] as { number: number }).number
+      )
+      expect(scores).toEqual([0.4, 0.2])
+      expect(confidenceScore).toBe(0.2)
+    } finally {
+      vi.unstubAllEnvs()
+      rmSync(stateDir, { recursive: true, force: true })
+    }
   })
 
   it("falls back to a Valid Until + Invalidated At write when the read fails", async () => {

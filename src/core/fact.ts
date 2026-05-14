@@ -2796,35 +2796,12 @@ export class FactService {
    * single `pages.update` so the WRITE itself is atomic — a transient
    * failure either lands all three columns or none.
    *
-   * **The read+compute+write trio is NOT atomic at the Notion API.**
-   * Notion has no compare-and-swap or conditional-write primitive (same
-   * posture as `createWithDedup`'s dedup race). Two concurrent
-   * invalidates of the same fact — cross-process autosaves, a
-   * `lore-correct` racing a `lore-fact action='invalidate'` in the
-   * same session, or a `lore-memory action='update'`
-   * computing the same `staleFacts` list as a parallel explicit
-   * invalidate — can land EITHER one OR two confidence decrements
-   * depending on interleaving:
-   *
-   * - **Both reads before either write** (A.read → B.read → A.write
-   *   → B.write): both readers see the same pre-decrement
-   *   `confidenceScore`, both compute `s * 0.5`, and the second
-   *   writer overwrites with the same halved value. Final state is
-   *   `s * 0.5` — halved exactly once.
-   * - **Read interleaved with write** (A.read → A.write → B.read →
-   *   B.write): the second reader sees the post-first-write
-   *   `s * 0.5`, computes `s * 0.25`, and the second writer lands
-   *   that quarter value. Final state is `s * 0.25` — halved twice.
-   *
-   * Which interleaving lands depends on Notion API latency, the
-   * shared rate-limit middleware queue position, and the mix of
-   * concurrent callers; the runtime can't choose between them. The
-   * decrement is therefore advisory under concurrency: the
-   * invalidate contract (`Valid Until = today`) holds because the
-   * final `pages.update` is atomic, but the score lands somewhere
-   * in `[s * 0.25, s * 0.5]` for two parallel invalidators on the
-   * same row. Matches `MemoryService.decrementConfidence`'s
-   * concurrency posture; both ship under the same contract.
+   * The read+compute+write trio is serialized per fact id because Notion
+   * has no compare-and-swap or conditional-write primitive. The lock makes
+   * concurrent invalidators queue behind the first writer, then read the
+   * updated score, so each invalidate call contributes exactly one
+   * confidence decrement. The final `pages.update` remains the atomic
+   * boundary for `Valid Until`, `Invalidated At`, and the score columns.
    *
    * **Archived rows short-circuit.** The helper retrieves
    * the row directly (rather than via `getById`, which collapses the
@@ -2869,6 +2846,15 @@ export class FactService {
        * the row exists or is accessible (consistent with how `setSource`
        * treats `sourceMemoryId`).
        */
+      sourceMemoryId?: string
+    } = {}
+  ): Promise<void> {
+    return withEntityRelationLocks([id], () => this.invalidateLocked(id, opts))
+  }
+
+  private async invalidateLocked(
+    id: string,
+    opts: {
       sourceMemoryId?: string
     } = {}
   ): Promise<void> {

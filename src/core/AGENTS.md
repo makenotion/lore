@@ -2494,37 +2494,18 @@ problem with the invalidate write is distinguishable from
 transient dedup races on the create side.
 
 **Concurrent invalidate against the same fact id.**
-`FactService.invalidate` is documented as advisory under
-concurrency: the `Valid Until` write is idempotent (two writes
-produce the same date), but the confidence-score decrement is a
-non-atomic read-compute-write — Notion has no compare-and-swap on
-property updates. Two parallel invalidators on the same fact can
-land either ONE or TWO decrements depending on interleaving: if
-both reads happen before either write, both compute `s → s/2`
-against the same pre-decrement snapshot and the final value is
-halved once; if the second read happens after the first write, the
-second decrement sees the post-first-write `s/2` and lands `s/4`.
-Same posture as `src/core/fact.ts`'s read/compute/write contract —
-this AGENTS.md prose is the cross-reference, not a contradicting
-spec. Pre-#491 the race was bounded to two surfaces: explicit
-`lore-fact action='invalidate'` and the compare-dispatch confidence
-path (which has the `compare_dispatch` ledger guard precisely for
-this reason). After #491, every `lore-memory action='update'` with
-extraction-relevant args becomes a potential second writer — e.g.
-an operator running `lore-fact action='invalidate'` on a stale
-auto-mention while a concurrent `lore-memory action='update'`
-retitles the same memory, or two parallel updates against the same
-memory each computing the same `staleFacts` list from the same
-`existing` snapshot. The blast radius for auto-mentions
-specifically is small (these facts ship at `confidence:
-speculative` with low seed scores, and the auto-mentions surface
-only halves the score on invalidate, never on read), so 0.12.x
-ships without a per-fact lock; if real-vault data shows the race
-materializing, the fix shape is the same as #265's task-reuse plan
-— lift the existing per-id lock primitive in
-`src/core/entity-relation-lock.ts` (the canonical filesystem-lock
-helper used by `mergeEntities` and `FactService.createWithDedup`)
-or open a per-fact-id lock for the invalidate write.
+`FactService.invalidate` serializes the confidence read/compute/write
+with the existing per-id filesystem lock primitive. The `Valid Until`
+write is idempotent, but `Confidence Score` must apply one decrement
+per invalidate call. Acquiring the lock before `pages.retrieve` and
+holding it through the update/retry path makes parallel invalidators
+queue: the second caller reads the first caller's written score and
+lands the next decrement instead of overwriting with the same value.
+This covers explicit `lore-fact action='invalidate'` and
+auto-mentions diff invalidation from `lore-memory action='update'`.
+Compare-dispatch contradiction handling is governed by its own ledger
+and memory-confidence path, not by this fact-id lock. The cost is one
+filesystem lock per invalidate call.
 
 **Out of scope: decision-side emission.** `lore-decision
 action='create'` already emits `decided_by` facts via its `affects`
