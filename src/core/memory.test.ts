@@ -2582,9 +2582,8 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       async (_args: {
         page_id: string
         type: string
-        replace_content_range?: {
-          content: string
-          content_range: string
+        replace_content?: {
+          new_str: string
           allow_deleting_content: boolean
         }
         insert_content?: { content: string }
@@ -2727,7 +2726,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     })
     expect(createArgs.properties["Revision Count"]).toEqual({ number: 1 })
     // Body write fires on initial create via `insert_content`, NOT
-    // `replace_content_range` — the upsert path's append shape is
+    // `replace_content` — the upsert path's full-body rewrite is
     // reserved for subsequent revisions.
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
@@ -2739,7 +2738,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
   it("appends a revision block, bumps Revision Count, and updates Title when an existing match is found", async () => {
     // Existing memory at revision 1; upsert produces revision 2 with
     // a `## Revision 2 (YYYY-MM-DD)` block appended to the existing
-    // body via `replace_content_range`. Title bumps to the new value.
+    // body via `replace_content`. Title bumps to the new value.
     const existing = buildExistingMemoryPage("existing-mem", {
       topicKey: "decision/jwt-auth",
       projectIds: ["P1"],
@@ -2772,26 +2771,22 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
       type: string
-      replace_content_range: {
-        content: string
-        content_range: string
+      replace_content: {
+        new_str: string
         allow_deleting_content: boolean
       }
     }
-    expect(mdArgs.type).toBe("replace_content_range")
-    expect(mdArgs.replace_content_range.content_range).toBe("full_page")
-    expect(mdArgs.replace_content_range.allow_deleting_content).toBe(true)
+    expect(mdArgs.type).toBe("replace_content")
+    expect(mdArgs.replace_content.allow_deleting_content).toBe(true)
     // Append shape: existing body, then `---`, then the H2 revision
     // header, then the title-at-this-revision line, then the new body.
-    expect(mdArgs.replace_content_range.content).toContain("Initial body about JWT.")
-    expect(mdArgs.replace_content_range.content).toContain("---")
-    expect(mdArgs.replace_content_range.content).toContain("## Revision 2 (2026-04-30)")
-    expect(mdArgs.replace_content_range.content).toContain(
+    expect(mdArgs.replace_content.new_str).toContain("Initial body about JWT.")
+    expect(mdArgs.replace_content.new_str).toContain("---")
+    expect(mdArgs.replace_content.new_str).toContain("## Revision 2 (2026-04-30)")
+    expect(mdArgs.replace_content.new_str).toContain(
       "**Title at this revision:** JWT auth model with refresh rotation"
     )
-    expect(mdArgs.replace_content_range.content).toContain(
-      "Now we rotate refresh tokens."
-    )
+    expect(mdArgs.replace_content.new_str).toContain("Now we rotate refresh tokens.")
 
     // Property update bumps Title and Revision Count.
     expect(updateSpy).toHaveBeenCalledTimes(1)
@@ -3062,9 +3057,9 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       /property update timed out/
     )
     const firstWriteArgs = updateMarkdownSpy.mock.calls[0]![0] as {
-      replace_content_range: { content: string }
+      replace_content: { new_str: string }
     }
-    clientOpts.existingBody = firstWriteArgs.replace_content_range.content
+    clientOpts.existingBody = firstWriteArgs.replace_content.new_str
 
     const result = await service.upsertByTopicKey(input)
 
@@ -3148,10 +3143,10 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.revisionCount).toBe(3)
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
-      replace_content_range: { content: string }
+      replace_content: { new_str: string }
     }
-    expect(mdArgs.replace_content_range.content).toContain("## Revision 3 (2026-05-01)")
-    expect(mdArgs.replace_content_range.content.match(/## Revision 2/g)).toHaveLength(1)
+    expect(mdArgs.replace_content.new_str).toContain("## Revision 3 (2026-05-01)")
+    expect(mdArgs.replace_content.new_str.match(/## Revision 2/g)).toHaveLength(1)
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const updateArgs = updateSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
@@ -3216,9 +3211,9 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.revisionCount).toBe(3)
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
-      replace_content_range: { content: string }
+      replace_content: { new_str: string }
     }
-    expect(mdArgs.replace_content_range.content).toContain("## Revision 3 (2026-05-01)")
+    expect(mdArgs.replace_content.new_str).toContain("## Revision 3 (2026-05-01)")
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const updateArgs = updateSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
@@ -3295,12 +3290,10 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
 
     expect(result.revisionCount).toBe(3)
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
-      replace_content_range: { content: string }
+      replace_content: { new_str: string }
     }
-    expect(mdArgs.replace_content_range.content).toContain("## Revision 3 (2026-05-01)")
-    expect(mdArgs.replace_content_range.content).not.toContain(
-      "## Revision 100 (2026-05-01)"
-    )
+    expect(mdArgs.replace_content.new_str).toContain("## Revision 3 (2026-05-01)")
+    expect(mdArgs.replace_content.new_str).not.toContain("## Revision 100 (2026-05-01)")
     const updateArgs = updateSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
     }

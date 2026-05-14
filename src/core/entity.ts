@@ -876,10 +876,9 @@ export class EntityService {
         const content = `${existing.markdown}${separator}${mergeBlock}`
         await this.client.pages.updateMarkdown({
           page_id: entity.id,
-          type: "replace_content_range",
-          replace_content_range: {
-            content,
-            content_range: "full_page",
+          type: "replace_content",
+          replace_content: {
+            new_str: content,
             allow_deleting_content: true,
           },
         })

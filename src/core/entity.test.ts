@@ -970,13 +970,12 @@ describe("EntityService.archive", () => {
 
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith({
       page_id: "ent-archive",
-      type: "replace_content_range",
-      replace_content_range: {
-        content:
+      type: "replace_content",
+      replace_content: {
+        new_str:
           "Existing notes\n\n---\n\n" +
           "## Merged into AuthService\n\n" +
           "Merged into AuthService (ent-winner) on 2026-05-02.",
-        content_range: "full_page",
         allow_deleting_content: true,
       },
     })

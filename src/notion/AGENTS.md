@@ -190,10 +190,9 @@ await client.pages.updateMarkdown({
 // Replace content (existing page)
 await client.pages.updateMarkdown({
   page_id: id,
-  type: "replace_content_range",
-  replace_content_range: {
-    content: newMarkdown,
-    content_range: "full_page",
+  type: "replace_content",
+  replace_content: {
+    new_str: newMarkdown,
     allow_deleting_content: true,
   },
 })
