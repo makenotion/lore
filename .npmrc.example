@@ -1,0 +1,16 @@
+# Copy to .npmrc, or merge into an existing .npmrc, when consuming
+# @makenotion/lore from GitHub Packages with npm or Yarn 1.
+# Yarn Berry / Yarn 4 consumers should configure the same scope mapping in
+# .yarnrc.yml; see docs/dev-dependency-install.md.
+
+@makenotion:registry=https://npm.pkg.github.com
+
+# GitHub Packages requires authentication for the internal package. Prefer a
+# gh-managed token exposed through the environment:
+#
+#   gh auth refresh -h github.com -s read:packages
+#   export GITHUB_PACKAGES_TOKEN="$(gh auth token)"
+#
+# A classic Personal Access Token with read:packages also works. Do not commit
+# a populated .npmrc that contains a literal token.
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}

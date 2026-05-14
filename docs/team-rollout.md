@@ -163,20 +163,21 @@ integration and distribute that shared token.
 
 ### Step 2 — Each engineer runs (one-time, ~2 minutes)
 
-> **Pending first public publish.** `npm install -g @makenotion/lore` below
-> currently returns `E404` from `registry.npmjs.org` — the publish workflow
-> was retargeted to public npm in
-> [#561](https://github.com/makenotion/lore/pull/561) but the first release
-> tag has not been cut yet (tracked in
-> [#569](https://github.com/makenotion/lore/issues/569)). Until that lands,
-> install from a local clone instead:
->
-> ```bash
-> git clone https://github.com/makenotion/lore.git
-> cd lore && npm install && npm run build && npm link
-> ```
->
-> The post-publish steps below will work as-is once first publish succeeds.
+Lore releases are still internal-only on GitHub Packages. Before installing
+the package, expose a GitHub Packages token and make sure npm maps the
+`@makenotion` scope to `https://npm.pkg.github.com`:
+
+```bash
+gh auth refresh -h github.com -s read:packages
+export GITHUB_PACKAGES_TOKEN="$(gh auth token)"
+```
+
+Add this to `~/.npmrc` if it is not already present:
+
+```ini
+@makenotion:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
+```
 
 ```bash
 # 1. Install Lore (if not already pinned as a devDependency in the team repo)

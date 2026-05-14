@@ -20,17 +20,13 @@ context loading and session saving into supported hosts.
 
 ### 1. Install
 
-> **Pending first public publish.** The npm publish workflow was
-> retargeted to public `registry.npmjs.org` in
-> [#561](https://github.com/makenotion/lore/pull/561), but the first
-> release tag has not been cut yet —
-> `npm view @makenotion/lore --registry=https://registry.npmjs.org/`
-> currently returns `E404`. Until first publish lands (tracked in
-> [#569](https://github.com/makenotion/lore/issues/569)), install from a
-> local clone (option A below). The published-package commands in
-> option B will work as-is once the publish succeeds.
+> **Public npm publish is intentionally parked.** Lore still publishes
+> internal-only releases to GitHub Packages while the team finishes the
+> rollout. External users should install from a local clone for now.
+> Internal Notion engineers can install the package from GitHub Packages
+> after configuring the `@makenotion` registry mapping.
 
-#### Option A — local clone (works today, recommended while publish is pending)
+#### Option A — local clone
 
 ```bash
 git clone https://github.com/makenotion/lore.git
@@ -40,10 +36,23 @@ cd lore && npm install && npm run build && npm link
 `npm link` makes `lore` available globally on your `PATH` from the clone.
 Run `lore --version` to confirm, then continue with step 2 below.
 
-#### Option B — published package (works once first publish lands)
+#### Option B — internal GitHub Packages install
 
-When `@makenotion/lore` is on public npm, install with no `.npmrc` or
-authentication setup:
+Configure GitHub Packages access once:
+
+```bash
+gh auth refresh -h github.com -s read:packages
+export GITHUB_PACKAGES_TOKEN="$(gh auth token)"
+```
+
+Then ensure your npm config maps the `@makenotion` scope to GitHub Packages:
+
+```ini
+@makenotion:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
+```
+
+Install the package:
 
 ```bash
 npm install -g @makenotion/lore                       # global CLI

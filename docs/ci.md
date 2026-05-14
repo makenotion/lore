@@ -81,16 +81,14 @@ not to `ci.yml`.
 
 ## Why `publish.yml` doesn't affect forks
 
-`publish.yml` runs on `release: published` and `workflow_dispatch`. Neither
-event fires for a fork PR, so the workflow never executes from a fork.
-Broader publish-pipeline hardening (environment-gated publish job, required
-reviewers on the npm-publish environment, removing `workflow_dispatch` once
-release-driven publish is stable) is tracked under the package-distribution
-umbrella in [issue #554](https://github.com/makenotion/lore/issues/554) and
-the npm-retarget work in
-[issue #561](https://github.com/makenotion/lore/issues/561). This doc does
-not claim `publish.yml` is already buttoned up — only that its triggers
-prevent fork PRs from invoking it.
+`publish.yml` runs on `release: published`, which never fires for a fork PR,
+so the workflow never executes from a fork. The publish job writes to GitHub
+Packages with the release run's scoped `GITHUB_TOKEN`; it does not use public
+npm credentials. Broader publish-pipeline hardening is tracked under the
+package-distribution umbrella in
+[issue #554](https://github.com/makenotion/lore/issues/554). This doc does
+not claim `publish.yml` is already buttoned up — only that its trigger
+prevents fork PRs from invoking it.
 
 ## What the local dev hooks installer does in CI
 
