@@ -69,7 +69,7 @@ export async function startServer(): Promise<void> {
   // so reconnecting clients always observe the same string the rest
   // of the build advertises.
   const server = new McpServer(
-    { name: "lore", version: "0.13.1" },
+    { name: "lore", version: "0.14.0" },
     {
       capabilities: {
         tools: {},

@@ -23,7 +23,7 @@ import { profileCommand } from "./commands/profile.js"
 
 const program = new Command()
 
-program.name("lore").description("AI memory system backed by Notion").version("0.13.1")
+program.name("lore").description("AI memory system backed by Notion").version("0.14.0")
 
 program.addCommand(initCommand)
 program.addCommand(authCommand)

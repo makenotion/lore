@@ -11,12 +11,77 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-05-14
+
+### Added
+
+- Profile distribution, validation, installation, and migration workflows.
+  Operators can inspect, install, pin, and migrate exact
+  `<name>@<version>` profile bundles, and Lore now ships default and
+  support profile bundles with their schema, taxonomy, and prompts. (#619)
+- Cross-vault promotion workflows. `lore promote` and MCP promotion
+  actions can copy curated memories into reusable upstream context, with
+  inherited-section rendering and upstream read inheritance for downstream
+  vaults. (#584, #589, #591)
+- Memory maintenance tooling via `lore debt scan` and
+  `lore debt create-tasks`, covering stale, noisy, duplicated, and
+  low-confidence memory debt categories with task creation for follow-up
+  cleanup. (#585)
+- Temporal fact provenance and as-of recall, plus procedural memory
+  promotion and shared pinned context blocks for vault-wide coordination.
+  (#586, #587, #588)
+- Expanded eval coverage: LongMemEval bench running, simulated autosave
+  ingestion, hook-native longitudinal task evals, default profile loading,
+  a support pilot profile, and a live evaluation vault registry. (#597,
+  #601, #606, #609, #611, #612, #614, #624, #625)
+
+### Changed
+
+- Runtime feature flags are centralized behind a shared Lore feature-flag
+  module, and Codex hook flag handling now uses that runtime path. (#622,
+  #663)
+- Memory listing no longer fetches markdown bodies by default, the absent
+  body state is represented explicitly in types, and Notion rate limits
+  have endpoint-specific overrides based on probe evidence. (#600, #617,
+  #618)
+- New installs surface hook side effects in generated config, PAT/operator
+  onboarding docs were rewritten for public OSS usage, and GitHub Packages
+  publishing was restored through the release workflow. (#567, #561, #562,
+  #564, #582, #628)
+
+### Fixed
+
+- ntn auto-install archive downloads are integrity-verified, hook identity
+  prompt values are sanitized, lock contention handling is hardened, and
+  wake-up vault content is framed as untrusted host prompt input. (#599,
+  #655, #660, #661)
+- MCP tool errors are redacted more consistently, missing pinned-query
+  results are handled gracefully, and `lore mine` file selection handles
+  edge cases more reliably. (#649, #651, #652)
+- Migration and fact-maintenance paths are more robust: schema option
+  updates are hardened, curated entity relations survive
+  `build-entities`, fact invalidation confidence decrements serialize, and
+  migration coverage was expanded. (#650, #653, #654, #658)
+- Production npm audit advisories were cleared, source formatting is now
+  checked in CI, and local agent worktrees are excluded from Vitest
+  discovery. (#647, #648, #659)
+
 ### Removed
 
 - Removed deprecated auth fallbacks and compatibility exports. Lore now
   resolves credentials only from `NOTION_API_TOKEN` or ntn `auth.json`;
   `.lore.yaml` `auth.token` is rejected at config load, and the legacy
   auth migration command and OAuth helper exports have been deleted.
+  (#623)
+
+## [0.13.1] - 2026-05-07
+
+### Changed
+
+- Stop-hook autosave prompts and the foreground `lore-task` MCP tool
+  description now gate `lore-task action='create'` to tangential or
+  out-of-scope follow-up work; the session's primary objective is no
+  longer filed as a Lore task. (#550)
 
 ## [0.13.0] - 2026-05-04
 
@@ -970,7 +1035,9 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/makenotion/lore/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/makenotion/lore/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/makenotion/lore/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/makenotion/lore/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
