@@ -716,8 +716,8 @@ export async function fetchNearDuplicateCandidatePageIds(
  *
  * - `subjectEntityRaw`: the raw `SubjectEntity` cell value as
  *   stored in the SQL gateway (JSON-stringified array of full URLs
- *   on populated rows, or `null` / empty string on rows the
- *   migration hasn't re-pointed yet). The caller normalizes via
+ *   on populated rows, or `null` / empty string on rows without an
+ *   entity relation). The caller normalizes via
  *   `extractFirstRelationId(raw)` to recover the canonical Notion
  *   page id; passing the raw form through preserves the gateway's
  *   shape for callers that want to debug / log.

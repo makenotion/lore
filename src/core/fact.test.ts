@@ -1353,8 +1353,8 @@ describe("FactService.createWithDedup", () => {
   })
 
   it("fills only the missing entity side and leaves the populated side untouched", async () => {
-    // Mid-migration vault: subject was re-pointed by `--build-entities`
-    // but the object side hasn't landed yet. Asymmetric fill.
+    // Mid-migration vault: the subject side is populated but the object
+    // side has not landed yet. Asymmetric fill.
     client.dataSources.query.mockResolvedValueOnce({
       results: [
         factPage({

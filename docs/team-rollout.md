@@ -53,9 +53,9 @@ Self-service repair for a four-database vault:
    database with the supported schema and runs the additive schema
    migration so Facts gains `SubjectEntity` / `ObjectEntity`.
 3. Run `lore migrate --build-entities --yes` in a quiet window to create
-   canonical Entity rows and re-point existing Fact rows. The
-   row-level `SubjectKey` fallback remains available until every row is
-   backfilled.
+   canonical Entity rows and fill empty Fact entity relations. Populated
+   relations are preserved, and the row-level `SubjectKey` fallback remains
+   available until every row is backfilled.
 
 `lore vault ensure-entities --dry-run` previews the bootstrap step
 without writing. If a vault is missing any required child database other

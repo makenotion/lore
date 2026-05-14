@@ -304,7 +304,7 @@ before the Entities database was introduced only have four (no Entities);
 they need a one-time legacy migration via `lore vault ensure-entities` to
 create the Entities database and add the `SubjectEntity` / `ObjectEntity`
 relation columns to Facts, followed by `lore migrate --build-entities --yes`
-to re-point historical rows. See
+to fill historical rows that do not already have relation values. See
 [`docs/team-rollout.md#entities-database-cutover`](docs/team-rollout.md#entities-database-cutover).
 
 **Predicate values accepted by `lore-fact action='create'`**: `is_a`, `has_a`,

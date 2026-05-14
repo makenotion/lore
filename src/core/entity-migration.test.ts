@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest"
 import type { Entity, Fact } from "../types.js"
 import type { SqlSubjectGroupCount } from "../notion/runtool/query.js"
+import type { EntityService } from "./entity.js"
+import type { FactService } from "./fact.js"
 import {
+  buildEntities,
   computeOrphanRateFromAggregateRows,
   computeOrphanRateFromFacts,
   foldOrphanRateGroups,
@@ -40,6 +43,38 @@ function makeEntity(overrides: Partial<Entity>): Entity {
     description: overrides.description ?? "",
     projectIds: overrides.projectIds ?? [],
   }
+}
+
+type RelationUpdate = {
+  factId: string
+  relations: {
+    subjectEntityId?: string | null
+    objectEntityId?: string | null
+  }
+}
+
+function makeBuildEntitiesServices(inputFacts: Fact[], inputEntities: Entity[]) {
+  const updates: RelationUpdate[] = []
+  const facts = {
+    queryBySubject: async () => inputFacts,
+    setEntityRelations: async (
+      factId: string,
+      relations: RelationUpdate["relations"]
+    ) => {
+      updates.push({ factId, relations })
+    },
+  } as unknown as FactService
+  const entities = {
+    listAll: async () => inputEntities,
+    create: async () => {
+      throw new Error("test fixture should not create entities")
+    },
+    addAliases: async () => {
+      throw new Error("test fixture should not add aliases")
+    },
+  } as unknown as EntityService
+
+  return { facts, entities, updates }
 }
 
 describe("pickCanonical", () => {
@@ -178,6 +213,80 @@ describe("planEntityMigration", () => {
     // through `addAliases` (which post-filters to truly-new aliases)
     // rather than `create`.
     expect(memoryServicePlan.canonical).toBe("MemoryService")
+  })
+})
+
+describe("buildEntities", () => {
+  it("fills empty relation sides without overwriting populated curated sides", async () => {
+    const subjectEntity = makeEntity({
+      id: "ent-subject-canonical",
+      name: "MemoryService",
+    })
+    const objectEntity = makeEntity({
+      id: "ent-object-canonical",
+      name: "DataSourceQuery",
+    })
+    const { facts, entities, updates } = makeBuildEntitiesServices(
+      [
+        makeFact({
+          id: "fact-subject-curated",
+          subject: "MemoryService",
+          object: "DataSourceQuery",
+          subjectEntityId: "ent-subject-curated",
+          objectEntityId: null,
+        }),
+        makeFact({
+          id: "fact-object-curated",
+          subject: "MemoryService",
+          object: "DataSourceQuery",
+          subjectEntityId: null,
+          objectEntityId: "ent-object-curated",
+        }),
+      ],
+      [subjectEntity, objectEntity]
+    )
+
+    const result = await buildEntities(facts, entities, { apply: true })
+
+    expect(result.factsRepointed).toBe(2)
+    expect(updates).toEqual([
+      {
+        factId: "fact-subject-curated",
+        relations: { objectEntityId: "ent-object-canonical" },
+      },
+      {
+        factId: "fact-object-curated",
+        relations: { subjectEntityId: "ent-subject-canonical" },
+      },
+    ])
+  })
+
+  it("leaves a fully curated fact relation untouched on apply", async () => {
+    const subjectEntity = makeEntity({
+      id: "ent-subject-canonical",
+      name: "MemoryService",
+    })
+    const objectEntity = makeEntity({
+      id: "ent-object-canonical",
+      name: "DataSourceQuery",
+    })
+    const { facts, entities, updates } = makeBuildEntitiesServices(
+      [
+        makeFact({
+          id: "fact-curated",
+          subject: "MemoryService",
+          object: "DataSourceQuery",
+          subjectEntityId: "ent-subject-curated",
+          objectEntityId: "ent-object-curated",
+        }),
+      ],
+      [subjectEntity, objectEntity]
+    )
+
+    const result = await buildEntities(facts, entities, { apply: true })
+
+    expect(result.factsRepointed).toBe(0)
+    expect(updates).toEqual([])
   })
 })
 

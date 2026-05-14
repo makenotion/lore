@@ -804,9 +804,9 @@ export class FactService {
 
   /**
    * Set or replace the `SubjectEntity` / `ObjectEntity` relation on an
-   * existing fact. Used by `lore migrate --build-entities` to re-point
-   * historical rows after their canonical Entity is created. Either side
-   * may be passed independently; `null` clears the column.
+   * existing fact. Used by `lore migrate --build-entities` to fill empty
+   * historical relations and by entity merges to repoint duplicate entity
+   * rows. Either side may be passed independently; `null` clears the column.
    */
   async setEntityRelations(
     id: string,
@@ -2345,7 +2345,7 @@ export class FactService {
    * ObjectEntity contains entityId`) AND an unbackfilled-only
    * substring query in parallel, then unions the two. Symmetric, exact
    * on the relation side; recall-preserving for transition-window
-   * vaults where some facts haven't been re-pointed yet.
+   * vaults where some facts do not have entity relations yet.
    *
    * Why the parallel substring is gated on un-backfilled rows: a
    * relation-only path silently drops every fact whose
@@ -2464,7 +2464,7 @@ export class FactService {
   /**
    * Substring search restricted to facts whose `SubjectEntity` AND
    * `ObjectEntity` relations are both empty — i.e. rows the
-   * build-entities migration hasn't re-pointed yet. Used by
+   * build-entities migration has not backfilled yet. Used by
    * `queryByEntity` to keep recall on transition-window vaults where
    * some facts still lack relation columns.
    *
@@ -2738,8 +2738,8 @@ export class FactService {
    * Overwrites any existing Source relation — facts in the current model have
    * a single source memory, so re-running the backfill replaces rather than
    * appending. The backfill caller is expected to run during a quiet window
-   * (no concurrent autosave creating or re-pointing facts); we don't
-   * re-read before the write.
+   * (no concurrent autosave creating facts or filling entity relations);
+   * we don't re-read before the write.
    */
   async setSource(id: string, sourceMemoryId: string): Promise<void> {
     await this.client.pages.update({

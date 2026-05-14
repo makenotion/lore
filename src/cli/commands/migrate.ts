@@ -118,7 +118,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--build-entities",
-    "Group every fact's Subject and Object strings by their normalized key, propose one canonical Entity row per group with the remaining raw forms as aliases, and re-point each fact's SubjectEntity/ObjectEntity relation. Plan-only by default — re-run with --yes to apply. Apply mode takes a vault-scoped lock and still expects a quiet vault with no concurrent autosaves writing facts. PF3-01."
+    "Group every fact's Subject and Object strings by their normalized key, propose one canonical Entity row per group with the remaining raw forms as aliases, and fill empty SubjectEntity/ObjectEntity relations without overwriting populated relations. Plan-only by default — re-run with --yes to apply. Apply mode takes a vault-scoped lock and still expects a quiet vault with no concurrent autosaves writing facts. PF3-01."
   )
   .option(
     "--report-orphan-rate",
@@ -1688,7 +1688,7 @@ export async function runBuildEntitiesMigration(
       `\n${verb} ${result.plans.length} entity group${result.plans.length === 1 ? "" : "s"} ` +
         `(${planOnly ? "would create" : "created"} ${newRows} new entit${newRows === 1 ? "y" : "ies"}, ` +
         `${planOnly ? "would extend" : "extended"} ${aliasRows} alias${aliasRows === 1 ? "" : "es"} on existing rows; ` +
-        `${planOnly ? "would re-point" : "re-pointed"} ${result.factsRepointed} fact relation${result.factsRepointed === 1 ? "" : "s"}).`
+        `${planOnly ? "would fill" : "filled"} ${result.factsRepointed} fact row${result.factsRepointed === 1 ? "" : "s"} with empty entity relations).`
     )
 
     // Preview — surface the largest collapses first so the operator can
@@ -1729,7 +1729,7 @@ export async function runBuildEntitiesMigration(
 
     if (planOnly) {
       console.log(
-        "\nPlan only — no changes written. Re-run with `--yes` to create entity rows and re-point fact relations."
+        "\nPlan only — no changes written. Re-run with `--yes` to create entity rows and fill empty fact relations."
       )
     }
 
@@ -1792,8 +1792,8 @@ function acquireBuildEntitiesMigrationLock(
  * **Pre/post-pass labeling**. `apply` is the canonical signal for
  * which graph the metric measured. On `apply === true` (i.e.
  * `--yes` and not `--dry-run`) the helper labels the output
- * `post-pass` because `runBuildEntitiesMigration` re-pointed Fact
- * relations in place before this report ran. On `apply === false`
+ * `post-pass` because `runBuildEntitiesMigration` filled empty Fact
+ * relations before this report ran. On `apply === false`
  * (plan-only, including `--dry-run`) the helper labels `pre-pass`
  * because the migration printed the plan without rewriting any
  * rows. Without this distinction an operator running the

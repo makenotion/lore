@@ -3,12 +3,12 @@
  *
  * Walks every live fact, groups distinct Subject + Object strings by
  * `computeSubjectKey`, proposes one canonical Entity per group with the
- * remaining raw forms as aliases, and re-points each fact's
- * `SubjectEntity` / `ObjectEntity` relation at the surviving row.
+ * remaining raw forms as aliases, and fills empty fact
+ * `SubjectEntity` / `ObjectEntity` relations with the surviving row.
  *
  * Two-phase. Plan-only by default — operators inspect the proposed
  * canonical/alias split before any writes land. Re-running with
- * `apply: true` creates Entity rows and rewrites Fact relations in
+ * `apply: true` creates Entity rows and fills missing Fact relations in
  * place; original Subject / Object text stays unchanged so the
  * substring-fallback path keeps working for any callers that bypass
  * the relation.
@@ -16,9 +16,9 @@
  * Idempotent. A second run on a migrated vault sees existing
  * Entity rows for every key and either no-ops (everything already
  * pointed) or extends aliases for stray strings the first pass didn't
- * see. The migration never demotes — an entity that's been manually
- * edited inside Notion is left alone except for additive alias
- * append.
+ * see. The migration never demotes — populated fact relations and
+ * entities manually edited inside Notion are left alone except for
+ * additive alias appends.
  */
 
 import type { Entity, Fact } from "../types.js"
@@ -100,8 +100,8 @@ export interface EntityMigrationResult {
    */
   aliasesAdded: number
   /**
-   * Fact rows whose `SubjectEntity` and/or `ObjectEntity` relation was
-   * rewritten. A row that gets both relations updated counts once.
+   * Fact rows whose empty `SubjectEntity` and/or `ObjectEntity` relation was
+   * filled. A row that gets both relations updated counts once.
    */
   factsRepointed: number
   /** Per-fact errors during the apply phase — bounds the blast radius. */
@@ -246,7 +246,7 @@ export function indexEntitiesByKey(entities: Entity[]): Map<string, Entity> {
 /**
  * Drive the full plan + apply migration. Reads every live fact in
  * scope, indexes existing entities, computes the plan, and (when
- * `apply: true`) creates entities + repoints fact relations.
+ * `apply: true`) creates entities + fills empty fact relations.
  */
 export async function buildEntities(
   facts: FactService,
@@ -291,7 +291,7 @@ export async function buildEntities(
         return n + wouldAdd
       }, 0)
 
-    // Estimate fact-repoint count: any fact whose Subject or Object
+    // Estimate fact relation fills: any fact whose Subject or Object
     // normalizes to a planned key AND whose corresponding entity
     // relation is currently empty.
     let wouldRepoint = 0
@@ -383,10 +383,10 @@ export async function buildEntities(
       subjectEntityId?: string | null
       objectEntityId?: string | null
     } = {}
-    if (subjectEntity && fact.subjectEntityId !== subjectEntity.id) {
+    if (subjectEntity && !fact.subjectEntityId) {
       updates.subjectEntityId = subjectEntity.id
     }
-    if (objectEntity && fact.objectEntityId !== objectEntity.id) {
+    if (objectEntity && !fact.objectEntityId) {
       updates.objectEntityId = objectEntity.id
     }
     if (updates.subjectEntityId === undefined && updates.objectEntityId === undefined) {
@@ -443,7 +443,7 @@ export interface OrphanRateReport {
 /**
  * Canonical metric key per the PF3-01 spec: prefer the populated
  * `SubjectEntity` relation id; fall back to `computeSubjectKey(subject)`
- * for rows the migration hasn't re-pointed yet. The empty key (no
+ * for rows that do not have an entity relation yet. The empty key (no
  * entity AND `computeSubjectKey` produced empty) falls out — those
  * are degenerate punctuation-only / whitespace-only Subjects that
  * the migration also drops via `groupObservationsByKey`.
