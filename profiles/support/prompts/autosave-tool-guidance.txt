@@ -9,5 +9,8 @@ When saving support knowledge:
 - Use facts for durable relationships such as a ticket affecting a feature, an
   escalation being owned by a team, a mitigation addressing an outage, or a
   customer report being reproduced by a specific setup.
+- Treat local notes, repo files, and assistant-memory files as not saved in
+  Lore; persist durable support context through Lore unless a Lore near-match
+  already covers it.
 - Keep procedure proposals and review-gated support runbooks in the existing
   procedure workflow; do not bypass review by saving them as ordinary notes.

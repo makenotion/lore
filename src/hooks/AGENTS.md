@@ -124,7 +124,7 @@ Operators swap the binary by name (preset args resolve automatically):
 ```yaml
 hooks:
   backgroundAgent:
-    command: codex # picks up CODEX_BACKGROUND_ARGS preset (`exec --full-auto`)
+    command: codex # picks up CODEX_BACKGROUND_ARGS preset (`exec --sandbox workspace-write --skip-git-repo-check`)
 ```
 
 Or via env (ad-hoc):

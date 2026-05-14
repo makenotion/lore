@@ -1,5 +1,13 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from "node:fs/promises"
+import {
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  stat,
+  rm,
+  readdir,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -9,8 +17,10 @@ import {
   buildBenchSpawnArgs,
   buildCodexChildEnv,
   CODEX_FORWARDED_ENV_KEYS,
+  createIsolatedCodexHome,
   isLongitudinalTaskArtifact,
   LongitudinalAdapterRefusedError,
+  selectExpectedContextIds,
   type LongitudinalAgentConfigServices,
   type LongitudinalLoreAdapter,
   runTaskEvalSuite,
@@ -588,7 +598,9 @@ scenarios:
       "utf-8"
     )
 
+    const phaseWorkspaces: Array<{ prompt: string; workspace: string }> = []
     const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      phaseWorkspaces.push({ prompt, workspace })
       const servicePath = join(workspace, "profile-service.js")
       if (prompt.includes("createUserProfile")) {
         await writeFile(
@@ -665,6 +677,8 @@ scenarios:
     })
 
     expect(cleanupCalls).toBe(1)
+    expect(phaseWorkspaces[0]?.workspace).not.toBe(phaseWorkspaces[1]?.workspace)
+    expect(phaseWorkspaces[2]?.workspace).not.toBe(phaseWorkspaces[3]?.workspace)
     expect(artifact.runner).toMatchObject({ mode: "task", kind: "longitudinal" })
     if (!isLongitudinalTaskArtifact(artifact)) {
       throw new Error("expected longitudinal artifact")
@@ -763,12 +777,16 @@ scenarios:
                 miningSawConfig =
                   existsSync(join(phaseWorkspace, ".codex", "config.toml")) &&
                   existsSync(join(phaseWorkspace, ".mcp.json"))
-                expect(
-                  await readFile(
-                    join(phaseWorkspace, ".codex", "config.toml"),
-                    "utf-8"
-                  )
-                ).toContain("mcp_servers.lore")
+                const codexConfig = await readFile(
+                  join(phaseWorkspace, ".codex", "config.toml"),
+                  "utf-8"
+                )
+                expect(codexConfig).toContain("mcp_servers.lore")
+                expect(codexConfig).toContain(
+                  'default_tools_approval_mode = "approve"'
+                )
+                expect(codexConfig).toContain('"lore-memory"')
+                expect(codexConfig).toContain('"lore-decision"')
               }
             )
             return {
@@ -1378,6 +1396,137 @@ describe("buildCodexChildEnv", () => {
       "LC_CTYPE",
       "OPENAI_API_KEY",
     ])
+  })
+
+  it("pins HOME to the isolated Codex home for eval subprocesses", () => {
+    const env = buildCodexChildEnv(
+      {
+        PATH: "/usr/bin",
+        HOME: "/Users/example",
+        CODEX_HOME: "/Users/example/.codex",
+      },
+      { codexHome: "/tmp/lore-eval-codex-home-test" },
+    )
+    expect(env["PATH"]).toBe("/usr/bin")
+    expect(env["HOME"]).toBe("/tmp/lore-eval-codex-home-test")
+    expect(env["CODEX_HOME"]).toBe("/tmp/lore-eval-codex-home-test")
+  })
+})
+
+describe("createIsolatedCodexHome", () => {
+  it("copies auth and top-level model settings without global MCP or memories", async () => {
+    const sourceHome = await mkdtemp(join(tmpdir(), "lore-codex-source-home-"))
+    const isolatedHomes: string[] = []
+    try {
+      await mkdir(join(sourceHome, "memories"), { recursive: true })
+      await writeFile(
+        join(sourceHome, "auth.json"),
+        '{"OPENAI_API_KEY":"sk-test-sentinel"}\n',
+        "utf-8",
+      )
+      await writeFile(
+        join(sourceHome, "config.toml"),
+        [
+          'model = "gpt-5.5"',
+          'model_reasoning_effort = "xhigh"',
+          'sandbox_mode = "danger-full-access"',
+          "",
+          "[mcp_servers.lore]",
+          'command = "node"',
+          "",
+        ].join("\n"),
+        "utf-8",
+      )
+
+      const codexHome = await createIsolatedCodexHome({ CODEX_HOME: sourceHome })
+      isolatedHomes.push(codexHome)
+
+      expect(await readFile(join(codexHome, "auth.json"), "utf-8")).toBe(
+        '{"OPENAI_API_KEY":"sk-test-sentinel"}\n',
+      )
+      const config = await readFile(join(codexHome, "config.toml"), "utf-8")
+      expect(config).toContain('model = "gpt-5.5"')
+      expect(config).toContain('model_reasoning_effort = "xhigh"')
+      expect(config).not.toContain("sandbox_mode")
+      expect(config).not.toContain("mcp_servers")
+      expect(existsSync(join(codexHome, "memories"))).toBe(false)
+    } finally {
+      for (const codexHome of isolatedHomes) {
+        await rm(codexHome, { recursive: true, force: true })
+      }
+      await rm(sourceHome, { recursive: true, force: true })
+    }
+  })
+
+  it("removes copied auth if isolated setup fails", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "lore-codex-home-fail-"))
+    const previousTmpdir = process.env["TMPDIR"]
+    process.env["TMPDIR"] = tempRoot
+    const sourceHome = await mkdtemp(join(tempRoot, "source-codex-home-"))
+    try {
+      await writeFile(
+        join(sourceHome, "auth.json"),
+        '{"OPENAI_API_KEY":"sk-test-sentinel"}\n',
+        "utf-8",
+      )
+      await mkdir(join(sourceHome, "config.toml"))
+
+      await expect(createIsolatedCodexHome({ CODEX_HOME: sourceHome })).rejects.toThrow()
+
+      const leftovers = (await readdir(tempRoot)).filter((name) =>
+        name.startsWith("lore-eval-codex-home-")
+      )
+      expect(leftovers).toEqual([])
+    } finally {
+      if (previousTmpdir === undefined) {
+        delete process.env["TMPDIR"]
+      } else {
+        process.env["TMPDIR"] = previousTmpdir
+      }
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("selectExpectedContextIds", () => {
+  it("accepts expected keywords distributed across one formation's rows", () => {
+    const ids = selectExpectedContextIds(
+      ["Result", "ok", "err"],
+      [
+        {
+          id: "decision-result",
+          kind: "decision",
+          text: "Service boundaries return Result values.",
+        },
+        {
+          id: "fact-ok",
+          kind: "fact",
+          text: "createUserProfile uses ok helper",
+        },
+        {
+          id: "fact-err",
+          kind: "fact",
+          text: "createUserProfile uses err helper",
+        },
+      ],
+    )
+
+    expect(ids).toEqual(["decision-result", "fact-ok", "fact-err"])
+  })
+
+  it("requires the formed context set to cover every expected keyword", () => {
+    const ids = selectExpectedContextIds(
+      ["--json", "status", "follow-up"],
+      [
+        {
+          id: "task-json",
+          kind: "task",
+          text: "Add --json output for status automation consumers.",
+        },
+      ],
+    )
+
+    expect(ids).toEqual([])
   })
 })
 

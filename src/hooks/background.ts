@@ -10,8 +10,9 @@
  * without having to grep the PID).
  *
  * The spawned binary defaults to `claude -p` for Claude Code installs and
- * to `codex exec --full-auto` for Codex installs via the hook config
- * resolver. Operators can override the command/args through
+ * to `codex exec --sandbox workspace-write --skip-git-repo-check` for Codex
+ * installs via the hook config resolver. Operators can override the
+ * command/args through
  * `hooks.backgroundAgent` or `LORE_BACKGROUND_COMMAND`.
  *
  * Lives in its own module because the hook-helpers entry runs `main()`

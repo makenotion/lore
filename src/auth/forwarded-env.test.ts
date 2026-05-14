@@ -134,6 +134,7 @@ describe("RUNTIME_FORWARDED_KEYS — declaration shape", () => {
     expect(RUNTIME_FORWARDED_KEYS).not.toContain("LORE_AGENT_NAME")
     expect(RUNTIME_FORWARDED_KEYS).not.toContain("LORE_CONFIG_ROOT")
     expect(RUNTIME_FORWARDED_KEYS).not.toContain("LORE_SUPPRESS_DEPRECATIONS")
+    expect(RUNTIME_FORWARDED_KEYS).not.toContain("CODEX_HOME")
   })
 })
 
@@ -203,6 +204,14 @@ describe("buildSafeEnv — env partition shared by every Lore child spawn", () =
   it("does not leak env vars outside the allowlist", () => {
     const env = buildSafeEnv(undefined, parent)
     expect(env["UNRELATED_VAR"]).toBeUndefined()
+  })
+
+  it("forwards CODEX_HOME only as a runtime child-process selector", () => {
+    const env = buildSafeEnv(undefined, {
+      ...parent,
+      CODEX_HOME: "/tmp/lore-codex-home",
+    })
+    expect(env["CODEX_HOME"]).toBe("/tmp/lore-codex-home")
   })
 
   it("skips empty-string values to match resolveAuth priority semantics", () => {

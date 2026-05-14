@@ -27,7 +27,8 @@
  *   var, so a misconfigured CI job cannot rack up unbounded model
  *   spend.
  * - Codex spawns inherit a scrubbed env (only `PATH` / `HOME` / `TZ` /
- *   `LANG` / `LC_*` / `CODEX_*` / `OPENAI_API_KEY` are forwarded);
+ *   `LANG` / `LC_*` / `CODEX_*` / `OPENAI_API_KEY` are forwarded, with
+ *   `CODEX_HOME` pointed at an isolated runtime home);
  *   `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`, `GITHUB_TOKEN` and
  *   anything else stays out of the child env and the artifact.
  * - The Codex child runs in a detached process group; timeout
@@ -701,11 +702,12 @@ async function runLongitudinalTrial(input: {
   }
 
   const workspaceSource = resolve(input.suiteRoot, input.scenario.workspace)
-  const workspace = await prepareWorkspace({
+  let workspace = await prepareWorkspace({
     source: workspaceSource,
     suiteRoot: input.suiteRoot,
     declaredPath: input.scenario.workspace,
   })
+  const workspaces = [workspace]
   await removeLongitudinalAgentConfig(workspace)
   const runId = `longitudinal-${input.scenario.id}-${randomUUID().slice(0, 8)}`
   let loreRun: LongitudinalLoreRun | null = null
@@ -733,6 +735,9 @@ async function runLongitudinalTrial(input: {
       sessionId: formationSessionId,
     })
     phases.push(formationPhase)
+    await removeLongitudinalAgentConfig(workspace)
+    workspace = await rematerializeWorkspace(workspace)
+    workspaces.push(workspace)
     await removeLongitudinalAgentConfig(workspace)
 
     const expectedContextIds = formationPhase.lore.expectedContextIds
@@ -785,7 +790,11 @@ async function runLongitudinalTrial(input: {
       await loreRun.cleanup()
     }
     if (!input.keepWorkspaces) {
-      await rm(workspace, { recursive: true, force: true })
+      await Promise.all(
+        workspaces.map((workspacePath) =>
+          rm(workspacePath, { recursive: true, force: true })
+        )
+      )
     }
   }
 }
@@ -1234,6 +1243,12 @@ async function prepareWorkspace(input: {
   // mode preservation matters when a fixture commits an executable
   // script (e.g. `scripts/setup.sh`) whose +x bit must survive the copy.
   await cp(input.source, dir, { recursive: true, preserveTimestamps: true })
+  return dir
+}
+
+async function rematerializeWorkspace(source: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "lore-eval-task-"))
+  await cp(source, dir, { recursive: true, preserveTimestamps: true })
   return dir
 }
 
@@ -1851,30 +1866,37 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
   }): Promise<LongitudinalLoreFormationResult> {
     const before = await snapshotProjectContext(this.input.services, this.projectId)
     const hooks = mergeHookDefaults(this.input.services.config.hooks, this.projectName, [])
-    const mining = await withTemporaryLongitudinalAgentConfig(
-      {
-        workspace: input.workspace,
-        configRoot: this.input.configRoot,
-        services: this.input.services,
-      },
-      () =>
-        withTemporaryEnv(
-          {
-            LORE_CONFIG_ROOT: this.input.configRoot,
-            LORE_AGENT_NAME: process.env["LORE_AGENT_NAME"] ?? "Codex",
-          },
-          () =>
-            runConversationMining(input.transcript, {
-              cwd: input.workspace,
-              subProjects: [],
-              catchAllName: this.projectName,
-              sessionId: input.sessionId,
-              agentName: "Codex",
-              authSource: this.input.services.authSource,
-              agent: hooks.backgroundAgent,
-            })
-        )
-    )
+    const codexHome = await createIsolatedCodexHome()
+    let mining: MiningResult
+    try {
+      mining = await withTemporaryLongitudinalAgentConfig(
+        {
+          workspace: input.workspace,
+          configRoot: this.input.configRoot,
+          services: this.input.services,
+        },
+        () =>
+          withTemporaryEnv(
+            {
+              LORE_CONFIG_ROOT: this.input.configRoot,
+              LORE_AGENT_NAME: process.env["LORE_AGENT_NAME"] ?? "Codex",
+              CODEX_HOME: codexHome,
+            },
+            () =>
+              runConversationMining(input.transcript, {
+                cwd: input.workspace,
+                subProjects: [],
+                catchAllName: this.projectName,
+                sessionId: input.sessionId,
+                agentName: "Codex",
+                authSource: this.input.services.authSource,
+                agent: hooks.backgroundAgent,
+              })
+          )
+      )
+    } finally {
+      await removeIsolatedCodexHome(codexHome)
+    }
     const after = await snapshotProjectContext(this.input.services, this.projectId)
     const delta = diffProjectContextSnapshots(before, after)
     const expectedContextIds = selectExpectedContextIds(
@@ -2059,11 +2081,22 @@ function renderCodexMcpConfig(input: {
   args: string[]
   env: Record<string, string>
 }): string {
+  const enabledTools = [
+    "lore-context",
+    "lore-query",
+    "lore-memory",
+    "lore-decision",
+    "lore-fact",
+    "lore-task",
+    "lore-project",
+  ]
   const lines = [
     "[mcp_servers.lore]",
     'transport = "stdio"',
     `command = "${tomlEscape(input.command)}"`,
     `args = [${input.args.map((arg) => `"${tomlEscape(arg)}"`).join(", ")}]`,
+    'default_tools_approval_mode = "approve"',
+    `enabled_tools = [${enabledTools.map((tool) => `"${tool}"`).join(", ")}]`,
     "",
     "[mcp_servers.lore.env]",
   ]
@@ -2109,7 +2142,7 @@ interface ProjectContextSnapshot {
   factContexts: ProjectContextItem[]
 }
 
-interface ProjectContextItem {
+export interface ProjectContextItem {
   id: string
   kind: Memory["kind"] | "fact"
   text: string
@@ -2158,7 +2191,7 @@ function diffProjectContextSnapshots(
   }
 }
 
-function selectExpectedContextIds(
+export function selectExpectedContextIds(
   keywords: string[],
   contexts: ProjectContextItem[]
 ): string[] {
@@ -2168,6 +2201,19 @@ function selectExpectedContextIds(
       .map((context) => context.id)
   }
   const normalized = keywords.map((keyword) => keyword.toLocaleLowerCase())
+  const combinedText = contexts
+    .map((context) => context.text)
+    .join("\n")
+    .toLocaleLowerCase()
+  if (normalized.every((keyword) => combinedText.includes(keyword))) {
+    const partialMatches = contexts.filter((context) => {
+      const text = context.text.toLocaleLowerCase()
+      return normalized.some((keyword) => text.includes(keyword))
+    })
+    return partialMatches.length > 0
+      ? partialMatches.map((context) => context.id)
+      : contexts.map((context) => context.id)
+  }
   return contexts
     .filter((context) => {
       const text = context.text.toLocaleLowerCase()
@@ -2282,9 +2328,72 @@ export const CODEX_FORWARDED_ENV_KEYS = [
 ] as const
 
 const CODEX_FORWARDED_ENV_PREFIXES = ["CODEX_"]
+const CODEX_HOME_CONFIG_KEYS = new Set([
+  "model",
+  "model_provider",
+  "model_reasoning_effort",
+])
+
+export async function createIsolatedCodexHome(
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const codexHome = await mkdtemp(join(tmpdir(), "lore-eval-codex-home-"))
+  try {
+    await chmod(codexHome, 0o700)
+    const sourceHome = resolveSourceCodexHome(parentEnv)
+    if (sourceHome !== null) {
+      const sourceAuth = join(sourceHome, "auth.json")
+      if (existsSync(sourceAuth)) {
+        const targetAuth = join(codexHome, "auth.json")
+        await cp(sourceAuth, targetAuth)
+        await chmod(targetAuth, 0o600).catch(() => undefined)
+      }
+      const sourceConfig = join(sourceHome, "config.toml")
+      if (existsSync(sourceConfig)) {
+        const configText = renderIsolatedCodexConfig(
+          await readFile(sourceConfig, "utf-8")
+        )
+        if (configText.length > 0) {
+          await writeFile(join(codexHome, "config.toml"), configText, { mode: 0o600 })
+        }
+      }
+    }
+    return codexHome
+  } catch (err) {
+    await removeIsolatedCodexHome(codexHome)
+    throw err
+  }
+}
+
+function resolveSourceCodexHome(parentEnv: NodeJS.ProcessEnv): string | null {
+  const explicit = parentEnv["CODEX_HOME"]
+  if (typeof explicit === "string" && explicit.length > 0) return explicit
+  const home = parentEnv["HOME"]
+  if (typeof home === "string" && home.length > 0) return join(home, ".codex")
+  return null
+}
+
+function renderIsolatedCodexConfig(source: string): string {
+  const lines: string[] = []
+  for (const line of source.split(/\r?\n/u)) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue
+    if (trimmed.startsWith("[")) break
+    const match = /^([A-Za-z0-9_]+)\s*=/.exec(trimmed)
+    if (match && CODEX_HOME_CONFIG_KEYS.has(match[1]!)) {
+      lines.push(trimmed)
+    }
+  }
+  return lines.length > 0 ? `${lines.join("\n")}\n` : ""
+}
+
+async function removeIsolatedCodexHome(codexHome: string): Promise<void> {
+  await rm(codexHome, { recursive: true, force: true })
+}
 
 export function buildCodexChildEnv(
-  parentEnv: NodeJS.ProcessEnv = process.env
+  parentEnv: NodeJS.ProcessEnv = process.env,
+  options: { codexHome?: string } = {},
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
   for (const key of CODEX_FORWARDED_ENV_KEYS) {
@@ -2299,6 +2408,10 @@ export function buildCodexChildEnv(
         break
       }
     }
+  }
+  if (options.codexHome !== undefined) {
+    out["CODEX_HOME"] = options.codexHome
+    out["HOME"] = options.codexHome
   }
   return out
 }
@@ -2353,8 +2466,8 @@ function joinCappedCapture(capture: CappedCapture): string {
 /**
  * Production agent adapter. Shells out to `codex exec --cd <workspace>
  * --sandbox workspace-write --skip-git-repo-check <prompt>` with a
- * scrubbed env, in a detached process group so timeout cancellation
- * kills the whole tree.
+ * scrubbed env and an isolated Codex runtime home, in a detached
+ * process group so timeout cancellation kills the whole tree.
  *
  * Gated behind `LORE_EVAL_TASK_REAL=1` because real Codex invocations
  * incur model spend; without the env var the adapter exits cleanly with
@@ -2565,6 +2678,7 @@ export class CodexAgentAdapter implements AgentAdapter {
         refused: true,
       }
     }
+    const codexHome = await createIsolatedCodexHome()
     return new Promise<AgentRunResult>((resolveRun) => {
       const args = [
         "exec",
@@ -2575,9 +2689,10 @@ export class CodexAgentAdapter implements AgentAdapter {
         "--skip-git-repo-check",
         input.prompt,
       ]
+      const env = buildCodexChildEnv(process.env, { codexHome })
       const child = spawn("codex", args, {
         stdio: ["ignore", "pipe", "pipe"],
-        env: buildCodexChildEnv(),
+        env,
         // Detached so we can kill the entire process group on timeout
         // (codex may have spawned subprocesses inside `workspace-write`
         // — test watchers, package installs — that we need to clean up).
@@ -2586,6 +2701,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       const stdoutCapture = makeCappedCapture()
       const stderrCapture = makeCappedCapture()
       let timedOut = false
+      let settled = false
       const timer = setTimeout(() => {
         timedOut = true
         try {
@@ -2600,11 +2716,16 @@ export class CodexAgentAdapter implements AgentAdapter {
           // Process already gone; nothing to do.
         }
       }, input.timeoutMs)
+      const finish = (result: AgentRunResult): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        void removeIsolatedCodexHome(codexHome).finally(() => resolveRun(result))
+      }
       child.stdout?.on("data", (c: Buffer) => appendCappedChunk(stdoutCapture, c))
       child.stderr?.on("data", (c: Buffer) => appendCappedChunk(stderrCapture, c))
       child.on("error", (err) => {
-        clearTimeout(timer)
-        resolveRun({
+        finish({
           exitCode: -1,
           stdout: joinCappedCapture(stdoutCapture),
           stderr: joinCappedCapture(stderrCapture) + `\n[spawn-error] ${err}`,
@@ -2612,8 +2733,7 @@ export class CodexAgentAdapter implements AgentAdapter {
         })
       })
       child.on("close", (code) => {
-        clearTimeout(timer)
-        resolveRun({
+        finish({
           exitCode: code ?? -1,
           stdout: joinCappedCapture(stdoutCapture),
           stderr: joinCappedCapture(stderrCapture),

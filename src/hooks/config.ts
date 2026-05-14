@@ -58,9 +58,11 @@ export const DEFAULT_BACKGROUND_ARGS: readonly string[] = [
  * / `--model sonnet` flags, so falling through to `DEFAULT_BACKGROUND_ARGS`
  * on a `command: codex` override produces a guaranteed spawn failure.
  *
- * The shape here uses Codex's `exec` subcommand and `--full-auto` to run
- * non-interactively. There is NO `{{allowedTools}}` placeholder because
- * Codex's exec mode doesn't carry an analogous flag — the agent's
+ * The shape here uses Codex's `exec` subcommand with `workspace-write`
+ * sandboxing and an explicit git-trust bypass so hook-spawned temp
+ * workspaces can run non-interactively. There is NO
+ * `{{allowedTools}}` placeholder because Codex's exec mode doesn't
+ * carry an analogous flag — the agent's
  * allowlist must be configured out-of-band (Codex's .codex/config.toml
  * `approval_mode` / `mcp_servers.<name>.allowed_tools` entries are the
  * canonical knobs). The install-time path emits an explicit warning
@@ -70,7 +72,12 @@ export const DEFAULT_BACKGROUND_ARGS: readonly string[] = [
  * version that uses different flag spelling) override `args` in their
  * .lore.yaml to drop or replace these defaults.
  */
-export const CODEX_BACKGROUND_ARGS: readonly string[] = ["exec", "--full-auto"]
+export const CODEX_BACKGROUND_ARGS: readonly string[] = [
+  "exec",
+  "--sandbox",
+  "workspace-write",
+  "--skip-git-repo-check",
+]
 
 /**
  * Known-good arg presets keyed on `command` basename. When an operator

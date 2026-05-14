@@ -86,6 +86,12 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toMatch(/needs_action.*lore-task/s)
   })
 
+  it("does not treat local assistant notes as durable Lore persistence", () => {
+    const prompt = buildBackgroundSavePrompt([], null, "")
+    expect(prompt).toContain("assistant-memory file is not a Lore save")
+    expect(prompt).toContain("save it through Lore")
+  })
+
   it("injects project guidance when sub-projects exist", () => {
     const prompt = buildBackgroundSavePrompt(["Widget Backend"], "Widget", "...")
     expect(prompt).toContain("Widget Backend")
@@ -460,6 +466,8 @@ describe("buildBackgroundSavePrompt", () => {
       • lore-task action='create' — Open a task for **tangential or out-of-scope** work the session surfaced but did not pick up: side-effect discoveries, deferred follow-ups, blocked work. Never file the session's primary objective as a task — that's the next session's starting point, not a tracked follow-up. Pass subject (one-line title), state ("open" | "in-progress" | "blocked"), entity (the PR / service / person it's about), and dueDate (YYYY-MM-DD) when known. If state is "blocked", blockedBy is required.
 
       Every lore-fact action='create' call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory are rejected on create; lore-query action='ask' could not retrace them anyway. Alternatively, pass the same session value on both the lore-memory action='save' and lore-fact action='create' calls and sourceMemoryId will auto-link to the memory you just saved.
+
+      A local note, repo file, or assistant-memory file is not a Lore save. If it contains durable context, save it through Lore unless an existing Lore near-match already covers it.
 
       Fill every field you can confidently populate — empty fields hurt recall later. Leave a field empty only when you'd be guessing.
 

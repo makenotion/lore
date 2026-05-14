@@ -110,6 +110,15 @@ describe("mergeHookDefaults", () => {
       expect(config.backgroundAgent.args).toEqual([...CODEX_BACKGROUND_ARGS])
     })
 
+    it("uses Codex exec args that work in temp workspaces", () => {
+      expect(CODEX_BACKGROUND_ARGS).toEqual([
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "--skip-git-repo-check",
+      ])
+    })
+
     it("env override beats config override on command", () => {
       const config = mergeHookDefaults(
         { backgroundAgent: { command: "from-config" } },

@@ -44,6 +44,11 @@
  * do NOT live here — they're literal strings or install-time-derived
  * paths, not references to the operator's env.
  *
+ * Agent-runtime homes such as `CODEX_HOME` are also absent from this
+ * install-facing list. `buildSafeEnv` forwards them only for live child
+ * processes, because they are process-local runtime selectors rather
+ * than MCP environment placeholders.
+ *
  * `LORE_AGENT_NAME` is also intentionally absent. The agent-name flow
  * carries the value through prompt text (`Agent: <name>` line +
  * `Pass agent: "..." verbatim` instruction) for the hook-spawned save
@@ -184,6 +189,11 @@ import type { AuthSource } from "../config.js"
  * declared-but-empty `NOTION_API_TOKEN` would otherwise short-circuit
  * the child's priority walk.
  *
+ * `CODEX_HOME` is conditionally forwarded outside
+ * `RUNTIME_FORWARDED_KEYS`. It selects the headless Codex runtime home
+ * for the immediate child process but should not become a committed MCP
+ * env placeholder.
+ *
  * Under `authSource === "ntn-auth-json"`, the auth-token subset
  * (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) is partitioned out of the
  * forward. The spawned child re-reads ntn's on-disk auth file
@@ -224,6 +234,9 @@ export function buildSafeEnv(
       env[key] = value
     }
   }
+  const codexHome = parentEnv["CODEX_HOME"]
+  if (typeof codexHome === "string" && codexHome.length > 0) {
+    env["CODEX_HOME"] = codexHome
+  }
   return env
 }
-

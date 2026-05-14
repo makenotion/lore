@@ -181,6 +181,8 @@ function buildToolGuidance(): string {
 
 ${buildSourceLinkGuidance()}
 
+A local note, repo file, or assistant-memory file is not a Lore save. If it contains durable context, save it through Lore unless an existing Lore near-match already covers it.
+
 Fill every field you can confidently populate — empty fields hurt recall later. Leave a field empty only when you'd be guessing.
 
 If any tool result begins with \`WriteBudgetExceeded:\`, stop calling tools and exit normally. The MCP server has enforced its per-session mutation cap and any further write call will be rejected.`

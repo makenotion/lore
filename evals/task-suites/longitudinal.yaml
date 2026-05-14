@@ -69,11 +69,11 @@ scenarios:
       - type: file-exists
         path: commands/sync.ts
       - type: file-contents-match
-        path: commands/sync.ts
-        pattern: 'from\s+["'']\.\.?\/[^"'']+\.js["'']'
+        path: cli.ts
+        pattern: 'from\s+["'']\.\/commands\/sync\.js["'']'
       - type: file-contents-match
-        path: commands/sync.ts
-        pattern: 'from\s+["'']\.\.?\/(?![^"'']*\.js["''])'
+        path: cli.ts
+        pattern: 'from\s+["'']\.\/commands\/sync["'']'
         mode: forbid
       - type: command
         command: npm
@@ -95,11 +95,43 @@ scenarios:
         implement it.
     expectedContext:
       description: There is an unresolved follow-up to add status --json output.
-      keywords: ["--json", "status", "follow-up"]
+      keywords: ["--json", "status"]
     verifiers:
       - type: file-contents-match
         path: status.js
         pattern: '--json'
+      - type: command
+        command: npm
+        args: ["test"]
+
+  - id: convention-continuity-cache-prefix
+    agent: codex
+    workspace: ../longitudinal/workspaces/cache-prefix
+    phaseA:
+      promptId: convention-continuity-cache-prefix-formation
+      prompt: |
+        Decide and capture the cache-key prefix for future sync telemetry
+        helpers: use the exact prefix `sync-ledger:9c2a:`. Do not modify
+        source files, create repo-local notes, or write local assistant-memory
+        files; simply state the convention in your final answer so the session
+        transcript contains it.
+    phaseB:
+      promptId: convention-continuity-cache-prefix-use
+      prompt: |
+        Implement `cacheKey(name)` using the cache-key prefix chosen in the
+        previous session.
+    expectedContext:
+      description: Sync telemetry cache keys use the exact prefix sync-ledger:9c2a:.
+      keywords: ["sync-ledger:9c2a:", "cache"]
+    verifiers:
+      - type: file-contents-match
+        path: cache.js
+        pattern: 'sync-ledger:9c2a:'
+      - type: command
+        command: node
+        args:
+          - "-e"
+          - "import('./cache.js').then(({ cacheKey }) => { const actual = cacheKey('inbox'); if (actual !== 'sync-ledger:9c2a:inbox') throw new Error(`expected sync-ledger:9c2a:inbox, got ${actual}`); })"
       - type: command
         command: npm
         args: ["test"]

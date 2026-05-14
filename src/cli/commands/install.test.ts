@@ -1704,7 +1704,12 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
     )
     expect(result.command).toBe("/opt/homebrew/bin/codex")
     expect(result.presetMatched).toBe(true)
-    expect(result.args).toEqual(["exec", "--full-auto"])
+    expect(result.args).toEqual([
+      "exec",
+      "--sandbox",
+      "workspace-write",
+      "--skip-git-repo-check",
+    ])
     // Codex preset omits the placeholder by design.
     expect(result.argsContainAllowedToolsPlaceholder).toBe(false)
   })
