@@ -17,7 +17,7 @@
  */
 
 import type { LoreServices } from "../services.js"
-import type { FactConfidence, MemoryConfidence } from "../types.js"
+import type { FactConfidence } from "../types.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../notion/rate-limit.js"
 import {
   PROJECT_SCOPE_MIGRATION_DOC,
@@ -34,6 +34,18 @@ function daysBetween(later: string, earlier: string): number {
   const b = new Date(earlier).getTime()
   if (Number.isNaN(a) || Number.isNaN(b)) return 0
   return Math.max(0, Math.floor((a - b) / DAY_MS))
+}
+
+function seedFactConfidenceScore(confidence: FactConfidence, factId: string): number {
+  const seeded = seedConfidenceScore(confidence)
+  if (!Number.isFinite(seeded)) {
+    throw new Error(
+      `lore migrate --build-fact-confidence-scores: unsupported Fact.confidence ` +
+        `"${String(confidence)}" on fact id=${factId}; refusing to write an invalid ` +
+        `Confidence Score.`
+    )
+  }
+  return seeded
 }
 
 export interface BuildFactConfidenceScoresOptions {
@@ -134,10 +146,7 @@ async function buildPlan(
       continue
     }
 
-    // `FactConfidence` is structurally identical to `MemoryConfidence`
-    // (`certain | likely | speculative`), so the shared `CONFIDENCE_SEED`
-    // table backing `seedConfidenceScore` works without translation.
-    const seeded = seedConfidenceScore(fact.confidence as unknown as MemoryConfidence)
+    const seeded = seedFactConfidenceScore(fact.confidence, fact.id)
     // `Fact.createdAt` is typed optional on the public boundary
     // (DEFERRED-02) so adding the field doesn't break external
     // consumers. Internally, every Fact yielded by
