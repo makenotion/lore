@@ -403,9 +403,7 @@ describe("install helpers", () => {
 
   it("flags TOML array-of-tables as unsupported for Lore rewrites", () => {
     expect(containsTomlArrayOfTables("[[profile]]\nname = \"default\"\n")).toBe(true)
-    expect(containsTomlArrayOfTables("# [[comment]]\n[features]\ncodex_hooks = true\n")).toBe(
-      false,
-    )
+    expect(containsTomlArrayOfTables("# [[comment]]\n[features]\nhooks = true\n")).toBe(false)
   })
 })
 
@@ -831,6 +829,10 @@ describe("runCodexInstall (integration)", () => {
 
     await runCodexInstall(makeContext(projectDir, pkgRoot), null)
 
+    const config = await readFile(join(projectDir, ".codex", "config.toml"), "utf-8")
+    expect(config).toContain("[features]\nhooks = true")
+    expect(config).not.toContain("codex_hooks")
+
     const written = JSON.parse(
       await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8"),
     ) as CodexHooksFixture
@@ -920,6 +922,30 @@ describe("runCodexInstall (integration)", () => {
     expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
       buildCodexHookCommand("wakeup"),
     )
+  })
+
+  it("removes deprecated codex_hooks from an otherwise-current Codex config", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "deprecated-feature-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))
+    const context = makeContext(projectDir, pkgRoot)
+
+    await runCodexInstall(context, null)
+
+    const configPath = join(projectDir, ".codex", "config.toml")
+    const installedConfig = await readFile(configPath, "utf-8")
+    writeFileSync(
+      configPath,
+      installedConfig.replace(
+        "[features]\nhooks = true",
+        "[features]\nhooks = true\ncodex_hooks = true",
+      ),
+    )
+
+    await runCodexInstall(context, null)
+
+    const rewrittenConfig = await readFile(configPath, "utf-8")
+    expect(rewrittenConfig).toContain("[features]\nhooks = true")
+    expect(rewrittenConfig).not.toContain("codex_hooks")
   })
 })
 

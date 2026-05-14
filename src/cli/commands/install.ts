@@ -764,6 +764,8 @@ export function buildLegacyCodexMcpSection(
  * Aider) should follow the same convention.
  */
 const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
+const CODEX_HOOKS_FEATURE_KEY = "hooks"
+const DEPRECATED_CODEX_HOOKS_FEATURE_KEY = "codex_hooks"
 
 /**
  * Build the shell-string form of a Codex hook invocation with the
@@ -1541,6 +1543,21 @@ function upsertTomlTableKey(
   }
 
   lines.splice(section.end, 0, `${key} = ${value}`)
+  return joinTomlLines(lines)
+}
+
+function removeTomlTableKey(text: string, tableName: string, key: string): string {
+  const lines = splitTomlLines(text)
+  const section = parseTomlSections(text).find((candidate) => candidate.name === tableName)
+  if (!section) return text
+
+  const keyPattern = new RegExp(`^\\s*${key}\\s*=`)
+  for (let i = section.end - 1; i > section.start; i--) {
+    if (keyPattern.test(lines[i])) {
+      lines.splice(i, 1)
+    }
+  }
+
   return joinTomlLines(lines)
 }
 
@@ -3308,7 +3325,16 @@ export async function runCodexInstall(
   )
   const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
-  const hooksFeatureValue = extractTomlKeyValue(codexConfig, "features", "codex_hooks")
+  const hooksFeatureValue = extractTomlKeyValue(
+    codexConfig,
+    "features",
+    CODEX_HOOKS_FEATURE_KEY,
+  )
+  const deprecatedHooksFeatureValue = extractTomlKeyValue(
+    codexConfig,
+    "features",
+    DEPRECATED_CODEX_HOOKS_FEATURE_KEY,
+  )
   const binWakeupCommand = buildCodexHookCommand("wakeup", binShape)
   const binAutosaveCommand = buildCodexHookCommand("autosave", binShape)
   const legacyWakeupCommand = buildLegacyCodexHookCommand(context.wakeupPath)
@@ -3324,13 +3350,15 @@ export async function runCodexInstall(
         ? "legacy-current"
         : "stale"
   // The Codex hooks feature has no legacy/bin-dispatch axis — it's a
-  // single boolean (`codex_hooks = true`). Re-using HookStatus here
+  // single boolean (`hooks = true`). Re-using HookStatus here
   // would surface a meaningless legacy-current state, so we keep the
   // narrow three-value taxonomy for this row only.
   const hooksFeatureStatus: "current" | "stale" | "missing" =
     hooksFeatureValue == null
-      ? "missing"
-      : hooksFeatureValue === "true"
+      ? deprecatedHooksFeatureValue == null
+        ? "missing"
+        : "stale"
+      : hooksFeatureValue === "true" && deprecatedHooksFeatureValue == null
         ? "current"
         : "stale"
   const wakeupStatus = detectCodexHook(
@@ -3386,7 +3414,7 @@ export async function runCodexInstall(
   // Parity with the Claude install path — surface the
   // hook-side-effects disclosure on Codex too. The same Stop /
   // UserPromptSubmit hooks fire under Codex once
-  // `features.codex_hooks` is set and the project is trusted.
+  // `features.hooks` is set and the project is trusted.
   printHookDisclosure()
 
   const allCurrent =
@@ -3410,7 +3438,8 @@ export async function runCodexInstall(
 
   let nextConfig = codexConfig
   nextConfig = removeTomlTableGroup(nextConfig, "mcp_servers.lore")
-  nextConfig = upsertTomlTableKey(nextConfig, "features", "codex_hooks", "true")
+  nextConfig = removeTomlTableKey(nextConfig, "features", DEPRECATED_CODEX_HOOKS_FEATURE_KEY)
+  nextConfig = upsertTomlTableKey(nextConfig, "features", CODEX_HOOKS_FEATURE_KEY, "true")
   nextConfig = appendTomlBlock(nextConfig, desiredMcpSection)
 
   // Strip both legacy `.sh`-named entries AND any prior bin-dispatch

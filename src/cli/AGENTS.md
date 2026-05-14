@@ -795,7 +795,7 @@ state.
   (or `~/.cursor/mcp.json` with `--cursor-global`).
 - `--client both` is a deprecated alias for `--client all`; the CLI emits
   a warning and proceeds. Removal is plausible for 1.0.0.
-- Codex hooks require `features.codex_hooks = true` and only load in trusted
+- Codex hooks require `features.hooks = true` and only load in trusted
   projects, so preserve that behavior if you change the installer.
 - Cursor's MCP runtime does not currently support session-end / Stop hooks
   the way Claude Code and Codex do. The installer writes only an MCP entry

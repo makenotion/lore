@@ -191,5 +191,5 @@ instructions.
 | `No .lore.yaml found`                      | Config search failed                              | Ensure `.lore.yaml` exists in cwd or an ancestor                                                     |
 | `filter` type errors in queries            | Complex filter needs cast                         | Cast to `QueryDataSourceParameters["filter"]`                                                        |
 | `Vault already initialized`                | Running `lore init` twice                         | Use `lore status` to verify, or `VaultManager.load()`                                                |
-| Codex does not load Lore tools             | Project not trusted or hooks feature disabled     | Trust the project and ensure `.codex/config.toml` sets `features.codex_hooks = true`                 |
+| Codex does not load Lore tools             | Project not trusted or hooks feature disabled     | Trust the project and ensure `.codex/config.toml` sets `features.hooks = true`                       |
 | `No Notion auth configured`                | Every auth source returned empty                  | Run `lore auth --login` or set `NOTION_API_TOKEN`; see [`docs/authentication.md`](authentication.md) |

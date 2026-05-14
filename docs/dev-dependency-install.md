@@ -52,7 +52,7 @@ the MCP server and hooks.
      PnP, or `{ "command": "lore", "args": ["mcp"] }` for npm / Yarn 1
      (auto-detected via `.pnp.cjs`).
    - `.codex/config.toml` with the Lore MCP server and
-     `features.codex_hooks = true`, plus `.codex/hooks.json` entries for
+     `features.hooks = true`, plus `.codex/hooks.json` entries for
      `UserPromptSubmit` and `Stop` using `yarn run -T lore hooks <event>` (PnP)
      or `lore hooks <event>` (npm).
    - Project-scoped `.cursor/mcp.json` with the same MCP command / args shape
