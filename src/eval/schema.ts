@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
+import { isProfileSelector } from "../profile/index.js"
 import {
   SIMULATED_AUTOSAVE_EXTRACTION_MAX_TOKENS,
   SIMULATED_AUTOSAVE_EXTRACTION_MODEL,
@@ -9,7 +10,13 @@ import {
 
 export const EVAL_SUITE_VERSION = 1
 
-export const EVAL_RUNNERS = ["retrieval", "notion", "task", "bench"] as const
+export const EVAL_RUNNERS = [
+  "retrieval",
+  "notion",
+  "task",
+  "bench",
+  "profile",
+] as const
 
 /**
  * Agents the committed task-eval YAML may reference. `mock` is
@@ -291,6 +298,14 @@ export const benchSuiteSchema = z
     runner: z.literal("bench"),
     benchmark: z.literal("longmemeval"),
     suite: z.string().min(1),
+    profile: z
+      .object({
+        selector: z.string().refine(isProfileSelector, {
+          message: "must be an exact <name>@<semver> profile selector",
+        }),
+      })
+      .strict()
+      .optional(),
     corpus: z
       .object({
         name: z.string().min(1),
@@ -371,6 +386,101 @@ export const benchSuiteSchema = z
   .strict()
 
 export type BenchSuite = z.infer<typeof benchSuiteSchema>
+
+const profileMetricThresholdsSchema = z
+  .object({
+    entityKindRecallMin: z.number().min(0).max(1),
+    predicatePrecisionMin: z.number().min(0).max(1),
+    hallucinatedFactRateMax: z.number().min(0).max(1),
+    requiredFieldCompletenessMin: z.number().min(0).max(1),
+    invalidTaxonomyRateMax: z.number().min(0).max(1),
+  })
+  .strict()
+
+const profileExtractionEntitySchema = z
+  .object({
+    name: z.string(),
+    kind: z.string(),
+  })
+  .strict()
+
+const profileExtractionFactSchema = z
+  .object({
+    subject: z.string(),
+    predicate: z.string(),
+    object: z.string(),
+    evidence: z.string().optional(),
+  })
+  .strict()
+
+const profileExtractionMemorySchema = z
+  .object({
+    title: z.string(),
+    synopsis: z.string(),
+    tags: z.array(z.string()),
+    content: z.string(),
+    entities: z.array(profileExtractionEntitySchema).default([]),
+    facts: z.array(profileExtractionFactSchema).default([]),
+  })
+  .strict()
+
+const profileExtractionOutputSchema = z
+  .object({
+    memories: z.array(profileExtractionMemorySchema),
+  })
+  .strict()
+
+export const profileEvalSuiteSchema = z
+  .object({
+    version: z.literal(EVAL_SUITE_VERSION),
+    runner: z.literal("profile"),
+    suite: z
+      .string()
+      .min(1)
+      .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
+    profile: z.string().refine(isProfileSelector, {
+      message: "must be an exact <name>@<semver> profile selector",
+    }),
+    thresholds: profileMetricThresholdsSchema,
+    cases: z
+      .array(
+        z
+          .object({
+            id: z
+              .string()
+              .min(1)
+              .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
+            transcript: z.string().default(""),
+            expected: profileExtractionOutputSchema,
+            actual: profileExtractionOutputSchema,
+          })
+          .strict()
+      )
+      .min(1),
+    notes: z.string().default(""),
+  })
+  .strict()
+
+export type ProfileEvalSuite = z.infer<typeof profileEvalSuiteSchema>
+
+export interface LoadedProfileEvalSuite {
+  suite: ProfileEvalSuite
+  path: string
+  root: string
+}
+
+export async function loadProfileEvalSuite(
+  path: string
+): Promise<LoadedProfileEvalSuite> {
+  const absolute = resolve(path)
+  const raw = await readFile(absolute, "utf-8")
+  const parsed = parseEvalYaml(raw, absolute)
+  return {
+    suite: profileEvalSuiteSchema.parse(parsed),
+    path: absolute,
+    root: dirname(absolute),
+  }
+}
 
 export interface LoadedBenchSuite {
   suite: BenchSuite

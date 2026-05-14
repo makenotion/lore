@@ -1,0 +1,37 @@
+databases:
+  projects:
+    properties: {}
+  topics:
+    properties: {}
+  memories:
+    properties:
+      Support Severity:
+        select:
+          options:
+            - name: sev1
+              color: red
+            - name: sev2
+              color: orange
+            - name: sev3
+              color: yellow
+            - name: sev4
+              color: blue
+      Customer Impact:
+        rich_text: {}
+  entities:
+    properties:
+      Support Entity Role:
+        select:
+          options:
+            - name: customer
+              color: purple
+            - name: product-area
+              color: blue
+            - name: integration
+              color: green
+            - name: internal-team
+              color: gray
+  facts:
+    properties:
+      Evidence Link:
+        url: {}

@@ -146,6 +146,14 @@ export interface BenchSummary {
 }
 
 export interface BenchArtifactConfig {
+  profile?: {
+    selector: string
+    name: string
+    version: string
+    source: string
+    manifestDigest: string
+    promptHashes: Record<string, string>
+  }
   corpus: {
     name: string
     source: string

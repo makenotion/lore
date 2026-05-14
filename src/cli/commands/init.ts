@@ -52,10 +52,14 @@ export const buildHookDisclosureLines = buildHookDisclosureLinesShared
  * multi-workspace operators. Single-workspace operators (no `workspaceId`)
  * get a minimal config with the `auth:` block absent.
  */
-export function buildInitConfigYaml(pageId: string, workspaceId?: string): string {
+export function buildInitConfigYaml(
+  pageId: string,
+  workspaceId?: string,
+  profileSelector = defaultProfileSelector()
+): string {
   const config: LoreConfig = {
     vault: { pageId },
-    profile: defaultProfileSelector(),
+    profile: profileSelector,
     ...(workspaceId !== undefined && {
       auth: { workspaceId },
     }),
@@ -228,6 +232,30 @@ function expectedBaseUrlForEnv(env: NtnEnv): string | undefined {
   return ntnEnvBaseUrl(env)
 }
 
+function resolveInitProfile(profileSelector: string | undefined) {
+  try {
+    return resolveProfileFromConfig(
+      profileSelector ? { profile: profileSelector } : {}
+    )
+  } catch (err) {
+    const label = profileSelector ? ` ${JSON.stringify(profileSelector)}` : ""
+    console.error(
+      `Invalid --profile${label}: ${err instanceof Error ? err.message : String(err)}`
+    )
+    process.exit(1)
+    throw err
+  }
+}
+
+function formatDatabaseRef(ref: unknown): string {
+  if (typeof ref === "string") return ref
+  if (ref && typeof ref === "object") {
+    const databaseId = (ref as { databaseId?: unknown }).databaseId
+    if (typeof databaseId === "string" && databaseId.length > 0) return databaseId
+  }
+  return String(ref)
+}
+
 /**
  * `lore init <page-id>` legacy path. Operator already owns a vault page
  * (created in Notion's UI or via a prior install) and hands its id to
@@ -245,7 +273,7 @@ function expectedBaseUrlForEnv(env: NtnEnv): string | undefined {
  */
 export async function runExplicitPageInit(
   pageId: string,
-  opts: { token?: string; name?: string; ntnEnv?: string }
+  opts: { token?: string; name?: string; ntnEnv?: string; profile?: string }
 ): Promise<void> {
   if (opts.name && opts.name.trim().length > 0) {
     console.error(
@@ -263,6 +291,7 @@ export async function runExplicitPageInit(
       "[lore] --ntn-env is ignored when a page id is provided (no ntn login is spawned on the explicit-page path)."
     )
   }
+  const profile = resolveInitProfile(opts.profile)
   // Two paths:
   // - `--token` provided: operator hands us a literal token. We don't
   //   know the base URL (the operator can set `LORE_NOTION_BASE_URL`
@@ -320,7 +349,6 @@ export async function runExplicitPageInit(
     process.exit(1)
   }
 
-  const profile = resolveProfileFromConfig({})
   const vault = new VaultManager(client, pageId, profile)
 
   console.log("Creating Lore databases in Notion...")
@@ -328,11 +356,11 @@ export async function runExplicitPageInit(
   try {
     const result = await vault.init()
     console.log("Vault initialized successfully!")
-    console.log(`  Projects DB: ${result.databases.projects}`)
-    console.log(`  Topics DB:   ${result.databases.topics}`)
-    console.log(`  Memories DB: ${result.databases.memories}`)
-    console.log(`  Entities DB: ${result.databases.entities}`)
-    console.log(`  Facts DB:    ${result.databases.facts}`)
+    console.log(`  Projects DB: ${formatDatabaseRef(result.databases.projects)}`)
+    console.log(`  Topics DB:   ${formatDatabaseRef(result.databases.topics)}`)
+    console.log(`  Memories DB: ${formatDatabaseRef(result.databases.memories)}`)
+    console.log(`  Entities DB: ${formatDatabaseRef(result.databases.entities)}`)
+    console.log(`  Facts DB:    ${formatDatabaseRef(result.databases.facts)}`)
 
     const configPath = resolve(process.cwd(), ".lore.yaml")
     // Pass the ntn-source `workspaceId` through to the generated YAML
@@ -340,7 +368,10 @@ export async function runExplicitPageInit(
     // `auth.workspaceId` pinned just like the no-arg path. Without
     // this, the legacy path silently re-introduced the ambiguity case
     // every subsequent command would re-discover.
-    await writeFile(configPath, buildInitConfigYaml(pageId, workspaceId))
+    await writeFile(
+      configPath,
+      buildInitConfigYaml(pageId, workspaceId, profile.selector)
+    )
     console.log(`\nConfig written to ${configPath}`)
     console.log("")
     for (const line of buildHookDisclosureLines()) {
@@ -374,6 +405,7 @@ export async function runNoArgInit(opts: {
   yes?: boolean
   name?: string
   ntnEnv?: string
+  profile?: string
 }): Promise<void> {
   const cwd = process.cwd()
   const yesFlag = opts.yes === true
@@ -417,6 +449,8 @@ export async function runNoArgInit(opts: {
     process.exit(1)
     return
   }
+
+  const profile = resolveInitProfile(opts.profile)
 
   // Resolve auth via the existing chain (NOTION_API_TOKEN env →
   // ntn auth.json → LORE_NOTION_TOKEN → auth.token). No-arg
@@ -482,6 +516,7 @@ export async function runNoArgInit(opts: {
         opts.name && opts.name.trim().length > 0
           ? `--name ${JSON.stringify(opts.name.trim())}`
           : null,
+        opts.profile ? `--profile ${JSON.stringify(profile.selector)}` : null,
       ]
         .filter((f): f is string => f !== null)
         .join(" ")
@@ -708,15 +743,14 @@ export async function runNoArgInit(opts: {
 
   // Create the five databases under the vault page.
   console.log("Creating Lore databases...")
-  const profile = resolveProfileFromConfig({})
   const vault = new VaultManager(client, vaultPageId, profile)
   try {
     const result = await vault.init()
-    console.log(`  ✓ Projects DB: ${result.databases.projects}`)
-    console.log(`  ✓ Topics DB:   ${result.databases.topics}`)
-    console.log(`  ✓ Memories DB: ${result.databases.memories}`)
-    console.log(`  ✓ Entities DB: ${result.databases.entities}`)
-    console.log(`  ✓ Facts DB:    ${result.databases.facts}`)
+    console.log(`  ✓ Projects DB: ${formatDatabaseRef(result.databases.projects)}`)
+    console.log(`  ✓ Topics DB:   ${formatDatabaseRef(result.databases.topics)}`)
+    console.log(`  ✓ Memories DB: ${formatDatabaseRef(result.databases.memories)}`)
+    console.log(`  ✓ Entities DB: ${formatDatabaseRef(result.databases.entities)}`)
+    console.log(`  ✓ Facts DB:    ${formatDatabaseRef(result.databases.facts)}`)
   } catch (err) {
     // "Already initialized" is FATAL in the no-arg flow: we just
     // created the page seconds ago via `pages.create`. If
@@ -754,7 +788,10 @@ export async function runNoArgInit(opts: {
   }
 
   // Write .lore.yaml.
-  await writeFile(configPath, buildInitConfigYaml(vaultPageId, auth.workspaceId))
+  await writeFile(
+    configPath,
+    buildInitConfigYaml(vaultPageId, auth.workspaceId, profile.selector)
+  )
   console.log("")
   console.log(`Config written to ${configPath}`)
 
@@ -788,6 +825,7 @@ interface InitOpts {
   yes?: boolean
   name?: string
   ntnEnv?: string
+  profile?: string
 }
 
 export const initCommand = new Command("init")
@@ -808,6 +846,10 @@ export const initCommand = new Command("init")
   .option(
     "--ntn-env <env>",
     "Notion environment for ntn login (prod | dev | stg). When omitted, ntn's own default applies (prod unless NOTION_ENV is set in the operator's shell). Sets NOTION_ENV in the spawned ntn process so the post-login auth resolution surfaces the matching base URL."
+  )
+  .option(
+    "--profile <selector>",
+    "Built-in first-party profile selector to write for the new vault (exact <name>@<semver>, e.g. default@1.0.0)."
   )
   .action(async (pageId: string | undefined, opts: InitOpts) => {
     if (pageId) {

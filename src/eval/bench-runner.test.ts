@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+  assertBenchSandboxProfileMatchesSuite,
   assertBenchEnvReady,
   assertSandboxProjectName,
   buildBenchWorkspace,
@@ -13,9 +14,12 @@ import {
   makeSubProjectName,
   parseAgentTurnCompleted,
   restoreBenchEnv,
+  runBenchSuite,
   SUB_PROJECT_NAME_REGEX,
   ulidTimestampMs,
+  type BenchSandbox,
 } from "./bench-runner.js"
+import { resolveProfileFromConfig } from "../profile/index.js"
 
 describe("generateUlid", () => {
   it("produces a 26-char Crockford base32 string", () => {
@@ -143,6 +147,105 @@ describe("assertSandboxProjectName", () => {
     expect(() => assertSandboxProjectName("lme-test-01HXYZ")).not.toThrow()
     expect(() => assertSandboxProjectName("lme-sandbox-01HXYZ")).not.toThrow()
     expect(() => assertSandboxProjectName("lme-eval-01HXYZ")).not.toThrow()
+  })
+})
+
+describe("assertBenchSandboxProfileMatchesSuite", () => {
+  it("rejects profile-declared suites when the sandbox profile differs", () => {
+    const profile = resolveProfileFromConfig({ profile: "support@1.0.0" })
+
+    expect(() =>
+      assertBenchSandboxProfileMatchesSuite({
+        sandbox: { activeProfileSelector: "default@1.0.0" },
+        profile,
+      })
+    ).toThrow(/does not match the active sandbox profile/)
+  })
+
+  it("accepts matching profile-declared suites and unprofiled suites", () => {
+    const profile = resolveProfileFromConfig({ profile: "support@1.0.0" })
+
+    expect(() =>
+      assertBenchSandboxProfileMatchesSuite({
+        sandbox: { activeProfileSelector: "support@1.0.0" },
+        profile,
+      })
+    ).not.toThrow()
+    expect(() =>
+      assertBenchSandboxProfileMatchesSuite({
+        sandbox: { activeProfileSelector: "default@1.0.0" },
+        profile: null,
+      })
+    ).not.toThrow()
+  })
+})
+
+describe("runBenchSuite profile guard", () => {
+  const keys = [
+    "LORE_EVAL_BENCH_REAL",
+    "LORE_BENCH_NOTION_TOKEN",
+    "LORE_BENCH_OPENAI_API_KEY",
+    "LORE_BENCH_CONFIG_ROOT",
+    "LORE_BENCH_SANDBOX_PROJECT_NAME",
+    "NOTION_API_TOKEN",
+    "LORE_CONFIG_ROOT",
+  ]
+  let saved: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    saved = {}
+    for (const key of keys) {
+      saved[key] = process.env[key]
+      delete process.env[key]
+    }
+  })
+
+  afterEach(() => {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key]
+      else process.env[key] = saved[key]
+    }
+  })
+
+  it("fails before creating sub-projects when the suite and sandbox profiles differ", async () => {
+    process.env["LORE_EVAL_BENCH_REAL"] = "1"
+    process.env["LORE_BENCH_NOTION_TOKEN"] = "ntn_bench"
+    process.env["LORE_BENCH_OPENAI_API_KEY"] = "sk-bench"
+    process.env["LORE_BENCH_CONFIG_ROOT"] = "/tmp/lore-bench-config"
+    process.env["LORE_BENCH_SANDBOX_PROJECT_NAME"] = "Bench Sandbox"
+    let createSubProjectCalled = false
+    const sandbox: BenchSandbox = {
+      authSource: "env-notion-api-token",
+      activeProfileSelector: "default@1.0.0",
+      async createSubProject() {
+        createSubProjectCalled = true
+        return "project-1"
+      },
+      async createMemoryInProject() {
+        throw new Error("not expected")
+      },
+      async createSimulatedAutosaveMemoryInProject() {
+        throw new Error("not expected")
+      },
+      async getWakeUpForQuery() {
+        throw new Error("not expected")
+      },
+      async archiveProject() {},
+      async countMemoriesForProject() {
+        return 0
+      },
+      async countFactsForProject() {
+        return 0
+      },
+    }
+
+    await expect(
+      runBenchSuite({
+        suitePath: "evals/bench-suites/support-simulated-autosave.yaml",
+        sandbox,
+      })
+    ).rejects.toThrow(/Bench suite profile support@1\.0\.0/)
+    expect(createSubProjectCalled).toBe(false)
   })
 })
 

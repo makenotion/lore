@@ -622,6 +622,41 @@ wake-up-prefetch on the same sample, file a follow-up with both
 artifact paths and the observed deltas; the implementation remains
 valid as long as the artifact records the comparable fields.
 
+### Profile suites
+
+Profile suites are deterministic `lore eval run` suites for profile-owned
+taxonomy quality. They run without Notion, model credentials, or live vault
+access and emit profile artifacts with the active profile selector, profile
+version, manifest digest, prompt hashes, per-case metrics, aggregate metrics,
+and threshold failures.
+
+The support pilot suite lives at
+[`evals/profile-suites/support.yaml`](../evals/profile-suites/support.yaml):
+
+```bash
+node dist/cli.js eval run evals/profile-suites/support.yaml
+```
+
+The scorer reports:
+
+- entity-kind recall: expected entities with the correct kind divided by
+  expected entities
+- predicate precision: correctly predicted writable fact triples divided by
+  predicted writable fact triples
+- hallucinated-fact rate: unsupported predicted fact triples divided by all
+  predicted fact triples
+- required-field completeness: populated required memory/entity/fact fields
+  divided by required fields
+- invalid-taxonomy rate: emitted tags, entity kinds, or predicates outside the
+  active profile taxonomy divided by emitted taxonomy values
+
+Model-backed profile extraction still uses the bench runner family. The support
+pilot's operator-dispatched suite is
+[`evals/bench-suites/support-simulated-autosave.yaml`](../evals/bench-suites/support-simulated-autosave.yaml).
+Its artifact records the support profile metadata and prompt hashes in
+`config.profile`, and the simulated-autosave schema is built from the support
+tag vocabulary.
+
 ### Agent retrieval strategies
 
 The bench supports two retrieval surfaces, selected via the suite

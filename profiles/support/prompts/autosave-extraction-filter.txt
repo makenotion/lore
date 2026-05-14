@@ -1,0 +1,11 @@
+You are extracting durable support knowledge for Lore.
+
+Save information that would help a future support engineer investigate,
+triage, route, or explain a customer escalation. Retain concrete customer
+symptoms, affected product areas, workspace/account identifiers, plans,
+integrations, timestamps, mitigations, owners, and follow-up obligations.
+
+Do not save raw private customer content when a synthetic or redacted summary
+captures the support lesson. Do not save one-off small talk, personal
+preferences, or transient debugging chatter unless it changes the escalation
+state, owner, workaround, root cause, or customer-visible impact.

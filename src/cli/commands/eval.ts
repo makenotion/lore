@@ -176,6 +176,23 @@ export function validateEvalRunRunnerCompatibility(
     }
   }
 
+  if (runner === "profile") {
+    const profileIncompatible: Array<{ flag: string; raw: string | undefined }> = [
+      { flag: "--baseline", raw: raw.baseline },
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of profileIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner profile; profile suites declare their taxonomy thresholds in YAML.`,
+        }
+      }
+    }
+  }
+
   return { ok: true, value: undefined }
 }
 
@@ -234,6 +251,13 @@ export function validateBaselineRunnerSupport(
       ok: false,
       message:
         "--runner task is not supported by the baseline subcommand. Task-mode artifacts are scored by deterministic verifiers, not retrieval metrics, so baseline comparisons do not apply.",
+    }
+  }
+  if (runner === "profile") {
+    return {
+      ok: false,
+      message:
+        "--runner profile is not supported by the baseline subcommand. Profile-mode artifacts are deterministic threshold checks, so baseline comparisons do not apply.",
     }
   }
   return { ok: true, value: undefined }
@@ -328,7 +352,7 @@ evalCommand.addCommand(
     .argument("<suite>", "Path to an eval suite YAML file")
     .option(
       "--runner <mode>",
-      "Runner mode (retrieval|notion|task); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
+      "Runner mode (retrieval|notion|task|bench|profile); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
     )
     .option("--trials <n>", "Trial count; retrieval mode requires 1")
     .option("--out <path>", "Write the JSON artifact to a specific path")
@@ -572,6 +596,55 @@ evalCommand.addCommand(
             } finally {
               restoreBenchEnv(envSnapshot)
             }
+          }
+
+          if (parsed.value.runner === "profile") {
+            if (
+              parsed.value.baselinePath ||
+              parsed.value.minLift !== undefined ||
+              parsed.value.maxHarm !== undefined ||
+              parsed.value.projectName
+            ) {
+              console.error(
+                "Eval failed: --baseline, --min-lift, --max-harm, and --project are not supported with runner profile; profile suites declare thresholds in YAML.",
+              )
+              process.exit(1)
+              return
+            }
+            const { runProfileEvalSuite } = await import(
+              "../../eval/profile-runner.js"
+            )
+            const { artifact, outPath } = await runProfileEvalSuite(suite, {
+              outPath: parsed.value.outPath,
+            })
+            if (parsed.value.json) {
+              console.log(JSON.stringify(artifact, null, 2))
+            } else {
+              const status =
+                artifact.summary.failedCases === 0 &&
+                artifact.summary.failures.length === 0
+                  ? "passed"
+                  : "failed"
+              console.log(
+                `Profile eval ${status}: ${artifact.summary.passedCases}/${artifact.summary.cases} cases passed.`
+              )
+              console.log(`Artifact: ${outPath}`)
+              for (const failure of artifact.summary.failures) {
+                console.error(`Profile threshold failed: ${failure}`)
+              }
+              for (const result of artifact.results) {
+                for (const failure of result.failures) {
+                  console.error(`  - ${result.id}: ${failure}`)
+                }
+              }
+            }
+            if (
+              artifact.summary.failedCases > 0 ||
+              artifact.summary.failures.length > 0
+            ) {
+              process.exit(1)
+            }
+            return
           }
 
           const runOptions: RunEvalOptions = {

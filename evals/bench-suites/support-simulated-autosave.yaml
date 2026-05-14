@@ -1,0 +1,28 @@
+runner: bench
+benchmark: longmemeval
+suite: support-simulated-autosave
+profile:
+  selector: support@1.0.0
+corpus:
+  name: longmemeval_s_cleaned
+  path: evals/bench-corpora/longmemeval/longmemeval_s_cleaned.json
+agent:
+  model: gpt-4o-mini-2024-07-18
+  adapter: codex
+  systemPrompt: evals/prompts/longmemeval-agent-system-wake-up.txt
+  retrieval: wake-up-prefetch
+judge:
+  model: gpt-4o-2024-08-06
+  recallPrompt: evals/prompts/longmemeval-judge.txt
+  abstentionPrompt: evals/prompts/longmemeval-judge-abstention.txt
+ingestion:
+  strategy: simulated-autosave
+  extractionPrompt: profiles/support/prompts/longmemeval-ingest-extract.txt
+  extractionModel: gpt-4o-mini-2024-07-18
+  extractionMaxTokens: 1000
+caps:
+  perExampleWrites: 500
+  perSuiteWrites: 250000
+notes: >
+  Operator-dispatched model-backed extraction suite for the support pilot
+  profile. The artifact records support profile metadata and prompt hashes.

@@ -267,6 +267,16 @@ describe("buildInitConfigYaml", () => {
       },
     })
   })
+
+  it("writes an explicit non-default profile selector when provided", () => {
+    const text = buildInitConfigYaml("abc123", undefined, "support@1.0.0")
+    const parsed = yamlParse(text)
+
+    expect(parsed).toMatchObject({
+      vault: { pageId: "abc123" },
+      profile: "support@1.0.0",
+    })
+  })
 })
 
 describe("buildHookDisclosureLines", () => {
@@ -447,13 +457,10 @@ afterAll(() => {
 })
 
 interface TestVaultResult {
-  databases: {
-    projects: string
-    topics: string
-    memories: string
-    entities: string
-    facts: string
-  }
+  databases: Record<
+    "projects" | "topics" | "memories" | "entities" | "facts",
+    { databaseId: string; dataSourceId: string }
+  >
 }
 
 /**
@@ -491,14 +498,14 @@ function setupTestCwd(): string {
 function mockVaultInitSuccess(): TestVaultResult {
   const result: TestVaultResult = {
     databases: {
-      projects: "db-projects",
-      topics: "db-topics",
-      memories: "db-memories",
+      projects: { databaseId: "db-projects", dataSourceId: "ds-projects" },
+      topics: { databaseId: "db-topics", dataSourceId: "ds-topics" },
+      memories: { databaseId: "db-memories", dataSourceId: "ds-memories" },
       // PF3-01: every fresh init creates the Entities DB. Fixture
       // mirrors the production shape so the success-log render asserts
       // realistic output.
-      entities: "db-entities",
-      facts: "db-facts",
+      entities: { databaseId: "db-entities", dataSourceId: "ds-entities" },
+      facts: { databaseId: "db-facts", dataSourceId: "ds-facts" },
     },
   }
   vi.mocked(VaultManager).mockImplementation(
@@ -602,6 +609,53 @@ describe("runNoArgInit", () => {
     // not a recovery-flow signal.
     expect(installNtn).not.toHaveBeenCalled()
     expect(runNtnLogin).not.toHaveBeenCalled()
+    const log = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")
+    expect(log).toContain("Projects DB: db-projects")
+    expect(log).not.toContain("[object Object]")
+  })
+
+  it("threads --profile through no-arg vault creation and generated config", async () => {
+    const cwd = setupTestCwd()
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "tok-ntn",
+      baseUrl: undefined,
+      source: "ntn-auth-json",
+      workspaceId: "ws-1",
+    })
+    const create = vi.fn(async () => ({ id: "page-support" }))
+    const { createClient } = await import("../../notion/client.js")
+    vi.mocked(createClient).mockReturnValue({
+      pages: { create },
+    } as unknown as ReturnType<typeof createClient>)
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+    mockVaultInitSuccess()
+
+    await runNoArgInit({ profile: "support@1.0.0" })
+
+    const yaml = await readFile(join(cwd, ".lore.yaml"), "utf-8")
+    const parsed = yamlParse(yaml) as Record<string, unknown>
+    expect(parsed.profile).toBe("support@1.0.0")
+    expect(VaultManager).toHaveBeenCalledWith(
+      expect.anything(),
+      "page-support",
+      expect.objectContaining({ selector: "support@1.0.0" })
+    )
+  })
+
+  it("rejects an invalid --profile before creating a page or resolving auth", async () => {
+    setupTestCwd()
+    const exitTrap = trapProcessExit()
+
+    await expect(
+      runNoArgInit({ profile: "missing@1.0.0" })
+    ).rejects.toBeInstanceOf(ProcessExitSentinel)
+
+    expect(exitTrap.lastCode()).toBe(1)
+    expect(resolveAuth).not.toHaveBeenCalled()
+    expect(VaultManager).not.toHaveBeenCalled()
+    const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
+    expect(stderr).toContain("Invalid --profile")
+    expect(stderr).toContain("Unknown built-in profile")
   })
 
   it("post-init output prints the issue #560 hook-disclosure block before Next steps", async () => {
@@ -1405,6 +1459,8 @@ describe("runNoArgInit", () => {
 
     const log = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")
     expect(log).toContain("Entities DB:")
+    expect(log).toContain("db-entities")
+    expect(log).not.toContain("[object Object]")
   })
 
   // ---------------------------------------------------------------------
@@ -1625,6 +1681,26 @@ describe("runExplicitPageInit", () => {
     expect(yaml).toContain("pageId: explicit-page")
     // Preflight runs against the operator-supplied page id.
     expect(verifyVaultAccess).toHaveBeenCalledWith(expect.anything(), "explicit-page")
+  })
+
+  it("threads --profile through explicit-page vault creation and generated config", async () => {
+    const cwd = setupTestCwd()
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+    mockVaultInitSuccess()
+
+    await runExplicitPageInit("explicit-support", {
+      token: "tok-explicit",
+      profile: "support@1.0.0",
+    })
+
+    const yaml = await readFile(join(cwd, ".lore.yaml"), "utf-8")
+    const parsed = yamlParse(yaml) as Record<string, unknown>
+    expect(parsed.profile).toBe("support@1.0.0")
+    expect(VaultManager).toHaveBeenCalledWith(
+      expect.anything(),
+      "explicit-support",
+      expect.objectContaining({ selector: "support@1.0.0" })
+    )
   })
 
   it("with partial vault schema: exits without writing config or implying init can repair it", async () => {

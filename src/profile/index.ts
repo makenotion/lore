@@ -289,7 +289,7 @@ export function isProfileSelector(value: string): boolean {
 }
 
 export function defaultProfileRoot(): string {
-  return findBundledProfileRoot("default")
+  return bundledProfileRoot("default")
 }
 
 export function defaultProfileSelector(): string {
@@ -297,19 +297,20 @@ export function defaultProfileSelector(): string {
   return `${manifest.name}@${manifest.version}`
 }
 
+export function bundledProfileRoot(name: string): string {
+  return findBundledProfileRoot(name)
+}
+
 export function resolveProfileFromConfig(config: { profile?: string }): ResolvedProfile {
-  const root = defaultProfileRoot()
-  const manifest = readManifest(root)
-  const selector = config.profile ?? `${manifest.name}@${manifest.version}`
+  const selector = config.profile ?? defaultProfileSelector()
   const parsed = parseProfileSelector(selector)
-  if (parsed.name !== "default") {
+  let root: string
+  try {
+    root = bundledProfileRoot(parsed.name)
+  } catch (err) {
+    if (!(err instanceof ProfileLoadError)) throw err
     throw new ProfileLoadError(
-      `Unknown built-in profile "${parsed.name}". Phase 1 ships only default@${manifest.version}.`
-    )
-  }
-  if (parsed.version !== manifest.version) {
-    throw new ProfileLoadError(
-      `Built-in profile default is version ${manifest.version}, but config requested ${parsed.selector}.`
+      `Unknown built-in profile "${parsed.name}". Expected profiles/${parsed.name}/profile.yaml to exist in this Lore release.`
     )
   }
   return loadProfileFromRoot(root, { source: "built-in", selector: parsed.selector })

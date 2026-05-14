@@ -1,0 +1,13 @@
+When saving support knowledge:
+
+- Use tags only from the support profile vocabulary.
+- Put ticket ids, workspace ids, customer names, plan names, exact error
+  strings, API endpoints, and product surfaces in keywords.
+- Prefer entity names that a future support engineer would search for:
+  customers, workspaces, product areas, integrations, support tickets, owners,
+  and affected systems.
+- Use facts for durable relationships such as a ticket affecting a feature, an
+  escalation being owned by a team, a mitigation addressing an outage, or a
+  customer report being reproduced by a specific setup.
+- Keep procedure proposals and review-gated support runbooks in the existing
+  procedure workflow; do not bypass review by saving them as ordinary notes.

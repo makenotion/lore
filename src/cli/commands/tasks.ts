@@ -1,4 +1,7 @@
 import { Command } from "commander"
+import { access } from "node:fs/promises"
+import { resolve } from "node:path"
+import { findConfigFile, loadConfig } from "../../config.js"
 import { initServices, type LoreServices } from "../../services.js"
 import {
   reconcileActiveTasks,
@@ -25,6 +28,7 @@ import {
   type TaskSummary,
 } from "../../types.js"
 import { parsePositiveDecimalInteger, parseUnitIntervalDecimal } from "../parse.js"
+import { resolveProfileFromConfig } from "../../profile/index.js"
 
 const PROJECT_LIST_HINT = "run `lore status projects` to list configured projects"
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
@@ -271,6 +275,31 @@ function parseTagsList(
     }
   }
   return { ok: true, value: tags }
+}
+
+async function loadActiveTagVocabularyForCli(): Promise<readonly string[]> {
+  const rawRoot = process.env["LORE_CONFIG_ROOT"]
+  const explicitRoot = rawRoot?.trim() ? rawRoot.trim() : undefined
+  let configPath: string
+  if (explicitRoot) {
+    const root = resolve(explicitRoot)
+    configPath = resolve(root, ".lore.yaml")
+    try {
+      await access(configPath)
+    } catch {
+      throw new Error(
+        `LORE_CONFIG_ROOT=${root} but no .lore.yaml exists there. ` +
+          "Re-run `lore install` from the project directory or unset " +
+          "LORE_CONFIG_ROOT to fall back to the upward search."
+      )
+    }
+  } else {
+    const found = await findConfigFile(process.cwd())
+    if (!found) return TAG_VOCABULARY
+    configPath = found.path
+  }
+  const config = await loadConfig(configPath)
+  return resolveProfileFromConfig(config).taxonomy.tags
 }
 
 function validateState(
@@ -730,7 +759,8 @@ const createCommand = new Command("create")
       }
     ) => {
       try {
-        const parsed = parseCreateCliOptions(subject, opts)
+        const tagVocabulary = await loadActiveTagVocabularyForCli()
+        const parsed = parseCreateCliOptions(subject, opts, tagVocabulary)
         if (!parsed.ok) {
           console.error(`Task create failed: ${parsed.message}`)
           process.exit(1)
@@ -910,7 +940,8 @@ const updateCommand = new Command("update")
       }
     ) => {
       try {
-        const parsed = parseUpdateCliOptions(taskId, opts)
+        const tagVocabulary = await loadActiveTagVocabularyForCli()
+        const parsed = parseUpdateCliOptions(taskId, opts, tagVocabulary)
         if (!parsed.ok) {
           console.error(`Task update failed: ${parsed.message}`)
           process.exit(1)

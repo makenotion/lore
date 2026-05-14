@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   parseCloseCliOptions,
   parseCreateCliOptions,
@@ -1704,6 +1707,82 @@ describe("tasksCommand create/update/close/list actions", () => {
     expect(logSpy).toHaveBeenCalledTimes(1)
     const logged = logSpy.mock.calls[0]!.join("\n")
     expect(logged).toContain('Created task: "Track PR-1" (t-new)')
+  })
+
+  it("create validates --tags against the active profile vocabulary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lore-tasks-profile-"))
+    writeFileSync(
+      join(cwd, ".lore.yaml"),
+      "vault:\n  pageId: test-page\nprofile: support@1.0.0\n"
+    )
+    vi.spyOn(process, "cwd").mockReturnValue(cwd)
+    const tasksCreate = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-support",
+        title: "Follow up on SUP-1024",
+        taskState: "open",
+      }) as unknown as Task
+    )
+    const services = makeServices({ contextProject: null, tasksCreate })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    try {
+      await tasksCommand.parseAsync(
+        ["create", "Follow up on SUP-1024", "--tags", "escalation"],
+        { from: "user" }
+      )
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(exitTrap.exitCodes).toEqual([])
+    expect(tasksCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: ["escalation"] })
+    )
+  })
+
+  it("create validates --tags through LORE_CONFIG_ROOT when it is set", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lore-tasks-cwd-profile-"))
+    const configRoot = mkdtempSync(join(tmpdir(), "lore-tasks-root-profile-"))
+    const priorRoot = process.env["LORE_CONFIG_ROOT"]
+    writeFileSync(
+      join(cwd, ".lore.yaml"),
+      "vault:\n  pageId: cwd-page\nprofile: default@1.0.0\n"
+    )
+    writeFileSync(
+      join(configRoot, ".lore.yaml"),
+      "vault:\n  pageId: root-page\nprofile: support@1.0.0\n"
+    )
+    process.env["LORE_CONFIG_ROOT"] = configRoot
+    vi.spyOn(process, "cwd").mockReturnValue(cwd)
+    const tasksCreate = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-support-root",
+        title: "Follow up on SUP-1024",
+        taskState: "open",
+      }) as unknown as Task
+    )
+    const services = makeServices({ contextProject: null, tasksCreate })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    try {
+      await tasksCommand.parseAsync(
+        ["create", "Follow up on SUP-1024", "--tags", "escalation"],
+        { from: "user" }
+      )
+    } finally {
+      if (priorRoot === undefined) delete process.env["LORE_CONFIG_ROOT"]
+      else process.env["LORE_CONFIG_ROOT"] = priorRoot
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(configRoot, { recursive: true, force: true })
+    }
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(exitTrap.exitCodes).toEqual([])
+    expect(tasksCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: ["escalation"] })
+    )
   })
 
   it("update exits 1 once before initServices on --state=blocked without --blocked-by", async () => {

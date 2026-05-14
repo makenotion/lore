@@ -1,0 +1,36 @@
+tags:
+  - admin
+  - api
+  - billing
+  - customer-report
+  - data-loss
+  - desktop
+  - docs-gap
+  - escalation
+  - integration
+  - latency
+  - mobile
+  - outage
+  - permissions
+  - product-area
+  - root-cause
+  - workaround
+entityKinds:
+  - account
+  - customer
+  - feature
+  - integration
+  - person
+  - plan
+  - product-area
+  - support-ticket
+  - system
+  - team
+  - workspace
+writableFactPredicates:
+  - affects
+  - caused_by
+  - mitigated_by
+  - owned_by
+  - reported_by
+  - reproduced_by

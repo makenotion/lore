@@ -44,6 +44,7 @@ export async function buildBenchSandbox(): Promise<BenchSandbox> {
   )
   return {
     authSource: services.authSource,
+    activeProfileSelector: services.profile.selector,
     async createSubProject(name) {
       const project = await services.projects.create({
         name,

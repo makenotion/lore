@@ -1,0 +1,82 @@
+version: 1
+runner: profile
+suite: support-profile
+profile: support@1.0.0
+thresholds:
+  entityKindRecallMin: 0.8
+  predicatePrecisionMin: 0.85
+  hallucinatedFactRateMax: 0.05
+  requiredFieldCompletenessMin: 0.9
+  invalidTaxonomyRateMax: 0
+cases:
+  - id: api-timeout-escalation
+    transcript: |
+      Support ticket SUP-1024 reports that Acme Workspace sees API export
+      requests timeout after 30 seconds on Enterprise Plan. The API Platform
+      team owns the escalation. A temporary workaround is to split exports by
+      date range while the team investigates the query planner regression.
+    expected:
+      memories:
+        - title: Acme API export timeout escalation
+          synopsis: Acme Workspace reports API export timeouts on Enterprise Plan; API Platform owns investigation and date-range splits mitigate customer impact.
+          tags:
+            - customer-report
+            - api
+            - latency
+            - workaround
+          content: Acme Workspace ticket SUP-1024 reports API export requests timing out after 30 seconds on Enterprise Plan. API Platform owns the escalation, and support can mitigate by splitting exports by date range while the query planner regression is investigated.
+          entities:
+            - name: SUP-1024
+              kind: support-ticket
+            - name: Acme Workspace
+              kind: workspace
+            - name: API Platform
+              kind: team
+            - name: Enterprise Plan
+              kind: plan
+          facts:
+            - subject: SUP-1024
+              predicate: affects
+              object: API export
+              evidence: Ticket reports API export requests timing out.
+            - subject: SUP-1024
+              predicate: owned_by
+              object: API Platform
+              evidence: API Platform owns the escalation.
+            - subject: Date-range split
+              predicate: mitigated_by
+              object: API timeout escalation
+              evidence: Support can split exports by date range as a workaround.
+    actual:
+      memories:
+        - title: Acme API export timeout escalation
+          synopsis: Acme Workspace reports API export timeouts on Enterprise Plan; API Platform owns investigation and date-range splits mitigate customer impact.
+          tags:
+            - customer-report
+            - api
+            - latency
+            - workaround
+          content: Acme Workspace ticket SUP-1024 reports API export requests timing out after 30 seconds on Enterprise Plan. API Platform owns the escalation, and support can mitigate by splitting exports by date range while the query planner regression is investigated.
+          entities:
+            - name: SUP-1024
+              kind: support-ticket
+            - name: Acme Workspace
+              kind: workspace
+            - name: API Platform
+              kind: team
+            - name: Enterprise Plan
+              kind: plan
+          facts:
+            - subject: SUP-1024
+              predicate: affects
+              object: API export
+              evidence: Ticket reports API export requests timing out.
+            - subject: SUP-1024
+              predicate: owned_by
+              object: API Platform
+              evidence: API Platform owns the escalation.
+            - subject: Date-range split
+              predicate: mitigated_by
+              object: API timeout escalation
+              evidence: Support can split exports by date range as a workaround.
+notes: Synthetic support fixture. No real customer, workspace, or ticket data.

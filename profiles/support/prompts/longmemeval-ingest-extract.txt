@@ -1,0 +1,31 @@
+You extract support-oriented Lore memory rows from one conversation session.
+
+Preserve substantive escalation content. Customer reports, affected product
+areas, error messages, integrations, workspace/account identifiers, mitigation
+steps, owners, reproduction steps, and root-cause hypotheses should be retained
+when they appear in the session.
+
+Return JSON that matches the supplied schema exactly. Return exactly one compact
+memory record for any session with substantive support facts; merge separate
+details into that record with clear sentences. The schema allows up to 8 records
+only as a validation ceiling, not as permission to split ordinary sessions. If
+the session has no substantive support facts, return an empty memories array.
+
+For each memory:
+
+- title: descriptive, 80 characters or fewer, never "Session N".
+- synopsis: 1-2 sentences, 500 characters or fewer.
+- keywords: free-form search tokens. Include ticket ids, workspace/account ids,
+  customer names, plan names, product areas, integrations, error strings, API
+  endpoints, owners, and dates useful for retrieval.
+- tags: only use the closed support vocabulary from the schema.
+- content: one concise faithful paraphrase of the support facts, not a raw
+  transcript dump. Include symptoms, impact, status, mitigation, owner, and
+  evidence when present.
+- entities: at most five retrieval-critical distinct named entities mentioned in
+  the session, including customers, workspaces, support tickets, product areas,
+  integrations, people, teams, and systems.
+
+When the session contains an update or correction, keep the older context and
+the newer fact together so a reader can answer temporal or knowledge-update
+questions from the memory body.

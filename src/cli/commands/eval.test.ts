@@ -100,6 +100,43 @@ describe("parseEvalRunCliOptions", () => {
     }
   )
 
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Widget" },
+  ])("rejects --$flag with --runner profile ($flag)", ({ flag, value }) => {
+    const result = parseEvalRunCliOptions({
+      runner: "profile",
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner profile")
+    }
+  })
+
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Widget" },
+  ])(
+    "rejects --$flag after peeking a YAML-declared profile suite",
+    ({ flag, value }) => {
+      const parsed = parseEvalRunCliOptions({ [flag]: value })
+      expect(parsed.ok).toBe(true)
+
+      const result = validateEvalRunRunnerCompatibility("profile", {
+        [flag]: value,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.message).toContain("not supported with --runner profile")
+      }
+    }
+  )
+
   it("requires --project when --runner notion is set", () => {
     const result = parseEvalRunCliOptions({ runner: "notion" })
     expect(result.ok).toBe(false)
@@ -245,6 +282,15 @@ describe("validateBaselineRunnerSupport", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("--runner task is not supported")
+      expect(result.message).toContain("baseline subcommand")
+    }
+  })
+
+  it("rejects --runner profile with an actionable operator message", () => {
+    const result = validateBaselineRunnerSupport("profile")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--runner profile is not supported")
       expect(result.message).toContain("baseline subcommand")
     }
   })

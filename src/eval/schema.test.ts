@@ -7,6 +7,8 @@ import {
   evalSuiteSchema,
   loadBenchSuite,
   loadEvalSuite,
+  loadProfileEvalSuite,
+  profileEvalSuiteSchema,
 } from "./schema.js"
 
 const BENCH_BASE = {
@@ -233,6 +235,14 @@ describe("bench suite schema ingestion extraction fields", () => {
     expect(loaded.suite.agent.retrieval).toBe("wake-up-prefetch")
   })
 
+  it("validates the committed support simulated-autosave profile suite", async () => {
+    const loaded = await loadBenchSuite(
+      "evals/bench-suites/support-simulated-autosave.yaml",
+    )
+    expect(loaded.suite.profile?.selector).toBe("support@1.0.0")
+    expect(loaded.suite.ingestion.strategy).toBe("simulated-autosave")
+  })
+
   it("accepts simulated-autosave with required extraction fields", () => {
     const parsed = benchSuiteSchema.parse({
       ...BENCH_BASE,
@@ -244,6 +254,20 @@ describe("bench suite schema ingestion extraction fields", () => {
       },
     })
     expect(parsed.ingestion.strategy).toBe("simulated-autosave")
+  })
+
+  it("accepts optional profile metadata on bench suites", () => {
+    const parsed = benchSuiteSchema.parse({
+      ...BENCH_BASE,
+      profile: { selector: "support@1.0.0" },
+      ingestion: {
+        strategy: "simulated-autosave",
+        extractionPrompt: "profiles/support/prompts/longmemeval-ingest-extract.txt",
+        extractionModel: "gpt-4o-mini-2024-07-18",
+        extractionMaxTokens: 1000,
+      },
+    })
+    expect(parsed.profile?.selector).toBe("support@1.0.0")
   })
 
   it("rejects simulated-autosave when extraction fields are missing", () => {
@@ -278,5 +302,39 @@ describe("bench suite schema ingestion extraction fields", () => {
       })
       expect(result.success, `strategy=${strategy}`).toBe(false)
     }
+  })
+})
+
+describe("profile eval suite schema", () => {
+  it("validates the committed support profile suite", async () => {
+    const loaded = await loadProfileEvalSuite("evals/profile-suites/support.yaml")
+    expect(loaded.suite.runner).toBe("profile")
+    expect(loaded.suite.profile).toBe("support@1.0.0")
+    expect(loaded.suite.cases[0]?.id).toBe("api-timeout-escalation")
+  })
+
+  it("requires exact profile selectors", () => {
+    const result = profileEvalSuiteSchema.safeParse({
+      version: 1,
+      runner: "profile",
+      suite: "support-profile",
+      profile: "support",
+      thresholds: {
+        entityKindRecallMin: 0.8,
+        predicatePrecisionMin: 0.85,
+        hallucinatedFactRateMax: 0.05,
+        requiredFieldCompletenessMin: 0.9,
+        invalidTaxonomyRateMax: 0,
+      },
+      cases: [
+        {
+          id: "case-one",
+          expected: { memories: [] },
+          actual: { memories: [] },
+        },
+      ],
+    })
+
+    expect(result.success).toBe(false)
   })
 })

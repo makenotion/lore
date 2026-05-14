@@ -173,6 +173,34 @@ version: banana
     )
   })
 
+  it("resolves a non-default built-in profile by exact selector", () => {
+    const profile = resolveProfileFromConfig({ profile: "support@1.0.0" })
+
+    expect(profile.selector).toBe("support@1.0.0")
+    expect(profile.source).toBe("built-in")
+    expect(profile.taxonomy.tags).toContain("customer-report")
+    expect(profile.taxonomy.entityKinds).toContain("support-ticket")
+    expect(profile.taxonomy.writableFactPredicates).toContain("reported_by")
+    expect(profile.schema.memories["Support Severity"]).toEqual({
+      select: {
+        options: [
+          { name: "sev1", color: "red" },
+          { name: "sev2", color: "orange" },
+          { name: "sev3", color: "yellow" },
+          { name: "sev4", color: "blue" },
+        ],
+      },
+    })
+    expect(profile.prompts.autosaveExtractionFilter.source).toBe("active-profile")
+    expect(profile.prompts.atomicLearningExtraction.source).toBe("core-default")
+  })
+
+  it("rejects an exact built-in selector whose version does not match the bundle", () => {
+    expect(() => resolveProfileFromConfig({ profile: "support@9.9.9" })).toThrow(
+      /does not match/
+    )
+  })
+
   it("keeps manifestDigest stable across YAML key order and changes on participating content", () => {
     const files = minimalProfileFiles("fixture")
     withProfileDir(files, (dir) => {

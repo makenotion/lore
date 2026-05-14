@@ -106,6 +106,7 @@ import {
   loadBenchSuite,
   type BenchIngestionStrategy,
 } from "./schema.js"
+import { resolveProfileFromConfig, type ResolvedProfile } from "../profile/index.js"
 
 const SANDBOX_NAME_REGEX =
   /\b(sandbox|eval|test|scratch|staging|dev|playground)\b/i
@@ -218,6 +219,11 @@ export interface BenchSandbox {
    * child's `buildSafeEnv` applies the right auth-token partition.
    */
   readonly authSource: import("../config.js").AuthSource
+  /**
+   * Profile selector resolved by the sandbox's live Lore services.
+   * Profile-declared bench suites must match this before they write.
+   */
+  readonly activeProfileSelector: string
   /** Create a sub-project under the sandbox vault; returns its id. */
   createSubProject(name: string): Promise<string>
   /**
@@ -442,6 +448,18 @@ export function assertSandboxProjectName(name: string): void {
         `sandbox/eval/test/scratch/staging/dev/playground). Refusing to run bench.`,
     )
   }
+}
+
+export function assertBenchSandboxProfileMatchesSuite(input: {
+  sandbox: Pick<BenchSandbox, "activeProfileSelector">
+  profile: ResolvedProfile | null
+}): void {
+  if (!input.profile) return
+  if (input.sandbox.activeProfileSelector === input.profile.selector) return
+  throw new Error(
+    `Bench suite profile ${input.profile.selector} does not match the active sandbox profile ${input.sandbox.activeProfileSelector}. ` +
+      "Run the bench against a vault initialized with the suite profile before any bench sub-projects are created.",
+  )
 }
 
 /**
@@ -736,6 +754,7 @@ export async function runBenchExample(input: {
   extractionClient?: BenchExtractionClient
   extractionModel?: string
   extractionMaxTokens?: number
+  tagVocabulary?: readonly string[]
   /**
    * `tool-driven` (V1 default): agent has MCP tools registered and
    * decides when to call them. Structurally unavailable under
@@ -857,6 +876,7 @@ export async function runBenchExample(input: {
         extractionClient: input.extractionClient,
         extractionModel: input.extractionModel,
         extractionMaxTokens: input.extractionMaxTokens,
+        tagVocabulary: input.tagVocabulary,
         createSimulatedAutosaveMemoryInProject:
           input.sandbox.createSimulatedAutosaveMemoryInProject,
         countMemoriesForProject: input.sandbox.countMemoriesForProject,
@@ -1127,6 +1147,13 @@ async function runBenchSuiteUnderBenchEnv(
   assertSandboxProjectName(process.env["LORE_BENCH_SANDBOX_PROJECT_NAME"] ?? "")
   const loadedSuite = await loadBenchSuite(options.suitePath)
   const suite = loadedSuite.suite
+  const profile = suite.profile
+    ? resolveProfileFromConfig({ profile: suite.profile.selector })
+    : null
+  assertBenchSandboxProfileMatchesSuite({
+    sandbox: options.sandbox,
+    profile,
+  })
   // Asset paths in the suite YAML may be absolute (operator-supplied
   // smoke suites) or repo-relative (the committed
   // evals/bench-suites/longmemeval.yaml). Absolute paths bypass the
@@ -1206,6 +1233,7 @@ async function runBenchSuiteUnderBenchEnv(
   }
 
   const config = {
+    ...(profile ? { profile: benchProfileConfig(profile) } : {}),
     corpus: {
       name: corpus.name,
       source: "huggingface",
@@ -1354,6 +1382,7 @@ async function runBenchSuiteUnderBenchEnv(
       extractionClient,
       extractionModel: suite.ingestion.extractionModel,
       extractionMaxTokens: suite.ingestion.extractionMaxTokens,
+      tagVocabulary: profile?.taxonomy.tags,
       agentRetrieval: suite.agent.retrieval,
       systemPrompt,
       perSessionMiningTimeoutMs: options.perSessionMiningTimeoutMs,
@@ -1484,6 +1513,21 @@ async function runBenchSuiteUnderBenchEnv(
   await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
 
   return { artifact, outPath }
+}
+
+function benchProfileConfig(profile: ResolvedProfile) {
+  const promptHashes: Record<string, string> = {}
+  for (const [key, prompt] of Object.entries(profile.prompts)) {
+    promptHashes[key] = sha256Hex(prompt.text)
+  }
+  return {
+    selector: profile.selector,
+    name: profile.name,
+    version: profile.version,
+    source: profile.source,
+    manifestDigest: profile.manifestDigest,
+    promptHashes,
+  }
 }
 
 function round2(n: number): number {
