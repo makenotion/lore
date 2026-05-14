@@ -1,6 +1,8 @@
 import { Command } from "commander"
+import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import {
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -11,7 +13,8 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { resolve, relative, basename, extname, join } from "node:path"
+import { resolve, relative, basename, extname, join, isAbsolute } from "node:path"
+import { promisify } from "node:util"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import { redactDebugError } from "../../debug-redact.js"
 import { dynamicCodeFence } from "../../core/markdown.js"
@@ -106,6 +109,8 @@ const DEFAULT_MINE_POST_CREATE_STABILIZE_MS = 500
 const MINE_LOCK_HARD_STALE_MS = 30 * 60 * 1000
 const MINE_LOCK_WAIT_NOTICE_MS = 5_000
 
+const execFileAsync = promisify(execFile)
+
 const IGNORED_DIRS = new Set([
   "node_modules",
   "dist",
@@ -113,6 +118,18 @@ const IGNORED_DIRS = new Set([
   ".git",
   ".next",
   "__pycache__",
+  ".claude",
+  ".codex",
+  ".cursor",
+  ".cache",
+  ".turbo",
+  "coverage",
+  ".nyc_output",
+  "artifact",
+  "artifacts",
+  ".artifacts",
+  "playwright-report",
+  "test-results",
 ])
 
 const IGNORED_FILES = new Set([
@@ -121,6 +138,46 @@ const IGNORED_FILES = new Set([
   "yarn.lock",
   "pnpm-lock.yaml",
 ])
+
+function normalizeMineRelativePath(filePath: string): string {
+  return filePath.split(/[\\/]/).filter(Boolean).join("/")
+}
+
+function isHiddenWorktreeDirName(name: string): boolean {
+  return (
+    name === ".worktree" ||
+    name === ".worktrees" ||
+    /^\.lore-wt-[A-Za-z0-9_-]+$/.test(name)
+  )
+}
+
+function isIgnoredMineDirectoryName(name: string): boolean {
+  return IGNORED_DIRS.has(name) || isHiddenWorktreeDirName(name)
+}
+
+export function isDefaultMineIgnoredPath(filePath: string): boolean {
+  const normalized = normalizeMineRelativePath(filePath)
+  if (!normalized) return false
+  const segments = normalized.split("/")
+  if (segments.some(isIgnoredMineDirectoryName)) return true
+  const last = segments.at(-1)
+  return last !== undefined && IGNORED_FILES.has(last)
+}
+
+function isPathInsideRoot(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+}
+
+function isIgnoredMineRoot(dir: string): boolean {
+  const rootName = basename(resolve(dir))
+  return isIgnoredMineDirectoryName(rootName) && !isHiddenWorktreeDirName(rootName)
+}
+
+interface GitMineCandidates {
+  files: string[]
+  prefix: string
+}
 
 export interface MineFailure {
   file: string
@@ -884,8 +941,37 @@ async function processOneFile(
   logLockWait: (msg: string) => void
 ): Promise<MineFileOutcome> {
   try {
-    const fullPath = resolve(dir, file)
-    const fileStat = await stat(fullPath)
+    if (isDefaultMineIgnoredPath(file)) {
+      return {
+        kind: "skipped",
+        file,
+        reason: "ignored path",
+      }
+    }
+    const root = resolve(dir)
+    const fullPath = resolve(root, file)
+    if (!isPathInsideRoot(root, fullPath)) {
+      return {
+        kind: "skipped",
+        file,
+        reason: "outside mining root",
+      }
+    }
+    const fileStat = await lstat(fullPath)
+    if (fileStat.isSymbolicLink()) {
+      return {
+        kind: "skipped",
+        file,
+        reason: "symbolic link",
+      }
+    }
+    if (!fileStat.isFile()) {
+      return {
+        kind: "skipped",
+        file,
+        reason: "not a regular file",
+      }
+    }
     if (fileStat.size > MAX_FILE_SIZE) {
       return {
         kind: "skipped",
@@ -1050,21 +1136,109 @@ export function formatMineSummary(s: MineSummary, totalFiles: number): string {
   return `Done! Indexed ${total} files${breakdown}.`
 }
 
+function spawnGitStdout(args: readonly string[]): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn("git", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk))
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk))
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolvePromise(Buffer.concat(stdoutChunks).toString("utf8"))
+        return
+      }
+      const stderr = Buffer.concat(stderrChunks).toString("utf8").trim()
+      reject(new Error(stderr || `git exited with status ${code ?? "unknown"}`))
+    })
+  })
+}
+
+async function listGitMineCandidates(dir: string): Promise<GitMineCandidates | null> {
+  try {
+    const { stdout: inside } = await execFileAsync(
+      "git",
+      ["-C", dir, "rev-parse", "--is-inside-work-tree"],
+      { maxBuffer: 1024 }
+    )
+    if (String(inside).trim() !== "true") return null
+  } catch {
+    return null
+  }
+
+  const { stdout: prefix } = await execFileAsync(
+    "git",
+    ["-C", dir, "rev-parse", "--show-prefix"],
+    { maxBuffer: 1024 }
+  )
+  const stdout = await spawnGitStdout([
+    "-C",
+    dir,
+    "ls-files",
+    "-co",
+    "--exclude-standard",
+    "-z",
+    "--",
+    ".",
+  ])
+  return {
+    files: stdout.split("\0").filter(Boolean),
+    prefix: String(prefix).trim(),
+  }
+}
+
+async function filterMineCandidates(
+  dir: string,
+  files: readonly string[],
+  repoRelativePrefix = ""
+): Promise<string[]> {
+  const root = resolve(dir)
+  const results: string[] = []
+  for (const file of files) {
+    const repoRelativePath = repoRelativePrefix
+      ? join(repoRelativePrefix, file)
+      : file
+    if (isDefaultMineIgnoredPath(repoRelativePath)) continue
+    const fullPath = resolve(root, file)
+    if (!isPathInsideRoot(root, fullPath)) continue
+    let fileStat: Awaited<ReturnType<typeof lstat>>
+    try {
+      fileStat = await lstat(fullPath)
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) continue
+      throw err
+    }
+    if (fileStat.isSymbolicLink() || !fileStat.isFile()) continue
+    results.push(file)
+  }
+  return results
+}
+
 async function walkDirectory(dir: string, base: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true })
   const results: string[] = []
   for (const entry of entries) {
+    const relPath = join(base, entry.name)
+    if (isDefaultMineIgnoredPath(relPath) || entry.isSymbolicLink()) continue
     if (entry.isDirectory()) {
-      if (!IGNORED_DIRS.has(entry.name)) {
-        results.push(
-          ...(await walkDirectory(join(dir, entry.name), join(base, entry.name)))
-        )
-      }
-    } else if (!IGNORED_FILES.has(entry.name)) {
-      results.push(join(base, entry.name))
+      results.push(...(await walkDirectory(join(dir, entry.name), relPath)))
+    } else if (entry.isFile()) {
+      results.push(relPath)
     }
   }
   return results
+}
+
+export async function discoverMineFiles(dir: string): Promise<string[]> {
+  const gitCandidates = await listGitMineCandidates(dir)
+  if (gitCandidates !== null) {
+    return filterMineCandidates(dir, gitCandidates.files, gitCandidates.prefix)
+  }
+  if (isIgnoredMineRoot(dir)) return []
+  return walkDirectory(dir, "")
 }
 
 export const mineCommand = new Command("mine")
@@ -1116,7 +1290,7 @@ export const mineCommand = new Command("mine")
         const project = await resolveMineProject(services, opts.project)
         const projectId = project?.id
 
-        const files = await walkDirectory(dir, "")
+        const files = await discoverMineFiles(dir)
         const textFiles = selectMineFiles(files, opts.pattern, opts.limit)
 
         if (textFiles.length === 0) {

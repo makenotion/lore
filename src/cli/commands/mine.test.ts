@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
@@ -25,10 +26,12 @@ import {
   DEFAULT_MINE_PATTERN,
   FIND_EXISTING_LIMIT,
   classifyMineFailure,
+  discoverMineFiles,
   formatOrphanSummary,
   findExistingFileMemory,
   formatMineSummary,
   globToRegExp,
+  isDefaultMineIgnoredPath,
   matchesGlob,
   mineCommand,
   mineLockPath,
@@ -399,6 +402,107 @@ describe("selectMineFiles", () => {
     const files = ["a.ts", "b.ts", "c.ts", "d.ts"]
     const out = selectMineFiles(files, "**/*", 2)
     expect(out).toEqual(["a.ts", "b.ts"])
+  })
+})
+
+describe("discoverMineFiles", () => {
+  async function withTempDir(test: (dir: string) => Promise<void>) {
+    const tmp = await mkdtemp(`${tmpdir()}/lore-mine-discover-test-`)
+    try {
+      await test(tmp)
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+    }
+  }
+
+  async function writeFixtureFile(root: string, name: string, content: string) {
+    const idx = name.lastIndexOf("/")
+    if (idx >= 0) {
+      await mkdir(join(root, name.slice(0, idx)), { recursive: true })
+    }
+    await writeFile(join(root, name), content, "utf-8")
+  }
+
+  function normalizeList(files: readonly string[]): string[] {
+    return files.map((file) => file.split(/[\\/]/).join("/")).sort()
+  }
+
+  it("classifies local tooling, artifact, and hidden worktree paths as ignored", () => {
+    expect(isDefaultMineIgnoredPath(".claude/worktrees/private.ts")).toBe(true)
+    expect(isDefaultMineIgnoredPath(".codex/config.toml")).toBe(true)
+    expect(isDefaultMineIgnoredPath(".cursor/mcp.json")).toBe(true)
+    expect(isDefaultMineIgnoredPath("coverage/report.json")).toBe(true)
+    expect(isDefaultMineIgnoredPath("artifacts/out.md")).toBe(true)
+    expect(isDefaultMineIgnoredPath(".lore-wt-child/private.ts")).toBe(true)
+    expect(isDefaultMineIgnoredPath("src/app.ts")).toBe(false)
+  })
+
+  it("honors git exclude-standard output and applies local tooling excludes", async () => {
+    await withTempDir(async (dir) => {
+      execFileSync("git", ["init", "--quiet"], { cwd: dir, stdio: "ignore" })
+      await writeFixtureFile(dir, ".gitignore", "ignored/\n*.local.md\n")
+      await writeFixtureFile(dir, "keep.ts", "export const keep = true\n")
+      await writeFixtureFile(dir, "ignored/secret.ts", "export const secret = true\n")
+      await writeFixtureFile(dir, "notes.local.md", "# local\n")
+      await writeFixtureFile(dir, ".codex/config.ts", "export const codex = true\n")
+      await writeFixtureFile(dir, ".cursor/mcp.ts", "export const cursor = true\n")
+      await writeFixtureFile(
+        dir,
+        ".claude/worktrees/private.ts",
+        "export const privateState = true\n",
+      )
+      await writeFixtureFile(dir, "coverage/report.ts", "export const covered = true\n")
+      await writeFixtureFile(dir, "artifacts/output.md", "# artifact\n")
+      await writeFixtureFile(
+        dir,
+        ".lore-wt-nested/private.ts",
+        "export const worktree = true\n",
+      )
+
+      const discovered = normalizeList(await discoverMineFiles(dir))
+      const selected = normalizeList(
+        selectMineFiles(discovered, DEFAULT_MINE_PATTERN, 50),
+      )
+
+      expect(selected).toEqual(["keep.ts"])
+
+      const codexSelected = normalizeList(
+        selectMineFiles(
+          await discoverMineFiles(join(dir, ".codex")),
+          DEFAULT_MINE_PATTERN,
+          50,
+        ),
+      )
+      expect(codexSelected).toEqual([])
+    })
+  })
+
+  it("skips symlink candidates during filesystem discovery", async () => {
+    await withTempDir(async (dir) => {
+      const outside = await mkdtemp(`${tmpdir()}/lore-mine-discover-outside-`)
+      try {
+        await writeFixtureFile(dir, "keep.ts", "export const keep = true\n")
+        await writeFile(join(outside, "secret.ts"), "export const secret = true\n")
+        await symlink(join(outside, "secret.ts"), join(dir, "linked.ts"))
+
+        const discovered = normalizeList(await discoverMineFiles(dir))
+
+        expect(discovered).toContain("keep.ts")
+        expect(discovered).not.toContain("linked.ts")
+      } finally {
+        await rm(outside, { recursive: true, force: true })
+      }
+    })
+  })
+
+  it("skips local tooling roots during filesystem discovery outside git", async () => {
+    await withTempDir(async (dir) => {
+      await writeFixtureFile(dir, ".codex/config.ts", "export const codex = true\n")
+
+      const discovered = normalizeList(await discoverMineFiles(join(dir, ".codex")))
+
+      expect(discovered).toEqual([])
+    })
   })
 })
 
@@ -1269,6 +1373,95 @@ describe("runMineUpsert (orchestration)", () => {
         expect(update).not.toHaveBeenCalled()
       },
     )
+  })
+
+  it("skips symlink candidates without reading their targets", async () => {
+    await withFixture({}, async (dir) => {
+      const outside = await mkdtemp(`${tmpdir()}/lore-mine-outside-`)
+      try {
+        await writeFile(join(outside, "secret.ts"), "export const secret = true\n")
+        await symlink(join(outside, "secret.ts"), join(dir, "linked.ts"))
+        const { services, create, update } = makeServices({})
+
+        const summary = await runMineUpsert(
+          services,
+          dir,
+          ["linked.ts"],
+          undefined,
+          undefined,
+          () => {},
+        )
+
+        expect(summary.skipped).toBe(1)
+        expect(summary.outcomes[0]).toMatchObject({
+          kind: "skipped",
+          file: "linked.ts",
+          reason: "symbolic link",
+        })
+        expect(create).not.toHaveBeenCalled()
+        expect(update).not.toHaveBeenCalled()
+      } finally {
+        await rm(outside, { recursive: true, force: true })
+      }
+    })
+  })
+
+  it("skips directly supplied ignored paths before reading", async () => {
+    await withFixture(
+      { ".codex/config.ts": "export const codex = true\n" },
+      async (dir) => {
+        const { services, create, update } = makeServices({})
+
+        const summary = await runMineUpsert(
+          services,
+          dir,
+          [".codex/config.ts"],
+          undefined,
+          undefined,
+          () => {},
+        )
+
+        expect(summary.skipped).toBe(1)
+        expect(summary.outcomes[0]).toMatchObject({
+          kind: "skipped",
+          file: ".codex/config.ts",
+          reason: "ignored path",
+        })
+        expect(create).not.toHaveBeenCalled()
+        expect(update).not.toHaveBeenCalled()
+      },
+    )
+  })
+
+  it("skips root-escaping relative candidates before reading", async () => {
+    await withFixture({}, async (dir) => {
+      const outside = await mkdtemp(`${tmpdir()}/lore-mine-outside-`)
+      try {
+        await writeFile(join(outside, "secret.ts"), "export const secret = true\n")
+        const escapePath = relative(dir, join(outside, "secret.ts"))
+        const { services, create, update } = makeServices({})
+
+        const summary = await runMineUpsert(
+          services,
+          dir,
+          [escapePath],
+          undefined,
+          undefined,
+          () => {},
+        )
+
+        expect(summary.skipped).toBe(1)
+        expect(summary.outcomes[0]).toMatchObject({
+          kind: "skipped",
+          file: escapePath,
+          reason: "outside mining root",
+        })
+        expect(create).not.toHaveBeenCalled()
+        expect(update).not.toHaveBeenCalled()
+      } finally {
+        await rm(outside, { recursive: true, force: true })
+      }
+    })
   })
 
   it("update payload omits topicId when none is passed (preserves prior topic)", async () => {
