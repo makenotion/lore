@@ -27,6 +27,7 @@ import type {
 import { ACTIVE_TASK_STATES } from "../types.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { trigramJaccard, tagOverlap } from "./similarity.js"
+import { LoreError, errorCauseMessage } from "../errors.js"
 
 /**
  * Sentinel keyword written into a memory's `Keywords` column at the same
@@ -373,12 +374,17 @@ export interface FindAutosaveLearningDuplicateOpts {
   onError?: (err: unknown) => void
 }
 
-export class AutosaveLearningDuplicateProbeError extends Error {
+export class AutosaveLearningDuplicateProbeError extends LoreError<"autosave-learning-duplicate-probe"> {
   constructor(
     message: string,
     public readonly cause: unknown
   ) {
-    super(message)
+    super(
+      "autosave-learning-duplicate-probe",
+      message,
+      { causeMessage: errorCauseMessage(cause) },
+      { cause }
+    )
     this.name = "AutosaveLearningDuplicateProbeError"
   }
 }

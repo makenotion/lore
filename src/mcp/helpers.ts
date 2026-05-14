@@ -11,6 +11,7 @@ import type { WakeUpCache } from "../core/wakeup-cache.js"
 import { isRetryableError } from "../core/project-scope.js"
 import { WriteBudgetExceededError } from "../notion/rate-limit.js"
 import { redactDebugError, redactDebugMessage } from "../debug-redact.js"
+import { isLoreError } from "../errors.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -101,16 +102,51 @@ export function toolError(err: unknown): ToolResult {
   // applying the debug-log length cap.
   const rawMessage = err instanceof Error ? err.message : String(err)
   const message = redactDebugMessage(rawMessage, { truncate: false })
-  const retryable = isRetryableError(err)
-    ? `\n\n\`\`\`json\n${JSON.stringify({
-        code: err.code,
-        retryable: true,
-      })}\n\`\`\``
-    : ""
+  const metadata = formatErrorMetadata(err)
   return {
-    content: [{ type: "text" as const, text: `Error: ${message}${retryable}` }],
+    content: [{ type: "text" as const, text: `Error: ${message}${metadata}` }],
     isError: true,
   }
+}
+
+function formatErrorMetadata(err: unknown): string {
+  const metadata: Record<string, unknown> = {}
+  if (isLoreError(err)) {
+    metadata.kind = err.kind
+    metadata.details = redactStructuredDetails(err.details)
+  }
+  if (isRetryableError(err)) {
+    metadata.code = err.code
+    metadata.retryable = true
+  }
+  if (Object.keys(metadata).length === 0) return ""
+  return `\n\n\`\`\`json\n${JSON.stringify(metadata)}\n\`\`\``
+}
+
+function redactStructuredDetails(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet()
+): unknown {
+  if (typeof value === "string") {
+    return redactDebugMessage(value, { truncate: false })
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactStructuredDetails(item, seen))
+  }
+  if (typeof value === "object" && value !== null) {
+    if (seen.has(value)) return "[Circular]"
+    seen.add(value)
+    const redacted: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) redacted[key] = redactStructuredDetails(item, seen)
+    }
+    return redacted
+  }
+  if (value === undefined) return undefined
+  return redactDebugMessage(String(value), { truncate: false })
 }
 
 /**

@@ -116,6 +116,7 @@ import {
   isSqlValidationError,
   logRunToolFallback,
 } from "../notion/runtool/error-helpers.js"
+import { LoreError, errorCauseMessage } from "../errors.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  * 30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -919,7 +920,7 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
  * detect this state; the message string carries the operator-facing
  * remediation hint.
  */
-export class RekeyAuditError extends Error {
+export class RekeyAuditError extends LoreError<"rekey-audit-failed"> {
   readonly memoryId: string
   readonly oldTopicKey: string
   readonly newTopicKey: string
@@ -934,7 +935,17 @@ export class RekeyAuditError extends Error {
       cause: unknown
     }
   ) {
-    super(message)
+    super(
+      "rekey-audit-failed",
+      message,
+      {
+        memoryId: details.memoryId,
+        oldTopicKey: details.oldTopicKey,
+        newTopicKey: details.newTopicKey,
+        causeMessage: errorCauseMessage(details.cause),
+      },
+      { cause: details.cause }
+    )
     this.name = "RekeyAuditError"
     this.memoryId = details.memoryId
     this.oldTopicKey = details.oldTopicKey
@@ -953,7 +964,7 @@ export class RekeyAuditError extends Error {
  * render an actionable error pointing at `lore-memory
  * action='update' status='<value>'` for direct status flips.
  */
-export class MemoryReviewStateError extends Error {
+export class MemoryReviewStateError extends LoreError<"memory-review-state"> {
   readonly memoryId: string
   readonly currentStatus: MemoryStatus
 
@@ -961,7 +972,10 @@ export class MemoryReviewStateError extends Error {
     message: string,
     details: { memoryId: string; currentStatus: MemoryStatus }
   ) {
-    super(message)
+    super("memory-review-state", message, {
+      memoryId: details.memoryId,
+      currentStatus: details.currentStatus,
+    })
     this.name = "MemoryReviewStateError"
     this.memoryId = details.memoryId
     this.currentStatus = details.currentStatus
@@ -977,7 +991,7 @@ export class MemoryReviewStateError extends Error {
  * the row's `Status` has already moved off `"proposed"`. See
  * `recordReview`'s docstring for the full failure-mode rationale.
  */
-export class MemoryReviewAuditError extends Error {
+export class MemoryReviewAuditError extends LoreError<"memory-review-audit-failed"> {
   readonly memoryId: string
   readonly previousStatus: MemoryStatus
   readonly newStatus: MemoryStatus
@@ -992,7 +1006,17 @@ export class MemoryReviewAuditError extends Error {
       cause: unknown
     }
   ) {
-    super(message)
+    super(
+      "memory-review-audit-failed",
+      message,
+      {
+        memoryId: details.memoryId,
+        previousStatus: details.previousStatus,
+        newStatus: details.newStatus,
+        causeMessage: errorCauseMessage(details.cause),
+      },
+      { cause: details.cause }
+    )
     this.name = "MemoryReviewAuditError"
     this.memoryId = details.memoryId
     this.previousStatus = details.previousStatus
@@ -1023,13 +1047,22 @@ export class MemoryReviewAuditError extends Error {
  * the content update runs; this error covers the residual cases
  * where the preflight passed but the mutation still rejected.
  */
-export class PartialUpdateError extends Error {
+export class PartialUpdateError extends LoreError<"memory-update-partial"> {
   readonly memoryId: string
   readonly contentApplied: true
   readonly rekeyError: unknown
 
   constructor(message: string, details: { memoryId: string; rekeyError: unknown }) {
-    super(message)
+    super(
+      "memory-update-partial",
+      message,
+      {
+        memoryId: details.memoryId,
+        contentApplied: true,
+        rekeyCauseMessage: errorCauseMessage(details.rekeyError),
+      },
+      { cause: details.rekeyError }
+    )
     this.name = "PartialUpdateError"
     this.memoryId = details.memoryId
     this.contentApplied = true
@@ -1050,17 +1083,26 @@ export class PartialUpdateError extends Error {
  * the message. The message is prefixed with the class name because MCP
  * transports flatten errors to text.
  */
-export class MemoryUpdatePartialFailureError extends Error {
+export class MemoryUpdatePartialFailureError extends LoreError<"memory-update-body-partial"> {
   readonly memoryId: string
   readonly failedPhase: "body"
   readonly persisted: { readonly properties: true; readonly body: false }
   readonly bodyWriteError: unknown
 
   constructor(message: string, details: { memoryId: string; bodyWriteError: unknown }) {
+    const prefixedMessage = message.startsWith("MemoryUpdatePartialFailureError: ")
+      ? message
+      : `MemoryUpdatePartialFailureError: ${message}`
     super(
-      message.startsWith("MemoryUpdatePartialFailureError: ")
-        ? message
-        : `MemoryUpdatePartialFailureError: ${message}`
+      "memory-update-body-partial",
+      prefixedMessage,
+      {
+        memoryId: details.memoryId,
+        failedPhase: "body",
+        persisted: { properties: true, body: false },
+        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
+      },
+      { cause: details.bodyWriteError }
     )
     this.name = "MemoryUpdatePartialFailureError"
     this.memoryId = details.memoryId
@@ -1085,7 +1127,7 @@ export class MemoryUpdatePartialFailureError extends Error {
  * `lore-pinned action='update'` with `mutability: "mutable"` and
  * `force: true` in a single call.
  */
-export class MemoryReadOnlyError extends Error {
+export class MemoryReadOnlyError extends LoreError<"memory-read-only"> {
   readonly memoryId: string
   readonly memoryTitle: string
 
@@ -1098,9 +1140,11 @@ export class MemoryReadOnlyError extends Error {
     // consumers; only the user-visible `.message` is sanitized.
     const safeTitle = sanitizeMemoryTitleForMessage(memoryTitle)
     super(
+      "memory-read-only",
       `MemoryReadOnlyError: cannot modify pinned block "${safeTitle}" (${memoryId}): ` +
         `Mutability is read-only. Pass force=true on lore-pinned action='update' ` +
-        `(or allowReadOnlyUpdate=true at the service layer) to override.`
+        `(or allowReadOnlyUpdate=true at the service layer) to override.`,
+      { memoryId, memoryTitle }
     )
     this.name = "MemoryReadOnlyError"
     this.memoryId = memoryId
@@ -1129,16 +1173,18 @@ export class MemoryReadOnlyError extends Error {
  * `PinnedCapExceededError` for the user-facing surface (operator
  * recovery copy is tied to the MCP / CLI vocabulary).
  */
-export class MemoryPinCapExceededError extends Error {
+export class MemoryPinCapExceededError extends LoreError<"memory-pin-cap-exceeded"> {
   readonly memoryId: string
   readonly currentCount: number
   readonly cap: number
 
   constructor(memoryId: string, currentCount: number, cap: number) {
     super(
+      "memory-pin-cap-exceeded",
       `MemoryPinCapExceededError: cannot pin memory ${memoryId} — vault ` +
         `already has ${currentCount} active pinned block(s), at the ${cap}-` +
-        "block hard cap. Unpin stale blocks before pinning new rows."
+        "block hard cap. Unpin stale blocks before pinning new rows.",
+      { memoryId, currentCount, cap }
     )
     this.name = "MemoryPinCapExceededError"
     this.memoryId = memoryId
@@ -1237,7 +1283,7 @@ export function sanitizeMemoryTitleForMessage(title: string): string {
  * happen"). Callers branch on `instanceof` to distinguish the three
  * shapes.
  */
-export class MemoryCreatePartialFailureError extends Error {
+export class MemoryCreatePartialFailureError extends LoreError<"memory-create-partial"> {
   readonly pageId: string
   readonly cleanedUp: boolean
   readonly bodyWriteError: unknown
@@ -1252,7 +1298,19 @@ export class MemoryCreatePartialFailureError extends Error {
       cleanupError?: unknown
     }
   ) {
-    super(message)
+    super(
+      "memory-create-partial",
+      message,
+      {
+        pageId: details.pageId,
+        cleanedUp: details.cleanedUp,
+        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
+        ...(details.cleanupError !== undefined
+          ? { cleanupCauseMessage: errorCauseMessage(details.cleanupError) }
+          : {}),
+      },
+      { cause: details.bodyWriteError }
+    )
     this.name = "MemoryCreatePartialFailureError"
     this.pageId = details.pageId
     this.cleanedUp = details.cleanedUp
@@ -1439,7 +1497,7 @@ export interface RecordComparedResult {
  * check in `handleCompare`; the message string carries the partial-
  * success diagnostic for any callers that flatten through `toolError`.
  */
-export class RecordComparedPartialWriteError extends Error {
+export class RecordComparedPartialWriteError extends LoreError<"record-compared-partial-write"> {
   readonly result: RecordComparedResult
   readonly failedSide: "A" | "B"
   readonly cause: unknown
@@ -1450,7 +1508,16 @@ export class RecordComparedPartialWriteError extends Error {
     failedSide: "A" | "B"
     cause: unknown
   }) {
-    super(args.message)
+    super(
+      "record-compared-partial-write",
+      args.message,
+      {
+        result: args.result,
+        failedSide: args.failedSide,
+        causeMessage: errorCauseMessage(args.cause),
+      },
+      { cause: args.cause }
+    )
     this.name = "RecordComparedPartialWriteError"
     this.result = args.result
     this.failedSide = args.failedSide
@@ -7516,7 +7583,7 @@ export interface CompareDispatchServices {
  * create failed. Distinguishing them matters for retry diagnostics —
  * the next safe step differs by what actually landed.
  */
-export class CompareDispatchPartialFailureError extends Error {
+export class CompareDispatchPartialFailureError extends LoreError<"compare-dispatch-partial"> {
   readonly step: "fact" | "supersede"
   readonly affectedMemoryId: string
   readonly factId: string | undefined
@@ -7529,7 +7596,17 @@ export class CompareDispatchPartialFailureError extends Error {
     factId: string | undefined
     cause: unknown
   }) {
-    super(args.message)
+    super(
+      "compare-dispatch-partial",
+      args.message,
+      {
+        step: args.step,
+        affectedMemoryId: args.affectedMemoryId,
+        ...(args.factId === undefined ? {} : { factId: args.factId }),
+        causeMessage: errorCauseMessage(args.cause),
+      },
+      { cause: args.cause }
+    )
     this.name = "CompareDispatchPartialFailureError"
     this.step = args.step
     this.affectedMemoryId = args.affectedMemoryId

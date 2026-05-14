@@ -41,6 +41,7 @@ import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
 import { withEntityRelationLocks } from "./entity-relation-lock.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
+import { LoreError, errorCauseMessage } from "../errors.js"
 
 /** Days to push `Review By` forward when `reviewCompleted` is called with no explicit date. */
 const DEFAULT_REVIEW_EXTENSION_DAYS = 90
@@ -123,7 +124,7 @@ function decodeDecisionTextFields(input: CreateDecisionInput): DecodedDecisionTe
  * archived before this error is thrown; `cleanedUp` reports whether that
  * cleanup landed.
  */
-export class DecisionCreatePartialFailureError extends Error {
+export class DecisionCreatePartialFailureError extends LoreError<"decision-create-partial"> {
   readonly pageId: string
   readonly cleanedUp: boolean
   readonly bodyWriteError: unknown
@@ -138,7 +139,19 @@ export class DecisionCreatePartialFailureError extends Error {
       cleanupError?: unknown
     }
   ) {
-    super(message)
+    super(
+      "decision-create-partial",
+      message,
+      {
+        pageId: details.pageId,
+        cleanedUp: details.cleanedUp,
+        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
+        ...(details.cleanupError !== undefined
+          ? { cleanupCauseMessage: errorCauseMessage(details.cleanupError) }
+          : {}),
+      },
+      { cause: details.bodyWriteError }
+    )
     this.name = "DecisionCreatePartialFailureError"
     this.pageId = details.pageId
     this.cleanedUp = details.cleanedUp

@@ -53,6 +53,7 @@ import {
 } from "../notion/live-pages.js"
 import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
+import { LoreError, errorCauseMessage } from "../errors.js"
 
 /**
  * Single rule for every empty-able optional task field: **empty string
@@ -95,7 +96,7 @@ export function isCleared(value: string | null | undefined): boolean {
  * `cleanedUp` tells callers whether Lore archived that row before
  * surfacing the failure.
  */
-export class TaskCreatePartialFailureError extends Error {
+export class TaskCreatePartialFailureError extends LoreError<"task-create-partial"> {
   readonly pageId: string
   readonly cleanedUp: boolean
   readonly bodyWriteError: unknown
@@ -110,7 +111,19 @@ export class TaskCreatePartialFailureError extends Error {
       cleanupError?: unknown
     }
   ) {
-    super(message)
+    super(
+      "task-create-partial",
+      message,
+      {
+        pageId: details.pageId,
+        cleanedUp: details.cleanedUp,
+        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
+        ...(details.cleanupError !== undefined
+          ? { cleanupCauseMessage: errorCauseMessage(details.cleanupError) }
+          : {}),
+      },
+      { cause: details.bodyWriteError }
+    )
     this.name = "TaskCreatePartialFailureError"
     this.pageId = details.pageId
     this.cleanedUp = details.cleanedUp
@@ -131,17 +144,26 @@ export class TaskCreatePartialFailureError extends Error {
  * the message. The message is prefixed with the class name because MCP
  * transports flatten errors to text.
  */
-export class TaskUpdatePartialFailureError extends Error {
+export class TaskUpdatePartialFailureError extends LoreError<"task-update-partial"> {
   readonly taskId: string
   readonly failedPhase: "body"
   readonly persisted: { readonly properties: true; readonly body: false }
   readonly bodyWriteError: unknown
 
   constructor(message: string, details: { taskId: string; bodyWriteError: unknown }) {
+    const prefixedMessage = message.startsWith("TaskUpdatePartialFailureError: ")
+      ? message
+      : `TaskUpdatePartialFailureError: ${message}`
     super(
-      message.startsWith("TaskUpdatePartialFailureError: ")
-        ? message
-        : `TaskUpdatePartialFailureError: ${message}`
+      "task-update-partial",
+      prefixedMessage,
+      {
+        taskId: details.taskId,
+        failedPhase: "body",
+        persisted: { properties: true, body: false },
+        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
+      },
+      { cause: details.bodyWriteError }
     )
     this.name = "TaskUpdatePartialFailureError"
     this.taskId = details.taskId

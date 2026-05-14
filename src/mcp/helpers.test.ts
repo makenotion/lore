@@ -9,6 +9,7 @@ import {
   toolError,
 } from "./helpers.js"
 import { WriteBudgetExceededError } from "../notion/rate-limit.js"
+import { LoreError } from "../errors.js"
 
 // Wrapper around `vi.spyOn(process.stderr, "write")` that returns the
 // spy at the loose `MockInstance` shape vitest infers. The
@@ -93,6 +94,28 @@ describe("toolError", () => {
       content: [{ type: "text", text: err.message }],
       isError: true,
     })
+  })
+
+  it("renders LoreError kind and redacted details as structured metadata", () => {
+    const pageId = "abcdef0123456789abcdef0123456789"
+    const token = "secret_aaaaaaaaaaaaaaaaaaaaaaaa"
+    const err = new LoreError("memory-create-partial", `Partial failure on ${pageId}`, {
+      pageId,
+      cleanedUp: false,
+      bodyWriteCauseMessage: `body=${JSON.stringify({ token, pageId })}`,
+      cleanupCauseMessage: `headers={Authorization: Bearer ${token}}`,
+    })
+
+    const result = toolError(err)
+    const text = result.content[0].text
+
+    expect(text).toContain("Error: Partial failure on <page-id>")
+    expect(text).toContain('"kind":"memory-create-partial"')
+    expect(text).toContain('"pageId":"<page-id>"')
+    expect(text).toContain('"bodyWriteCauseMessage":"body=<redacted>"')
+    expect(text).toContain('"cleanupCauseMessage":"headers=<redacted>"')
+    expect(text).not.toContain(pageId)
+    expect(text).not.toContain(token)
   })
 })
 

@@ -40,6 +40,7 @@ import { MemoryReadOnlyError } from "../../core/memory.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "../../core/rich-text-schema.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.js"
+import { LoreError, errorCauseMessage } from "../../errors.js"
 
 /**
  * Soft cap on the user-supplied audit `reason` field.
@@ -328,7 +329,7 @@ function scrubAuditField(value: string): string {
  * for an audit line matching `(action, today)`; if absent, the
  * retry appends it).
  */
-export class PinnedAuditError extends Error {
+export class PinnedAuditError extends LoreError<"pinned-audit-failed"> {
   readonly memoryId: string
   readonly action: PinAuditAction
   readonly cause: unknown
@@ -337,11 +338,18 @@ export class PinnedAuditError extends Error {
     const causeMsg =
       input.cause instanceof Error ? input.cause.message : String(input.cause)
     super(
+      "pinned-audit-failed",
       `PinnedAuditError: ${input.action.toLowerCase()} for memory ` +
         `${input.memoryId} persisted, but the audit-line append failed: ` +
         `${causeMsg}. Retry the same lore-pinned action to re-attempt the ` +
         "audit append; the primary mutation is idempotent on the row's " +
-        "current state."
+        "current state.",
+      {
+        memoryId: input.memoryId,
+        action: input.action,
+        causeMessage: errorCauseMessage(input.cause),
+      },
+      { cause: input.cause }
     )
     this.name = "PinnedAuditError"
     this.memoryId = input.memoryId
@@ -364,19 +372,21 @@ export class PinnedAuditError extends Error {
  * `lore pinned list --all-audiences` / `lore-pinned
  * action='unpin'` so operators know exactly how to recover.
  */
-export class PinnedCapExceededError extends Error {
+export class PinnedCapExceededError extends LoreError<"pinned-cap-exceeded"> {
   readonly currentCount: number
   readonly cap: number
 
   constructor(input: { currentCount: number; cap: number }) {
     super(
+      "pinned-cap-exceeded",
       `PinnedCapExceededError: cannot pin — vault already has ` +
         `${input.currentCount} active pinned block(s), at the ${input.cap}-block ` +
         "hard cap. Unpin stale or unauthorized blocks first via " +
         "`lore pinned list --all-audiences` followed by " +
         "`lore-pinned action='unpin' memoryId=<id>`. The cap prevents " +
         "cross-audience pin spam from starving legitimate matching pins " +
-        "out of wake-up's bounded refill window."
+        "out of wake-up's bounded refill window.",
+      { currentCount: input.currentCount, cap: input.cap }
     )
     this.name = "PinnedCapExceededError"
     this.currentCount = input.currentCount

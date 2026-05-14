@@ -139,6 +139,8 @@ export { buildUpstreamVaultBundles } from "./core/topology-readers.js"
 // to the bundle interface (which is the actually-stable shape) and
 // the builder function.
 export type { UpstreamVaultBundle } from "./core/topology-readers.js"
+export { LoreError, errorCauseMessage, isLoreError, loreErrorExitCode } from "./errors.js"
+export type { LoreErrorDetails, LoreErrorDetailsByKind, LoreErrorKind } from "./errors.js"
 export type { VaultAccessResult } from "./auth/oauth.js"
 export { verifyVaultAccess } from "./auth/oauth.js"
 export type {

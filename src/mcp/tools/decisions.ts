@@ -31,6 +31,7 @@ import {
 } from "../../core/rich-text-schema.js"
 import { findNearDuplicates, type NearDuplicateMatch } from "../../core/near-duplicate.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
+import { LoreError, errorCauseMessage } from "../../errors.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -55,7 +56,7 @@ const DECISION_POOL_LIMIT = 50
 /** Max candidates to surface in the response. */
 const DECISION_SURFACE_LIMIT = 3
 
-class DecisionCreateFactPartialFailureError extends Error {
+class DecisionCreateFactPartialFailureError extends LoreError<"decision-create-fact-partial"> {
   readonly decisionId: string
   readonly failedAffect: string
   readonly createdAffects: string[]
@@ -88,13 +89,23 @@ class DecisionCreateFactPartialFailureError extends Error {
         ? `Pending supersessions not attempted: ${details.pendingSupersedes.join(", ")}. `
         : ""
     super(
+      "decision-create-fact-partial",
       `Decision create partial failure: decision "${details.decision.title}" ` +
         `(${details.decision.id}) was saved, but the \`decided_by\` fact ` +
         `for "${details.failedAffect}" failed: ${cause}. ` +
         createdPart +
         pendingPart +
         supersedesPart +
-        "Create the missing facts for the saved decision; do not recreate the decision."
+        "Create the missing facts for the saved decision; do not recreate the decision.",
+      {
+        decisionId: details.decision.id,
+        failedAffect: details.failedAffect,
+        createdAffects: details.createdAffects,
+        pendingAffects: details.pendingAffects,
+        pendingSupersedes: details.pendingSupersedes,
+        factWriteCauseMessage: errorCauseMessage(details.factWriteError),
+      },
+      { cause: details.factWriteError }
     )
     this.name = "DecisionCreateFactPartialFailureError"
     this.decisionId = details.decision.id
@@ -106,7 +117,7 @@ class DecisionCreateFactPartialFailureError extends Error {
   }
 }
 
-class DecisionCreateSupersedePartialFailureError extends Error {
+class DecisionCreateSupersedePartialFailureError extends LoreError<"decision-create-supersede-partial"> {
   readonly decisionId: string
   readonly failedSupersede: string
   readonly completedSupersedes: string[]
@@ -138,6 +149,7 @@ class DecisionCreateSupersedePartialFailureError extends Error {
       (ref) => !completedIds.has(ref.id)
     )
     super(
+      "decision-create-supersede-partial",
       `Decision create partial failure: decision "${details.decision.title}" ` +
         `(${details.decision.id}) was saved, but supersession for ` +
         `${formatSupersedeRef(details.failedSupersede)} failed during ` +
@@ -168,7 +180,21 @@ class DecisionCreateSupersedePartialFailureError extends Error {
           "Pending supersessions not attempted",
           details.pendingSupersedes
         ) +
-        "Repair the missing supersession work for the saved decision; do not recreate the decision."
+        "Repair the missing supersession work for the saved decision; do not recreate the decision.",
+      {
+        decisionId: details.decision.id,
+        failedSupersede: details.failedSupersede.id,
+        completedSupersedes: details.completedSupersedes.map((ref) => ref.id),
+        markedSupersedes: details.markedSupersedes.map((ref) => ref.id),
+        createdSupersedeFacts: details.createdSupersedeFacts.map((ref) => ref.id),
+        pendingSupersedes: details.pendingSupersedes.map((ref) => ref.id),
+        missingSupersedeFacts: details.missingSupersedeFacts.map((ref) => ref.id),
+        missingReachabilityUpdates: details.missingReachabilityUpdates.map(
+          (ref) => ref.id
+        ),
+        supersedeCauseMessage: errorCauseMessage(details.supersedeError),
+      },
+      { cause: details.supersedeError }
     )
     this.name = "DecisionCreateSupersedePartialFailureError"
     this.decisionId = details.decision.id

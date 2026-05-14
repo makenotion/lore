@@ -34,6 +34,7 @@ import type {
 import type { MemoryService } from "./memory.js"
 import { extractEntityCandidates } from "./near-duplicate.js"
 import { COMBINING_MARK_PATTERN } from "./topic-key.js"
+import { LoreError } from "../errors.js"
 
 /**
  * Memory kinds that can be mined into procedure candidates. Closed
@@ -240,10 +241,10 @@ export interface ResolvedProcedureSource {
  * specific failure mode so the operator can correct the input. Named
  * subclass so consumers can branch on `instanceof`.
  */
-export class ProcedureSourceResolutionError extends Error {
+export class ProcedureSourceResolutionError extends LoreError<"procedure-source-resolution"> {
   readonly memoryIds: readonly string[]
   constructor(message: string, memoryIds: readonly string[]) {
-    super(message)
+    super("procedure-source-resolution", message, { memoryIds })
     this.name = "ProcedureSourceResolutionError"
     this.memoryIds = memoryIds
   }
@@ -510,7 +511,7 @@ export async function resolveProcedureSupersedesIds(
  * memory id so the response surface can show the operator what to
  * deprecate.
  */
-export class ProcedureTopicKeyConflictError extends Error {
+export class ProcedureTopicKeyConflictError extends LoreError<"procedure-topic-key-conflict"> {
   readonly existingMemoryId: string
   readonly existingStatus: Memory["status"]
   readonly topicKey: string
@@ -520,7 +521,11 @@ export class ProcedureTopicKeyConflictError extends Error {
     existingStatus: Memory["status"]
     message: string
   }) {
-    super(input.message)
+    super("procedure-topic-key-conflict", input.message, {
+      topicKey: input.topicKey,
+      existingMemoryId: input.existingMemoryId,
+      existingStatus: input.existingStatus,
+    })
     this.name = "ProcedureTopicKeyConflictError"
     this.topicKey = input.topicKey
     this.existingMemoryId = input.existingMemoryId

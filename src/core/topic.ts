@@ -25,6 +25,7 @@ import { hydrateRelationProperties } from "../notion/relation-properties.js"
 import { LruCache } from "./cache.js"
 import { normalizeTopicNameForLookup } from "./topic-normalize.js"
 import { trigramJaccard } from "./similarity.js"
+import { LoreError } from "../errors.js"
 
 /** Max retries for the optimistic `getOrCreate` extend loop when a concurrent
  *  writer clobbers the relation mid-update. Two retries is enough to cover
@@ -70,7 +71,7 @@ export interface SimilarTopicCandidate {
  * `candidates` field lets the MCP tool layer render a copy-pasteable list
  * without re-parsing the message.
  */
-export class SimilarTopicError extends Error {
+export class SimilarTopicError extends LoreError<"similar-topic"> {
   readonly attempted: string
   readonly candidates: SimilarTopicCandidate[]
 
@@ -79,9 +80,11 @@ export class SimilarTopicError extends Error {
       .map((c) => `  - "${c.name}" (similarity ${c.similarity.toFixed(2)}, id: ${c.id})`)
       .join("\n")
     super(
+      "similar-topic",
       `Topic "${attempted}" looks similar to ${candidates.length} existing topic${candidates.length === 1 ? "" : "s"} in this project:\n` +
         `${lines}\n` +
-        "Use one of the existing topic names verbatim, or pass `forceNew: true` to create a new topic anyway."
+        "Use one of the existing topic names verbatim, or pass `forceNew: true` to create a new topic anyway.",
+      { attempted, candidates }
     )
     this.name = "SimilarTopicError"
     this.attempted = attempted

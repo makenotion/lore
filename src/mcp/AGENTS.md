@@ -769,15 +769,10 @@ export function toolError(err: unknown): ToolResult {
 
   const rawMessage = err instanceof Error ? err.message : String(err)
   const message = redactDebugMessage(rawMessage, { truncate: false })
-  const retryable = isRetryableError(err)
-    ? `\n\n\`\`\`json\n${JSON.stringify({
-        code: err.code,
-        retryable: true,
-      })}\n\`\`\``
-    : ""
+  const metadata = formatErrorMetadata(err)
 
   return {
-    content: [{ type: "text" as const, text: `Error: ${message}${retryable}` }],
+    content: [{ type: "text" as const, text: `Error: ${message}${metadata}` }],
     isError: true,
   }
 }
@@ -786,6 +781,11 @@ export function toolError(err: unknown): ToolResult {
 Do not interpolate `err.message` directly into MCP content, even for validation
 or dispatch errors. Wrap thrown and string errors in `toolError()` and let the
 helper handle redaction and retryable metadata consistently.
+
+Errors that extend `LoreError` append a fenced JSON metadata block containing
+`kind` and redacted `details`. Retryable errors append `code` and
+`retryable: true` in the same block. Treat this block as the machine-readable
+contract; the leading prose message remains for operators.
 
 **Rule**: Never let exceptions propagate out of a tool callback. The MCP transport
 does not handle thrown errors gracefully. Always catch and return `toolError()`.

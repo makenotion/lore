@@ -23,6 +23,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeFilenameSegment } from "./marker-key.js"
+import { LoreError } from "../errors.js"
 
 /**
  * Where per-session lock files and stderr logs live. Defaults to a fixed
@@ -150,12 +151,15 @@ export function activeSaveCount(): number {
  * this classified throw, the underlying `ENAMETOOLONG` propagates out of
  * every Stop hook for the affected session and indefinitely skips autosave.
  */
-export class LockPathTooLongError extends Error {
+export class LockPathTooLongError extends LoreError<"lock-path-too-long"> {
   readonly code: "ENAMETOOLONG" | "ENOENT"
   readonly lockKey: string
 
   constructor(lockKey: string, code: "ENAMETOOLONG" | "ENOENT") {
-    super(`lock path too long (${code}) for "${lockKey}"`)
+    super("lock-path-too-long", `lock path too long (${code}) for "${lockKey}"`, {
+      lockKey,
+      code,
+    })
     this.name = "LockPathTooLongError"
     this.code = code
     this.lockKey = lockKey

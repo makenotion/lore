@@ -1,5 +1,6 @@
 import { renameSync, writeFileSync } from "node:fs"
 import { dirname, basename } from "node:path"
+import { LoreError } from "../errors.js"
 
 /**
  * Shared concurrency + request-rate governor for outbound Notion SDK calls.
@@ -879,13 +880,17 @@ export function classifyWriteBudget(
  * `WriteBudgetExceeded: tool=<name> limit=<N> count=<final>` text-error
  * envelope the mining child grep-matches to halt.
  */
-export class WriteBudgetExceededError extends Error {
+export class WriteBudgetExceededError extends LoreError<"write-budget-exceeded"> {
   constructor(
     public readonly toolPath: string,
     public readonly limit: number,
     public readonly count: number
   ) {
-    super(`WriteBudgetExceeded: tool=${toolPath} limit=${limit} count=${count}`)
+    super(
+      "write-budget-exceeded",
+      `WriteBudgetExceeded: tool=${toolPath} limit=${limit} count=${count}`,
+      { toolPath, limit, count }
+    )
     this.name = "WriteBudgetExceededError"
   }
 }

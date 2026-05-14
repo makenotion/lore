@@ -4,6 +4,7 @@
 
 import type { Project } from "../types.js"
 import type { ProjectNameResolution } from "./project.js"
+import { LoreError, errorCauseMessage } from "../errors.js"
 
 export interface FormatUnresolvedProjectScopeErrorOptions {
   archivedHint?: string
@@ -82,13 +83,7 @@ export function formatUnresolvedProjectScopeError(
   return messages.join(" ")
 }
 
-function causeMessage(cause: unknown): string {
-  if (cause instanceof Error && cause.message) return cause.message
-  if (typeof cause === "string" && cause.length > 0) return cause
-  return "unknown transient Notion error"
-}
-
-export class TransientProjectResolutionError extends Error {
+export class TransientProjectResolutionError extends LoreError<"transient-project-resolution"> {
   readonly code = "transient_project_resolution"
   readonly retryable = true
   readonly names: readonly string[]
@@ -103,10 +98,13 @@ export class TransientProjectResolutionError extends Error {
     const quoted = names.map((name) => `"${name}"`).join(", ")
     const subject = names.length === 1 ? `Project ${quoted}` : `Projects ${quoted}`
     const docsHint = options.docsHint ? ` See ${options.docsHint}.` : ""
+    const causeText = errorCauseMessage(cause, "unknown transient Notion error")
     super(
+      "transient-project-resolution",
       `${subject} could not be resolved because Notion returned a transient error. ` +
         `Retry ${scopeFields} resolution later; do not treat this as a missing project. ` +
-        `Cause: ${causeMessage(cause)}.${docsHint}`,
+        `Cause: ${causeText}.${docsHint}`,
+      { names, scopeFields, causeMessage: causeText },
       { cause }
     )
     this.name = "TransientProjectResolutionError"
