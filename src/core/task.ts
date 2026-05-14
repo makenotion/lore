@@ -43,7 +43,7 @@ import type { MemoryScopeContext } from "../types.js"
 import { buildMemoryProps, MEMORY_PROPS } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
-import { matchesDefaultScope } from "./memory.js"
+import { matchesDefaultScope } from "./memory-scope.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { isLiveFullPage } from "../notion/extractors.js"
 import {

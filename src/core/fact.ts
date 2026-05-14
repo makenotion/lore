@@ -31,7 +31,7 @@ import {
   withDefaultScopeFilter,
   FACT_SCOPE_PROPS,
 } from "../notion/filters.js"
-import { matchesDefaultScope } from "./memory.js"
+import { matchesDefaultScope } from "./memory-scope.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { withEntityRelationLocks } from "./entity-relation-lock.js"

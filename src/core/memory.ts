@@ -32,7 +32,6 @@ import type {
   MemoryConfidence,
   MemoryScopeContext,
   MemoryScopeInput,
-  MemoryMutability,
   TaskState,
   DatabaseRef,
   FreshCreatePreparation,
@@ -42,9 +41,6 @@ import {
   EXPIRING_SOON_DAYS,
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
-  PINNED_BLOCKS_HARD_CAP,
-  PINNED_PRIORITY_MAX,
-  PINNED_PRIORITY_MIN,
   pairScopeForFactEmission,
 } from "../types.js"
 import {
@@ -56,7 +52,6 @@ import {
 } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
-import { requireQueryResults } from "../notion/query-response.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   RunToolBlockEditError,
@@ -99,7 +94,6 @@ import {
   extractRelationIds,
   extractDate,
   extractNumber,
-  extractCheckbox,
 } from "../notion/extractors.js"
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
 import {
@@ -113,6 +107,22 @@ import {
 } from "../notion/runtool/error-helpers.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
+import { matchesDefaultScope } from "./memory-scope.js"
+import {
+  MemoryPinned,
+  clampPinnedPriority,
+  extractMemoryPinned,
+  pinnedInputToBuilderProps,
+} from "./memory-pinned.js"
+
+export { matchesDefaultScope } from "./memory-scope.js"
+export {
+  MemoryPinCapExceededError,
+  MemoryReadOnlyError,
+  clampPinnedPriority,
+  pinnedBlockAudienceMatches,
+  sanitizeMemoryTitleForMessage,
+} from "./memory-pinned.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  * 30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -169,76 +179,6 @@ function scopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
   if (scope.lifetime !== undefined) out.lifetime = scope.lifetime
   if (scope.expiresAt !== undefined) out.expiresAt = scope.expiresAt
   return out
-}
-
-/**
- * Client-side mirror of the server-side default scope inclusion
- * filter. Used by `applySemanticPostFilters` because
- * `client.search` has no property-filter support — the same logic
- * runs server-side on `dataSources.query` paths via
- * `withDefaultScopeFilter`.
- *
- * Returns `true` when the row passes the default scope filter:
- * - Scope Kind empty / `team` / `project` / `global` (broadcast); OR
- * - Scope Kind is one of the narrow kinds AND Scope Key equals the
- * reader's resolved context value for that kind.
- *
- * AND not expired:
- * - Expires At empty OR Expires At >= today.
- *
- * Pure function over the page's already-fetched properties. Mirrors
- * the server-side filter shape exactly so a future contributor
- * tightening one MUST tighten the other in lockstep.
- */
-export function matchesDefaultScope(
-  props: PageObjectResponse["properties"],
-  ctx: MemoryScopeContext,
-  today: string,
-  scopeProps: import("../notion/filters.js").ScopeFilterProps = {
-    scopeKind: MEMORY_PROPS.SCOPE_KIND,
-    scopeKey: MEMORY_PROPS.SCOPE_KEY,
-    expiresAt: MEMORY_PROPS.EXPIRES_AT,
-  }
-): boolean {
-  // Expiry check first — cheap, no scope-context lookup.
-  const expiresAt = extractDate(props[scopeProps.expiresAt])
-  if (expiresAt !== null && expiresAt < today) return false
-
-  const kindProp = props[scopeProps.scopeKind]
-  const kind =
-    kindProp && kindProp.type === "select" && kindProp.select
-      ? kindProp.select.name
-      : null
-  if (kind === null) return true
-  if (kind === "team" || kind === "project" || kind === "global") return true
-
-  const key = extractRichText(props[scopeProps.scopeKey])
-  if (key.length === 0) return false
-
-  switch (kind) {
-    case "user":
-      return ctx.userId === key
-    case "agent":
-      return ctx.agent === key
-    case "role":
-      return ctx.role === key
-    case "session":
-      return ctx.session === key
-    case "run":
-      return ctx.run === key
-    case "environment":
-      return ctx.environment === key
-    default:
-      // Unknown kind value — fail closed. The server-side filter has
-      // no clause for an unrecognized `Scope Kind` select option, so
-      // the row is dropped on the contains lane; the semantic post-
-      // filter must mirror that behavior or callers see asymmetric
-      // results across the two lanes. This is a defensive guard
-      // against schema drift (someone manually adding a Notion
-      // select option that the type system doesn't know about); the
-      // documented kinds always hit one of the cases above.
-      return false
-  }
 }
 
 /**
@@ -1110,108 +1050,6 @@ export class MemoryUpdatePartialFailureError extends LoreError<"memory-update-bo
 }
 
 /**
- * Thrown by `MemoryService.update` when the target memory has
- * `Mutability = read-only` and the caller did not pass
- * `allowReadOnlyUpdate: true`. The error names the memory id and
- * title so the agent surface can render a clear message:
- *
- * "Cannot update '<title>': pinned block is read-only. Pass
- * `force: true` to `lore-pinned action='update'` to override."
- *
- * Caught and surfaced verbatim by the MCP `toolError` wrapper; CLI
- * `lore pinned` commands surface it as a non-zero exit with the
- * message. Operators flipping a read-only pin to mutable use
- * `lore-pinned action='update'` with `mutability: "mutable"` and
- * `force: true` in a single call.
- */
-export class MemoryReadOnlyError extends LoreError<"memory-read-only"> {
-  readonly memoryId: string
-  readonly memoryTitle: string
-
-  constructor(memoryId: string, memoryTitle: string) {
-    // scrub control chars (newlines, tabs,
-    // C0 / DEL) and truncate the title before interpolation so a
-    // pin author cannot plant a title that breaks log formatting
-    // or visually disguises the error message. The raw title
-    // stays available on `.memoryTitle` for programmatic
-    // consumers; only the user-visible `.message` is sanitized.
-    const safeTitle = sanitizeMemoryTitleForMessage(memoryTitle)
-    super(
-      "memory-read-only",
-      `MemoryReadOnlyError: cannot modify pinned block "${safeTitle}" (${memoryId}): ` +
-        `Mutability is read-only. Pass force=true on lore-pinned action='update' ` +
-        `(or allowReadOnlyUpdate=true at the service layer) to override.`,
-      { memoryId, memoryTitle }
-    )
-    this.name = "MemoryReadOnlyError"
-    this.memoryId = memoryId
-    this.memoryTitle = memoryTitle
-  }
-}
-
-/**
- * Service-layer mirror of the MCP `PinnedCapExceededError`.
- * Thrown by `MemoryService.update` when an
- * `UpdateMemoryInput` would transition a row from un-pinned to
- * pinned and the vault is already at or above
- * `PINNED_BLOCKS_HARD_CAP`. The cap was originally enforced only
- * at the MCP `handlePin` boundary; sinking it into `update`
- * closes the defense-in-depth gap for future service-layer
- * callers (CLI / hooks / migrations) that flip `Pinned = true`
- * through this entry point.
- *
- * Service-layer callers that have already verified the cap (the
- * MCP `handlePin` handler) bypass this check by passing
- * `bypassPinCapCheck: true` on the update input — that avoids a
- * second `countPinnedBlocks` round-trip per pin call.
- *
- * Distinct error class from `MemoryReadOnlyError` so callers can
- * branch via `instanceof`. The MCP layer keeps its own
- * `PinnedCapExceededError` for the user-facing surface (operator
- * recovery copy is tied to the MCP / CLI vocabulary).
- */
-export class MemoryPinCapExceededError extends LoreError<"memory-pin-cap-exceeded"> {
-  readonly memoryId: string
-  readonly currentCount: number
-  readonly cap: number
-
-  constructor(memoryId: string, currentCount: number, cap: number) {
-    super(
-      "memory-pin-cap-exceeded",
-      `MemoryPinCapExceededError: cannot pin memory ${memoryId} — vault ` +
-        `already has ${currentCount} active pinned block(s), at the ${cap}-` +
-        "block hard cap. Unpin stale blocks before pinning new rows.",
-      { memoryId, currentCount, cap }
-    )
-    this.name = "MemoryPinCapExceededError"
-    this.memoryId = memoryId
-    this.currentCount = currentCount
-    this.cap = cap
-  }
-}
-
-/**
- * Sanitize a memory title for interpolation into a user-facing
- * error message. Strips ASCII control chars and Unicode bidi-override
- * / zero-width chars, collapses whitespace, truncates to 120 chars.
- * Mirrors the `scrubAuditField` posture used for pinned-block audit
- * lines.
- *
- * Exported for unit-test coverage; production callers route
- * through `MemoryReadOnlyError`.
- */
-export function sanitizeMemoryTitleForMessage(title: string): string {
-  const MAX = 120
-  const cleaned = title
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1F\x7F]+/g, " ")
-    .replace(/[\u200B-\u200D\u202A-\u202E\u2066-\u2069\uFEFF]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-  return cleaned.length > MAX ? `${cleaned.slice(0, MAX - 1)}…` : cleaned
-}
-
-/**
  * Structured partial-state error raised by `MemoryService.create`
  * when the `pages.create` call landed (a Memories DB row exists) but
  * the follow-up `pages.updateMarkdown` body-write rejected. Notion's
@@ -1999,6 +1837,7 @@ export class MemoryService {
    * and the auth identity; tests default to empty.
    */
   private scopeCtx: MemoryScopeContext = {}
+  private readonly pinned: MemoryPinned
 
   /**
    * Whether default-retrieval paths should apply the scope filter.
@@ -2020,6 +1859,13 @@ export class MemoryService {
     options?: { features?: LoreFeatureFlags }
   ) {
     this.features = options?.features ?? resolveFeatureFlags()
+    this.pinned = new MemoryPinned(
+      client,
+      db,
+      () => this.scopeCtx,
+      () => this.scopeFilterEnabled,
+      (pages, includeContent) => this.materializeMemories(pages, includeContent)
+    )
     if (scopeCtx) {
       this.scopeCtx = scopeCtx
       this.scopeFilterEnabled = true
@@ -2213,6 +2059,8 @@ export class MemoryService {
     // surfaces (near-duplicate probe, entity canonicalization,
     // DS-scoped search) will read.
     const decoded = decodeMemoryTextFields(input)
+    const createsPinnedBlock = input.pinned?.pinned === true
+    await this.pinned.preflightCreate(input.pinned)
 
     // Create the page with properties only
     const page = await this.client.pages.create({
@@ -2245,8 +2093,12 @@ export class MemoryService {
         topicKey: input.topicKey,
         revisionCount: input.revisionCount,
         ...scopeInputToBuilderProps(input.scope),
+        ...pinnedInputToBuilderProps(input.pinned),
       }),
     })
+    if (createsPinnedBlock) {
+      this.pinned.invalidateCountCache()
+    }
 
     // Write content via markdown API. The SDK splits memory creation
     // across two calls — properties above, body below — so a rejection
@@ -3627,71 +3479,13 @@ export class MemoryService {
     // clear the pinned-count cache too on the
     // cross-service `clearServiceCaches()` reset so test fixtures
     // see a fresh count between cases.
-    this.pinnedCountCache = null
+    this.pinned.clearCountCache()
   }
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
     validateRichTextMetadataFields(input, "MemoryService.update")
 
-    // Read-only enforcement for pinned context blocks.
-    // Preflight before any decode / property build so the
-    // refusal lands without touching Notion via update. The check
-    // is gated on `Pinned = true` (the row IS a pinned block) AND
-    // `Mutability = "read-only"` AND the caller did not pass
-    // `allowReadOnlyUpdate: true`. Non-pinned rows skip this gate
-    // entirely so generic memory edits are unaffected.
-    //
-    // The only update path that legitimately needs to land changes
-    // on a read-only pin is the MCP `lore-pinned action='update'`
-    // with `force: true` — the carve-out for
-    // "operator/owner approves." Every other path (autosave, plain
-    // update, re-key) hits this guard.
-    //
-    // The preflight reads only the `Pinned` and `Mutability`
-    // columns plus the `Title` column (for the error message);
-    // intentionally NOT routing through `getPropertiesById` because
-    // that helper enforces parent-DB equality, which test fixtures
-    // and certain cross-DB callers may not satisfy. The lightweight
-    // inline read keeps the preflight scoped to the AC #3
-    // contract.
-    // also enforce `PINNED_BLOCKS_HARD_CAP`
-    // when this update would transition a row from un-pinned to
-    // pinned. The MCP `handlePin` already enforces the cap at the
-    // tool boundary; this is the defense-in-depth gate for any
-    // service-layer caller (CLI / hooks / migrations) that flips
-    // the flag through `update`. Callers that have already
-    // verified the cap pass `bypassPinCapCheck: true` to avoid a
-    // duplicate `countPinnedBlocks` round-trip per pin.
-    const wouldPin = input.pinned?.pinned === true
-    const needsPreflight =
-      !input.allowReadOnlyUpdate || (wouldPin && !input.bypassPinCapCheck)
-    if (needsPreflight) {
-      const probe = (await this.client.pages.retrieve({
-        page_id: id,
-      })) as PageObjectResponse
-      const props = probe.properties
-      const isPinned = extractCheckbox(props[MEMORY_PROPS.PINNED])
-      if (!input.allowReadOnlyUpdate && isPinned) {
-        const mutabilityProp = props[MEMORY_PROPS.MUTABILITY]
-        const mutability =
-          mutabilityProp && mutabilityProp.type === "select" && mutabilityProp.select
-            ? (mutabilityProp.select.name as MemoryMutability)
-            : "mutable"
-        if (mutability === "read-only") {
-          throw new MemoryReadOnlyError(id, extractTitle(props[MEMORY_PROPS.TITLE]))
-        }
-      }
-      // Cap check fires only on a true un-pinned → pinned
-      // transition. A no-op pin (already pinned), an unpin
-      // (`pinned: false`), or a property-only update on a pinned
-      // row all skip this gate.
-      if (wouldPin && !isPinned && !input.bypassPinCapCheck) {
-        const activePinCount = await this.countPinnedBlocks()
-        if (activePinCount >= PINNED_BLOCKS_HARD_CAP) {
-          throw new MemoryPinCapExceededError(id, activePinCount, PINNED_BLOCKS_HARD_CAP)
-        }
-      }
-    }
+    await this.pinned.preflightUpdate(id, input)
 
     // Same decode-at-write discipline as `create`: encoded titles /
     // content / alternatives / consequences flowing in from re-saves of
@@ -3849,7 +3643,7 @@ export class MemoryService {
         props[MEMORY_PROPS.PINNED] = { checkbox: pinnedInput.pinned }
         // Invalidate the in-process pinned-count cache so a same-process
         // pin / unpin sees the fresh count without waiting on the 30s TTL.
-        this.invalidatePinnedCountCache()
+        this.pinned.invalidateCountCache()
       }
       if (pinnedInput.priority !== undefined) {
         props[MEMORY_PROPS.PINNED_PRIORITY] =
@@ -4949,261 +4743,20 @@ export class MemoryService {
     return Promise.all(result.pages.map((page) => this.pageToMemory(page, "")))
   }
 
-  /**
-   * Pinned context blocks for the wake-up Pinned Context section.
-   *
-   * Server-side filter:
-   *
-   * Pinned = true
-   * AND (Project contains projectId OR Project is_empty) [when scoped]
-   * AND <default scope filter> [when scope columns present
-   * and the caller did not opt out via `includeOutOfScope`]
-   *
-   * The default scope filter is composed via `withDefaultScopeFilter`,
-   * which folds in the broadcast/narrow scope-kind OR-clause plus the
-   * expiry-not-passed clause. Without it, a row with
-   * `Scope Kind = session` / `user` / `agent` / `role` and a
-   * non-matching `Scope Key` would still surface as a pinned context
-   * block — a local pin would silently leak across readers/sessions
-   * at the top of every wake-up. The corresponding client-side mirror
-   * runs inside the `collectLivePages` `extraFilter` so the kind+key
-   * binding (which Notion's 2-level compound-filter cap can't express
-   * server-side) is enforced row-by-row during pagination.
-   *
-   * Audience matching is also applied via the same `extraFilter`
-   * because the `Audience` column is free-form rich_text — a
-   * Notion-side `contains` filter would surface partial-token matches
-   * (`"team"` matching `"team-leads"`), which is the wrong precision
-   * for an authorization-shaped check. Client-side comma-split +
-   * exact match against the reader's scope context (`agent` /
-   * `role` / `userId`) gives the right semantics:
-   *
-   * - Empty audience (column unset) OR contains `"all"` / `"*"` /
-   * `"everyone"` / `"agents"` → matches every reader.
-   * - Otherwise: comma-split, case-fold, exact match against the
-   * reader's resolved identity slots.
-   *
-   * **Both filters run inside the paginating loop via `extraFilter`**,
-   * not as post-materialization filters. The earlier shape applied
-   * audience after limiting to N raw rows, which could starve
-   * matching pins when the top-priority slice happened to target
-   * other audiences. Filtering inside the loop lets the walker
-   * over-fetch and backfill until `limit` visible rows are
-   * collected.
-   *
-   * Sorted by `Pinned Priority` descending, then by `created_time`
-   * descending as tie-break so newer blocks at the same priority
-   * surface first.
-   *
-   * Vaults missing the `Pinned` column entirely hit
-   * `isMissingPropertyError` and return `[]` — same gracefully-degrade
-   * posture as `queryStaleConfidence` for vaults without the scope
-   * schema. The operator runs `lore migrate` to add the columns and
-   * pin blocks surface on the next wake-up.
-   *
-   * No body fetch by default — the wake-up renderer surfaces
-   * pinned-block titles, labels, and synopses; bodies appear via
-   * `lore-memory action='expand'` for deeper inspection. Callers
-   * that need bodies pass `includeContent: true`.
-   */
   async listPinnedBlocks(opts: {
-    /** Omit for vault-wide wake-up. Project-scoped pins surface only
-     * within their project's wake-up; unscoped pins surface in every
-     * project's wake-up (broadcast). */
     projectId?: string
-    /** Cap on rows returned. Defaults to `DEFAULT_PINNED_BLOCK_LIMIT`. */
     limit?: number
-    /** YYYY-MM-DD anchor for lifetime hygiene; matches the wake-up
-     * loader's `todayDate`. When omitted, expired pins are not
-     * filtered. */
     today?: string
-    /** Reader's resolved identity slots for audience matching.
-     * When omitted (and `audienceFilter !== false`), only
-     * audience-`all` / empty-audience pins surface. Same shape as
-     * `MemoryScopeContext`. */
     readerContext?: MemoryScopeContext
-    /** Fetch markdown bodies. Defaults to false (title-tier). */
     includeContent?: boolean
-    /** When `false`, skip the audience filter entirely so the caller
-     * sees every pinned block in scope regardless of audience
-     * tokens. Required for the operator inspection surface
-     * (`lore pinned list --all-audiences` and
-     * `lore-pinned action='list' includeAllAudiences=true`) — an
-     * empty `readerContext` alone is not enough because the
-     * audience matcher rejects narrow tokens when no reader slot
-     * is populated. Defaults to `true`. */
     audienceFilter?: boolean
-    /** When `true`, bypass the default scope filter so every
-     * pinned row passes regardless of `Scope Kind` / `Scope Key`.
-     * Used by maintenance / audit surfaces that intentionally need
-     * to see scoped rows outside the reader's context (mirrors
-     * `MemoryService.list`'s out-of-scope reads). Defaults to
-     * `false` — wake-up and the agent-facing list path see only
-     * in-scope rows. */
     includeOutOfScope?: boolean
   }): Promise<Memory[]> {
-    const limit = opts.limit ?? 10
-    if (limit <= 0) return []
-
-    const filters: Array<Record<string, unknown>> = [
-      { property: MEMORY_PROPS.PINNED, checkbox: { equals: true } },
-    ]
-    if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
-    }
-    const baseFilter = { and: filters } as Record<string, unknown>
-    // Compose the default scope filter when scope columns are
-    // present on this vault and the caller hasn't opted out. On
-    // vaults without the columns `scopeFilterEnabled` is false at
-    // service init, so the bare base filter applies and the row
-    // passes through (matches the legacy "broadcast on null scope"
-    // contract).
-    const reader = opts.readerContext ?? {}
-    const today = opts.today ?? todayUtc()
-    const scopeFilterActive = this.scopeFilterEnabled && opts.includeOutOfScope !== true
-    const filter = (
-      scopeFilterActive
-        ? withDefaultScopeFilter(baseFilter, this.scopeCtx, today)
-        : baseFilter
-    ) as QueryDataSourceParameters["filter"]
-    const applyAudienceFilter = opts.audienceFilter !== false
-
-    let result: Awaited<ReturnType<typeof collectLivePages>>
-    try {
-      result = await collectLivePages({
-        limit,
-        source: "MemoryService.listPinnedBlocks",
-        query: ({ page_size, start_cursor }) =>
-          this.client.dataSources.query({
-            data_source_id: this.db.dataSourceId,
-            filter,
-            sorts: [
-              {
-                property: MEMORY_PROPS.PINNED_PRIORITY,
-                direction: "descending",
-              },
-              { timestamp: "created_time", direction: "descending" },
-            ],
-            page_size,
-            start_cursor,
-          }),
-        extraFilter: (page) => {
-          if (
-            scopeFilterActive &&
-            !matchesDefaultScope(page.properties, this.scopeCtx, today)
-          ) {
-            return false
-          }
-          if (applyAudienceFilter) {
-            const audience = extractRichText(page.properties[MEMORY_PROPS.AUDIENCE])
-            if (!pinnedBlockAudienceMatches(audience, reader)) return false
-          }
-          return true
-        },
-      })
-    } catch (err) {
-      // Vault hasn't run the pinned-blocks schema migration — the
-      // `Pinned` / `Pinned Priority` columns don't exist. Degrade
-      // to an empty section rather than failing wake-up. Transient
-      // failures still propagate.
-      if (isMissingPropertyError(err)) return []
-      throw err
-    }
-    if (result.capped) {
-      warnLivePageCapFired({
-        source: "MemoryService.listPinnedBlocks",
-        pages: result.pageCount,
-        accumulated: result.pages.length,
-        limit,
-      })
-    }
-
-    return this.materializeMemories(result.pages, opts.includeContent ?? false)
-  }
-
-  /**
-   * Active-pinned-block count. Backs the per-vault DoS
-   * cap surfaced as a warning on wake-up: a malicious caller pinning
-   * dozens of rows can push legitimate governance context out of
-   * the visible cap. The renderer threshold is
-   * `PINNED_BLOCKS_ABUSE_THRESHOLD`.
-   *
-   * Server-side count via the same `Pinned = true` clause used by
-   * `listPinnedBlocks`. Does NOT apply the audience or scope
-   * filters — operators must see the TOTAL number of pinned rows
-   * across the vault even when most are out-of-scope or
-   * out-of-audience for the current reader.
-   *
-   * Vaults missing the `Pinned` column hit `isMissingPropertyError`
-   * and return `0` — same graceful-degrade posture as
-   * `listPinnedBlocks`.
-   *
-   * **30s TTL cache :** the count runs on every
-   * wake-up via `loadWakeUpData`'s fan-out AND on every
-   * `handlePin` / write-path cap check. The TTL window collapses
-   * back-to-back callers onto one Notion round-trip while keeping
-   * the cap reactive within 30s of any external change. The cache
-   * invalidates on every `update` that flips the `Pinned` checkbox
-   * so a same-process pin / unpin sees the fresh count without
-   * waiting on the TTL. Mirrors `WakeUpCache`'s posture.
-   */
-  private pinnedCountCache: { value: number; expiresAt: number } | null = null
-  private readonly PINNED_COUNT_TTL_MS = 30_000
-
-  /**
-   * Invalidate the in-process count cache. Called from `update`
-   * whenever the `Pinned` checkbox flips so the next caller sees
-   * a fresh count without waiting on the 30s TTL.
-   */
-  private invalidatePinnedCountCache(): void {
-    this.pinnedCountCache = null
+    return this.pinned.listPinnedBlocks(opts)
   }
 
   async countPinnedBlocks(opts: { bypassCache?: boolean } = {}): Promise<number> {
-    if (!opts.bypassCache && this.pinnedCountCache !== null) {
-      if (Date.now() < this.pinnedCountCache.expiresAt) {
-        return this.pinnedCountCache.value
-      }
-      this.pinnedCountCache = null
-    }
-    let total = 0
-    let cursor: string | undefined
-    const filter = {
-      property: MEMORY_PROPS.PINNED,
-      checkbox: { equals: true },
-    } as QueryDataSourceParameters["filter"]
-    try {
-      for (;;) {
-        const response = await this.client.dataSources.query({
-          data_source_id: this.db.dataSourceId,
-          filter,
-          page_size: 100,
-          ...(cursor ? { start_cursor: cursor } : {}),
-        })
-        // Mirror the live-page filter so soft-deleted pins don't
-        // inflate the count.
-        total += requireQueryResults(response, "MemoryService.countPinnedBlocks").filter(
-          isLiveFullPage
-        ).length
-        if (!response.has_more) break
-        cursor = response.next_cursor ?? undefined
-        if (!cursor) break
-      }
-    } catch (err) {
-      if (isMissingPropertyError(err)) {
-        this.pinnedCountCache = {
-          value: 0,
-          expiresAt: Date.now() + this.PINNED_COUNT_TTL_MS,
-        }
-        return 0
-      }
-      throw err
-    }
-    this.pinnedCountCache = {
-      value: total,
-      expiresAt: Date.now() + this.PINNED_COUNT_TTL_MS,
-    }
-    return total
+    return this.pinned.countPinnedBlocks(opts)
   }
 
   /**
@@ -7173,103 +6726,6 @@ function extractMemoryScope(
     return null
   }
   return { kind, key, audience, lifetime, expiresAt }
-}
-
-/**
- * Read the pinned-block columns into a `MemoryPinned` bundle.
- * Returns `null` when `Pinned = false` / unset — the
- * overwhelming majority of memories. Returns a populated bundle when
- * the row is a pinned context block, defaulting `priority` to `0`
- * (number column cleared) and `mutability` to `mutable` (select
- * column cleared).
- *
- * The check is gated solely on the `Pinned` checkbox: a row with
- * `Pinned Priority` set but `Pinned = false` is treated as "not a
- * pinned block" — the checkbox is the source of truth, and the
- * other columns are advisory state attached to the pin.
- */
-function extractMemoryPinned(
-  props: PageObjectResponse["properties"]
-): import("../types.js").MemoryPinned | null {
-  const isPinned = extractCheckbox(props[MEMORY_PROPS.PINNED])
-  if (!isPinned) return null
-  const priority = extractNumber(props[MEMORY_PROPS.PINNED_PRIORITY]) ?? 0
-  const mutabilityProp = props[MEMORY_PROPS.MUTABILITY]
-  const mutability =
-    mutabilityProp && mutabilityProp.type === "select" && mutabilityProp.select
-      ? (mutabilityProp.select.name as import("../types.js").MemoryMutability)
-      : "mutable"
-  return { priority, mutability }
-}
-
-/**
- * Clamp a pinned-block priority to `[PINNED_PRIORITY_MIN,
- * PINNED_PRIORITY_MAX]` and round to a whole number so Notion's
- * display formatting stays predictable. The MCP Zod schema also
- * clamps; this is the load-bearing protection at the service layer
- * for CLI / hook / internal callers.
- *
- * Exported for unit-test coverage; production callers should let
- * `MemoryService.update`'s pinned branch invoke this helper.
- */
-export function clampPinnedPriority(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  if (value > PINNED_PRIORITY_MAX) return PINNED_PRIORITY_MAX
-  if (value < PINNED_PRIORITY_MIN) return PINNED_PRIORITY_MIN
-  return Math.round(value)
-}
-
-/**
- * Audience matching for pinned context blocks.
- *
- * Rules:
- * - Empty `audience` or whitespace-only → matches every reader
- * (treated as broadcast, same posture as `MemoryScope` audience).
- * - Comma-separated tokens; case-folded for comparison.
- * - `all` / `*` / `everyone` / `agents` tokens are universal — any
- * of them matches every reader regardless of identity slots.
- * - Otherwise the reader's `agent`, `role`, or `userId` (in that
- * precedence) must appear as a token in the audience list.
- *
- * The precedence (agent → role → userId) reflects how operators
- * actually scope blocks: most pins target an agent role (e.g.
- * `code-reviewers`); some target a specific agent identity
- * (`Claude Code`); user-specific pins are the rarest case but
- * supported. A row's audience is a single rich_text cell in Notion;
- * commas are the only standardized separator.
- *
- * Exported for unit-test coverage; production callers route through
- * `MemoryService.listPinnedBlocks`.
- */
-export function pinnedBlockAudienceMatches(
-  audience: string,
-  reader: MemoryScopeContext
-): boolean {
-  const trimmed = audience.trim()
-  if (trimmed.length === 0) return true
-  const tokens = trimmed
-    .split(",")
-    .map((t) => t.trim().toLowerCase())
-    .filter((t) => t.length > 0)
-  if (tokens.length === 0) return true
-  // Universal tokens — any of these unconditionally surfaces the pin.
-  if (
-    tokens.some((t) => t === "all" || t === "*" || t === "everyone" || t === "agents")
-  ) {
-    return true
-  }
-  const readerSlots: string[] = []
-  if (reader.agent && reader.agent.trim().length > 0) {
-    readerSlots.push(reader.agent.trim().toLowerCase())
-  }
-  if (reader.role && reader.role.trim().length > 0) {
-    readerSlots.push(reader.role.trim().toLowerCase())
-  }
-  if (reader.userId && reader.userId.trim().length > 0) {
-    readerSlots.push(reader.userId.trim().toLowerCase())
-  }
-  if (readerSlots.length === 0) return false
-  return tokens.some((token) => readerSlots.includes(token))
 }
 
 // ---------------------------------------------------------------------------

@@ -288,8 +288,14 @@ describe("MemoryService.create — Confidence Score write semantics (#01)", () =
       })
     )
     const updateMarkdownSpy = vi.fn(async () => ({}))
+    const querySpy = vi.fn(async () => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
     const client = {
       pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
+      dataSources: { query: querySpy },
     } as unknown as Client
     return { client, createSpy }
   }
@@ -317,6 +323,137 @@ describe("MemoryService.create — Confidence Score write semantics (#01)", () =
 
     const props = createSpy.mock.calls[0]![0].properties
     expect("Confidence Score" in props).toBe(false)
+  })
+})
+
+describe("MemoryService.create — pinned-block property writes", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeCreateClient() {
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-1",
+        created_time: "2026-04-20T00:00:00.000Z",
+        last_edited_time: "2026-04-20T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "Pinned" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      })
+    )
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const querySpy = vi.fn(async () => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    return { client, createSpy }
+  }
+
+  it("maps the pinned input bundle onto Notion pinned columns", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.create({
+      title: "Pinned",
+      content: "",
+      pinned: { pinned: true, priority: 77.7, mutability: "read-only" },
+    })
+
+    const props = createSpy.mock.calls[0]![0].properties
+    expect(props["Pinned"]).toEqual({ checkbox: true })
+    expect(props["Pinned Priority"]).toEqual({ number: 78 })
+    expect(props["Mutability"]).toEqual({ select: { name: "read-only" } })
+  })
+
+  it("rejects create-time pinned rows at the hard cap before writing", async () => {
+    const pinnedPages = Array.from({ length: PINNED_BLOCKS_HARD_CAP }, (_, i) =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: `pin-${i}` }] },
+          Pinned: { type: "checkbox", checkbox: true },
+        },
+        {
+          id: `pin-${i}`,
+          parent: { type: "database_id", database_id: db.databaseId },
+        }
+      )
+    )
+    const createSpy = vi.fn(async () => ({}))
+    const querySpy = vi.fn(async () => ({
+      results: pinnedPages,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      pages: { create: createSpy, updateMarkdown: vi.fn() },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.create({ title: "Pinned", content: "", pinned: { pinned: true } })
+    ).rejects.toBeInstanceOf(MemoryPinCapExceededError)
+    expect(createSpy).not.toHaveBeenCalled()
+  })
+
+  it("invalidates the pinned-count cache after a pinned create", async () => {
+    function pinnedPages(count: number) {
+      return Array.from({ length: count }, (_, i) =>
+        buildPage(
+          {
+            Title: { type: "title", title: [{ plain_text: `pin-${i}` }] },
+            Pinned: { type: "checkbox", checkbox: true },
+          },
+          {
+            id: `pin-${i}`,
+            parent: { type: "database_id", database_id: db.databaseId },
+          }
+        )
+      )
+    }
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: `created-${createSpy.mock.calls.length}`,
+        created_time: "2026-04-20T00:00:00.000Z",
+        last_edited_time: "2026-04-20T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "Pinned" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      })
+    )
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: pinnedPages(PINNED_BLOCKS_HARD_CAP - 1),
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: pinnedPages(PINNED_BLOCKS_HARD_CAP),
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = {
+      pages: { create: createSpy, updateMarkdown: vi.fn() },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.create({ title: "Pinned one", content: "", pinned: { pinned: true } })
+    await expect(
+      service.create({ title: "Pinned two", content: "", pinned: { pinned: true } })
+    ).rejects.toBeInstanceOf(MemoryPinCapExceededError)
+
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(createSpy).toHaveBeenCalledTimes(1)
   })
 })
 

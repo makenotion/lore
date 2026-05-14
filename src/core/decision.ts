@@ -29,7 +29,7 @@ import type {
 import type { MemoryScopeContext } from "../types.js"
 import { buildMemoryProps, MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
-import { matchesDefaultScope } from "./memory.js"
+import { matchesDefaultScope } from "./memory-scope.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   collectLivePages,
