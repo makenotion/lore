@@ -139,7 +139,10 @@ export class VaultManager {
 
     const missingProps = diffs.reduce((n, d) => n + d.missing.length, 0)
     const missingOptions = diffs.reduce(
-      (n, d) => n + d.addedOptions.reduce((m, a) => m + a.options.length, 0),
+      (n, d) =>
+        n +
+        d.addedOptions.reduce((m, a) => m + a.options.length, 0) +
+        d.blockedOptions.reduce((m, a) => m + a.options.length, 0),
       0
     )
     const relationUpgrades = diffs.reduce((n, d) => n + d.addedRelationConfig.length, 0)

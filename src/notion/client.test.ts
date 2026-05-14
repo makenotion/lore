@@ -751,7 +751,7 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     })
   })
 
-  it("preserves non-`request` methods unchanged so namespace methods like `pages.create` still work", async () => {
+  it("preserves successful namespace method responses", async () => {
     const create = vi.fn(async () => ({ id: "page-x" }))
     const client = {
       pages: { create },
@@ -760,6 +760,33 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
     await expect(wrapped.pages.create({} as never)).resolves.toEqual({ id: "page-x" })
     expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it("throws APIResponseError on a namespace method error envelope", async () => {
+    const update = vi.fn(async () => ({
+      object: "error",
+      status: 400,
+      code: "validation_error",
+      message: "body.properties.Tags.multi_select.options.length should be <= 100",
+      request_id: "req-ds-update",
+    }))
+    const client = {
+      dataSources: { update },
+      request: vi.fn(),
+    } as unknown as Client
+    const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
+
+    await expect(
+      wrapped.dataSources.update({
+        data_source_id: "ds-1",
+        properties: {},
+      })
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "validation_error",
+      request_id: "req-ds-update",
+    })
+    expect(update).toHaveBeenCalledTimes(1)
   })
 
   it("composes with createLimitedClient: a 200-wrapped 429 envelope pauses the shared bucket", async () => {

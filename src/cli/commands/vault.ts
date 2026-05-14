@@ -20,6 +20,14 @@ export const ensureEntitiesCommand = new Command("ensure-entities")
       })) {
         console.log(line)
       }
+      const summary = summarizeMigrationDiffs(result.diffs)
+      if (!opts.dryRun && summary.blockedOptions > 0) {
+        console.error(
+          "Vault ensure-entities failed: schema migration is incomplete because one or more select option updates exceed Notion's option limit."
+        )
+        process.exit(1)
+        return
+      }
     } catch (err) {
       console.error(
         "Vault ensure-entities failed:",
@@ -77,6 +85,22 @@ export function formatEnsureEntitiesResult(
     }
   }
 
+  if (summary.blockedOptions > 0) {
+    lines.push(
+      `Cannot add ${summary.blockedOptions} select option${summary.blockedOptions === 1 ? "" : "s"} because Notion caps property options at 100:`
+    )
+    for (const diff of result.diffs) {
+      for (const blocked of diff.blockedOptions) {
+        lines.push(
+          `  ${diff.database}.${blocked.property}: live=${blocked.liveCount}, attempted=${blocked.attemptedCount}, limit=${blocked.limit}; ${blocked.options.join(", ")}`
+        )
+      }
+    }
+    lines.push(
+      "Prune options from the listed properties or reduce the active profile vocabulary, then rerun the command."
+    )
+  }
+
   if (summary.relationConfigs > 0) {
     lines.push(
       `${upgradeVerb} ${summary.relationConfigs} relation config${summary.relationConfigs === 1 ? "" : "s"}:`
@@ -93,6 +117,7 @@ export function formatEnsureEntitiesResult(
   if (
     summary.missingProperties === 0 &&
     summary.addedOptions === 0 &&
+    summary.blockedOptions === 0 &&
     summary.relationConfigs === 0
   ) {
     lines.push("Vault schema is up to date.")

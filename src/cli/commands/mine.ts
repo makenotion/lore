@@ -1198,9 +1198,7 @@ async function filterMineCandidates(
   const root = resolve(dir)
   const results: string[] = []
   for (const file of files) {
-    const repoRelativePath = repoRelativePrefix
-      ? join(repoRelativePrefix, file)
-      : file
+    const repoRelativePath = repoRelativePrefix ? join(repoRelativePrefix, file) : file
     if (isDefaultMineIgnoredPath(repoRelativePath)) continue
     const fullPath = resolve(root, file)
     if (!isPathInsideRoot(root, fullPath)) continue

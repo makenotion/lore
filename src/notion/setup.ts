@@ -32,6 +32,7 @@ import {
   FACTS_DB_ICON,
   factsProperties,
 } from "./schema.js"
+import { throwIfNotionErrorEnvelope } from "./client.js"
 
 // The SDK expects InitialDataSourceRequest.properties typed as
 // Record<string, PropertyConfigurationRequest>. Our schema definitions
@@ -48,6 +49,7 @@ export interface VaultWithOptionalEntities {
 }
 
 const MAX_VAULT_CHILD_BLOCK_PAGES = 100
+const SELECT_OPTIONS_MAX = 100
 
 const EXPECTED_VAULT_TITLES: VaultDatabaseTitles = {
   projects: PROJECTS_DB_TITLE,
@@ -389,8 +391,17 @@ export interface MigrationDiff {
   database: keyof VaultDatabases
   /** Property names present in the expected schema but absent from the live DB. */
   missing: string[]
-  /** Per-property new select option names that need to be appended. */
+  /** Per-property select option names that can be appended safely. */
   addedOptions: Array<{ property: string; options: string[] }>
+  /** Per-property option additions blocked by Notion's option-count limit. */
+  blockedOptions: Array<{
+    property: string
+    type: "select" | "multi_select"
+    options: string[]
+    liveCount: number
+    attemptedCount: number
+    limit: number
+  }>
   /**
    * Per-property relation config upgrades (e.g. single_property →
    * dual_property). Existing relation values are preserved by Notion across
@@ -429,7 +440,10 @@ export function computeSelectOptionDiff(
   expectedProperty: unknown
 ): {
   property: string
+  type: "select" | "multi_select"
   newOptions: string[]
+  liveOptionCount: number
+  mergedOptionCount: number
   mergedProperty: Record<string, unknown>
 } | null {
   const selectType = detectSelectType(liveProperty)
@@ -461,7 +475,10 @@ export function computeSelectOptionDiff(
 
   return {
     property: propertyName,
+    type: selectType,
     newOptions: newOptions.map((o) => o.name),
+    liveOptionCount: liveOptions.length,
+    mergedOptionCount: merged.length,
     mergedProperty: { [selectType]: { options: merged } },
   }
 }
@@ -554,6 +571,90 @@ export function computeRelationConfigDiff(
   }
 }
 
+type SchemaWriteKind = "missing property" | "select options" | "relation config"
+
+interface SchemaPropertyWrite {
+  property: string
+  kind: SchemaWriteKind
+  payload: Record<string, unknown>
+}
+
+async function retrieveDataSourceProperties(
+  client: Client,
+  dataSourceId: string
+): Promise<Record<string, unknown>> {
+  const live = await client.dataSources.retrieve({ data_source_id: dataSourceId })
+  throwIfNotionErrorEnvelope(live)
+  return (live as { properties: Record<string, unknown> }).properties
+}
+
+async function updateDataSourceProperty(
+  client: Client,
+  database: keyof VaultDatabases,
+  dataSourceId: string,
+  write: SchemaPropertyWrite
+): Promise<void> {
+  try {
+    const result = await client.dataSources.update({
+      data_source_id: dataSourceId,
+      properties: {
+        [write.property]: write.payload,
+      } as Parameters<Client["dataSources"]["update"]>[0]["properties"],
+    })
+    throwIfNotionErrorEnvelope(result)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Schema migration failed on ${database} DB while updating ${write.kind} ` +
+        `${write.property}: ${msg}`,
+      { cause: err }
+    )
+  }
+}
+
+function verifyAppliedSchemaWrites(
+  expected: AnyProperties,
+  liveProps: Record<string, unknown>,
+  writes: SchemaPropertyWrite[]
+): string[] {
+  const failures: string[] = []
+  for (const write of writes) {
+    if (!(write.property in liveProps)) {
+      failures.push(`${write.property} is still missing`)
+      continue
+    }
+
+    if (write.kind === "select options") {
+      const diff = computeSelectOptionDiff(
+        write.property,
+        liveProps[write.property],
+        expected[write.property]
+      )
+      if (diff) {
+        failures.push(
+          `${write.property} is still missing option${diff.newOptions.length === 1 ? "" : "s"} ` +
+            diff.newOptions.join(", ")
+        )
+      }
+      continue
+    }
+
+    if (write.kind === "relation config") {
+      const diff = computeRelationConfigDiff(
+        write.property,
+        liveProps[write.property],
+        expected[write.property]
+      )
+      if (diff) {
+        failures.push(
+          `${write.property} relation config is still ${diff.liveType}; expected ${diff.expectedType}`
+        )
+      }
+    }
+  }
+  return failures
+}
+
 /**
  * Compare the expected property schema against each live data source and
  * add any properties or select options that are missing. Never renames or
@@ -621,8 +722,7 @@ export async function migrateVaultSchema(
   // ever filters between A and B).
   const resolved = await Promise.all(
     targets.map(async (t) => {
-      const live = await client.dataSources.retrieve({ data_source_id: t.dsId })
-      const liveProps = (live as { properties: Record<string, unknown> }).properties
+      const liveProps = await retrieveDataSourceProperties(client, t.dsId)
       return { ...t, liveProps }
     })
   )
@@ -637,11 +737,23 @@ export async function migrateVaultSchema(
 
     // Step 2: detect missing select options on properties that exist in both.
     const addedOptions: Array<{ property: string; options: string[] }> = []
+    const blockedOptions: MigrationDiff["blockedOptions"] = []
     const optionUpdates: AnyProperties = {}
     for (const name of Object.keys(expected)) {
       if (!(name in liveProps)) continue
       const diff = computeSelectOptionDiff(name, liveProps[name], expected[name])
       if (!diff) continue
+      if (diff.mergedOptionCount > SELECT_OPTIONS_MAX) {
+        blockedOptions.push({
+          property: diff.property,
+          type: diff.type,
+          options: diff.newOptions,
+          liveCount: diff.liveOptionCount,
+          attemptedCount: diff.mergedOptionCount,
+          limit: SELECT_OPTIONS_MAX,
+        })
+        continue
+      }
       addedOptions.push({ property: diff.property, options: diff.newOptions })
       optionUpdates[name] = diff.mergedProperty
     }
@@ -661,36 +773,59 @@ export async function migrateVaultSchema(
       relationUpdates[name] = diff.updatePayload
     }
 
-    diffs.push({ database: key, missing, addedOptions, addedRelationConfig })
+    diffs.push({
+      database: key,
+      missing,
+      addedOptions,
+      blockedOptions,
+      addedRelationConfig,
+    })
 
     if (
       missing.length === 0 &&
       addedOptions.length === 0 &&
+      blockedOptions.length === 0 &&
       addedRelationConfig.length === 0
     )
       continue
     if (options.dryRun) continue
 
-    const updateProps: AnyProperties = { ...optionUpdates, ...relationUpdates }
-    for (const name of missing) updateProps[name] = expected[name]
+    const writes: SchemaPropertyWrite[] = [
+      ...missing.map((name) => ({
+        property: name,
+        kind: "missing property" as const,
+        payload: expected[name],
+      })),
+      ...Object.entries(relationUpdates).map(([name, payload]) => ({
+        property: name,
+        kind: "relation config" as const,
+        payload,
+      })),
+      ...Object.entries(optionUpdates).map(([name, payload]) => ({
+        property: name,
+        kind: "select options" as const,
+        payload,
+      })),
+    ]
 
-    try {
-      await client.dataSources.update({
-        data_source_id: dsId,
-        properties: updateProps as Parameters<
-          Client["dataSources"]["update"]
-        >[0]["properties"],
-      })
-    } catch (err) {
-      // Re-throw with phase attribution so a Notion "validation_error" on
-      // the merged update payload is diagnosable: the user learns which DB
-      // and which phase's contribution most likely caused the failure.
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new Error(
-        `Schema migration failed on ${key} DB ` +
-          `(missing=${missing.length}, options=${addedOptions.length}, relation=${addedRelationConfig.length}): ${msg}`,
-        { cause: err }
+    for (const write of writes) {
+      await updateDataSourceProperty(client, key, dsId, write)
+    }
+
+    if (writes.length > 0) {
+      const refreshedProps = await retrieveDataSourceProperties(client, dsId)
+      const verificationFailures = verifyAppliedSchemaWrites(
+        expected,
+        refreshedProps,
+        writes
       )
+      if (verificationFailures.length > 0) {
+        throw new Error(
+          `Schema migration verification failed on ${key} DB after ` +
+            `${writes.length} update${writes.length === 1 ? "" : "s"}: ` +
+            verificationFailures.join("; ")
+        )
+      }
     }
   }
 

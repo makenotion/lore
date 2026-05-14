@@ -13,10 +13,17 @@ import {
 import {
   ENTITIES_DB_TITLE,
   FACTS_DB_TITLE,
+  MEMORY_PROPS,
   MEMORIES_DB_TITLE,
   PROJECTS_DB_TITLE,
   TOPICS_DB_TITLE,
+  entitiesProperties,
+  factsProperties,
+  memoriesProperties,
+  projectsProperties,
+  topicsProperties,
 } from "./schema.js"
+import { resolveProfileFromConfig } from "../profile/index.js"
 
 describe("computeSelectOptionDiff", () => {
   it("returns null for non-select property types", () => {
@@ -457,6 +464,19 @@ function makeStartupStub({
   const databasesRetrieveCalls: string[] = []
   const dataSourcesRetrieveCalls: string[] = []
   const databaseCreateCalls: unknown[] = []
+  const livePropertiesByDataSource = new Map<
+    string,
+    Record<string, Record<string, unknown>>
+  >()
+
+  const getLiveProperties = (dataSourceId: string) => {
+    let props = livePropertiesByDataSource.get(dataSourceId)
+    if (!props) {
+      props = { ...liveProperties }
+      livePropertiesByDataSource.set(dataSourceId, props)
+    }
+    return props
+  }
 
   const track = async <T>(value: T): Promise<T> => {
     inFlight++
@@ -517,9 +537,15 @@ function makeStartupStub({
     dataSources: {
       retrieve: async (args: { data_source_id: string }) => {
         dataSourcesRetrieveCalls.push(args.data_source_id)
-        return track({ properties: liveProperties })
+        return track({ properties: { ...getLiveProperties(args.data_source_id) } })
       },
-      update: async () => ({}),
+      update: async (args: {
+        data_source_id: string
+        properties: Record<string, Record<string, unknown>>
+      }) => {
+        Object.assign(getLiveProperties(args.data_source_id), args.properties)
+        return {}
+      },
     },
   } as unknown as Client
 
@@ -974,9 +1000,56 @@ describe("migrateVaultSchema parallel retrieves", () => {
     }
   }
 
+  function expectedPropertiesByDataSource(): Record<
+    string,
+    Record<string, Record<string, unknown>>
+  > {
+    const profile = resolveProfileFromConfig({})
+    return {
+      "p-ds": projectsProperties(profile) as Record<string, Record<string, unknown>>,
+      "t-ds": topicsProperties("p-ds", profile) as Record<
+        string,
+        Record<string, unknown>
+      >,
+      "m-ds": memoriesProperties("p-ds", "t-ds", "m-ds", profile) as Record<
+        string,
+        Record<string, unknown>
+      >,
+      "e-ds": entitiesProperties("p-ds", "m-ds", profile) as Record<
+        string,
+        Record<string, unknown>
+      >,
+      "f-ds": factsProperties("p-ds", "m-ds", "e-ds", profile) as Record<
+        string,
+        Record<string, unknown>
+      >,
+    }
+  }
+
+  function cloneProperties(
+    props: Record<string, Record<string, unknown>>
+  ): Record<string, Record<string, unknown>> {
+    return Object.fromEntries(
+      Object.entries(props).map(([name, prop]) => [name, { ...prop }])
+    )
+  }
+
+  function overLimitTagProperty(count: number): Record<string, unknown> {
+    return {
+      type: "multi_select",
+      multi_select: {
+        options: Array.from({ length: count }, (_, i) => ({
+          id: `tag-${i}`,
+          name: `legacy-tag-${i}`,
+          color: "default",
+        })),
+      },
+    }
+  }
+
   it("issues dataSources.retrieve concurrently across every target DB", async () => {
-    // No-drift fixture: live properties are a superset, so Phase B emits no
-    // updates. We only care about Phase A's fan-out shape here.
+    // We only care about Phase A's fan-out shape here. Later verification
+    // reads are allowed; they happen after the initial concurrent scan.
     const liveProperties: Record<string, Record<string, unknown>> = {}
     const { client, maxInFlight, dataSourcesRetrieveCalls } = makeStartupStub({
       childDatabases: [],
@@ -985,8 +1058,15 @@ describe("migrateVaultSchema parallel retrieves", () => {
 
     const diffs = await migrateVaultSchema(client, vaultFixture())
 
-    // 5 expected DBs (projects, topics, memories, entities, facts).
-    expect(dataSourcesRetrieveCalls()).toHaveLength(5)
+    // The first 5 retrieves are the concurrent drift-scan fan-out. Later
+    // retrieves verify writes that landed during the migration.
+    expect(dataSourcesRetrieveCalls().slice(0, 5)).toEqual([
+      "p-ds",
+      "t-ds",
+      "m-ds",
+      "e-ds",
+      "f-ds",
+    ])
     expect(maxInFlight()).toBeGreaterThan(1)
     // Diff order must match Object.keys(expectedByDb) enumeration order.
     // The production code follows the vault dependency order, with Facts
@@ -1041,7 +1121,13 @@ describe("migrateVaultSchema parallel retrieves", () => {
 
     const diffs = await migrateVaultSchema(client, vaultFixture())
 
-    expect(dataSourcesRetrieveCalls()).toHaveLength(5)
+    expect(dataSourcesRetrieveCalls().slice(0, 5)).toEqual([
+      "p-ds",
+      "t-ds",
+      "m-ds",
+      "e-ds",
+      "f-ds",
+    ])
     expect(maxInFlight()).toBeGreaterThan(1)
     const factsDiff = diffs.find((d) => d.database === "facts")
     expect(factsDiff?.missing).toEqual(
@@ -1295,27 +1381,149 @@ describe("migrateVaultSchema parallel retrieves", () => {
     expect(memoriesDiff!.missing).not.toContain("Affects")
   })
 
+  it("skips over-limit option updates while applying safe property additions", async () => {
+    const liveByDataSource = expectedPropertiesByDataSource()
+    liveByDataSource["m-ds"] = cloneProperties(liveByDataSource["m-ds"]!)
+    delete liveByDataSource["m-ds"]![MEMORY_PROPS.PINNED]
+    delete liveByDataSource["m-ds"]![MEMORY_PROPS.PINNED_PRIORITY]
+    delete liveByDataSource["m-ds"]![MEMORY_PROPS.MUTABILITY]
+    liveByDataSource["m-ds"]![MEMORY_PROPS.TAGS] = overLimitTagProperty(100)
+
+    const updateCalls: Array<{ dataSourceId: string; properties: string[] }> = []
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async (args: { data_source_id: string }) => ({
+          properties: cloneProperties(liveByDataSource[args.data_source_id] ?? {}),
+        }),
+        update: async (args: {
+          data_source_id: string
+          properties: Record<string, Record<string, unknown>>
+        }) => {
+          const properties = Object.keys(args.properties)
+          updateCalls.push({ dataSourceId: args.data_source_id, properties })
+          if (properties.includes(MEMORY_PROPS.TAGS)) {
+            throw new Error("Tags update should have been skipped")
+          }
+          Object.assign(liveByDataSource[args.data_source_id]!, args.properties)
+          return {}
+        },
+      },
+    } as unknown as Client
+
+    const diffs = await migrateVaultSchema(stub, vaultFixture())
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+
+    expect(memoriesDiff?.missing).toEqual([
+      MEMORY_PROPS.PINNED,
+      MEMORY_PROPS.PINNED_PRIORITY,
+      MEMORY_PROPS.MUTABILITY,
+    ])
+    expect(memoriesDiff?.addedOptions).toEqual([])
+    expect(memoriesDiff?.blockedOptions).toHaveLength(1)
+    expect(memoriesDiff?.blockedOptions[0]).toMatchObject({
+      property: MEMORY_PROPS.TAGS,
+      type: "multi_select",
+      liveCount: 100,
+      attemptedCount: 140,
+      limit: 100,
+    })
+    expect(memoriesDiff?.blockedOptions[0]?.options).toContain("android")
+    expect(updateCalls).toEqual([
+      { dataSourceId: "m-ds", properties: [MEMORY_PROPS.PINNED] },
+      { dataSourceId: "m-ds", properties: [MEMORY_PROPS.PINNED_PRIORITY] },
+      { dataSourceId: "m-ds", properties: [MEMORY_PROPS.MUTABILITY] },
+    ])
+    expect(liveByDataSource["m-ds"]![MEMORY_PROPS.PINNED]).toBeDefined()
+    expect(liveByDataSource["m-ds"]![MEMORY_PROPS.PINNED_PRIORITY]).toBeDefined()
+    expect(liveByDataSource["m-ds"]![MEMORY_PROPS.MUTABILITY]).toBeDefined()
+  })
+
+  it("throws when dataSources.update returns an error envelope", async () => {
+    const liveByDataSource = expectedPropertiesByDataSource()
+    liveByDataSource["m-ds"] = cloneProperties(liveByDataSource["m-ds"]!)
+    delete liveByDataSource["m-ds"]![MEMORY_PROPS.PINNED]
+
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async (args: { data_source_id: string }) => ({
+          properties: cloneProperties(liveByDataSource[args.data_source_id] ?? {}),
+        }),
+        update: async () => ({
+          object: "error",
+          status: 400,
+          code: "validation_error",
+          message: "body.properties.Tags.multi_select.options.length should be <= 100",
+        }),
+      },
+    } as unknown as Client
+
+    await expect(migrateVaultSchema(stub, vaultFixture())).rejects.toThrow(
+      /Schema migration failed on memories DB while updating missing property Pinned: body\.properties\.Tags\.multi_select\.options\.length/
+    )
+  })
+
+  it("throws when a successful update is not visible on reread", async () => {
+    const liveByDataSource = expectedPropertiesByDataSource()
+    liveByDataSource["m-ds"] = cloneProperties(liveByDataSource["m-ds"]!)
+    delete liveByDataSource["m-ds"]![MEMORY_PROPS.PINNED]
+
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async (args: { data_source_id: string }) => ({
+          properties: cloneProperties(liveByDataSource[args.data_source_id] ?? {}),
+        }),
+        update: async () => ({}),
+      },
+    } as unknown as Client
+
+    await expect(migrateVaultSchema(stub, vaultFixture())).rejects.toThrow(
+      /Schema migration verification failed on memories DB after 1 update: Pinned is still missing/
+    )
+  })
+
   it("preserves per-database error attribution on update failure", async () => {
     // Force every DB to surface a missing-property diff so Phase B issues an
     // update for each one. The `memories` update rejects — the thrown error
     // must name `memories`, not `projects` or the batch.
     const liveProperties: Record<string, Record<string, unknown>> = {}
+    const livePropertiesByDataSource = new Map<
+      string,
+      Record<string, Record<string, unknown>>
+    >()
+    const getLiveProperties = (dataSourceId: string) => {
+      let props = livePropertiesByDataSource.get(dataSourceId)
+      if (!props) {
+        props = { ...liveProperties }
+        livePropertiesByDataSource.set(dataSourceId, props)
+      }
+      return props
+    }
 
-    let dataSourcesRetrieveCount = 0
+    const dataSourcesRetrieveCalls: string[] = []
     const updateCalls: string[] = []
     const stub = {
       blocks: { children: { list: async () => ({ results: [] }) } },
       databases: { retrieve: async () => ({}) },
       dataSources: {
-        retrieve: async () => {
-          dataSourcesRetrieveCount++
-          return { properties: liveProperties }
+        retrieve: async (args: { data_source_id: string }) => {
+          dataSourcesRetrieveCalls.push(args.data_source_id)
+          return { properties: { ...getLiveProperties(args.data_source_id) } }
         },
-        update: async (args: { data_source_id: string }) => {
+        update: async (args: {
+          data_source_id: string
+          properties: Record<string, Record<string, unknown>>
+        }) => {
           updateCalls.push(args.data_source_id)
           if (args.data_source_id === "m-ds") {
             throw new Error("validation_error: bad payload")
           }
+          Object.assign(getLiveProperties(args.data_source_id), args.properties)
           return {}
         },
       },
@@ -1325,10 +1533,17 @@ describe("migrateVaultSchema parallel retrieves", () => {
       /Schema migration failed on memories DB/
     )
     // We still hit retrieve on every DB before the update phase failed.
-    expect(dataSourcesRetrieveCount).toBe(5)
+    expect(dataSourcesRetrieveCalls.slice(0, 5)).toEqual([
+      "p-ds",
+      "t-ds",
+      "m-ds",
+      "e-ds",
+      "f-ds",
+    ])
     // Phase B must remain sequential and short-circuit on the first
-    // failure. If updates ran in parallel, all five would be observed; if
-    // a batched try/catch wrapped them, attribution would collapse.
-    expect(updateCalls).toEqual(["p-ds", "t-ds", "m-ds"])
+    // failure. If updates ran in parallel, facts/entities writes would be
+    // observed; if a batched try/catch wrapped them, attribution would collapse.
+    expect(Array.from(new Set(updateCalls))).toEqual(["p-ds", "t-ds", "m-ds"])
+    expect(updateCalls.at(-1)).toBe("m-ds")
   })
 })

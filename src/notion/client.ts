@@ -143,11 +143,10 @@ export function createClient(token: string, baseUrl?: string): Client {
 }
 
 /**
- * Notion's `tools/run` gateway can resolve with a `200 OK` body shaped
- * like `{ object: "error", status, code, message, request_id }` instead
- * of throwing through the SDK's normal non-2xx path. Without
- * normalization, downstream proxies see a successful resolution and
- * never engage:
+ * Some Notion SDK paths can resolve with a body shaped like
+ * `{ object: "error", status, code, message, request_id }` instead of
+ * throwing through the SDK's normal non-2xx path. Without normalization,
+ * downstream proxies see a successful resolution and never engage:
  *
  * - `createLimitedClient`'s 429 backoff fires only inside its `catch`
  *   around the underlying SDK method.
@@ -158,49 +157,76 @@ export function createClient(token: string, baseUrl?: string): Client {
  *   `catch` around the underlying SDK method. A 200-wrapped
  *   `{ status: 401 }` envelope skips the one-shot ntn refresh.
  *
- * The fix is to throw at the innermost `client.request` layer — same
- * place a non-2xx HTTP response would surface — so the rate-limit and
+ * The fix is to throw from the wrapped SDK method — same observable
+ * behavior as a non-2xx HTTP response — so the rate-limit and
  * auth-refresh proxies catch the throw exactly as they would a native
- * SDK error. We re-shape the envelope as an `APIResponseError` so
+ * SDK error. The envelope is re-shaped as an `APIResponseError` so
  * `isNotionClientError(err)` (the auth-refresh wrapper's predicate)
  * returns true, and so `isRateLimitError(err)` (the rate-limit
  * wrapper's predicate, which checks `status === 429 || code ===
  * "rate_limited"`) catches the 429 case.
  *
  * Wrapping happens at `createClient` so every consumer (the
- * authoritative one being the auth-refreshing + rate-limited stack
- * built) inherits the protection without
- * call-site work. Surfaced by the SQL-filter vault-validation harness.
+ * authoritative one being the auth-refreshing + rate-limited stack)
+ * inherits the protection without call-site work.
  */
 export function wrapWithRunToolEnvelopeNormalizer(client: Client): Client {
-  return new Proxy(client, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver)
-      if (prop !== "request" || typeof value !== "function") {
-        return value
-      }
-      const originalRequest = value as (this: Client, args: unknown) => Promise<unknown>
-      return async function (this: unknown, args: unknown): Promise<unknown> {
-        const result = await originalRequest.call(target, args)
-        if (
-          result &&
-          typeof result === "object" &&
-          (result as Record<string, unknown>)["object"] === "error"
-        ) {
-          throw runToolEnvelopeToError(result as RunToolErrorEnvelope)
+  const seen = new WeakMap<object, object>()
+
+  const wrapLevel = <T extends object>(obj: T): T => {
+    const cached = seen.get(obj)
+    if (cached) return cached as T
+
+    const wrapped = new Proxy(obj, {
+      get(target, prop, receiver) {
+        if (typeof prop === "symbol") {
+          return Reflect.get(target, prop, receiver)
         }
-        return result
-      }
-    },
-  })
+        const value = Reflect.get(target, prop, receiver)
+        if (typeof value === "function") {
+          return async (...args: unknown[]): Promise<unknown> => {
+            const result = await (value as (...inner: unknown[]) => unknown).apply(
+              target,
+              args
+            )
+            throwIfNotionErrorEnvelope(result)
+            return result
+          }
+        }
+        if (typeof value === "object" && value !== null) {
+          return wrapLevel(value as object)
+        }
+        return value
+      },
+    })
+
+    seen.set(obj, wrapped)
+    return wrapped
+  }
+
+  return wrapLevel(client)
 }
 
-interface RunToolErrorEnvelope {
+export interface NotionErrorEnvelope {
   object: "error"
   status?: number
   code?: string
   message?: string
   request_id?: string
+}
+
+export function isNotionErrorEnvelope(value: unknown): value is NotionErrorEnvelope {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as Record<string, unknown>)["object"] === "error"
+  )
+}
+
+export function throwIfNotionErrorEnvelope(value: unknown): void {
+  if (isNotionErrorEnvelope(value)) {
+    throw notionErrorEnvelopeToError(value)
+  }
 }
 
 /**
@@ -218,12 +244,14 @@ interface RunToolErrorEnvelope {
  * downstream classifiers don't mis-route a missing-status envelope as
  * a 200.
  */
-function runToolEnvelopeToError(envelope: RunToolErrorEnvelope): APIResponseError {
+export function notionErrorEnvelopeToError(
+  envelope: NotionErrorEnvelope
+): APIResponseError {
   const status = envelope.status ?? 500
   const code = (envelope.code ?? "unknown") as APIErrorCode
   const message =
     envelope.message ??
-    `Notion tools/run returned error envelope (code=${envelope.code ?? "unknown"})`
+    `Notion returned error envelope (code=${envelope.code ?? "unknown"})`
   return new APIResponseError({
     code,
     status,

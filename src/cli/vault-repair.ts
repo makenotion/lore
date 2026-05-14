@@ -95,12 +95,17 @@ export async function ensureConfiguredEntitiesDatabase(
 export function summarizeMigrationDiffs(diffs: MigrationDiff[]): {
   missingProperties: number
   addedOptions: number
+  blockedOptions: number
   relationConfigs: number
 } {
   return {
     missingProperties: diffs.reduce((n, d) => n + d.missing.length, 0),
     addedOptions: diffs.reduce(
       (n, d) => n + d.addedOptions.reduce((m, a) => m + a.options.length, 0),
+      0
+    ),
+    blockedOptions: diffs.reduce(
+      (n, d) => n + d.blockedOptions.reduce((m, a) => m + a.options.length, 0),
       0
     ),
     relationConfigs: diffs.reduce((n, d) => n + d.addedRelationConfig.length, 0),

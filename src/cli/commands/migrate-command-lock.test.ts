@@ -100,4 +100,51 @@ describe("migrateCommand build-entities locking", () => {
     )
     expect(errorSpy.mock.calls.join("\n")).toContain(`rm ${lockPath}`)
   })
+
+  it("exits non-zero after reporting skipped over-limit option updates", async () => {
+    const services = makeServices()
+    services.vault.migrate.mockResolvedValue({
+      diffs: [
+        {
+          database: "memories",
+          missing: ["Pinned"],
+          addedOptions: [],
+          blockedOptions: [
+            {
+              property: "Tags",
+              type: "multi_select",
+              options: ["android"],
+              liveCount: 100,
+              attemptedCount: 101,
+              limit: 100,
+            },
+          ],
+          addedRelationConfig: [],
+        },
+      ],
+      duplicateTopics: [],
+      mergeResults: [],
+      encodedTopics: [],
+      encodingFixResults: [],
+    })
+    const logSpy = vi.fn()
+    vi.spyOn(console, "log").mockImplementation(logSpy)
+    vi.mocked(initServices).mockResolvedValue(services as never)
+
+    await expect(
+      migrateCommand.parseAsync([], {
+        from: "user",
+      })
+    ).rejects.toThrow("exit-called")
+
+    const output = logSpy.mock.calls.flat().join("\n")
+    expect(output).toContain("Added 1 missing property")
+    expect(output).toContain("Skipped 1 select option")
+    expect(output).toContain(
+      "memories.Tags (multi_select): live=100, attempted=101, limit=100; android"
+    )
+    expect(errorSpy.mock.calls.join("\n")).toContain(
+      "Migrate failed: one or more select option updates exceed Notion's option limit."
+    )
+  })
 })

@@ -316,12 +316,17 @@ export const migrateCommand = new Command("migrate")
           (n, d) => n + d.addedOptions.reduce((m, a) => m + a.options.length, 0),
           0
         )
+        const totalBlockedOptions = diffs.reduce(
+          (n, d) => n + d.blockedOptions.reduce((m, a) => m + a.options.length, 0),
+          0
+        )
         const totalRelationConfig = diffs.reduce(
           (n, d) => n + d.addedRelationConfig.length,
           0
         )
 
         const verb = opts.dryRun ? "Would add" : "Added"
+        const blockedVerb = opts.dryRun ? "Cannot add" : "Skipped"
         const upgradeVerb = opts.dryRun ? "Would upgrade" : "Upgraded"
         const mergeVerb = opts.dryRun ? "Would merge" : "Merged"
 
@@ -391,6 +396,25 @@ export const migrateCommand = new Command("migrate")
           }
         }
 
+        if (totalBlockedOptions > 0) {
+          console.log(
+            `${blockedVerb} ${totalBlockedOptions} select option${totalBlockedOptions === 1 ? "" : "s"} because Notion caps property options at 100:`
+          )
+          for (const diff of diffs) {
+            if (diff.blockedOptions.length === 0) continue
+            for (const blocked of diff.blockedOptions) {
+              console.log(
+                `  ${diff.database}.${blocked.property} (${blocked.type}): ` +
+                  `live=${blocked.liveCount}, attempted=${blocked.attemptedCount}, ` +
+                  `limit=${blocked.limit}; ${blocked.options.join(", ")}`
+              )
+            }
+          }
+          console.log(
+            "Prune options from the listed properties or reduce the active profile vocabulary, then rerun `lore migrate`."
+          )
+        }
+
         if (totalRelationConfig > 0) {
           console.log(
             `${upgradeVerb} ${totalRelationConfig} relation config${totalRelationConfig === 1 ? "" : "s"}:`
@@ -408,6 +432,7 @@ export const migrateCommand = new Command("migrate")
         if (
           totalMissing === 0 &&
           totalAddedOptions === 0 &&
+          totalBlockedOptions === 0 &&
           totalRelationConfig === 0 &&
           duplicateTopics.length === 0 &&
           encodedTopics.length === 0 &&
@@ -417,6 +442,14 @@ export const migrateCommand = new Command("migrate")
           !aliasMergePlans
         ) {
           console.log("Vault schema is up to date. Nothing to migrate.")
+        }
+
+        if (totalBlockedOptions > 0 && !opts.dryRun) {
+          console.error(
+            "Migrate failed: one or more select option updates exceed Notion's option limit."
+          )
+          process.exit(1)
+          return
         }
 
         if (opts.upgradeDecisionTags) {

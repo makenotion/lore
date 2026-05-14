@@ -449,19 +449,19 @@ describe("discoverMineFiles", () => {
       await writeFixtureFile(
         dir,
         ".claude/worktrees/private.ts",
-        "export const privateState = true\n",
+        "export const privateState = true\n"
       )
       await writeFixtureFile(dir, "coverage/report.ts", "export const covered = true\n")
       await writeFixtureFile(dir, "artifacts/output.md", "# artifact\n")
       await writeFixtureFile(
         dir,
         ".lore-wt-nested/private.ts",
-        "export const worktree = true\n",
+        "export const worktree = true\n"
       )
 
       const discovered = normalizeList(await discoverMineFiles(dir))
       const selected = normalizeList(
-        selectMineFiles(discovered, DEFAULT_MINE_PATTERN, 50),
+        selectMineFiles(discovered, DEFAULT_MINE_PATTERN, 50)
       )
 
       expect(selected).toEqual(["keep.ts"])
@@ -470,8 +470,8 @@ describe("discoverMineFiles", () => {
         selectMineFiles(
           await discoverMineFiles(join(dir, ".codex")),
           DEFAULT_MINE_PATTERN,
-          50,
-        ),
+          50
+        )
       )
       expect(codexSelected).toEqual([])
     })
@@ -1388,7 +1388,7 @@ describe("runMineUpsert (orchestration)", () => {
           ["linked.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
 
         expect(summary.skipped).toBe(1)
@@ -1417,7 +1417,7 @@ describe("runMineUpsert (orchestration)", () => {
           [".codex/config.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
 
         expect(summary.skipped).toBe(1)
@@ -1428,7 +1428,7 @@ describe("runMineUpsert (orchestration)", () => {
         })
         expect(create).not.toHaveBeenCalled()
         expect(update).not.toHaveBeenCalled()
-      },
+      }
     )
   })
 
@@ -1446,7 +1446,7 @@ describe("runMineUpsert (orchestration)", () => {
           [escapePath],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
 
         expect(summary.skipped).toBe(1)
