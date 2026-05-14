@@ -1,7 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { mkdtemp } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   assertSandboxProjectName,
   collectEvalThresholdFailures,
+  evalCommand,
   hasLongitudinalTaskGateFailures,
   parseEvalRunCliOptions,
   validateBaselineRunnerSupport,
@@ -273,6 +277,27 @@ describe("hasLongitudinalTaskGateFailures", () => {
         })
       )
     ).toBe(true)
+  })
+})
+
+describe("eval vaults command", () => {
+  const originalCwd = process.cwd()
+
+  afterEach(() => {
+    process.chdir(originalCwd)
+    vi.restoreAllMocks()
+  })
+
+  it("loads the committed registry from a non-root cwd", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lore-eval-vaults-cli-"))
+    process.chdir(dir)
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined)
+
+    await evalCommand.parseAsync(["vaults"], { from: "user" })
+
+    const output = logSpy.mock.calls.flat().join("\n")
+    expect(output).toContain("Eval vaults (evals/vaults.yaml):")
+    expect(output).toContain("lore-dev-sandbox")
   })
 })
 

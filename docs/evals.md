@@ -116,8 +116,52 @@ substrings rather than standalone markers. If your sandbox uses a
 camel-case convention, either add a separator (`Eval-Project`) or set the
 env var to opt in.
 
-Because the sandbox vault is not committed, runners against it are not
-deterministic the way fixture runs are; treat notion-mode CI as a coarser
+### Evaluation vault registry
+
+Shared live eval vault locators live in
+[`evals/vaults.yaml`](../evals/vaults.yaml). The registry may commit Notion
+workspace ids and vault page ids because they are access locators, not bearer
+credentials; operators still need matching Notion auth and page access. Never
+commit tokens or generated `.lore.yaml` files.
+
+List the registered vaults:
+
+```bash
+npm run build
+node dist/cli.js eval vaults
+```
+
+Materialize a local config root for the seeded dev sandbox:
+
+```bash
+mkdir -p /tmp/lore-eval-vaults/lore-dev-sandbox
+node dist/cli.js eval vaults show lore-dev-sandbox --config \
+  > /tmp/lore-eval-vaults/lore-dev-sandbox/.lore.yaml
+node dist/cli.js eval vaults show lore-dev-sandbox --env
+```
+
+Run the live longitudinal suite against that vault by pointing
+`LORE_EVAL_LONGITUDINAL_CONFIG_ROOT` at the generated config root, exporting
+the vault selector env, and opting into the live task runner:
+
+```bash
+NOTION_ENV=dev \
+NOTION_WORKSPACE_ID=415fc269-e68f-4da0-b3e3-b1273b741a7f \
+LORE_EVAL_LONGITUDINAL_CONFIG_ROOT=/tmp/lore-eval-vaults/lore-dev-sandbox \
+LORE_EVAL_TASK_REAL=1 \
+LORE_EVAL_LONGITUDINAL_REAL=1 \
+LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT="Eval Sandbox" \
+node dist/cli.js eval run --runner task evals/task-suites/longitudinal.yaml
+```
+
+The initial seeded-vault validation recorded in the registry is a smoke run,
+not a statistically powered benchmark: it ran all 4 scenarios in the committed
+longitudinal suite across both conditions (8 condition runs total). On
+2026-05-14, `no-memory` passed 3/4 scenarios, `lore-full-loop` passed 4/4
+scenarios, and the observed success-rate lift was +25 percentage points.
+
+Because the live sandbox vault state is not committed, runners against it are
+not deterministic the way fixture runs are; treat notion-mode CI as a coarser
 signal that catches retrieval-stack regressions across the rate limiter,
 search composition, and Notion-side ranking — not the per-row precision the
 fixture suite measures. Single-task pass/fail flips between adjacent runs
@@ -395,12 +439,12 @@ scenarios:
 ```
 
 The committed MVP suite lives at
-`evals/task-suites/longitudinal.yaml` and contains exactly the three
-Phase 1 scenarios from the benchmark-path decision:
+`evals/task-suites/longitudinal.yaml` and contains four smoke scenarios:
 
 - `decision-continuity-result-boundary`
 - `failed-attempt-avoidance-esm-imports`
 - `follow-up-task-json-output`
+- `convention-continuity-cache-prefix`
 
 Each scenario runs Phase A and Phase B in the same copied workspace, but each
 phase is a fresh agent process. Under `no-memory`, the runner does not write

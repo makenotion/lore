@@ -20,6 +20,14 @@ import {
 } from "../../eval/task-runner.js"
 import { resolveProjectByName } from "../../core/project-scope.js"
 import { EVAL_RUNNERS, peekSuiteRunner, type EvalRunner } from "../../eval/schema.js"
+import {
+  EVAL_VAULT_REGISTRY_PATH,
+  findEvalVault,
+  loadEvalVaultRegistry,
+  renderEvalVaultEnv,
+  renderEvalVaultLoreConfig,
+  type EvalVault,
+} from "../../eval/vaults.js"
 import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
 
 export interface EvalRunCliOptions {
@@ -843,6 +851,113 @@ evalCommand.addCommand(
       }
     )
 )
+
+const vaultsCommand = new Command("vaults").description(
+  "List committed evaluation vaults and render local run config"
+)
+
+vaultsCommand
+  .option("--json", "Print the registry as JSON")
+  .option("--registry <path>", "Override the eval vault registry YAML path")
+  .action(async (opts: { json?: boolean; registry?: string }) => {
+    try {
+      const registry = await loadEvalVaultRegistry(opts.registry)
+      if (opts.json) {
+        console.log(JSON.stringify(registry, null, 2))
+        return
+      }
+      console.log(`Eval vaults (${EVAL_VAULT_REGISTRY_PATH}):`)
+      for (const vault of registry.vaults) {
+        console.log(`  ${vault.id} - ${vault.label} [${vault.notionEnv}]`)
+        console.log(`    vault: ${vault.vaultPageId}`)
+        if (vault.defaultProjectName) {
+          console.log(`    default project: ${vault.defaultProjectName}`)
+        }
+      }
+    } catch (err) {
+      console.error(
+        "lore eval vaults failed:",
+        err instanceof Error ? err.message : err
+      )
+      process.exit(1)
+    }
+  })
+
+vaultsCommand.addCommand(
+  new Command("show")
+    .description("Show a committed evaluation vault by id")
+    .argument("<id>", "Eval vault id from evals/vaults.yaml")
+    .option("--json", "Print the vault entry as JSON")
+    .option("--config", "Print a local .lore.yaml snippet for this vault")
+    .option("--env", "Print shell exports for this vault")
+    .option("--registry <path>", "Override the eval vault registry YAML path")
+    .action(
+      async (
+        id: string,
+        opts: { json?: boolean; config?: boolean; env?: boolean; registry?: string }
+      ) => {
+        try {
+          const registry = await loadEvalVaultRegistry(opts.registry)
+          const vault = findEvalVault(registry, id)
+          if (!vault) {
+            console.error(`lore eval vaults show failed: unknown vault "${id}".`)
+            process.exit(1)
+            return
+          }
+          if (opts.json) {
+            console.log(JSON.stringify(vault, null, 2))
+            return
+          }
+          if (opts.config) {
+            process.stdout.write(renderEvalVaultLoreConfig(vault))
+          }
+          if (opts.env) {
+            process.stdout.write(renderEvalVaultEnv(vault))
+          }
+          if (!opts.config && !opts.env) {
+            printEvalVaultSummary(vault)
+          }
+        } catch (err) {
+          console.error(
+            "lore eval vaults show failed:",
+            err instanceof Error ? err.message : err
+          )
+          process.exit(1)
+        }
+      }
+    )
+)
+
+function printEvalVaultSummary(vault: EvalVault): void {
+  console.log(`${vault.id} - ${vault.label}`)
+  console.log(`  Notion env: ${vault.notionEnv}`)
+  console.log(`  Workspace: ${vault.notionWorkspaceId}`)
+  console.log(`  Vault page: ${vault.vaultPageId}`)
+  if (vault.defaultProjectName) {
+    console.log(`  Default project: ${vault.defaultProjectName}`)
+  }
+  if (vault.supportedRuns.length > 0) {
+    console.log("  Supported runs:")
+    for (const run of vault.supportedRuns) {
+      const project = run.sandboxProjectName
+        ? `, project="${run.sandboxProjectName}"`
+        : ""
+      console.log(`    - ${run.id}: runner=${run.runner}, suite=${run.suite}${project}`)
+    }
+  }
+  if (vault.lastValidation) {
+    const validation = vault.lastValidation
+    console.log(
+      `  Last validation: ${validation.date} ${validation.kind}, ` +
+        `${validation.scenarios} scenarios / ${validation.conditionRuns} condition runs, ` +
+        `no-memory ${validation.noMemory.passed}/${validation.noMemory.trials}, ` +
+        `lore-full-loop ${validation.loreFullLoop.passed}/${validation.loreFullLoop.trials}, ` +
+        `lift ${(validation.successRateDelta * 100).toFixed(1)} pp`
+    )
+  }
+}
+
+evalCommand.addCommand(vaultsCommand)
 
 // ---------------------------------------------------------------------------
 // `lore eval bench` — LongMemEval bench-runner CLI surface (issue #595).

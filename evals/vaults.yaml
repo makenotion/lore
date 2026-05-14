@@ -1,0 +1,37 @@
+version: 1
+vaults:
+  - id: lore-dev-sandbox
+    label: Lore dev sandbox
+    description: >-
+      Shared dev-environment sandbox vault seeded with operational Lore memories
+      for live longitudinal eval runs.
+    notionEnv: dev
+    notionWorkspaceId: 415fc269-e68f-4da0-b3e3-b1273b741a7f
+    vaultPageId: 360b35e6-e67f-8156-aa0e-f3763246719d
+    defaultProjectName: Eval Sandbox
+    supportedRuns:
+      - id: longitudinal-full-loop
+        runner: task
+        suite: evals/task-suites/longitudinal.yaml
+        sandboxProjectName: Eval Sandbox
+        requiredEnv:
+          LORE_EVAL_TASK_REAL: "1"
+          LORE_EVAL_LONGITUDINAL_REAL: "1"
+    lastValidation:
+      kind: smoke
+      date: "2026-05-14"
+      suite: evals/task-suites/longitudinal.yaml
+      scenarios: 4
+      conditionRuns: 8
+      noMemory:
+        passed: 3
+        trials: 4
+      loreFullLoop:
+        passed: 4
+        trials: 4
+      successRateDelta: 0.25
+      liftedScenarioIds:
+        - convention-continuity-cache-prefix
+    notes:
+      - Access is controlled by Notion; the committed page id is not a bearer secret.
+      - Operators still need dev Notion auth and explicit access to the vault.
