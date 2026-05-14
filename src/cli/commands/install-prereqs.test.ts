@@ -131,31 +131,6 @@ describe("ensurePrerequisites — happy path", () => {
     expect(out).toMatch(/Vault page:\s+✓ My Vault/)
   })
 
-  it("annotates legacy auth sources with the PAT-default-plus-ntn migration recommendation", async () => {
-    // Post-2026-05-13: the install-time legacy-source annotation
-    // must name BOTH migrate branches — PAT default
-    // (`lore auth --migrate`) and the `--ntn` opt-in
-    // (`lore auth --migrate --ntn`). The pre-announcement
-    // "switch to ntn via `NOTION_KEYRING=0 ntn login`" wording
-    // silently routed legacy operators to the wrong contract;
-    // this test pins the post-announcement wording AND keeps the
-    // stale string from sneaking back.
-    vi.mocked(resolveAuth).mockResolvedValue({
-      token: "tok",
-      source: "env-lore-notion-token",
-    })
-    const result = await ensurePrerequisites(makeContext(), { yes: true })
-    expect(result.ready).toBe(true)
-    const out = captured(consoleLogSpy)
-    expect(out).toMatch(/Auth source:\s+✓ LORE_NOTION_TOKEN \(env, legacy\)/)
-    expect(out).toMatch(/soft-deprecated; migrate via `lore auth --migrate` \(PAT default\)/)
-    expect(out).toMatch(/`lore auth --migrate --ntn` for ntn-issued auth/)
-    // Regression guard for the stale ntn-only wording. A future
-    // refactor that reverts the install-time annotation to "switch
-    // to ntn via `NOTION_KEYRING=0 ntn login`" fails loudly.
-    expect(out).not.toMatch(/switch to ntn via/)
-    expect(out).not.toMatch(/NOTION_KEYRING=0 ntn login\)/)
-  })
 })
 
 describe("ensurePrerequisites — version warning", () => {
@@ -1222,11 +1197,30 @@ describe("ensurePrerequisites — PAT-source preflight-failure recovery", () => 
     expect(err).not.toMatch(/NOTION_KEYRING=0/)
   })
 
-  it("PAT-source `not-found` flags `secret_` token shape with the rate-limit-collapse warning", async () => {
-    // An integration token operator who hits `not-found` should hear
-    // "your token shape is wrong" as a third remediation, not just
-    // workspace/permissions. The shape mismatch is the load-bearing
-    // signal for the headline failure mode.
+  it("PAT-source `unauthorized` flags `secret_` token shape before PAT recovery", async () => {
+    process.env["NOTION_API_TOKEN"] = "secret_integration-bearer"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "secret_integration-bearer",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(verifyVaultAccess).mockResolvedValue({
+      kind: "unauthorized",
+      pageId: "page-123",
+      message: "Notion rejected the bearer token.",
+    })
+
+    const result = await ensurePrerequisites(makeContext(), { yes: true })
+
+    expect(result.ready).toBe(false)
+    const err = captured(consoleErrorSpy)
+    const secretIndex = err.indexOf("secret_…")
+    expect(secretIndex).toBeGreaterThanOrEqual(0)
+    expect(secretIndex).toBeLessThan(err.indexOf("Recovery:"))
+    expect(secretIndex).toBeLessThan(err.indexOf("Rotate the PAT"))
+    expect(err).toMatch(/notion\.so\/profile\/integrations/)
+  })
+
+  it("PAT-source `not-found` flags `secret_` token shape before PAT recovery", async () => {
     process.env["NOTION_API_TOKEN"] = "secret_integration-bearer"
     vi.mocked(resolveAuth).mockResolvedValue({
       token: "secret_integration-bearer",
@@ -1242,10 +1236,11 @@ describe("ensurePrerequisites — PAT-source preflight-failure recovery", () => 
 
     expect(result.ready).toBe(false)
     const err = captured(consoleErrorSpy)
-    // The integration-token clause spans two console.error lines —
-    // `integration token from` ends one line, `notion.so/profile/integrations`
-    // starts the next. Match across the wrap.
-    expect(err).toMatch(/integration token from[\s\S]*notion\.so\/profile\/integrations/)
+    const secretIndex = err.indexOf("secret_…")
+    expect(secretIndex).toBeGreaterThanOrEqual(0)
+    expect(secretIndex).toBeLessThan(err.indexOf("Most likely causes"))
+    expect(secretIndex).toBeLessThan(err.indexOf("The PAT was created"))
+    expect(err).toMatch(/notion\.so\/profile\/integrations/)
     expect(err).toMatch(/Rotate to a PAT/)
   })
 
@@ -1742,33 +1737,6 @@ describe("ensurePrerequisites — Notion environment display", () => {
     expect(out).toMatch(/Notion environment:\s+stg \(from shell NOTION_ENV=stg\)/)
   })
 
-  it("annotates (from .lore.yaml auth.baseUrl) for legacy auth source, with no mismatch warning", async () => {
-    // Legacy paths (`env-lore-notion-token` / `config-auth-token`)
-    // honor `auth.baseUrl` directly via `legacyBaseUrlOverride`, so
-    // the annotation names `.lore.yaml` as the runtime source and
-    // the mismatch warning is structurally impossible (resolved
-    // baseUrl == config baseUrl by construction).
-    vi.mocked(findConfigFile).mockResolvedValue({
-      path: "/tmp/legacy-project/.lore.yaml",
-      root: "/tmp/legacy-project",
-    })
-    vi.mocked(loadConfig).mockResolvedValue({
-      vault: { pageId: "legacy-page" },
-      auth: { baseUrl: "https://api-dev.notion.com" },
-    } as never)
-    vi.mocked(resolveAuth).mockResolvedValue({
-      token: "tok",
-      source: "env-lore-notion-token",
-      baseUrl: "https://api-dev.notion.com",
-    })
-
-    await ensurePrerequisites(makeContext(), { yes: true })
-
-    const out = captured(consoleLogSpy)
-    expect(out).toMatch(/Notion environment:\s+dev \(from \.lore\.yaml auth\.baseUrl\)/)
-    expect(out).not.toMatch(/declares auth\.baseUrl=/)
-  })
-
   it("displays a non-canonical resolved baseUrl with the URL itself rather than mapping it to an env", async () => {
     // Corporate-proxy / unknown deployment URLs that
     // `ntnEnvFromBaseUrl` can't recognize. Surface the URL itself
@@ -1784,7 +1752,7 @@ describe("ensurePrerequisites — Notion environment display", () => {
     } as never)
     vi.mocked(resolveAuth).mockResolvedValue({
       token: "tok",
-      source: "env-lore-notion-token",
+      source: "ntn-auth-json",
       baseUrl: "https://notion.corp.example.com",
     })
 
@@ -1792,7 +1760,7 @@ describe("ensurePrerequisites — Notion environment display", () => {
 
     const out = captured(consoleLogSpy)
     expect(out).toMatch(
-      /Notion environment:\s+https:\/\/notion\.corp\.example\.com \(from \.lore\.yaml auth\.baseUrl\), non-canonical/,
+      /Notion environment:\s+https:\/\/notion\.corp\.example\.com \(from ntn config\.json\), non-canonical/,
     )
   })
 

@@ -265,9 +265,9 @@ describe("redactDebugMessage (issue #488)", () => {
     expect(out).not.toContain("ntn_aaaaaaaaaaaaaaaaaaaaaaaa")
   })
 
-  it("redacts secret_-prefixed bearer tokens (legacy integration shape)", () => {
-    // Pre-0.10.0 LORE_NOTION_TOKEN integration secrets carry the
-    // `secret_` prefix. Both shapes redact to the same sentinel.
+  it("redacts secret_-prefixed bearer tokens (integration shape)", () => {
+    // Integration secrets carry the `secret_` prefix. Both shapes
+    // redact to the same sentinel.
     const out = redactDebugMessage(
       "leaked: secret_abcdefghijklmnopqrstuvwx in trace",
     )

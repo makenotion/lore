@@ -170,14 +170,6 @@ spawned MCP server reads `~/.config/notion/auth.json` directly, so the shared
 auth-token placeholders that produce `/doctor` warnings when an operator's
 shell does not define them.
 
-Legacy `LORE_NOTION_TOKEN` contributors can restore local token forwarding
-without committing the diff by running:
-
-```bash
-cd ~/.lore
-lore install --legacy-paths
-```
-
 Pass `--project <checkout>` from that clone when updating another local
 worktree. The same local reinstall path applies to contributors who depend on
 `NOTION_WORKSPACE_ID`, `NOTION_ENV`, `NOTION_BASE_URL`,

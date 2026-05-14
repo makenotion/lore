@@ -3,7 +3,7 @@
 Hook commands automate Lore integration with supported AI coding assistants.
 Default installs use bin dispatch (`lore hooks <event>`, or
 `yarn run -T lore hooks <event>` under Yarn PnP). The `hooks/*.sh` scripts are
-legacy compatibility entrypoints emitted only by `lore install --legacy-paths`.
+legacy compatibility entrypoints for older absolute-path installs.
 
 ## Auto-Save
 
@@ -99,9 +99,9 @@ by walking upward from the hook event's cwd. ntn-backed setups read
 `~/.config/notion/auth.json` from the operator's home directory.
 
 When the foreground resolved auth via `ntn-auth-json`, the bearer-token subset
-(`NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`) is dropped from the spawned child's
-env — the child re-reads `~/.config/notion/auth.json` directly and lands on
-the same token without it ever crossing the fork boundary. Workspace and
+(`NOTION_API_TOKEN`) is dropped from the spawned child's env — the child
+re-reads `~/.config/notion/auth.json` directly and lands on the same token
+without it ever crossing the fork boundary. Workspace and
 base-URL selectors still forward so multi-workspace ntn setups pick the same
 workspace as the foreground. This mirrors the install-path partition
 `buildMcpEnv` already applies for `.mcp.json` (issue #475). Other auth sources

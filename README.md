@@ -59,14 +59,20 @@ config across a repo.
 
 ### 2. Authenticate with Notion
 
-Lore needs a Notion bearer token. Two parallel options:
+Lore needs a Notion bearer token. Two supported sources:
 
-- **`NOTION_API_TOKEN`** — set this environment variable to any Notion
-  integration token your vault page is shared with. Lore uses it directly:
+- **`NOTION_API_TOKEN`** — external operators set this environment variable
+  to a Notion Personal Access Token (PAT) from
+  `notion.so/developers/tokens`. PATs inherit the operator's Notion
+  permissions and keep rate limits per operator:
 
   ```bash
-  export NOTION_API_TOKEN=<your-integration-token>
+  export NOTION_API_TOKEN=ntn_...
   ```
+
+  Do not use `secret_` integration tokens from
+  `notion.so/profile/integrations` for team rollout; they share one bucket
+  across every operator using the same integration.
 
 - **`ntn` CLI** — the [`ntn` tool](https://github.com/makenotion/skills)
   issues per-user Notion tokens that inherit your own Notion permissions.
@@ -74,9 +80,11 @@ Lore needs a Notion bearer token. Two parallel options:
   rate-limit bucket, no integration sharing is required, and access matches
   what each engineer can already see in Notion's UI.
 
-  The simplest setup is to let Lore drive the flow — `lore install`
-  (step 4) and `lore auth --login` both auto-install `ntn` if needed and
-  run `ntn login` for you, forcing the file-mode storage that Lore reads.
+  The simplest setup is to let Lore drive the internal flow — run
+  `lore install --ntn` when configuring assistants, or
+  `lore auth --login` for auth only. Both auto-install `ntn` if needed
+  and run `ntn login` for you, forcing the file-mode storage that Lore
+  reads.
 
   To run `ntn` yourself, set `NOTION_KEYRING=0` before logging in. `ntn`
   defaults to macOS Keychain storage, which Lore does not read; the env
@@ -90,9 +98,8 @@ Lore needs a Notion bearer token. Two parallel options:
   [`docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore`](docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore)
   for the persistent shell-rc setup if you use `ntn` for other tooling too.
 
-Token resolution order is `NOTION_API_TOKEN` → ntn-resolved `auth.json` →
-soft-deprecated `LORE_NOTION_TOKEN` → soft-deprecated `auth.token` in
-`.lore.yaml`. The first source available wins. See
+Token resolution order is `NOTION_API_TOKEN` → ntn-resolved `auth.json`.
+The first source available wins. See
 [`docs/authentication.md`](docs/authentication.md) for the full priority chain,
 multi-workspace selection, and troubleshooting.
 
@@ -145,13 +152,13 @@ silently creating a vault in the wrong environment. Either init path creates the
 five databases inside the page (Projects, Topics, Memories, Entities, Facts)
 and writes a `.lore.yaml` config file.
 
-For direct non-ntn integration tokens, set the canonical Notion SDK env var and
-share the page with that integration before `lore init <page-id>`. This path is
-only for non-ntn integrations; ntn users do not separately share with the
-`Notion Workers CLI` bot.
+For direct non-ntn setup, create a Notion Personal Access Token at
+`notion.so/developers/tokens`, set the canonical Notion SDK env var, and
+make sure the operator's Notion account can access the vault page before
+`lore init <page-id>`.
 
 ```bash
-export NOTION_API_TOKEN=<your-integration-token>
+export NOTION_API_TOKEN=ntn_...
 ```
 
 See [`docs/team-rollout.md`](docs/team-rollout.md) for the per-engineer
@@ -166,14 +173,10 @@ wrapper to refresh ntn auth and preflight access:
 lore auth --login
 ```
 
-`LORE_NOTION_TOKEN` and inline `auth.token` remain soft-deprecated migration
-fallbacks. Removal is plausibly 0.11.0 or 1.0.0, contingent on telemetry
-showing no internal team still relies on them; see
-[`src/auth/AGENTS.md`](src/auth/AGENTS.md) for migration timing. Lore warns
-whenever it sees `auth.token` in `.lore.yaml`, even when a higher-priority auth
-source wins, and rejects Notion bearer-shaped values such as `ntn_...` or
-`secret_...` at config load time — a local file is still backed up, synced,
-and easy to paste from.
+Deprecated token fallbacks have been removed. `LORE_NOTION_TOKEN` is no
+longer read, and any `auth.token` value in `.lore.yaml` is rejected at
+config load time. Use `NOTION_API_TOKEN` for Personal Access Tokens or
+`lore auth --login` for ntn auth.
 
 Existing vaults from before PF3-01 need one bootstrap step before the
 entity backfill: run `lore vault ensure-entities`, then run
@@ -183,18 +186,24 @@ the fact graph.
 ### 4. Configure Your AI Assistant
 
 ```bash
+# Internal ntn path:
+lore install --ntn
+
+# External PAT path, after exporting NOTION_API_TOKEN:
 lore install
 ```
 
-By default, `lore install` configures every supported assistant integration
-(`--client all`) and fills in any missing side from an older install. Use
-`--client` to install only one:
+Both install paths configure every supported assistant integration
+(`--client all`) and fill in any missing side from an older install. Use
+`--client` to install only one. Keep `--ntn` on client-scoped commands when
+using the internal ntn path; omit it for the PAT path after exporting
+`NOTION_API_TOKEN`:
 
 ```bash
-lore install --client claude
-lore install --client codex
-lore install --client cursor
-lore install --client cursor --cursor-global
+lore install --ntn --client claude
+lore install --ntn --client codex
+lore install --ntn --client cursor
+lore install --ntn --client cursor --cursor-global
 ```
 
 - `claude`: writes Claude Code settings plus `.mcp.json`
@@ -343,7 +352,8 @@ reference, and task/fact migration notes.
 Core commands:
 
 - `lore init [page-id]` creates vault databases and writes `.lore.yaml`.
-- `lore install` writes assistant MCP config and supported hooks.
+- `lore install` writes assistant MCP config and supported hooks; add `--ntn`
+  to select the internal ntn bootstrap path.
 - `lore auth --login` refreshes ntn auth and verifies vault access.
 - `lore search <query>` searches memories.
 - `lore status` reports vault health and active project resolution.
@@ -368,8 +378,9 @@ Lore installs hook commands for supported AI coding assistants:
 
 Claude Code and Codex installs wire hooks automatically using bin dispatch
 (`lore hooks ...`, or `yarn run -T lore hooks ...` under Yarn PnP). The
-`hooks/autosave.sh` and `hooks/wakeup.sh` scripts are legacy `--legacy-paths`
-entrypoints. Cursor and `--print-config` hosts only get the MCP tool surface.
+`hooks/autosave.sh` and `hooks/wakeup.sh` scripts are compatibility
+entrypoints for older absolute-path installs. Cursor and `--print-config`
+hosts only get the MCP tool surface.
 See [`docs/hooks.md`](docs/hooks.md) for host timing, auth forwarding, auto-digest
 behavior, and compatibility notes.
 
@@ -401,10 +412,6 @@ vault:
 # auth:
 #   workspaceId: "workspace-id"
 #
-# Soft-deprecated migration fallback only. Never commit this field:
-# auth:
-#   token: "<legacy-token>"
-
 # Optional: read-only inherited vaults and deliberate promotion destinations.
 # Normal save/update tools still write only to vault.pageId.
 # upstreamVaults:
@@ -441,26 +448,24 @@ hooks:
 ```
 
 Token resolution order: `NOTION_API_TOKEN` environment variable, then
-ntn-resolved `~/.config/notion/auth.json`, then soft-deprecated
-`LORE_NOTION_TOKEN`, then soft-deprecated `auth.token` in `.lore.yaml`. The
-first available source wins. `.lore.yaml` rejects bearer-shaped `auth.token`
-values at config load time; move those tokens to `NOTION_API_TOKEN` or ntn auth.
-Multi-workspace ntn setups select a workspace with `NOTION_WORKSPACE_ID` or
-`auth.workspaceId`.
+ntn-resolved `~/.config/notion/auth.json`. The first available source wins.
+Any `auth.token` value in `.lore.yaml` is rejected at config load time; move
+credentials to `NOTION_API_TOKEN` or ntn auth. Multi-workspace ntn setups
+select a workspace with `NOTION_WORKSPACE_ID` or `auth.workspaceId`.
 
-Notion rate limits are per token, so ntn-issued per-user tokens give each
-engineer an independent bucket; a shared `NOTION_API_TOKEN` collapses everyone
-onto one bucket. See [`AGENTS.md`](AGENTS.md#authentication) for the operational
-rationale, and [`src/auth/AGENTS.md`](src/auth/AGENTS.md) for the priority chain
+Notion rate limits are per token. ntn-issued tokens and PATs give each
+operator an independent bucket; distributing one shared `secret_` integration
+token through `NOTION_API_TOKEN` collapses everyone onto one bucket. See
+[`AGENTS.md`](AGENTS.md#authentication) for the operational rationale, and
+[`src/auth/AGENTS.md`](src/auth/AGENTS.md) for the priority chain
 implementation, ntn version policy, and keychain-mode workaround.
 
 ### Environment variables
 
 | Variable                 | Effect                                                                                                                                                                                |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NOTION_API_TOKEN`       | Canonical Notion bearer token env var. Takes precedence over ntn `auth.json`                                                                                                          |
+| `NOTION_API_TOKEN`       | Canonical Notion bearer token env var for Personal Access Tokens. Takes precedence over ntn `auth.json`                                                                                |
 | `NOTION_WORKSPACE_ID`    | Selects a workspace from a multi-workspace ntn `auth.json`                                                                                                                            |
-| `LORE_NOTION_TOKEN`      | Soft-deprecated legacy Notion token fallback. Prefer ntn auth or `NOTION_API_TOKEN`; removal is planned in a future major, contingent on telemetry                                    |
 | `LORE_AGENT_NAME`        | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`)                                                                                                         |
 | `LORE_USER_NAME`         | Override the `Author:` field on saved memories with a human display name. When unset, Lore resolves the engineer identity from `users.me` on the active ntn-issued token.             |
 | `LORE_AUTO_DIGEST=false` | Suppress the Stop-triggered auto-digest scheduler (CLI `lore digest` still works)                                                                                                     |

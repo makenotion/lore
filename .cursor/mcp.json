@@ -1,11 +1,10 @@
 {
   "mcpServers": {
     "lore": {
-      "command": "node",
+      "command": "lore",
       "args": [
-        "${HOME}/.lore/dist/mcp.js"
+        "mcp"
       ],
-      "cwd": "${HOME}/.lore",
       "env": {
         "LORE_NOTION_BASE_URL": "${LORE_NOTION_BASE_URL}",
         "LORE_CONFIG_ROOT": "${HOME}/.lore",

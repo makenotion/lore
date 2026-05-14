@@ -56,11 +56,10 @@ describe("verifyVaultAccess", () => {
   })
 
   it("returns { kind: 'not-found' } when retrieve throws { status: 404, code: 'object_not_found' }", async () => {
-    // The most common operator failure under ntn-first auth: they ran
-    // `ntn login` against the wrong workspace, OR their Notion
-    // identity isn't a member of the workspace where the vault page
-    // lives. The message must reference both possibilities so the
-    // operator can self-diagnose without a runbook trip.
+    // Source-specific recovery belongs in callers because this helper
+    // cannot know whether the token came from NOTION_API_TOKEN or ntn
+    // auth.json. The shared message stays neutral and only names the
+    // common facts the preflight established.
     const apiError = Object.assign(new Error("object_not_found"), {
       status: 404,
       code: "object_not_found",
@@ -75,12 +74,12 @@ describe("verifyVaultAccess", () => {
     if (result.kind === "not-found") {
       expect(result.pageId).toBe("missing-page-id")
       // Pin the load-bearing parts of the message: the framing ("not
-      // accessible") and the ntn-first failure modes (wrong workspace,
-      // sharing). The exact prose can drift across follow-up PRs as
-      // the operator UX evolves; these substrings are the contract.
+      // accessible") and the neutral token/page-permission diagnosis.
+      // Source-specific recovery is layered by the caller.
       expect(result.message).toMatch(/not accessible/i)
-      expect(result.message).toMatch(/wrong workspace/i)
-      expect(result.message).toMatch(/shared with you/i)
+      expect(result.message).toMatch(/resolved token/i)
+      expect(result.message).toMatch(/permissions/i)
+      expect(result.message).not.toMatch(/ntn|NOTION_API_TOKEN/i)
     }
   })
 
@@ -116,11 +115,10 @@ describe("verifyVaultAccess", () => {
     expect(result.kind).toBe("not-found")
   })
 
-  it("returns { kind: 'unauthorized' } on 401 so the caller can route to re-auth, not vault-share-permission", async () => {
-    // 401 means the token itself is invalid/expired. The recovery is
-    // running ntn login again, NOT fixing workspace membership /
-    // page-share permissions. Distinct from `not-found` because the
-    // operator's actions to recover differ.
+  it("returns { kind: 'unauthorized' } on 401 so the caller can route source-specific recovery", async () => {
+    // 401 means the token itself is invalid/expired. The helper only
+    // classifies the failure; callers decide whether recovery is PAT
+    // rotation or ntn re-login.
     const authError = Object.assign(new Error("unauthorized"), { status: 401 })
     const client = mockClient(() => {
       throw authError
@@ -238,15 +236,14 @@ describe("verifyVaultAccess", () => {
     expect(result.kind).toBe("unauthorized")
     if (result.kind === "unauthorized") {
       expect(result.pageId).toBe("page-id")
-      expect(result.message).toMatch(/lore auth --login/)
       expect(result.message).toMatch(/invalid|expired|revoked/i)
+      expect(result.message).not.toMatch(/lore auth --login|NOTION_API_TOKEN/i)
     }
   })
 
   it("returns { kind: 'unauthorized' } on 403 (`restricted_resource`)", async () => {
-    // 403 maps to the same caller-action: re-auth via the wrapper.
-    // ntn-issued tokens inherit the engineer's identity, so re-auth
-    // picks up any access-policy update they need.
+    // 403 maps to the same discriminant as 401; callers layer
+    // source-specific recovery copy based on the resolved auth source.
     const apiError = Object.assign(new Error("restricted resource"), {
       status: 403,
       code: "restricted_resource",

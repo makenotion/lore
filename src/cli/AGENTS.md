@@ -71,10 +71,9 @@ vault, and resolves the current project context.
 
 **Exception**: The `auth` command does not call `initServices()` because it
 only checks whether the token is available, without connecting to Notion.
-**Updated for 0.10.0**: `auth --status`, `auth --whoami`, and
-`auth --migrate` _do_ connect to Notion (for vault preflight, identity
-lookup, and migration verification, respectively), but they construct
-their own client directly rather than going through `initServices`.
+**Updated for 0.10.0**: `auth --status` and `auth --whoami` _do_
+connect to Notion (for vault preflight and identity lookup), but they
+construct their own client directly rather than going through `initServices`.
 `--status` runs `verifyVaultAccess` by default — operators run it rarely
 and the round-trip is acceptable for the diagnostic value; a future
 `--no-verify` opt-out is plausible if telemetry shows real friction.
@@ -261,8 +260,7 @@ calling it explicitly.
 The other subcommands:
 
 - `--status` reports ntn install state, active workspace, token
-  source (`NOTION_API_TOKEN` / ntn-resolved / `LORE_NOTION_TOKEN` /
-  `auth.token`), deprecation state of legacy paths, AND runs
+  source (`NOTION_API_TOKEN` / ntn-resolved), and runs
   `verifyVaultAccess` against the configured vault page. The
   preflight is a Notion round-trip — that's why `--status`
   bypasses `initServices` and constructs its own client. A future
@@ -274,36 +272,9 @@ The other subcommands:
 - `--logout` directs operators at `ntn logout` (Lore doesn't manage
   ntn's storage; printing the right command is more useful than
   pretending Lore can revoke the token).
-- `--migrate` walks operators with `LORE_NOTION_TOKEN` or
-  `auth.token` set through migrating to a Personal Access Token
-  (PAT) pasted into `NOTION_API_TOKEN` (default, 2026-05-13
-  onward). When `NOTION_API_TOKEN` isn't yet set, the command prints
-  PAT-creation instructions and exits 0 — the operator re-runs after
-  exporting the token. With `NOTION_API_TOKEN` set, it verifies the
-  legacy token reaches the vault, verifies the PAT reaches the same
-  vault, prints unset instructions with shell-rc location detection,
-  and flags `secret_…` integration-token paste as a rate-limit-collapse
-  risk. Pass `--ntn` to select the internal-engineer flow instead
-  (walks the operator through `ntn login` + auth.json).
 
-  **Exit-code asymmetry between branches** (script-consumer
-  contract). `--migrate --ntn` returns `1` on every non-success step
-  — install ntn, `ntn login`, verify — because every step is
-  Lore-controlled. `--migrate` (PAT branch, default) returns `0`
-  when Step 2 detects `NOTION_API_TOKEN` is not yet exported,
-  because creating the PAT is irreducibly operator-controlled work
-  (browser → `notion.so/developers/tokens` → `export
-  NOTION_API_TOKEN`) and the "re-run after pasting" copy IS the
-  success path for that phase. Step 1 (legacy verify) and Step 3
-  (PAT verify) still return `1` on failure. Script consumers
-  writing `if ! lore auth --migrate; then ...` should know this is
-  a two-phase flow: a `0` exit with `NOTION_API_TOKEN` unset means
-  "waiting on operator paste", not "done". The asymmetry is the
-  contract — `runMigrate`'s ntn flow is entirely automatable; the
-  PAT flow has a human-in-the-loop step.
-
-`-y, --yes` skips confirmation prompts on `--login` /
-`--migrate` so non-interactive automation can pass through. The
+`-y, --yes` skips confirmation prompts on `--login` so
+non-interactive automation can pass through. The
 `auth.json` read happens in `loadNtnToken` from
 `src/auth/ntn.ts`; the workspace selection respects
 `NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml`
@@ -754,7 +725,7 @@ remediation for the external-operator default.
 ### 0.10.0 ntn detection and MCP env forwarding
 
 The behavior below is the 0.10.0 target shape — implemented
-across #01 (`resolveAuth` rewrite + deprecation warnings), #02
+across #01 (`resolveAuth` rewrite), #02
 (ntn detection + auto-install + auto-login), #03
 (`verifyVaultAccess` preflight), and #08 (this section's MCP
 env-forwarding rewrite). Runtime env names come from
@@ -765,11 +736,8 @@ Install detects ntn install / login state and prompts on missing
 pieces (auto-install via `curl -fsSL https://ntn.dev | bash` with
 operator confirmation; `--yes` skips). The MCP server resolves
 auth on its own at startup via `resolveAuth` rather than relying
-on static token forwarding for ntn-source operators. Conditional
-`LORE_NOTION_TOKEN` forwarding is preserved when the legacy env
-var is set in the install-time environment (with a `lore auth
---migrate` recommendation), so legacy operators don't lose access
-by upgrading. Static values from `buildMcpEnv()` include
+on static token forwarding for ntn-source operators. Static values
+from `buildMcpEnv()` include
 `LORE_SUPPRESS_DEPRECATIONS=1` (silences per-session warnings from spawned
 children — emitted by #01's `resolveAuth`) and `LORE_CONFIG_ROOT` for bare-bin,
 legacy, Cursor global-scope, and bare/legacy print-config shapes. Those shapes
@@ -794,8 +762,6 @@ state.
   `.codex/hooks.json`.
 - `--client cursor` updates only the project's `.cursor/mcp.json`
   (or `~/.cursor/mcp.json` with `--cursor-global`).
-- `--client both` is a deprecated alias for `--client all`; the CLI emits
-  a warning and proceeds. Removal is plausible for 1.0.0.
 - Codex hooks require `features.hooks = true` and only load in trusted
   projects, so preserve that behavior if you change the installer.
 - Cursor's MCP runtime does not currently support session-end / Stop hooks
@@ -809,14 +775,10 @@ state.
   `client: message` lines by default; set `LORE_INSTALL_DEBUG=1` to
   include stack traces (an unexpected failure mode worth surfacing
   without making the default operator output noisy).
-- Hook-script prerequisites (`hooks/autosave.sh`, `hooks/wakeup.sh`) are
-  checked only under `--legacy-paths`. Default Claude and Codex installs use
-  bin dispatch (`lore hooks ...`, or `yarn run -T lore hooks ...` under Yarn
-  PnP) and do not require the checked-in shell wrappers. Cursor never checks
-  the scripts because its MCP runtime does not use hooks. A missing or
-  non-writable legacy hook script does NOT block a Cursor-only install, and
-  under `--client all` it surfaces through the per-client captured-error path
-  so non-legacy branches still install cleanly.
+- Default Claude and Codex installs use bin dispatch (`lore hooks ...`, or
+  `yarn run -T lore hooks ...` under Yarn PnP) and do not require the
+  checked-in shell wrappers. Cursor never checks the scripts because its MCP
+  runtime does not use hooks.
 
 Cursor's MCP file location is documented at
 <https://docs.cursor.com/context/mcp> — the installer reads the project-
@@ -872,21 +834,8 @@ fail at agent startup); on missing build output the command exits 1 with
 the same `Run 'npm run build' first.` message the install paths use.
 
 Print-config also performs a best-effort `resolveAuth` call for the
-auth-source-driven placeholder suppression (#451), which means it
-inherits the deprecation-warning side effects:
-
-- `LORE_NOTION_TOKEN` set in the install-time env: the env-var warning
-  fires on stderr (debounced once per 24h per config root, silenceable
-  via `LORE_SUPPRESS_DEPRECATIONS=1`).
-- `auth.token` present in the resolved `.lore.yaml`: the config warning
-  fires on stderr (once per process, NOT silenceable per #484).
-
-The snippet itself flows to stdout, so `lore install --print-config json
-| jq …` parses cleanly. Operators piping into a JSON tool who also want
-the stderr noise gone use standard shell redirection (`2>/dev/null`),
-but the config-auth-token warning's whole point is to remain visible
-until the field is removed — silencing it via redirection only hides
-the symptom from one operator's session, not from the repo.
+auth-source-driven placeholder suppression (#451). The snippet itself flows
+to stdout, so `lore install --print-config json | jq …` parses cleanly.
 
 Hooks are not part of this surface. Stop / UserPromptSubmit hooks are
 installed only by supported host-specific installers; operators of other hosts

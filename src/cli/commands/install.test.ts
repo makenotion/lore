@@ -40,7 +40,6 @@ import {
   buildPrintConfigOutput,
   containsTomlArrayOfTables,
   detectYarnPnp,
-  formatLegacyForwardedNoteLines,
   ntnLoginRecovery,
   prepareInstallContext,
   shellQuotePortablePath,
@@ -52,7 +51,6 @@ import {
   dispatchInstall,
   ensureHookPrerequisites,
   installCommand,
-  isDeprecatedInstallClient,
   parseInstallClient,
   parsePrintConfigFormat,
   removeClaudeScriptEntries,
@@ -78,9 +76,8 @@ import { RUNTIME_FORWARDED_KEYS } from "../../auth/forwarded-env.js"
  */
 const TEST_CONFIG_ROOT = "/test/config-root"
 
-/** Both legacy env vars present — exercises the `${VAR}` forwarding shape. */
-const ENV_BOTH_LEGACY = {
-  LORE_NOTION_TOKEN: "test-token",
+/** Base URL override present — exercises the `${VAR}` forwarding shape. */
+const ENV_WITH_BASE_URL = {
   LORE_NOTION_BASE_URL: "https://api.notion.so",
 } as const
 
@@ -105,19 +102,13 @@ describe("install helpers", () => {
     expect(parseInstallClient("all")).toBe("all")
   })
 
-  it("accepts the deprecated 'both' alias and maps it to 'all'", () => {
-    expect(parseInstallClient("both")).toBe("all")
-    expect(isDeprecatedInstallClient("both")).toBe(true)
-    expect(isDeprecatedInstallClient("all")).toBe(false)
-    expect(isDeprecatedInstallClient(undefined)).toBe(false)
-  })
-
   it("rejects unrecognized client values, including the empty string", () => {
     // Only `undefined` (option omitted entirely) routes to the `"all"`
     // default. An explicit empty string is treated as a malformed value
     // and routes through the unrecognized-value error path so the CLI
     // doesn't silently dispatch every installer for `--client ""`.
     expect(parseInstallClient("aider")).toBeNull()
+    expect(parseInstallClient("both")).toBeNull()
     expect(parseInstallClient("")).toBeNull()
   })
 
@@ -291,11 +282,10 @@ describe("install helpers", () => {
     //    `yarn run -T` launch always lands at workspace root, so the
     //    spawned MCP server's `findConfigFile(cwd)` walk resolves
     //    `.lore.yaml` without help.
-    expect(buildClaudeMcpEntry("yarn", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)).toEqual({
+    expect(buildClaudeMcpEntry("yarn", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)).toEqual({
       command: "yarn",
       args: ["run", "-T", "lore", "mcp"],
       env: {
-        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
         LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
         // No LORE_CONFIG_ROOT under PnP — runtime resolves via
         // workspace-root cwd walk.
@@ -338,7 +328,7 @@ describe("install helpers", () => {
     // Under PnP the LORE_CONFIG_ROOT entry is omitted (committed-
     // config portability) and the launch command uses `yarn run -T`
     // for workspace-root binary resolution from subdirectory cwds.
-    const section = buildCodexMcpSection("yarn", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildCodexMcpSection("yarn", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain(
       `args = ["-lc", "LORE_SUPPRESS_DEPRECATIONS='1' yarn run -T lore mcp"]`,
     )
@@ -353,12 +343,11 @@ describe("install helpers", () => {
     // (The 0.10.0 LORE_CONFIG_ROOT addition does carry an absolute
     // path, but it's the operator's vault directory — not a path
     // baked into the install module.)
-    const entry = buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const entry = buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(entry).toEqual({
       command: "lore",
       args: ["mcp"],
       env: {
-        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
         LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
         ...STATIC_ENV_FOR_TEST_CONFIG_ROOT,
       },
@@ -369,7 +358,7 @@ describe("install helpers", () => {
   })
 
   it("buildCodexMcpSection emits the bin-dispatch TOML shape", () => {
-    const section = buildCodexMcpSection("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildCodexMcpSection("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain("[mcp_servers.lore]")
     // Codex needs the `bash -lc` wrapper to carry the static env
     // prefix; the bin name `lore` is the tail of the launch command.
@@ -378,9 +367,9 @@ describe("install helpers", () => {
       `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
     )
     // env_vars carries only the runtime-resolved forwards
-    // (NOTION_API_TOKEN / LORE_NOTION_TOKEN / LORE_NOTION_BASE_URL),
+    // (NOTION_API_TOKEN / LORE_NOTION_BASE_URL),
     // never the static pair.
-    expect(section).toContain('env_vars = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"]')
+    expect(section).toContain('env_vars = ["LORE_NOTION_BASE_URL"]')
   })
 
   it("detectClaudeHook prefers bin-dispatch match over legacy-current when both are present", () => {
@@ -414,14 +403,13 @@ describe("Cursor helpers", () => {
   // up here rather than as a silent runtime mismatch in a Cursor session.
 
   it("builds a bin-dispatch Cursor MCP entry that matches the Claude entry shape", () => {
-    expect(buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)).toEqual(
-      buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY),
+    expect(buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)).toEqual(
+      buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL),
     )
-    expect(buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)).toEqual({
+    expect(buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)).toEqual({
       command: "lore",
       args: ["mcp"],
       env: {
-        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
         LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
         ...STATIC_ENV_FOR_TEST_CONFIG_ROOT,
       },
@@ -433,14 +421,13 @@ describe("Cursor helpers", () => {
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     expect(entry).toEqual({
       command: "node",
       args: ["${HOME}/.lore/dist/mcp.js"],
       cwd: "${HOME}/.lore",
       env: {
-        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
         LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
         ...STATIC_ENV_FOR_TEST_CONFIG_ROOT,
       },
@@ -454,13 +441,13 @@ describe("Cursor helpers", () => {
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     const b = buildLegacyCursorMcpEntry(
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     expect(deepEqual(a, b)).toBe(true)
   })
@@ -470,13 +457,13 @@ describe("Cursor helpers", () => {
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     const current = buildLegacyCursorMcpEntry(
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore-2",
       TEST_CONFIG_ROOT,
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     expect(deepEqual(previous, current)).toBe(false)
   })
@@ -924,29 +911,6 @@ describe("runCodexInstall (integration)", () => {
     )
   })
 
-  it("removes deprecated codex_hooks from an otherwise-current Codex config", async () => {
-    const projectDir = mkdtempSync(join(SCRATCH, "deprecated-feature-"))
-    const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))
-    const context = makeContext(projectDir, pkgRoot)
-
-    await runCodexInstall(context, null)
-
-    const configPath = join(projectDir, ".codex", "config.toml")
-    const installedConfig = await readFile(configPath, "utf-8")
-    writeFileSync(
-      configPath,
-      installedConfig.replace(
-        "[features]\nhooks = true",
-        "[features]\nhooks = true\ncodex_hooks = true",
-      ),
-    )
-
-    await runCodexInstall(context, null)
-
-    const rewrittenConfig = await readFile(configPath, "utf-8")
-    expect(rewrittenConfig).toContain("[features]\nhooks = true")
-    expect(rewrittenConfig).not.toContain("codex_hooks")
-  })
 })
 
 describe("runCursorInstall (integration)", () => {
@@ -1289,7 +1253,7 @@ describe("runCursorInstall (integration)", () => {
   })
 
   it("writes the legacy absolute-path shape under legacyPaths=true", async () => {
-    // 0.11.0 acceptance criterion: `lore install --legacy-paths`
+    // 0.11.0 acceptance criterion: `lore install`
     // preserves the 0.10.x absolute-path output for one release. The
     // Cursor branch follows the same flag.
     const projectDir = mkdtempSync(join(SCRATCH, "legacy-cursor-"))
@@ -1379,7 +1343,7 @@ describe("ensureHookPrerequisites", () => {
   // 0.11.0 turned `ensureHookPrerequisites` into a no-op on the
   // bin-dispatch default path — the bin-dispatch shape has no `.sh`
   // dependency, so the existence checks only run under
-  // `--legacy-paths`. The prerequisite-verification tests therefore
+  // legacy absolute-path mode. The prerequisite-verification tests therefore
   // build a `legacyPaths: true` fixture explicitly. A separate test
   // pins the no-op behavior on the default path.
   function makeLegacyContext(pkgRoot: string): InstallContext {
@@ -1397,7 +1361,7 @@ describe("ensureHookPrerequisites", () => {
     }
   }
 
-  it("throws a clear error naming the missing hook scripts under --legacy-paths", async () => {
+  it("throws a clear error naming the missing hook scripts under legacy absolute-path mode", async () => {
     const pkgRoot = mkdtempSync(join(SCRATCH, "missing-"))
 
     await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).rejects.toThrow(
@@ -1405,7 +1369,7 @@ describe("ensureHookPrerequisites", () => {
     )
   })
 
-  it("throws when only one of the two hook scripts is missing under --legacy-paths", async () => {
+  it("throws when only one of the two hook scripts is missing under legacy absolute-path mode", async () => {
     // Half-baked install state: autosave.sh present, wakeup.sh missing.
     // The error should name only the missing one so an operator can act.
     const pkgRoot = mkdtempSync(join(SCRATCH, "partial-"))
@@ -1418,7 +1382,7 @@ describe("ensureHookPrerequisites", () => {
     )
   })
 
-  it("returns without throwing and chmods the scripts when both exist under --legacy-paths", async () => {
+  it("returns without throwing and chmods the scripts when both exist under legacy absolute-path mode", async () => {
     const pkgRoot = mkdtempSync(join(SCRATCH, "ok-"))
     const fs = await import("node:fs/promises")
     await fs.mkdir(join(pkgRoot, "hooks"), { recursive: true })
@@ -1877,14 +1841,16 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     const parsed = JSON.parse(output) as {
       mcpServers: { lore: { command: string; args: string[]; env: Record<string, string> } }
     }
     expect(parsed.mcpServers.lore.command).toBe("lore")
     expect(parsed.mcpServers.lore.args).toEqual(["mcp"])
-    expect(parsed.mcpServers.lore.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
+    expect(parsed.mcpServers.lore.env["LORE_NOTION_BASE_URL"]).toBe(
+      "${LORE_NOTION_BASE_URL}",
+    )
     expect(parsed.mcpServers.lore.env["LORE_CONFIG_ROOT"]).toBe(TEST_CONFIG_ROOT)
     expect(parsed.mcpServers.lore.env["LORE_SUPPRESS_DEPRECATIONS"]).toBe("1")
     expect(output.endsWith("\n")).toBe(true)
@@ -1898,7 +1864,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     expect(output.startsWith("[mcp_servers.lore]\n")).toBe(true)
     expect(output).toContain('command = "bash"')
@@ -1906,15 +1872,15 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
     )
     expect(output).toContain("env_vars = ")
-    expect(output).toContain('"LORE_NOTION_TOKEN"')
+    expect(output).toContain('"LORE_NOTION_BASE_URL"')
     // Trailing newline lets `lore install --print-config toml >> file.toml`
     // append a clean section without joining the next line.
     expect(output.endsWith("\n")).toBe(true)
   })
 
   it("contains no static env values when only operator env vars are unset", () => {
-    // With ENV_NONE, neither NOTION_API_TOKEN nor LORE_NOTION_TOKEN
-    // forwards. The MCP server resolves auth via auth.json on its own
+    // With ENV_NONE, NOTION_API_TOKEN does not forward. The MCP server
+    // resolves auth via auth.json on its own
     // (LORE_CONFIG_ROOT is forwarded so it knows where to look).
     const output = buildPrintConfigOutput(
       "json",
@@ -1931,55 +1897,10 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
     expect(parsed.mcpServers.lore.env).toEqual(STATIC_ENV_FOR_TEST_CONFIG_ROOT)
   })
 
-  it("emits the legacy absolute-path JSON shape when legacyPaths=true", () => {
-    const home = homedir()
-    const output = buildPrintConfigOutput(
-      "json",
-      `${home}/.lore/dist/mcp.js`,
-      `${home}/.lore`,
-      TEST_CONFIG_ROOT,
-      true,
-      "bare",
-      ENV_BOTH_LEGACY,
-    )
-    const parsed = JSON.parse(output) as {
-      mcpServers: { lore: { command: string; args: string[]; cwd: string } }
-    }
-    expect(parsed.mcpServers.lore.command).toBe("node")
-    expect(parsed.mcpServers.lore.args[0]).toBe("${HOME}/.lore/dist/mcp.js")
-    expect(parsed.mcpServers.lore.cwd).toBe("${HOME}/.lore")
-  })
-
-  it("emits the legacy bash-wrapped TOML shape when legacyPaths=true", () => {
-    const home = homedir()
-    const output = buildPrintConfigOutput(
-      "toml",
-      `${home}/.lore/dist/mcp.js`,
-      `${home}/.lore`,
-      TEST_CONFIG_ROOT,
-      true,
-      "bare",
-      ENV_BOTH_LEGACY,
-    )
-    expect(output).toContain('command = "bash"')
-    // The legacy launch command embeds the mcp.js path via path-aware
-    // quoting: the `${HOME}` portability marker is double-quoted (so
-    // bash expands it at launch time) and the suffix is single-quoted
-    // (so a path containing `$`/backtick/`\\` does not trigger shell
-    // re-interpretation). `JSON.stringify` would expose the suffix to
-    // shell expansion; plain `shellQuoteSingle` would inhibit `${HOME}`
-    // expansion and break committed-config portability.
-    //
-    // After JSON-encoding for TOML emission: each literal `"` becomes
-    // `\"` and the single quotes pass through unchanged.
-    expect(output).toContain('node \\"${HOME}\\"\'/.lore/dist/mcp.js\'')
-    expect(output).toContain(`LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}'`)
-  })
-
   it("byte-matches buildClaudeMcpEntry() under the bin-dispatch default", () => {
     const expected =
       JSON.stringify(
-        { mcpServers: { lore: buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY) } },
+        { mcpServers: { lore: buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL) } },
         null,
         2,
       ) + "\n"
@@ -1991,42 +1912,13 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
         TEST_CONFIG_ROOT,
         false,
         "bare",
-        ENV_BOTH_LEGACY,
-      ),
-    ).toBe(expected)
-  })
-
-  it("byte-matches buildLegacyClaudeMcpEntry under --legacy-paths", () => {
-    const expected =
-      JSON.stringify(
-        {
-          mcpServers: {
-            lore: buildLegacyClaudeMcpEntry(
-              "/lore/dist/mcp.js",
-              "/lore",
-              TEST_CONFIG_ROOT,
-              ENV_BOTH_LEGACY,
-            ),
-          },
-        },
-        null,
-        2,
-      ) + "\n"
-    expect(
-      buildPrintConfigOutput(
-        "json",
-        "/lore/dist/mcp.js",
-        "/lore",
-        TEST_CONFIG_ROOT,
-        true,
-        "bare",
-        ENV_BOTH_LEGACY,
+        ENV_WITH_BASE_URL,
       ),
     ).toBe(expected)
   })
 
   it("byte-matches buildCodexMcpSection() under the bin-dispatch default", () => {
-    const expected = buildCodexMcpSection("bare", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY) + "\n"
+    const expected = buildCodexMcpSection("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL) + "\n"
     expect(
       buildPrintConfigOutput(
         "toml",
@@ -2035,28 +1927,12 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
         TEST_CONFIG_ROOT,
         false,
         "bare",
-        ENV_BOTH_LEGACY,
+        ENV_WITH_BASE_URL,
       ),
     ).toBe(expected)
   })
 
-  it("byte-matches buildLegacyCodexMcpSection under --legacy-paths", () => {
-    const expected =
-      buildLegacyCodexMcpSection("/lore/dist/mcp.js", TEST_CONFIG_ROOT, ENV_BOTH_LEGACY) + "\n"
-    expect(
-      buildPrintConfigOutput(
-        "toml",
-        "/lore/dist/mcp.js",
-        "/lore",
-        TEST_CONFIG_ROOT,
-        true,
-        "bare",
-        ENV_BOTH_LEGACY,
-      ),
-    ).toBe(expected)
-  })
-
-  it("ignores --client / --project context — output depends only on resolved paths and legacyPaths", () => {
+  it("ignores --client / --project context — output depends only on resolved paths", () => {
     // Neither --client nor --project flows into buildPrintConfigOutput. Two
     // calls with the same paths always produce the same snippet, regardless
     // of what the operator passed alongside --print-config.
@@ -2067,7 +1943,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     const second = buildPrintConfigOutput(
       "json",
@@ -2076,7 +1952,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_BOTH_LEGACY,
+      ENV_WITH_BASE_URL,
     )
     expect(second).toBe(first)
   })
@@ -2208,7 +2084,7 @@ describe("install command runtime — --print-config short-circuits other flags"
     }
     // 0.11.0+ default is bin-dispatch — `command: "lore"`. The
     // legacy `command: "node"` shape only emits under
-    // `--legacy-paths`, which this test doesn't set.
+    // legacy absolute-path mode, which this test doesn't set.
     expect(parsed.mcpServers.lore.command).toBe("lore")
     // The install path's pre-flight banner would precede any JSON output if
     // it had run — its absence is the proof that --client was a no-op.
@@ -2428,151 +2304,6 @@ describe("install command runtime — --print-config short-circuits other flags"
     expect(output).not.toContain('"NOTION_API_BASE_URL"')
   })
 
-  it("--print-config json emits the PAT-default-plus-ntn legacy-forwarded note to stderr when LORE_NOTION_TOKEN is set", async () => {
-    // The reviewer's specific regression-coverage ask: the
-    // `--print-config` legacy-forwarded mirror must name BOTH
-    // migrate branches under the post-2026-05-13 contract, AND
-    // must keep the pre-announcement ntn-only wording out. The
-    // note goes to stderr (not stdout) so a pipeline like
-    // `lore install --print-config json | jq` stays clean.
-    const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const stderrWrites: string[] = []
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const priorLoreToken = process.env["LORE_NOTION_TOKEN"]
-    process.env["LORE_NOTION_TOKEN"] = "stale-legacy-tok"
-
-    try {
-      await installCommand.parseAsync(
-        ["--print-config", "json"],
-        { from: "user" },
-      )
-    } finally {
-      stdoutSpy.mockRestore()
-      stderrSpy.mockRestore()
-      if (priorLoreToken === undefined) {
-        delete process.env["LORE_NOTION_TOKEN"]
-      } else {
-        process.env["LORE_NOTION_TOKEN"] = priorLoreToken
-      }
-    }
-
-    // Stdout stays clean — the snippet JSON only.
-    const stdout = writes.join("")
-    expect(stdout.startsWith('{\n  "mcpServers":')).toBe(true)
-    // Stderr carries the note. Both migrate branches named, 0.14.0
-    // removal target named.
-    const stderr = stderrWrites.join("")
-    expect(stderr).toContain("LORE_NOTION_TOKEN forwarded")
-    expect(stderr).toContain("soft-deprecated")
-    expect(stderr).toContain("0.14.0")
-    expect(stderr).toContain("`lore auth --migrate`")
-    expect(stderr).toContain("PAT default")
-    expect(stderr).toContain("`lore auth --migrate --ntn`")
-    // Regression guards: the reviewer's specifically-named stale
-    // strings must not return through a future refactor.
-    expect(stderr).not.toMatch(/Switch via/)
-    expect(stderr).not.toMatch(/NOTION_KEYRING=0 ntn login/)
-    expect(stderr).not.toMatch(/until.*lore auth --migrate.*ships/)
-  })
-
-  it("--print-config toml emits the same stderr note shape (mirror parity)", async () => {
-    // Format-axis is orthogonal to the stderr note — both JSON and
-    // TOML print-config paths share the same legacy-forwarded
-    // mirror. Pin parity so a future refactor that splits the
-    // mirror by format keeps both branches consistent.
-    const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const stderrWrites: string[] = []
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const priorLoreToken = process.env["LORE_NOTION_TOKEN"]
-    process.env["LORE_NOTION_TOKEN"] = "stale-legacy-tok"
-
-    try {
-      await installCommand.parseAsync(
-        ["--print-config", "toml"],
-        { from: "user" },
-      )
-    } finally {
-      stdoutSpy.mockRestore()
-      stderrSpy.mockRestore()
-      if (priorLoreToken === undefined) {
-        delete process.env["LORE_NOTION_TOKEN"]
-      } else {
-        process.env["LORE_NOTION_TOKEN"] = priorLoreToken
-      }
-    }
-
-    expect(writes.join("").startsWith("[mcp_servers.lore]\n")).toBe(true)
-    const stderr = stderrWrites.join("")
-    expect(stderr).toContain("PAT default")
-    expect(stderr).toContain("`lore auth --migrate --ntn`")
-    expect(stderr).not.toMatch(/NOTION_KEYRING=0 ntn login/)
-  })
-
-  it("--print-config json with NO LORE_NOTION_TOKEN does NOT emit a legacy-forwarded note", async () => {
-    // The note is conditional on the legacy var being in the
-    // install-time env. Operators without it should not see any
-    // stderr line — the note exists specifically to nudge
-    // shell-rc cleanup, not as background noise.
-    const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const stderrWrites: string[] = []
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const priorLoreToken = process.env["LORE_NOTION_TOKEN"]
-    delete process.env["LORE_NOTION_TOKEN"]
-
-    try {
-      await installCommand.parseAsync(
-        ["--print-config", "json"],
-        { from: "user" },
-      )
-    } finally {
-      stdoutSpy.mockRestore()
-      stderrSpy.mockRestore()
-      if (priorLoreToken === undefined) {
-        delete process.env["LORE_NOTION_TOKEN"]
-      } else {
-        process.env["LORE_NOTION_TOKEN"] = priorLoreToken
-      }
-    }
-
-    // No stderr writes about the legacy note. (Other stderr —
-    // e.g. resolveAuth deprecation warnings under config-auth-token
-    // — could still land, but none of the test scaffolding here
-    // sets up that branch, so stderr should be entirely empty.)
-    expect(stderrWrites.join("")).toBe("")
-  })
 })
 
 describe("runPrintConfig auth-source orchestration (issue #451)", () => {
@@ -2589,11 +2320,6 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
   //   2. `.lore.yaml` exists but `resolveAuth` throws (no auth
   //      configured) → caught silently, source stays undefined,
   //      pre-#451 shape.
-  //   3. `.lore.yaml` carries a legacy `auth.token` (zod-valid
-  //      non-bearer string, the deprecation-warning path) → resolves
-  //      to `config-auth-token`; auth-token placeholders STILL forward
-  //      because suppression is `ntn-auth-json`-specific.
-  //
   // The ntn-auth-json branch is environment-dependent (depends on
   // `~/.config/notion/auth.json` presence) and isn't exercised here —
   // the unit-builder describe blocks above cover the suppression
@@ -2607,12 +2333,11 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     rmSync(SCRATCH, { recursive: true, force: true })
   })
 
-  it("no .lore.yaml → auth resolution skipped, output preserves pre-#451 shape (auth tokens forward when env-set)", async () => {
+  it("no .lore.yaml → auth resolution skipped, output preserves env-token forwarding", async () => {
     // Drives the `if (found)` guard's false branch: findConfigFile
     // returns null, runPrintConfig never calls resolveAuth, and
     // `printConfigAuthSource` stays undefined. With both auth tokens
-    // set in process.env, the pre-#451 unconditional-forward shape
-    // emits both `${VAR}` placeholders.
+    // set in process.env, the snippet emits the `${VAR}` placeholder.
     const projectDir = mkdtempSync(join(SCRATCH, "no-config-"))
     const writes: string[] = []
     const stdoutSpy = vi
@@ -2623,9 +2348,7 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
       }) as never)
 
     const previousApi = process.env["NOTION_API_TOKEN"]
-    const previousLore = process.env["LORE_NOTION_TOKEN"]
     process.env["NOTION_API_TOKEN"] = "api-tok"
-    process.env["LORE_NOTION_TOKEN"] = "lore-tok"
     try {
       await installCommand.parseAsync(
         ["--project", projectDir, "--print-config", "json"],
@@ -2635,8 +2358,6 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
       stdoutSpy.mockRestore()
       if (previousApi === undefined) delete process.env["NOTION_API_TOKEN"]
       else process.env["NOTION_API_TOKEN"] = previousApi
-      if (previousLore === undefined) delete process.env["LORE_NOTION_TOKEN"]
-      else process.env["LORE_NOTION_TOKEN"] = previousLore
     }
 
     const parsed = JSON.parse(writes.join("")) as {
@@ -2645,16 +2366,12 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBe(
       "${NOTION_API_TOKEN}",
     )
-    expect(parsed.mcpServers.lore.env["LORE_NOTION_TOKEN"]).toBe(
-      "${LORE_NOTION_TOKEN}",
-    )
   })
 
-  it(".lore.yaml present but no auth resolves → catch swallows, source stays undefined, auth tokens still forward when env-set", async () => {
-    // Vault page id but no auth.token, no env tokens. resolveAuth
-    // walks paths 1 (NOTION_API_TOKEN env) → 2 (ntn auth.json — may
-    // resolve on developer machines, see note below) → 3
-    // (LORE_NOTION_TOKEN env) → 4 (config auth.token), and either
+  it(".lore.yaml present but no auth resolves → catch swallows, source stays undefined", async () => {
+    // Vault page id but no env token. resolveAuth walks path 1
+    // (NOTION_API_TOKEN env) → path 2 (ntn auth.json — may
+    // resolve on developer machines, see note below), and either
     // throws "no auth configured" OR resolves to ntn-auth-json
     // depending on developer environment. The test only asserts the
     // catch swallows on throw — it doesn't pin which source resolves
@@ -2675,14 +2392,12 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
         return true
       }) as never)
 
-    // Force resolveAuth's path 1 / 3 / 4 misses; path 2 (ntn) is
+    // Force resolveAuth's env-token miss; path 2 (ntn) is
     // unmocked and behaves per the developer's machine — its outcome
     // doesn't affect the assertion below because we only check that
     // the snippet renders without an unhandled exception.
     const previousApi = process.env["NOTION_API_TOKEN"]
-    const previousLore = process.env["LORE_NOTION_TOKEN"]
     delete process.env["NOTION_API_TOKEN"]
-    delete process.env["LORE_NOTION_TOKEN"]
     try {
       await installCommand.parseAsync(
         ["--project", projectDir, "--print-config", "json"],
@@ -2691,7 +2406,6 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     } finally {
       stdoutSpy.mockRestore()
       if (previousApi !== undefined) process.env["NOTION_API_TOKEN"] = previousApi
-      if (previousLore !== undefined) process.env["LORE_NOTION_TOKEN"] = previousLore
     }
 
     const parsed = JSON.parse(writes.join("")) as {
@@ -2702,76 +2416,6 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     // or absent from the env source, the printed shape is the same.
     expect(parsed.mcpServers.lore.env["LORE_SUPPRESS_DEPRECATIONS"]).toBe("1")
     expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBeUndefined()
-  })
-
-  it(".lore.yaml carries legacy auth.token → resolves to config-auth-token; auth tokens still forward when env-set", async () => {
-    // Pins the regression-protection bullet from the issue's
-    // acceptance criteria: legacy operators are not affected by the
-    // ntn-source-only suppression. `auth.token` in `.lore.yaml`
-    // resolves resolveAuth to `config-auth-token` (path 4); the
-    // suppression keys ONLY off `ntn-auth-json`, so an operator on
-    // the legacy config-auth-token path who *also* has tokens set in
-    // env keeps the unconditional-forward shape.
-    const projectDir = mkdtempSync(join(SCRATCH, "config-auth-token-"))
-    // Non-bearer-shaped value to satisfy configAuthTokenSchema's
-    // refinement — bearer-shaped strings (ntn_*, secret_*) fail
-    // validation by design.
-    writeFileSync(
-      join(projectDir, ".lore.yaml"),
-      [
-        "vault:",
-        "  pageId: '00000000000000000000000000000000'",
-        "auth:",
-        "  token: legacy-config-tok",
-        "",
-      ].join("\n"),
-    )
-
-    const writes: string[] = []
-    const stderrWrites: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
-
-    const previousApi = process.env["NOTION_API_TOKEN"]
-    const previousLore = process.env["LORE_NOTION_TOKEN"]
-    process.env["NOTION_API_TOKEN"] = "api-tok"
-    delete process.env["LORE_NOTION_TOKEN"]
-    try {
-      await installCommand.parseAsync(
-        ["--project", projectDir, "--print-config", "json"],
-        { from: "user" },
-      )
-    } finally {
-      stdoutSpy.mockRestore()
-      stderrSpy.mockRestore()
-      if (previousApi === undefined) delete process.env["NOTION_API_TOKEN"]
-      else process.env["NOTION_API_TOKEN"] = previousApi
-      if (previousLore !== undefined) process.env["LORE_NOTION_TOKEN"] = previousLore
-    }
-
-    const parsed = JSON.parse(writes.join("")) as {
-      mcpServers: { lore: { env: Record<string, string> } }
-    }
-    // Acceptance: legacy operators with NOTION_API_TOKEN set in env
-    // keep the placeholder forwarded under config-auth-token source.
-    // resolveAuth's path 1 (NOTION_API_TOKEN) wins precedence over
-    // path 4 (config auth.token), so the resolved source actually
-    // resolves to `env-notion-api-token` here — which still preserves
-    // forwarding. The point is "non-ntn-auth-json source preserves
-    // forwarding"; that's what the assertion below pins.
-    expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBe(
-      "${NOTION_API_TOKEN}",
-    )
   })
 })
 
@@ -2885,7 +2529,7 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
 
   it("single-quotes $-bearing configRoots so bash does not expand the variable", () => {
     const root = "/Users/foo/$bar/project"
-    const section = buildCodexMcpSection("bare", root, ENV_BOTH_LEGACY)
+    const section = buildCodexMcpSection("bare", root, ENV_WITH_BASE_URL)
     // The literal `$bar` must appear in the launch command unquoted
     // by double-quotes, so bash treats it as a literal string.
     expect(section).toContain(
@@ -2895,7 +2539,7 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
 
   it("single-quotes backtick-bearing configRoots so bash does not run command substitution", () => {
     const root = "/Users/foo/`whoami`/project"
-    const section = buildCodexMcpSection("bare", root, ENV_BOTH_LEGACY)
+    const section = buildCodexMcpSection("bare", root, ENV_WITH_BASE_URL)
     expect(section).toContain(
       `args = ["-lc", "LORE_CONFIG_ROOT='/Users/foo/\`whoami\`/project' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
     )
@@ -2903,7 +2547,7 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
 
   it("escapes embedded single quotes via the POSIX close-escape-reopen idiom", () => {
     const root = "/Users/foo's/project"
-    const section = buildCodexMcpSection("bare", root, ENV_BOTH_LEGACY)
+    const section = buildCodexMcpSection("bare", root, ENV_WITH_BASE_URL)
     // `'foo'\''s'` ↦ bash concatenation of `foo` + `'` + `s`.
     // Inside the TOML JSON-encoded string, the backslash is escaped
     // again as `\\\\` (one for JSON, one for literal backslash).
@@ -2928,7 +2572,7 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
   // `toPortablePath` rewrites home-relative paths into `${HOME}/...`
   // for committed-config portability, and bash MUST be allowed to
   // expand `${HOME}` at launch time. Plain single-quoting would
-  // inhibit that expansion and break `lore install --legacy-paths`
+  // inhibit that expansion and break `lore install`
   // installs under home; plain double-quoting (the original 0.10.0
   // draft) would re-expose `$bar` / backtick / `\\` to bash. The
   // helper resolves both with `"${HOME}"'/<suffix>'` — adjacent
@@ -2937,7 +2581,7 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
 
   it("single-quotes absolute (non-${HOME}) $-bearing mcp.js paths so bash does not expand the variable", () => {
     const mcpPath = "/opt/lore/$build/dist/mcp.js"
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain(
       `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' node '/opt/lore/$build/dist/mcp.js'"]`,
     )
@@ -2945,7 +2589,7 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
 
   it("single-quotes backtick-bearing mcp.js paths so bash does not run command substitution", () => {
     const mcpPath = "/opt/lore/`whoami`/dist/mcp.js"
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain(
       `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' node '/opt/lore/\`whoami\`/dist/mcp.js'"]`,
     )
@@ -2953,13 +2597,13 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
 
   it("escapes embedded single quotes in mcp.js paths via close-escape-reopen", () => {
     const mcpPath = "/opt/lore/foo's/dist/mcp.js"
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     // `'foo'\''s'` after JSON-encoding for TOML emission.
     expect(section).toContain(`node '/opt/lore/foo'\\\\''s/dist/mcp.js'`)
   })
 
   it("preserves ${HOME} expansion on home-portable paths (the standard ~/.lore install)", () => {
-    // `lore install --legacy-paths` against a Lore checkout under the
+    // `lore install` against a Lore checkout under the
     // operator's home produces a `toPortablePath` output of
     // `${HOME}/.lore/dist/mcp.js`. Bash must expand `${HOME}` to the
     // runtime home; the suffix is single-quoted as a defensive measure
@@ -2968,7 +2612,7 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
     // After JSON-encoding for TOML emission: `"${HOME}"` becomes
     // `\"${HOME}\"` and the single quotes pass through.
     const mcpPath = `${homedir()}/.lore/dist/mcp.js`
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain('node \\"${HOME}\\"\'/.lore/dist/mcp.js\'')
   })
 
@@ -2978,7 +2622,7 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
     // but NOT `$bar` (security). Adjacent-quoted-string concatenation
     // is what keeps the two halves on a single argv entry.
     const mcpPath = `${homedir()}/.lore/$build/dist/mcp.js`
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain('node \\"${HOME}\\"\'/.lore/$build/dist/mcp.js\'')
   })
 
@@ -2988,20 +2632,15 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
     // that through as a no-suffix portable token so bash expands it
     // verbatim. (No real-world Lore install lives at the home root,
     // but pinning this branch keeps the helper honest.)
-    const section = buildLegacyCodexMcpSection(homedir(), TEST_CONFIG_ROOT, ENV_BOTH_LEGACY)
+    const section = buildLegacyCodexMcpSection(homedir(), TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain('node \\"${HOME}\\"')
   })
 })
 
 describe("buildMcpEnv (issue 0.10.0/08)", () => {
-  // The conditional-forwarding contract is the load-bearing piece of
-  // the 0.10.0 ntn-first install — pre-0.10.0 unconditionally
-  // forwarded `LORE_NOTION_TOKEN` and `LORE_NOTION_BASE_URL`, which
-  // pre-0.10.0 was the canonical auth path. Under ntn-first the
-  // canonical path is `auth.json` (resolved at runtime by the MCP
-  // server's `resolveAuth`); install-time forwarding is for
-  // *legacy operators* whose env still carries one of the deprecated
-  // vars, plus operators who explicitly set `NOTION_API_TOKEN`.
+  // The conditional-forwarding contract keeps committed MCP config
+  // free of literal token values while still preserving operator-set
+  // env selectors at runtime.
 
   it("forwards NOTION_API_TOKEN when the operator has it set, plus always-on statics", () => {
     const env: NodeJS.ProcessEnv = { NOTION_API_TOKEN: "ntn-tok" }
@@ -3011,31 +2650,17 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     expect(build.forwarded).toEqual(["NOTION_API_TOKEN"])
   })
 
-  it("forwards LORE_NOTION_TOKEN and reports it via `forwarded` for the migration note", () => {
-    // Acceptance criterion: a fresh install with `LORE_NOTION_TOKEN`
-    // set produces an MCP entry env containing `${LORE_NOTION_TOKEN}`
-    // AND surfaces the forwarded key so the install action prints the
-    // legacy-deprecated note shown at the install summary. The `forwarded`
-    // array is
-    // the connection between buildMcpEnv and the install action's
-    // legacy-detected note.
-    const env: NodeJS.ProcessEnv = { LORE_NOTION_TOKEN: "lore-tok" }
-    const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
-    expect(build.env).toEqual({ LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}" })
-    expect(build.forwarded).toContain("LORE_NOTION_TOKEN")
-  })
-
-  it("forwards both env vars when both are set in the operator env", () => {
+  it("forwards auth and base URL env vars when both are set in the operator env", () => {
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "api-tok",
-      LORE_NOTION_TOKEN: "lore-tok",
+      LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env).toEqual({
       NOTION_API_TOKEN: "${NOTION_API_TOKEN}",
-      LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
+      LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
     })
-    expect(build.forwarded.sort()).toEqual(["LORE_NOTION_TOKEN", "NOTION_API_TOKEN"])
+    expect(build.forwarded).toEqual(["NOTION_API_TOKEN", "LORE_NOTION_BASE_URL"])
   })
 
   it("forwards no auth env when neither var is set — MCP server resolves via auth.json", () => {
@@ -3058,17 +2683,16 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // declared but empty" edge case keeps the entry shape honest.
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "",
-      LORE_NOTION_TOKEN: "value",
+      LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
-    expect(build.env).toEqual({ LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}" })
-    expect(build.forwarded).toEqual(["LORE_NOTION_TOKEN"])
+    expect(build.env).toEqual({ LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}" })
+    expect(build.forwarded).toEqual(["LORE_NOTION_BASE_URL"])
   })
 
   it("forwards LORE_NOTION_BASE_URL alongside whichever token forwards", () => {
     // The base URL override is orthogonal to the auth-source choice —
-    // dev / staging environments need it regardless of whether the
-    // operator is on NOTION_API_TOKEN or LORE_NOTION_TOKEN.
+    // dev / staging environments need it regardless of auth source.
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "tok",
       LORE_NOTION_BASE_URL: "https://api.dev.notion.com",
@@ -3204,9 +2828,9 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     expect(build.forwarded).toContain("NOTION_WORKSPACE_ID")
   })
 
-  it("forwards all eight runtime keys when the operator has the full ntn-dev shell environment", () => {
+  it("forwards all runtime keys when the operator has the full ntn-dev shell environment", () => {
     // Pathological-but-real: a dev operator with everything set.
-    // All eight keys forward as `${VAR}` placeholders. Includes
+    // Every key forwards as a `${VAR}` placeholder. Includes
     // LORE_USER_NAME (DEFERRED-ATTRIBUTION) — operators who set the
     // attribution override at install time keep it on the spawned
     // MCP child without an extra `users.me` round-trip — and
@@ -3214,35 +2838,38 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // hook workers and MCP children pick the same workspace.
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "api-tok",
-      LORE_NOTION_TOKEN: "lore-tok",
       LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
       NOTION_WORKSPACE_ID: "ws_abc",
       NOTION_ENV: "dev",
       NOTION_BASE_URL: "https://api-dev.notion.com",
       NOTION_API_BASE_URL: "https://api-dev.notion.com",
       LORE_USER_NAME: "Test User",
+      LORE_MCP_WRITE_BUDGET: "500",
+      LORE_MCP_BUDGET_STATE_FILE: "/tmp/state.json",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env).toEqual({
       NOTION_API_TOKEN: "${NOTION_API_TOKEN}",
-      LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
       LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
       NOTION_WORKSPACE_ID: "${NOTION_WORKSPACE_ID}",
       NOTION_ENV: "${NOTION_ENV}",
       NOTION_BASE_URL: "${NOTION_BASE_URL}",
       NOTION_API_BASE_URL: "${NOTION_API_BASE_URL}",
       LORE_USER_NAME: "${LORE_USER_NAME}",
+      LORE_MCP_WRITE_BUDGET: "${LORE_MCP_WRITE_BUDGET}",
+      LORE_MCP_BUDGET_STATE_FILE: "${LORE_MCP_BUDGET_STATE_FILE}",
     })
     // Order pinned via runtimeForwardedKeys (matches RUNTIME_FORWARDED_KEYS).
     expect(build.forwarded).toEqual([
       "NOTION_API_TOKEN",
-      "LORE_NOTION_TOKEN",
       "LORE_NOTION_BASE_URL",
       "NOTION_WORKSPACE_ID",
       "NOTION_ENV",
       "NOTION_BASE_URL",
       "NOTION_API_BASE_URL",
       "LORE_USER_NAME",
+      "LORE_MCP_WRITE_BUDGET",
+      "LORE_MCP_BUDGET_STATE_FILE",
     ])
   })
 
@@ -3256,14 +2883,10 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     expect(build.forwarded).toContain("LORE_USER_NAME")
   })
 
-  it("does NOT include LORE_USER_NAME in the legacy-deprecated note filter", () => {
-    // Only LORE_NOTION_TOKEN is soft-deprecated. LORE_USER_NAME is a
-    // first-class operator override under DEFERRED-ATTRIBUTION; an
-    // engineer who sets it shouldn't see a migration recommendation
-    // pointing them at ntn.
+  it("forwards only the attribution override when LORE_USER_NAME is the only operator key", () => {
     const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "testuser" }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
-    expect(build.forwarded).not.toContain("LORE_NOTION_TOKEN")
+    expect(build.forwarded).toEqual(["LORE_USER_NAME"])
   })
 
   it("threads LORE_USER_NAME into Claude / Cursor / Codex installer output as `${LORE_USER_NAME}`", () => {
@@ -3292,17 +2915,14 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // can't accidentally emit it as a literal value).
   })
 
-  it("does NOT include the new ntn-native keys in the legacy-deprecated note filter", () => {
-    // Only LORE_NOTION_TOKEN is soft-deprecated. NOTION_ENV /
-    // NOTION_BASE_URL / NOTION_API_BASE_URL are normal ntn vars and
-    // shouldn't trigger the migration recommendation.
+  it("forwards ntn-native selector keys independently of auth tokens", () => {
     const env: NodeJS.ProcessEnv = {
       NOTION_ENV: "dev",
       NOTION_BASE_URL: "https://api-dev.notion.com",
       NOTION_API_BASE_URL: "https://api-dev.notion.com",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
-    expect(build.forwarded).not.toContain("LORE_NOTION_TOKEN")
+    expect(build.forwarded).toEqual(["NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL"])
   })
 
   it("omits LORE_CONFIG_ROOT from staticEnv when omitConfigRoot is true (PnP path)", () => {
@@ -3328,7 +2948,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
   // Issue #451: under `ntn-auth-json`, the spawned MCP server's
   // `resolveAuth` resolves the bearer token from
   // `~/.config/notion/auth.json` on its own. Forwarding
-  // `${NOTION_API_TOKEN}` / `${LORE_NOTION_TOKEN}` placeholders is
+  // `${NOTION_API_TOKEN}` placeholders is
   // therefore vestigial AND produces host-validator warnings (Claude
   // Code's `/doctor`) when the underlying env vars later unset
   // (one-shot install env, mid-migration shell rc cleanup, etc.).
@@ -3341,23 +2961,6 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env, { authSource: "ntn-auth-json" })
     expect(build.env["NOTION_API_TOKEN"]).toBeUndefined()
     expect(build.forwarded).not.toContain("NOTION_API_TOKEN")
-  })
-
-  it("ntn-auth-json suppresses LORE_NOTION_TOKEN forwarding even when the operator's shell still exports it", () => {
-    // An operator on `ntn-auth-json` whose shell still carries a
-    // stale `LORE_NOTION_TOKEN` (e.g. from a `~/.zshrc` they haven't
-    // pruned yet) shouldn't have it baked into their committed
-    // `.mcp.json` — the MCP server resolves auth.json anyway, so the
-    // placeholder is dead weight and contributes to host-validator
-    // warnings if the var later unsets. The legacy-forwarded
-    // deprecation note in `runInstall` / `runPrintConfig` STILL fires
-    // (it probes the unfiltered shape, not this filtered build) so the
-    // operator gets the shell-rc-cleanup nudge — see the runInstall
-    // test below.
-    const env: NodeJS.ProcessEnv = { LORE_NOTION_TOKEN: "lore-tok" }
-    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, { authSource: "ntn-auth-json" })
-    expect(build.env["LORE_NOTION_TOKEN"]).toBeUndefined()
-    expect(build.forwarded).not.toContain("LORE_NOTION_TOKEN")
   })
 
   it("ntn-auth-json continues to forward NOTION_WORKSPACE_ID — multi-workspace ntn engineers still need it", () => {
@@ -3399,19 +3002,6 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     expect(build.forwarded).toEqual([])
   })
 
-  it("env-lore-notion-token preserves LORE_NOTION_TOKEN forwarding — no regression on the legacy deprecation path", () => {
-    // Acceptance criterion from #451: existing legacy operators on
-    // `LORE_NOTION_TOKEN` still see their token forwarded so their
-    // MCP server can resolve auth via the env path (path 3). The
-    // suppression keys off `ntn-auth-json` only.
-    const env: NodeJS.ProcessEnv = { LORE_NOTION_TOKEN: "lore-tok" }
-    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, {
-      authSource: "env-lore-notion-token",
-    })
-    expect(build.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
-    expect(build.forwarded).toContain("LORE_NOTION_TOKEN")
-  })
-
   it("env-notion-api-token preserves NOTION_API_TOKEN forwarding — operators who exported the canonical name keep it", () => {
     // Path 1 of `resolveAuth` (canonical, env-set NOTION_API_TOKEN).
     // The MCP server reads `process.env["NOTION_API_TOKEN"]` first,
@@ -3434,12 +3024,10 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // even when auth isn't configured yet.
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "api-tok",
-      LORE_NOTION_TOKEN: "lore-tok",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env).toEqual({
       NOTION_API_TOKEN: "${NOTION_API_TOKEN}",
-      LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
     })
   })
 })
@@ -3453,18 +3041,17 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
 
   const ENV_NTN_LIKE: NodeJS.ProcessEnv = {
     // Mirrors the production-vault `.mcp.json` reproduction in #451:
-    // operator's install-time shell carried both an API token and a
-    // legacy LORE_NOTION_TOKEN, plus the ntn-native env selectors.
+    // operator's install-time shell carried an API token plus the
+    // ntn-native env selectors.
     // Tests that assert env_vars for this fixture intentionally cover
     // multi-workspace / dev-env local reinstalls, not the committed
     // source-repo baseline below.
     NOTION_API_TOKEN: "api-tok",
-    LORE_NOTION_TOKEN: "lore-tok",
     NOTION_ENV: "dev",
     NOTION_WORKSPACE_ID: "ws_abc",
   }
 
-  it("buildClaudeMcpEntry (bare bin-dispatch) suppresses both auth-token placeholders under ntn-auth-json", () => {
+  it("buildClaudeMcpEntry (bare bin-dispatch) suppresses auth-token placeholders under ntn-auth-json", () => {
     const entry = buildClaudeMcpEntry(
       "bare",
       TEST_CONFIG_ROOT,
@@ -3472,13 +3059,12 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
     // Environment selectors still flow.
     expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
     expect(entry.env["NOTION_WORKSPACE_ID"]).toBe("${NOTION_WORKSPACE_ID}")
   })
 
-  it("buildClaudeMcpEntry (yarn PnP) suppresses both auth-token placeholders under ntn-auth-json", () => {
+  it("buildClaudeMcpEntry (yarn PnP) suppresses auth-token placeholders under ntn-auth-json", () => {
     const entry = buildClaudeMcpEntry(
       "yarn",
       TEST_CONFIG_ROOT,
@@ -3486,11 +3072,10 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
     expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
   })
 
-  it("buildLegacyClaudeMcpEntry suppresses both auth-token placeholders under ntn-auth-json", () => {
+  it("buildLegacyClaudeMcpEntry suppresses auth-token placeholders under ntn-auth-json", () => {
     const entry = buildLegacyClaudeMcpEntry(
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
@@ -3499,7 +3084,6 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
     expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
   })
 
@@ -3508,11 +3092,10 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       authSource: "ntn-auth-json",
     })
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
     expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
   })
 
-  it("buildLegacyCursorMcpEntry suppresses both auth-token placeholders under ntn-auth-json", () => {
+  it("buildLegacyCursorMcpEntry suppresses auth-token placeholders under ntn-auth-json", () => {
     const entry = buildLegacyCursorMcpEntry(
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
@@ -3521,10 +3104,9 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
   })
 
-  it("buildCodexMcpSection drops both auth-token names from env_vars under ntn-auth-json", () => {
+  it("buildCodexMcpSection drops auth-token names from env_vars under ntn-auth-json", () => {
     // Codex's `env_vars = [...]` is a name-only allowlist. Under
     // ntn-source the auth-token names should NOT appear at all.
     const section = buildCodexMcpSection(
@@ -3534,12 +3116,11 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(section).not.toContain('"NOTION_API_TOKEN"')
-    expect(section).not.toContain('"LORE_NOTION_TOKEN"')
     expect(section).toContain('"NOTION_ENV"')
     expect(section).toContain('"NOTION_WORKSPACE_ID"')
   })
 
-  it("buildLegacyCodexMcpSection drops both auth-token names from env_vars under ntn-auth-json", () => {
+  it("buildLegacyCodexMcpSection drops auth-token names from env_vars under ntn-auth-json", () => {
     const section = buildLegacyCodexMcpSection(
       "${HOME}/.lore/dist/mcp.js",
       TEST_CONFIG_ROOT,
@@ -3547,7 +3128,6 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(section).not.toContain('"NOTION_API_TOKEN"')
-    expect(section).not.toContain('"LORE_NOTION_TOKEN"')
     expect(section).toContain('"NOTION_ENV"')
   })
 
@@ -3563,10 +3143,9 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
     )
     expect(section).toContain('env_vars = ["LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV"]')
     expect(section).not.toContain('"NOTION_API_TOKEN"')
-    expect(section).not.toContain('"LORE_NOTION_TOKEN"')
   })
 
-  it("buildPrintConfigOutput (json) suppresses both auth-token placeholders under ntn-auth-json", () => {
+  it("buildPrintConfigOutput (json) suppresses auth-token placeholders under ntn-auth-json", () => {
     const output = buildPrintConfigOutput(
       "json",
       "${HOME}/.lore/dist/mcp.js",
@@ -3578,11 +3157,10 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(output).not.toContain("${NOTION_API_TOKEN}")
-    expect(output).not.toContain("${LORE_NOTION_TOKEN}")
     expect(output).toContain("${NOTION_ENV}")
   })
 
-  it("buildPrintConfigOutput (toml) suppresses both auth-token names under ntn-auth-json", () => {
+  it("buildPrintConfigOutput (toml) suppresses auth-token names under ntn-auth-json", () => {
     const output = buildPrintConfigOutput(
       "toml",
       "${HOME}/.lore/dist/mcp.js",
@@ -3594,14 +3172,12 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(output).not.toContain('"NOTION_API_TOKEN"')
-    expect(output).not.toContain('"LORE_NOTION_TOKEN"')
     expect(output).toContain('"NOTION_ENV"')
   })
 
-  it("buildPrintConfigOutput emits the source-repo committed ntn-source legacy shape", () => {
+  it("buildPrintConfigOutput emits the source-repo committed ntn-source shape", () => {
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "api-tok",
-      LORE_NOTION_TOKEN: "legacy-tok",
       LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
     }
     const json = buildPrintConfigOutput(
@@ -3619,14 +3195,12 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
         lore: {
           command: string
           args: string[]
-          cwd: string
           env: Record<string, string>
         }
       }
     }
-    expect(parsed.mcpServers.lore.command).toBe("node")
-    expect(parsed.mcpServers.lore.args).toEqual(["${HOME}/.lore/dist/mcp.js"])
-    expect(parsed.mcpServers.lore.cwd).toBe("${HOME}/.lore")
+    expect(parsed.mcpServers.lore.command).toBe("lore")
+    expect(parsed.mcpServers.lore.args).toEqual(["mcp"])
     expect(parsed.mcpServers.lore.env).toEqual({
       LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
       LORE_CONFIG_ROOT: "${HOME}/.lore",
@@ -3644,14 +3218,13 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "ntn-auth-json",
     )
     expect(toml).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' node \\"\${HOME}\\"'/.lore/dist/mcp.js'"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
     )
     expect(toml).toContain('env_vars = ["LORE_NOTION_BASE_URL"]')
     expect(toml).not.toContain("NOTION_API_TOKEN")
-    expect(toml).not.toContain("LORE_NOTION_TOKEN")
   })
 
-  it("committed source-repo MCP configs match the documented ntn-source legacy shape", async () => {
+  it("committed source-repo MCP configs match the documented ntn-source shape", async () => {
     const committedEnv: NodeJS.ProcessEnv = {
       LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
     }
@@ -3659,9 +3232,8 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       JSON.stringify(
         {
           mcpServers: {
-            lore: buildLegacyClaudeMcpEntry(
-              "${HOME}/.lore/dist/mcp.js",
-              "${HOME}/.lore",
+            lore: buildClaudeMcpEntry(
+              "bare",
               "${HOME}/.lore",
               committedEnv,
               "ntn-auth-json",
@@ -3672,8 +3244,8 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
         2,
       ) + "\n"
     const expectedToml =
-      buildLegacyCodexMcpSection(
-        "${HOME}/.lore/dist/mcp.js",
+      buildCodexMcpSection(
+        "bare",
         "${HOME}/.lore",
         committedEnv,
         "ntn-auth-json",
@@ -3689,15 +3261,6 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
     expect(mcpSection).toBe(expectedToml)
   })
 
-  it("legacy authSource (env-lore-notion-token) keeps LORE_NOTION_TOKEN forwarding through the Claude builder — no regression", () => {
-    const entry = buildClaudeMcpEntry(
-      "bare",
-      TEST_CONFIG_ROOT,
-      { LORE_NOTION_TOKEN: "lore-tok" },
-      "env-lore-notion-token",
-    )
-    expect(entry.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
-  })
 })
 
 describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", () => {
@@ -3890,7 +3453,6 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
   // secret rather than a sanitized placeholder.
   const REAL_OPERATOR_ENV: NodeJS.ProcessEnv = {
     NOTION_API_TOKEN: "secret_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfG",
-    LORE_NOTION_TOKEN: "secret_legacy_lore_token_must_not_leak_into_config",
     LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
     NOTION_WORKSPACE_ID: "ws_pnp_real_operator_workspace",
     NOTION_ENV: "dev",
@@ -3911,7 +3473,7 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
   //   - `${HOME}` and `$HOME` catch the portability-rewritten shell
   //     marker (legitimate on the legacy absolute-path shape but
   //     illegitimate on PnP).
-  //   - The two raw token strings catch a regression that
+  //   - The raw token string catches a regression that
   //     interpolated values into the entry rather than emitting
   //     `${VAR}` placeholders. The operator env above is the only
   //     place these strings exist; finding them in serialized
@@ -3928,7 +3490,6 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     "${HOME}",
     "$HOME",
     "secret_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfG",
-    "secret_legacy_lore_token_must_not_leak_into_config",
     "https://api-dev.notion.com",
     "ws_pnp_real_operator_workspace",
     "Real Operator",
@@ -3985,7 +3546,7 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     // Pin the full env_vars line shape to catch ordering regressions
     // — the per-key probe above would still pass if a refactor
     // shuffled the array.
-    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME", "LORE_MCP_WRITE_BUDGET", "LORE_MCP_BUDGET_STATE_FILE"]')
+    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME", "LORE_MCP_WRITE_BUDGET", "LORE_MCP_BUDGET_STATE_FILE"]')
   })
 })
 
@@ -4433,51 +3994,5 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
       { NOTION_ENV: "stg" },
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=stg ntn login")
-  })
-})
-
-describe("formatLegacyForwardedNoteLines (PAT-default migrate contract)", () => {
-  // The install-summary legacy-forwarded note must:
-  //   1. Print exactly the shell-rc-cleanup nudge when
-  //      LORE_NOTION_TOKEN is in the operator's install-time env.
-  //   2. Name BOTH `lore auth --migrate` branches under the
-  //      post-2026-05-13 contract — PAT default + `--ntn` opt-in.
-  //   3. NOT contain the pre-announcement "switching to ntn-issued
-  //      workspace tokens" / "until `lore auth --migrate` ships"
-  //      wording. The reviewer flagged this as the regression
-  //      surface that future refactors must protect against; the
-  //      `not.toMatch` guards below pin the stale strings out.
-  //   4. Return empty for the no-legacy-forwarded case so the caller
-  //      can iterate without an empty-guard `if`.
-
-  it("returns empty array when no LORE_NOTION_TOKEN is forwarded", () => {
-    expect(formatLegacyForwardedNoteLines(false)).toEqual([])
-  })
-
-  it("names both migrate branches and the 0.14.0 removal target when LORE_NOTION_TOKEN is forwarded", () => {
-    const lines = formatLegacyForwardedNoteLines(true)
-    const joined = lines.join("\n")
-    expect(joined).toContain("LORE_NOTION_TOKEN is forwarded into the MCP entry")
-    expect(joined).toContain("soft-deprecated")
-    expect(joined).toContain("0.14.0")
-    expect(joined).toContain("`lore auth --migrate`")
-    expect(joined).toContain("PAT default")
-    expect(joined).toContain("`lore auth")
-    expect(joined).toContain("--migrate --ntn`")
-    expect(joined).toContain("unset LORE_NOTION_TOKEN from")
-  })
-
-  it("does NOT contain the pre-announcement ntn-only wording (regression guard)", () => {
-    // The reviewer's specific ask: the stale "switching to
-    // ntn-issued workspace tokens" / "until `lore auth --migrate`
-    // ships" wording must not return through a future refactor.
-    // The migrate-default flip is the load-bearing contract;
-    // backsliding here would silently route legacy operators to
-    // ntn-only when this PR ships PAT-default.
-    const joined = formatLegacyForwardedNoteLines(true).join("\n")
-    expect(joined).not.toMatch(/switching to ntn-issued workspace tokens/)
-    expect(joined).not.toMatch(/until `lore auth --migrate` ships/)
-    expect(joined).not.toMatch(/until lore auth --migrate ships/)
-    expect(joined).not.toMatch(/NOTION_KEYRING=0 ntn login/)
   })
 })

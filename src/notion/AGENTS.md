@@ -202,10 +202,10 @@ await client.pages.updateMarkdown({
 
 The `auth: token` parameter on `new Client({ auth, ... })` flows
 through to a `Bearer` header on every outbound request. For
-ntn-issued tokens (post-0.10.0 default), the token is the value
-read from `auth.json`'s workspace entry; for legacy
-`LORE_NOTION_TOKEN`, the token is the integration's static secret.
-Both are passed identically to the SDK; the SDK is auth-mode-blind.
+ntn-issued tokens, the token is the value read from `auth.json`'s
+workspace entry; for `NOTION_API_TOKEN`, the token is the explicit
+bearer supplied by the operator. Both are passed identically to the
+SDK; the SDK is auth-mode-blind.
 See the root `AGENTS.md` **Authentication** section and
 `src/auth/AGENTS.md` for how the token is resolved before reaching
 this layer.

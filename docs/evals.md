@@ -509,8 +509,8 @@ names must contain a word-bounded `sandbox`, `eval`, `test`, `scratch`,
   stderr line so the operator sees the refusal directly.
 - **Env scrubbing.** The Codex child inherits an explicit allowlist
   env (`PATH`, `HOME`, `TMPDIR`, `TZ`, `LANG`, `LC_*`, `OPENAI_API_KEY`,
-  plus `CODEX_*`). Secrets like `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
-  and `GITHUB_TOKEN` are stripped — both from the child env and from
+  plus `CODEX_*`). Secrets like `NOTION_API_TOKEN` and `GITHUB_TOKEN`
+  are stripped — both from the child env and from
   any echo into the captured stdout/stderr.
 - **Process-tree teardown.** The Codex child runs in a detached process
   group; timeout cancellation kills `-pid` so subprocesses Codex

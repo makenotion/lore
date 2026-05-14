@@ -111,11 +111,6 @@ describe("warnRunToolIntegrationSecretOnce + isKnownIntegrationSecretAuthSource"
     __resetWarnRunToolIntegrationSecretForTest()
   })
 
-  it("classifies env-lore-notion-token and config-auth-token as integration-secret sources", () => {
-    expect(isKnownIntegrationSecretAuthSource("env-lore-notion-token")).toBe(true)
-    expect(isKnownIntegrationSecretAuthSource("config-auth-token")).toBe(true)
-  })
-
   it("does NOT classify ntn-resolved or ambiguous env sources as integration-secret", () => {
     // ntn-auth-json is the canonical user-actor path.
     expect(isKnownIntegrationSecretAuthSource("ntn-auth-json")).toBe(false)
@@ -125,25 +120,10 @@ describe("warnRunToolIntegrationSecretOnce + isKnownIntegrationSecretAuthSource"
     expect(isKnownIntegrationSecretAuthSource("env-notion-api-token")).toBe(false)
   })
 
-  it("emits a stderr warning the first time it sees an integration-secret source", () => {
-    warnRunToolIntegrationSecretOnce("env-lore-notion-token")
-    expect(stderrSpy).toHaveBeenCalledTimes(1)
-    const line = (stderrSpy.mock.calls[0]![0] as string).trim()
-    expect(line).toContain("[lore] runtool:")
-    expect(line).toContain("env-lore-notion-token")
-    expect(line).toContain("'lore auth --login'")
-  })
-
   it("is silent for non-integration-secret sources", () => {
     warnRunToolIntegrationSecretOnce("ntn-auth-json")
     warnRunToolIntegrationSecretOnce("env-notion-api-token")
     expect(stderrSpy).not.toHaveBeenCalled()
   })
 
-  it("only emits ONCE per process across repeated calls", () => {
-    warnRunToolIntegrationSecretOnce("env-lore-notion-token")
-    warnRunToolIntegrationSecretOnce("env-lore-notion-token")
-    warnRunToolIntegrationSecretOnce("config-auth-token")
-    expect(stderrSpy).toHaveBeenCalledTimes(1)
-  })
 })

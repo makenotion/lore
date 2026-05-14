@@ -688,13 +688,12 @@ describe("installNtn", () => {
 
   it("scrubs the spawn env to an allowlist — token-bearing variables do NOT leak to the installer", async () => {
     // The remote installer at https://ntn.dev does not need
-    // NOTION_API_TOKEN, LORE_NOTION_TOKEN, GITHUB_TOKEN, npm
-    // credentials, or any other Lore/CI-injected secret. Pin the
+    // NOTION_API_TOKEN, GITHUB_TOKEN, npm credentials, or any other
+    // Lore/CI-injected secret. Pin the
     // scrub so a future contributor who reverts to
     // `{ ...process.env, NOTION_KEYRING: "0" }` exfiltration breaks
     // this test loudly.
     process.env["NOTION_API_TOKEN"] = "tok-canonical-must-not-leak"
-    process.env["LORE_NOTION_TOKEN"] = "tok-legacy-must-not-leak"
     process.env["GITHUB_TOKEN"] = "ghp-must-not-leak"
     process.env["NPM_TOKEN"] = "npm-must-not-leak"
     process.env["AWS_SECRET_ACCESS_KEY"] = "aws-must-not-leak"
@@ -707,13 +706,11 @@ describe("installNtn", () => {
 
     const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
     expect(options.env).not.toHaveProperty("NOTION_API_TOKEN")
-    expect(options.env).not.toHaveProperty("LORE_NOTION_TOKEN")
     expect(options.env).not.toHaveProperty("GITHUB_TOKEN")
     expect(options.env).not.toHaveProperty("NPM_TOKEN")
     expect(options.env).not.toHaveProperty("AWS_SECRET_ACCESS_KEY")
 
     delete process.env["NOTION_API_TOKEN"]
-    delete process.env["LORE_NOTION_TOKEN"]
     delete process.env["GITHUB_TOKEN"]
     delete process.env["NPM_TOKEN"]
     delete process.env["AWS_SECRET_ACCESS_KEY"]

@@ -8,17 +8,12 @@
  *   --whoami   Resolve the active token and print the bot identity from
  *              `users.me` on a single line (script-friendly).
  *   --logout   Print source-specific logout instructions (informational
- *              only — Lore doesn't manage ntn's storage; for legacy paths
- *              it points at the unset / config-edit step).
- *   --migrate  Walk an operator with LORE_NOTION_TOKEN (or auth.token in
- *              config) through migrating to ntn-first auth.
+ *              only — Lore doesn't manage ntn's storage or shell env).
  */
 
 import { Command } from "commander"
-import { readFile } from "node:fs/promises"
 import { createInterface } from "node:readline/promises"
 import { homedir } from "node:os"
-import { join } from "node:path"
 import type { Client } from "@notionhq/client"
 
 import {
@@ -33,23 +28,16 @@ import {
   installNtn,
   isNtnInstalled,
   listNtnWorkspaces,
-  loadNtnToken,
   MIN_NTN_VERSION,
   type NtnEnv,
   NTN_INSTALL_COMMAND,
   parseNtnEnv,
   resetNtnProbeCache,
   runNtnLogin,
-  type NtnInstallResult,
-  type NtnLoginResult,
-  type NtnTokenRecord,
 } from "../../auth/ntn.js"
 import {
-  ntnEnvBaseUrl,
   ntnEnvFromBaseUrl,
-  resolveOperatorBaseUrl,
   verifyVaultAccess,
-  type VaultAccessResult,
 } from "../../auth/oauth.js"
 import {
   classifyTokenPrefix,
@@ -64,26 +52,14 @@ interface AuthOpts {
   login?: boolean
   logout?: boolean
   whoami?: boolean
-  migrate?: boolean
   yes?: boolean
-  /**
-   * Persona selector for `--migrate`. When true (`--migrate --ntn`),
-   * runs the four-step internal-engineer flow that ends in
-   * `ntn login` + auth.json. When false (default — `--migrate`),
-   * runs the PAT flow: verify the legacy token reaches the vault,
-   * walk the operator through creating a PAT at
-   * `notion.so/developers/tokens`, verify the new PAT reaches the
-   * same vault, then print unset instructions for the legacy
-   * source. Ignored when `--migrate` is not also set.
-   */
-  ntn?: boolean
 }
 
-export type AuthAction = "login" | "logout" | "whoami" | "status" | "migrate"
+export type AuthAction = "login" | "logout" | "whoami" | "status"
 
 /**
  * Documented precedence for multi-flag invocations:
- *   --migrate > --login > --logout > --whoami > --status
+ *   --login > --logout > --whoami > --status
  *
  * Defaults to `--status` when no flag is set.
  *
@@ -97,7 +73,6 @@ export function pickAuthAction(opts: AuthOpts): {
   ignored: string[]
 } {
   const ladder: Array<{ name: string; on: boolean | undefined; action: AuthAction }> = [
-    { name: "--migrate", on: opts.migrate, action: "migrate" },
     { name: "--login", on: opts.login, action: "login" },
     { name: "--logout", on: opts.logout, action: "logout" },
     { name: "--whoami", on: opts.whoami, action: "whoami" },
@@ -121,14 +96,6 @@ export const authCommand = new Command("auth")
   .option("--whoami", "Print the authenticated identity (one line)")
   .option("--logout", "Show how to log out of the active auth source")
   .option(
-    "--migrate",
-    "Walk through migrating from LORE_NOTION_TOKEN (or auth.token in config) to PAT-first auth (default). Pass --ntn to migrate to ntn-issued auth instead.",
-  )
-  .option(
-    "--ntn",
-    "With --migrate, select the internal-engineer ntn flow (ntn login + auth.json). Default is the PAT flow.",
-  )
-  .option(
     "-y, --yes",
     'Auto-confirm prompts (e.g., "Install ntn? [Y/n]")',
   )
@@ -140,16 +107,6 @@ export const authCommand = new Command("auth")
       )
     }
     switch (action) {
-      case "migrate": {
-        if (opts.ntn) {
-          const result = await runMigrate({ yes: opts.yes }, productionMigrateDeps())
-          if (result.exitCode !== 0) process.exit(result.exitCode)
-          return
-        }
-        const result = await runPatMigrate({ yes: opts.yes }, productionPatMigrateDeps())
-        if (result.exitCode !== 0) process.exit(result.exitCode)
-        return
-      }
       case "login":
         await runLogin({ yes: opts.yes ?? false })
         return
@@ -197,13 +154,9 @@ export async function runStatus(): Promise<void> {
     let globalAuth: ResolvedAuth | undefined
     let globalErr: unknown
     try {
-      // Pass `homedir()` rather than `cwd` as the deprecation-marker
-      // keying input — without a vault context every cwd would mint
-      // its own marker, so an operator with `LORE_NOTION_TOKEN` set
-      // running from `~/proj-a` and then `~/proj-b` would re-fire
-      // the warning. `homedir()` collapses all no-vault calls onto a
-      // single per-operator marker. `LORE_SUPPRESS_DEPRECATIONS=1`
-      // remains the silence escape.
+      // Pass `homedir()` rather than `cwd` when there is no vault
+      // context so global auth resolution has a stable root for ntn
+      // workspace selection and diagnostics.
       globalAuth = await resolveAuth(undefined, homedir())
     } catch (err) {
       globalErr = err
@@ -272,10 +225,6 @@ export async function runStatus(): Promise<void> {
     console.log("  This auto-installs ntn (if missing), runs `ntn login`")
     console.log("  with NOTION_KEYRING=0 forced inside the spawn, and")
     console.log("  verifies vault access. No shell-rc edits required.")
-    console.log("")
-    console.log("  Legacy fallback (soft-deprecated):")
-    console.log("    export LORE_NOTION_TOKEN=<your-integration-token>")
-
     if (!isNtnInstalled()) {
       console.log("")
       console.log("  Note: `ntn` does not appear to be installed.")
@@ -285,24 +234,14 @@ export async function runStatus(): Promise<void> {
   }
 
   printAuthSourceLines(auth)
-  // Source-specific note that needs the resolved config path. The
-  // generic source lines live in `printAuthSourceLines`; the
-  // file-path callout has to live here because the helper has no
-  // access to the resolved path.
-  if (auth.source === "config-auth-token") {
-    console.log(`  (Edit ${found.path} to remove the auth.token field.)`)
-  }
 
   console.log("")
   console.log(`  Vault page id:  ${config.vault.pageId}`)
   if (config.auth?.workspaceId) {
     console.log(`  Pinned workspace: ${config.auth.workspaceId}`)
   }
-  // Surface the active baseUrl so operators on legacy sources see what
-  // host their next preflight call will hit. A .lore.yaml-supplied
-  // override can silently redirect a token to an arbitrary host on the
-  // legacy paths; printing the value here is one free defense-in-depth
-  // line.
+  // Surface the active baseUrl so operators see what host their next
+  // preflight call will hit.
   if (auth.baseUrl) {
     console.log(`  Notion base URL:  ${auth.baseUrl}`)
   }
@@ -318,14 +257,16 @@ export async function runStatus(): Promise<void> {
   } else if (result.kind === "not-found") {
     console.log("  ✗ Vault page NOT accessible")
     console.log(`    ${result.message}`)
+    console.log("")
+    printStatusVaultRecovery(auth, "not-found", config.vault.pageId)
   } else if (result.kind === "unauthorized") {
     // Token rejected (401 / 403). Distinct from `not-found` so the
     // remediation actually helps: the operator's next step is
-    // re-auth, not workspace re-share.
+    // source-specific auth recovery, not generic workspace re-share.
     console.log("  ✗ Vault preflight: token rejected (unauthorized)")
     console.log(`    ${result.message}`)
     console.log("")
-    console.log("  Recommended: run `lore auth --login` to issue a fresh token.")
+    printStatusVaultRecovery(auth, "unauthorized", config.vault.pageId)
   } else if (result.kind === "rate-limited") {
     // Transient throttling — bearer token is fine; the issue is
     // request-rate volume. Don't bounce the operator to re-auth.
@@ -343,15 +284,74 @@ export async function runStatus(): Promise<void> {
   }
 }
 
+function printStatusVaultRecovery(
+  auth: ResolvedAuth,
+  kind: "not-found" | "unauthorized",
+  vaultPageId: string
+): void {
+  if (auth.source === "env-notion-api-token") {
+    if (auth.token.startsWith("secret_")) {
+      console.log(
+        "  The token shape is `secret_…` — an integration token from notion.so/profile/integrations, NOT a PAT.",
+      )
+      console.log(
+        "  Rotate to a PAT from notion.so/developers/tokens for per-user isolation.",
+      )
+      console.log("")
+    }
+    console.log("  Recommended for NOTION_API_TOKEN / PAT:")
+    if (kind === "unauthorized") {
+      console.log(
+        "    1. Rotate the PAT at https://www.notion.so/developers/tokens.",
+      )
+      console.log(
+        "       The current value may be expired, revoked, or scoped to the wrong workspace.",
+      )
+      console.log(
+        "    2. Confirm the vault page is shared with the PAT's owning Notion identity.",
+      )
+    } else {
+      console.log(
+        `    1. Confirm the PAT was created in the workspace containing ${vaultPageId}.`,
+      )
+      console.log(
+        "       Create or rotate it at https://www.notion.so/developers/tokens.",
+      )
+      console.log(
+        "    2. Confirm the vault page is shared with the PAT's owning Notion identity.",
+      )
+    }
+    console.log(
+      "       If you can't open the page in Notion's UI, the PAT can't read it either.",
+    )
+    console.log(
+      "    3. Export the PAT as NOTION_API_TOKEN, then re-run `lore auth --status`.",
+    )
+    return
+  }
+
+  console.log("  Recommended for ntn auth:")
+  if (kind === "unauthorized") {
+    console.log("    Run `lore auth --login` to issue a fresh ntn token.")
+    console.log(
+      "    If the issue persists, check that your Notion identity is a member of the workspace.",
+    )
+    return
+  }
+
+  console.log(
+    `    1. Run \`lore auth --login\` and pick the workspace containing ${vaultPageId}.`,
+  )
+  console.log("    2. Confirm the vault page is shared with your Notion identity.")
+  console.log(
+    "       If you can't open it in Notion's UI, the ntn token can't read it either.",
+  )
+}
+
 /**
  * Render the source / status lines for an active or absent
  * `ResolvedAuth`. Pure-ish (writes to console.log) so tests can pin the
  * exact lines per source without driving the entire `runStatus` flow.
- *
- * Single-arg signature — the previous `configPath` parameter was used
- * by exactly one source (`config-auth-token`) to name the file the
- * operator edits; that copy moved into `runStatus`'s vault-context
- * branch where the path is already in scope.
  */
 export function printAuthSourceLines(auth: ResolvedAuth | undefined): void {
   if (!auth) {
@@ -371,46 +371,6 @@ export function printAuthSourceLines(auth: ResolvedAuth | undefined): void {
       }
       console.log("  Status: ✓ active")
       break
-    case "env-lore-notion-token":
-      console.log("  Source: LORE_NOTION_TOKEN (env, soft-deprecated)")
-      console.log("  Status: ✓ active (legacy)")
-      console.log("")
-      console.log(
-        "  Recommended: run `lore auth --migrate` to migrate to a PAT in NOTION_API_TOKEN,",
-      )
-      console.log(
-        "  or `lore auth --migrate --ntn` to migrate to ntn-issued auth instead.",
-      )
-      break
-    case "config-auth-token":
-      console.log("  Source: auth.token in .lore.yaml (soft-deprecated)")
-      console.log("  Status: ✓ active (legacy)")
-      console.log("")
-      console.log(
-        "  Recommended: run `lore auth --migrate` to migrate to a PAT in NOTION_API_TOKEN",
-      )
-      console.log(
-        "  (or `lore auth --migrate --ntn` for ntn-issued auth instead),",
-      )
-      console.log("  then remove auth.token from .lore.yaml.")
-      break
-  }
-
-  // Surface accidentally-set LORE_NOTION_TOKEN. The most common operator
-  // confusion: migrated to ntn, never unset the legacy env var. Listing
-  // every shadow source (NOTION_API_TOKEN when ntn is active, etc.)
-  // would clutter the output; only the dominant shadow gets a line.
-  if (
-    auth.source !== "env-lore-notion-token" &&
-    process.env["LORE_NOTION_TOKEN"]
-  ) {
-    console.log("")
-    console.log(
-      "  Shadow: LORE_NOTION_TOKEN is set in env but not active for this vault.",
-    )
-    console.log(
-      "  (Higher-priority source wins. Remove the env var when convenient.)",
-    )
   }
 }
 
@@ -728,15 +688,12 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
  * outside a Lore project when a `NOTION_API_TOKEN` env or a
  * single-workspace auth.json resolves. Inside a vault context
  * we still load the config so the resolver can honor
- * `auth.workspaceId` and the legacy `auth.token` source.
+ * `auth.workspaceId`.
  */
 export async function runWhoami(): Promise<void> {
   const cwd = process.cwd()
   const found = await findConfigFile(cwd)
   const config = found ? await loadConfig(found.path) : undefined
-  // Outside a vault, key the deprecation marker off `homedir()` so
-  // running `lore auth --whoami` from different project dirs doesn't
-  // re-fire the legacy `LORE_NOTION_TOKEN` warning per cwd.
   const configRoot = found ? found.root : homedir()
 
   let auth: ResolvedAuth
@@ -856,9 +813,6 @@ export async function runLogout(): Promise<void> {
     }
   } else {
     try {
-      // homedir() keying collapses all no-vault calls onto a single
-      // per-operator deprecation marker, matching the keying
-      // `runStatus` / `runWhoami` use when no vault is configured.
       auth = await resolveAuth(undefined, homedir())
     } catch {
       // No active auth — fall through.
@@ -883,28 +837,6 @@ export async function runLogout(): Promise<void> {
       console.log("")
       console.log(
         "This is ntn's responsibility; Lore reads but doesn't write auth.json.",
-      )
-      break
-    case "env-lore-notion-token":
-      console.log(
-        "Lore is using LORE_NOTION_TOKEN from your environment.",
-      )
-      console.log("To log out: unset LORE_NOTION_TOKEN")
-      console.log("")
-      console.log(
-        "Consider migrating: `lore auth --migrate` (PAT default) or `lore auth --migrate --ntn` (ntn).",
-      )
-      break
-    case "config-auth-token":
-      console.log("Lore is using auth.token in .lore.yaml.")
-      if (found) {
-        console.log(`To log out: remove the auth.token field from ${found.path}`)
-      } else {
-        console.log("To log out: remove the auth.token field from .lore.yaml")
-      }
-      console.log("")
-      console.log(
-        "Consider migrating: `lore auth --migrate` (PAT default) or `lore auth --migrate --ntn` (ntn).",
       )
       break
   }
@@ -959,1222 +891,4 @@ function formatErrorDetail(err: unknown): string {
   if (err instanceof Error) return err.message
   if (err === undefined || err === null) return String(err)
   return String(err)
-}
-
-/**
- * Re-export of the canonical `ntnEnvFromBaseUrl` inference helper under
- * the local name so the `runLogin` call site and its existing tests
- * don't have to migrate import paths in lockstep with the consolidation.
- * The canonical helper carries the recognized URL table and the
- * exact-match policy rationale.
- */
-export { ntnEnvFromBaseUrl as inferNtnEnvFromBaseUrl } from "../../auth/oauth.js"
-
-// ---------------------------------------------------------------------------
-// `lore auth --migrate`
-//
-// Walks an operator with `LORE_NOTION_TOKEN` set (or `auth.token` in config)
-// through running `ntn login`, double-preflights before/after to confirm the
-// new token reaches the same vault, and prints unset instructions with
-// shell-rc location detection. See Phase-2/07-lore-auth-migrate.md for the
-// full design.
-//
-// `runMigrate` takes a dependency bag so tests can stub the Notion-touching
-// pieces, the spawn helpers, and the prompt without process globals — same
-// posture as `runReconcile` / `dispatchInstall`. The commander dispatch above
-// supplies `productionMigrateDeps()` for the live path.
-// ---------------------------------------------------------------------------
-
-/**
- * Result of a `runMigrate` invocation. Returning `{ exitCode }` rather
- * than calling `process.exit` directly lets tests assert outcomes
- * without process globals; the commander dispatch above maps the code
- * onto `process.exit`.
- */
-export interface MigrateResult {
-  exitCode: 0 | 1
-}
-
-export interface MigrateOptions {
-  yes?: boolean
-}
-
-/**
- * Outcome of a candidate-shell-rc-files walk. Returns the first file
- * containing `LORE_NOTION_TOKEN`, or null when no candidate matched.
- * Best-effort: missing files / unreadable permissions / unconventional
- * shell-rc locations all fall through to null and the generic
- * unset-instruction message.
- */
-export type ShellRcFinder = () => Promise<string | null>
-
-/**
- * Map a `NOTION_ENV` selector to the URL `resolveNtnEnvBaseUrl` /
- * `resolveLoginTargetBaseUrl` should hand back. Delegates to the
- * single canonical `ntnEnvBaseUrl` env→URL table. The helper exists
- * for the early-return symmetry — `ntnEnvBaseUrl` already handles
- * `undefined` and unknown env names; this wrapper just names the
- * local intent at the call sites that read `NOTION_ENV` directly.
- *
- * **Explicit `NOTION_ENV=prod` returns the canonical prod URL**
- * (`https://api.notion.so`), NOT `undefined`. The "no override needed
- * for prod" normalization (i.e., letting the SDK pick its default)
- * happens at the spawn / client boundary in `computeNtnLoginEnvOverride`
- * — collapsing prod to `undefined` here lets a stale
- * `auth.baseUrl: <dev URL>` win over an explicit `NOTION_ENV=prod`
- * via `computeNtnLoginEnvOverride`'s `resolveNtnEnvBaseUrl(env) ??
- * configBaseUrl` fallback, which is exactly the "explicit operator
- * intent silently overruled by stale config" footgun this resolver is
- * supposed to prevent.
- */
-function envNameBaseUrl(envName: string | undefined): string | undefined {
-  return ntnEnvBaseUrl(envName)
-}
-
-/**
- * Resolve the Notion API base URL the migrate flow should use,
- * priority order:
- *
- *   1. `LORE_NOTION_BASE_URL` — Lore-specific override. Matches the
- *      shape `resolveAuth` uses for its `env-notion-api-token` source.
- *   2. `NOTION_BASE_URL` — the env-var name `resolveOperatorBaseUrl`
- *      accepts between the Lore-prefixed and ntn-API names.
- *      Including it keeps migrate's env-resolution aligned with the
- *      shared operator-base-URL chain.
- *   3. `NOTION_API_BASE_URL` — ntn's native override. Documented in
- *      `ntn --help` as the explicit dev/staging endpoint switch. An
- *      operator following ntn's docs sets this; without consulting it
- *      Lore would silently verify against prod while ntn login itself
- *      targeted dev — the round-4 blocking finding that prompted this
- *      helper's introduction.
- *   4. `NOTION_ENV` — ntn's environment switch (`dev` / `stg`),
- *      mapped to the canonical URL via `NTN_ENV_BASE_URLS`. Covers
- *      the case where the operator uses the env-name shortcut rather
- *      than the literal URL.
- *
- * Returns `undefined` when no override applies (SDK default = prod).
- *
- * **Used at every Notion-touching site in the migrate flow** — Step 4
- * ntn-verify (when `loadNtnToken` returns no baseUrl) and the
- * post-Step-4 NOTION_API_TOKEN guard. The login spawn (Step 3)
- * receives an explicit env-override via `computeNtnLoginEnvOverride`
- * so the config-driven `auth.baseUrl: <dev URL>` case threads through
- * correctly even when no env var is set.
- *
- * Takes `env: NodeJS.ProcessEnv` rather than reading `process.env`
- * directly so tests can stub via `MigrateDeps.env()`.
- */
-export function resolveNtnEnvBaseUrl(
-  env: NodeJS.ProcessEnv,
-): string | undefined {
-  const loreOverride = env["LORE_NOTION_BASE_URL"]
-  if (loreOverride) return loreOverride
-  const middleOverride = env["NOTION_BASE_URL"]
-  if (middleOverride) return middleOverride
-  const nativeOverride = env["NOTION_API_BASE_URL"]
-  if (nativeOverride) return nativeOverride
-  return envNameBaseUrl(env["NOTION_ENV"])
-}
-
-/**
- * Resolve the URL `ntn login` would natively target without any
- * Lore-driven env override. ntn login reads only `NOTION_BASE_URL`
- * and `NOTION_ENV` per `ntn login --help` — it does NOT read
- * `LORE_NOTION_BASE_URL` (a Lore-specific name) or
- * `NOTION_API_BASE_URL` (the runtime API-host var, used by
- * already-issued requests). The split between this helper and
- * `resolveNtnEnvBaseUrl` is load-bearing: an operator who set only
- * `NOTION_API_BASE_URL=<dev URL>` has signalled their dev intent for
- * Lore's verifies, but ntn login itself wouldn't know — so migrate
- * has to translate that intent into a `NOTION_BASE_URL=<URL>`
- * spawn override.
- *
- * Returns `undefined` when ntn login would default to prod.
- */
-export function resolveLoginTargetBaseUrl(
-  env: NodeJS.ProcessEnv,
-): string | undefined {
-  const direct = env["NOTION_BASE_URL"]
-  if (direct) return direct
-  return envNameBaseUrl(env["NOTION_ENV"])
-}
-
-/**
- * Compute the env-override (if any) that `runNtnLogin` should spawn
- * with so ntn login targets the same Notion host every other migrate
- * site is using.
- *
- * The blind spot this closes: a project with .lore.yaml carrying
- * `auth.baseUrl: https://api-dev.notion.com` (or with only
- * `NOTION_API_BASE_URL` / `LORE_NOTION_BASE_URL` set in env) would
- * have Step 1 verify the legacy token against dev, then run a bare
- * `ntn login` that defaults to prod (because none of those vars are
- * what ntn login natively reads), then verify a freshly-issued prod
- * token at Step 4 against the dev vault — silent host mismatch.
- *
- * Resolution:
- *
- *   1. **Compute migrate's intended target** via
- *      `resolveNtnEnvBaseUrl(env) ?? configBaseUrl`. This is the
- *      URL Lore's verifies will use.
- *   2. **Compute ntn login's native target** via
- *      `resolveLoginTargetBaseUrl(env)`. This is what ntn login
- *      itself would read from process.env.
- *   3. **If migrate has no target intent, no override needed.**
- *      Both ntn login and migrate's verifies default to prod.
- *      Consistent.
- *   4. **If migrate's target matches ntn login's native target, no
- *      override needed.** ntn login already inherits the var via
- *      process.env (e.g., the operator set `NOTION_BASE_URL` or
- *      `NOTION_ENV` directly).
- *   5. **Otherwise, forward `NOTION_BASE_URL=<migrateTarget>`.**
- *      Translates Lore's intent (LORE_NOTION_BASE_URL,
- *      NOTION_API_BASE_URL, config auth.baseUrl) into the env var
- *      ntn login natively respects.
- *
- * Returns `undefined` when no override is needed; `{ NOTION_BASE_URL: ... }`
- * when migrate's intended target needs to be translated for the spawn.
- */
-export function computeNtnLoginEnvOverride(
-  configBaseUrl: string | undefined,
-  env: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv | undefined {
-  const migrateTarget = resolveNtnEnvBaseUrl(env) ?? configBaseUrl
-  if (!migrateTarget) return undefined
-  const loginNativeTarget = resolveLoginTargetBaseUrl(env)
-  if (migrateTarget === loginNativeTarget) return undefined
-  return { NOTION_BASE_URL: migrateTarget }
-}
-
-/**
- * Operator-advice category for a `VaultAccessResult` failure.
- *
- * - `permission` — the page exists but the token can't read it (404
- *   under the current 3-arm shape on `main`). Routes to the
- *   integration-sharing / wrong-workspace / personal-permissions
- *   diagnostic copy.
- * - `auth` — the token itself is invalid or expired (401 / 403).
- *   Routes to a re-auth recommendation. Reachable through the
- *   5-arm `VaultAccessResult` refinement.
- * - `throttle` — the request was rate-limited (429). Routes to a
- *   back-off recommendation. Same forward-compat posture as `auth`.
- * - `transient` — 5xx, DNS, proxy, or any other not-explicitly-
- *   classified failure. Routes to the retry-with-status.notion.so
- *   advice. Catch-all so a future kind value lands somewhere
- *   harmless rather than silently misrouting.
- */
-type VaultErrorClass = "permission" | "auth" | "throttle" | "transient"
-
-/**
- * Classify a `VaultAccessResult` failure into one of four operator-
- * advice categories. Each abort site (Step 1 legacy, Step 4 ntn,
- * post-Step-4 NOTION_API_TOKEN guard) routes the four classes to
- * site-specific copy.
- *
- * **Takes `kind: string` rather than the typed discriminator** so the
- * helper covers every `VaultAccessResult` arm (`ok` / `not-found` /
- * `unauthorized` / `rate-limited` / `unknown-error`) without coupling
- * to a closed discriminator at this seam.
- *
- * The fall-through to `transient` is intentional: any future kind
- * we haven't yet routed lands on the safest non-misleading copy
- * (retry advice) rather than wrong remediation.
- */
-export function classifyVaultError(kind: string): VaultErrorClass {
-  if (kind === "not-found") return "permission"
-  if (kind === "unauthorized") return "auth"
-  if (kind === "rate-limited") return "throttle"
-  return "transient"
-}
-
-/**
- * Build a Notion client from a token + base URL. Defaulted to
- * `createLimitedClient(createClient(...))` — wrapped in a factory so
- * tests can inject a fake without touching `@notionhq/client`.
- */
-export type NotionClientFactory = (token: string, baseUrl?: string) => Client
-
-export interface MigrateDeps {
-  cwd: () => string
-  env: () => NodeJS.ProcessEnv
-  log: (line: string) => void
-  error: (line: string) => void
-  findConfigFile: typeof findConfigFile
-  loadConfig: typeof loadConfig
-  makeClient: NotionClientFactory
-  verifyVaultAccess: (client: Client, pageId: string) => Promise<VaultAccessResult>
-  loadNtnToken: typeof loadNtnToken
-  isNtnInstalled: () => boolean
-  installNtn: () => Promise<NtnInstallResult>
-  /**
-   * Optional `envOverride` lets the caller direct ntn login at a
-   * specific Notion environment when the config's `auth.baseUrl` is
-   * set but no env var directs ntn. The production wiring temporarily
-   * mutates `process.env` for the spawn (since the underlying
-   * `runNtnLogin` reads `process.env` directly) and restores on
-   * completion. Tests inject a spy that captures the argument
-   * directly without process-env mutation.
-   */
-  runNtnLogin: (envOverride?: NodeJS.ProcessEnv) => Promise<NtnLoginResult>
-  confirmPrompt: (message: string, defaultYes?: boolean) => Promise<boolean>
-  findShellRc: ShellRcFinder
-}
-
-/**
- * Production wiring of `MigrateDeps`. Threads the live auth, config,
- * and Notion client helpers into the orchestrator. Tests replace
- * this with `vi.fn()`-shaped stubs.
- */
-export function productionMigrateDeps(): MigrateDeps {
-  // `homedir()` resolves once at factory build; the closure below
-  // reuses it for every `findShellRc` call. One syscall instead of N.
-  const home = homedir()
-  return {
-    cwd: () => process.cwd(),
-    env: () => process.env,
-    log: (line) => console.log(line),
-    error: (line) => console.error(line),
-    findConfigFile,
-    loadConfig,
-    makeClient: (token, baseUrl) => createLimitedClient(createClient(token, baseUrl)),
-    verifyVaultAccess,
-    loadNtnToken,
-    isNtnInstalled,
-    installNtn,
-    // Wrap the underlying ntn login spawn so a caller-supplied
-    // `envOverride` lands in `process.env` for the duration of the
-    // spawn. `runNtnLogin` reads `process.env`
-    // directly via its `...process.env` spread; without this wrapper
-    // the override would have no effect. Restored in `finally` so an
-    // overridden var doesn't leak past the spawn.
-    runNtnLogin: async (envOverride) => {
-      if (!envOverride) return runNtnLogin()
-      const restore: Array<[string, string | undefined]> = []
-      for (const [key, value] of Object.entries(envOverride)) {
-        if (typeof value !== "string") continue
-        restore.push([key, process.env[key]])
-        process.env[key] = value
-      }
-      try {
-        return await runNtnLogin()
-      } finally {
-        for (const [key, prior] of restore) {
-          if (prior === undefined) delete process.env[key]
-          else process.env[key] = prior
-        }
-      }
-    },
-    confirmPrompt,
-    findShellRc: () => findShellRcReferencingLoreToken(home),
-  }
-}
-
-/**
- * Walk the candidate-shell-rc list looking for a `LORE_NOTION_TOKEN`
- * reference. Order matches the priority operators on macOS / Linux
- * actually use: zsh first (Notion-internal default), then bash, then
- * the POSIX fallback, then fish.
- *
- * Public so tests can construct a custom `homedir`-rooted scratch and
- * verify each branch independently.
- */
-export async function findShellRcReferencingLoreToken(
-  home: string,
-): Promise<string | null> {
-  const candidates = [
-    join(home, ".zshrc"),
-    join(home, ".bashrc"),
-    join(home, ".bash_profile"),
-    join(home, ".profile"),
-    join(home, ".config", "fish", "config.fish"),
-  ]
-  for (const path of candidates) {
-    try {
-      const contents = await readFile(path, "utf-8")
-      if (contents.includes("LORE_NOTION_TOKEN")) return path
-    } catch {
-      // file doesn't exist OR is unreadable — try the next.
-    }
-  }
-  return null
-}
-
-/**
- * Orchestrate the four-step migrate flow. Returns `{ exitCode }`;
- * commander dispatches that onto `process.exit` in the live path.
- *
- * Step 1: verify the legacy token reaches the configured vault.
- * Step 2: ensure ntn is installed (offer auto-install on miss).
- * Step 3: shell out to `ntn login` interactively.
- * Step 4: re-resolve auth via the ntn path and verify the new token
- *         reaches the same vault.
- *
- * On any non-success outcome the operator's environment / config is
- * unchanged and the failure message points at the remediation path.
- */
-export async function runMigrate(
-  opts: MigrateOptions,
-  deps: MigrateDeps,
-): Promise<MigrateResult> {
-  const cwd = deps.cwd()
-  const found = await deps.findConfigFile(cwd)
-
-  if (!found) {
-    deps.error("No .lore.yaml found. `lore auth --migrate` requires a vault context.")
-    deps.error("Run from inside a Lore-managed project directory.")
-    return { exitCode: 1 }
-  }
-
-  const config = await deps.loadConfig(found.path)
-
-  // 1. Detect the legacy source (env or config). At least one must be set.
-  const env = deps.env()
-  const envToken = env["LORE_NOTION_TOKEN"]
-  const configToken = config.auth?.token
-
-  if (!envToken && !configToken) {
-    deps.log("Nothing to migrate.")
-    deps.log("")
-    deps.log("Lore detected no LORE_NOTION_TOKEN env var and no auth.token in")
-    deps.log(`${found.path}.`)
-    deps.log("")
-    deps.log("If you're already on ntn-first auth, run `lore auth --status` to verify.")
-    deps.log("If you want to set up ntn-first auth fresh: run `lore auth --login`.")
-    deps.log("(Auto-installs ntn if missing, runs `ntn login` with the right env.)")
-    return { exitCode: 0 }
-  }
-
-  const legacyToken = envToken ?? configToken!
-  const legacySource: "env" | "config" = envToken ? "env" : "config"
-
-  deps.log("Lore migration: LORE_NOTION_TOKEN → ntn-first auth")
-  deps.log("")
-
-  // Step 1 — verify the legacy token reaches the vault.
-  deps.log("Step 1/4 — Verify legacy token reaches the configured vault...")
-  const legacyClient = deps.makeClient(legacyToken, config.auth?.baseUrl)
-  const legacyResult = await deps.verifyVaultAccess(legacyClient, config.vault.pageId)
-  if (legacyResult.kind !== "ok") {
-    const sourceLabel =
-      legacySource === "env" ? "LORE_NOTION_TOKEN" : "auth.token"
-    deps.error(
-      `  ✗ Legacy ${sourceLabel} cannot reach ${config.vault.pageId} (${legacyResult.kind}).`,
-    )
-    deps.error("")
-    deps.error("  Migration aborted — fix the legacy token first.")
-    const cls = classifyVaultError(legacyResult.kind)
-    if (cls === "permission") {
-      deps.error("  Most likely cause: the integration backing the legacy token")
-      deps.error("  doesn't have the vault page shared with it. Check Notion's UI")
-      deps.error(`  on ${config.vault.pageId} → Add connections.`)
-      deps.error("  (This is the integration-sharing model the legacy")
-      deps.error("   shared-token deployment uses. ntn-first auth, by contrast,")
-      deps.error("   inherits your personal Notion permissions and doesn't need")
-      deps.error("   this step.)")
-    } else if (cls === "auth") {
-      // 401 / 403 — legacy token is invalid or expired. Two paths
-      // forward: rotate the legacy token, OR skip the migration
-      // entirely and run `lore auth --login` to set up ntn-first
-      // auth fresh (which doesn't need the legacy token at all).
-      deps.error(`  The legacy ${sourceLabel} is invalid or expired (401 / 403).`)
-      deps.error("  Either rotate the legacy token, OR run `lore auth --login` to")
-      deps.error("  set up ntn-first auth without going through migration.")
-    } else if (cls === "throttle") {
-      // 429 — back off rather than retry instantly.
-      deps.error("  Notion rate-limited the request (429). Wait a moment, then")
-      deps.error("  re-run `lore auth --migrate`.")
-    } else {
-      // transient — 5xx, network outage, proxy failure, etc. The
-      // "share with integration" advice is wrong here; the integration
-      // may be perfectly fine. Recommend retry + status check.
-      deps.error("  Notion returned an unexpected error (transient 5xx, network,")
-      deps.error("  or proxy outage). Retry in a moment, or check status.notion.so.")
-      deps.error("  Re-run `lore auth --migrate` once the underlying issue clears.")
-    }
-    return { exitCode: 1 }
-  }
-  deps.log(
-    `  ✓ Legacy token reaches: ${legacyResult.pageTitle ?? config.vault.pageId}`,
-  )
-  deps.log("")
-
-  // Step 2 — check ntn install state; offer auto-install if missing.
-  deps.log("Step 2/4 — Check ntn is installed...")
-  if (!deps.isNtnInstalled()) {
-    deps.log("  ✗ `ntn` is not installed.")
-    deps.log("")
-    deps.log("  Lore can install it via the canonical command:")
-    deps.log(`    ${NTN_INSTALL_COMMAND}`)
-    deps.log("")
-    const ok =
-      opts.yes === true || (await deps.confirmPrompt("  Install ntn now?"))
-    if (!ok) {
-      deps.error("  Skipping. Install ntn manually, then re-run `lore auth --migrate`.")
-      return { exitCode: 1 }
-    }
-    const installResult = await deps.installNtn()
-    if (installResult.kind !== "success") {
-      deps.error("  ntn install failed.")
-      deps.error("  Check your network and shell, then re-run `lore auth --migrate`.")
-      return { exitCode: 1 }
-    }
-    deps.log("  ✓ ntn installed.")
-  } else {
-    deps.log("  ✓ ntn is installed")
-  }
-  // Note: no NOTION_KEYRING=0 check. `runNtnLogin()` sets it in
-  // the spawn env so the operator doesn't need it in their shell rc.
-  deps.log("")
-
-  // Step 3 — shell out to ntn login (interactive).
-  //
-  // `runNtnLogin` inherits the full `process.env`
-  // (plus `NOTION_KEYRING=0`), so ntn's native dev/staging controls
-  // (`NOTION_ENV`, `NOTION_BASE_URL` per `ntn login --help`) flow
-  // through automatically. An operator running migration in a dev
-  // environment with `NOTION_ENV=dev` set in their shell gets a
-  // dev-environment ntn token.
-  //
-  // `computeNtnLoginEnvOverride` closes the config-driven dev gap:
-  // when .lore.yaml carries `auth.baseUrl: <dev URL>` but NO env
-  // var directs ntn, the override forwards `NOTION_BASE_URL` into
-  // the spawn so ntn login targets the same host Step 1's legacy
-  // preflight verified. Without this, Step 1 verifies dev and Step 3
-  // silently logs in to prod — the round-5 finding's headline
-  // scenario.
-  const loginEnvOverride = computeNtnLoginEnvOverride(config.auth?.baseUrl, env)
-  // **Capture the effective Step 3 target URL BEFORE running Step 3.**
-  // The override mutates `process.env` only for the duration of the
-  // ntn login spawn (production wiring restores via try/finally), so
-  // by Step 4 the env has been restored. Without capturing here,
-  // Step 4's `resolveNtnEnvBaseUrl(env)` re-reads the un-overridden
-  // env and falls back to prod — exactly the silent-host-drift the
-  // round-5 reviewer flagged. Capturing once at Step 3-prep time
-  // makes Step 3 and Step 4 share the same target by construction,
-  // regardless of whether ntn persists the env to its config.json.
-  const step3EffectiveBaseUrl =
-    loginEnvOverride?.["NOTION_BASE_URL"] ?? resolveNtnEnvBaseUrl(env)
-  deps.log("Step 3/4 — Running `NOTION_KEYRING=0 ntn login`...")
-  deps.log("")
-  if (loginEnvOverride) {
-    // Surface the override so the operator knows which environment
-    // they're being directed at. Concrete copy beats a silent env
-    // mutation — if the operator wanted prod they can interrupt and
-    // unset `auth.baseUrl` in their config first.
-    const envSummary = Object.entries(loginEnvOverride)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(" ")
-    deps.log(
-      `  Forwarding from ${found.path}: ${envSummary}`,
-    )
-    deps.log("  (so ntn login targets the same host Step 1 just verified)")
-    deps.log("")
-  }
-  deps.log("  ntn will prompt you to pick a workspace and complete the browser")
-  deps.log("  flow. Confirm the workspace selector matches the workspace")
-  deps.log(`  containing ${config.vault.pageId}.`)
-  deps.log("  (If unsure, check the page in Notion's UI — the workspace name")
-  deps.log("   appears in the top-left.)")
-  deps.log("")
-
-  const loginResult = await deps.runNtnLogin(loginEnvOverride)
-  if (loginResult.kind !== "success") {
-    deps.error("")
-    deps.error("ntn login did not complete successfully.")
-    if (loginResult.kind === "exit-non-zero") {
-      deps.error(`  ntn exited with code ${loginResult.code}`)
-    } else if (loginResult.kind === "spawn-error") {
-      deps.error("  ntn could not be spawned — is it on PATH?")
-      deps.error("  (Run `lore auth --login` to use Lore's auto-install path.)")
-    }
-    deps.error("")
-    deps.error(
-      "LORE_NOTION_TOKEN is unchanged. Re-run `lore auth --migrate` to retry.",
-    )
-    return { exitCode: 1 }
-  }
-  deps.log("")
-
-  // Step 4 — verify the new ntn-issued token reaches the same vault.
-  deps.log("Step 4/4 — Verify ntn-issued token reaches the same vault...")
-  // `quiet: true` so loadNtnToken's own multi-line stderr hint
-  // (multi-workspace ambiguity, requested-workspace-not-present)
-  // doesn't fight the migrate flow's user-visible failure copy below.
-  // Same posture `resolveAuth` uses when a legacy fallback is
-  // available; the migrate flow owns the operator-facing error block.
-  const ntnRecord: NtnTokenRecord | null = await deps.loadNtnToken({
-    workspaceId: env["NOTION_WORKSPACE_ID"] ?? config.auth?.workspaceId,
-    quiet: true,
-  })
-  if (!ntnRecord) {
-    deps.error("  ✗ Lore could not resolve a ntn token from auth.json.")
-    deps.error("")
-    deps.error("  Check `lore auth --status` for diagnostic info.")
-    deps.error(
-      "  LORE_NOTION_TOKEN is unchanged — your existing setup still works.",
-    )
-    return { exitCode: 1 }
-  }
-  // `ntnRecord.baseUrl` is what `loadNtnToken` resolved (LORE_NOTION_BASE_URL
-  // env or ntn's own config.json env=dev/stg). Fall back to
-  // `step3EffectiveBaseUrl` (captured pre-spawn) so Step 3 and Step 4
-  // share the same effective target — even when ntn doesn't persist
-  // the dev base URL to its config.json. Without that fallback, the
-  // config-only-dev path (`auth.baseUrl: <dev URL>` in YAML, no env
-  // vars set) would have Step 3 log in to dev (via the override) but
-  // Step 4 verify against prod (because `loadNtnToken` returns
-  // baseUrl=undefined and the override has been restored from
-  // process.env).
-  const ntnClient = deps.makeClient(
-    ntnRecord.token,
-    ntnRecord.baseUrl ?? step3EffectiveBaseUrl,
-  )
-  const ntnResult = await deps.verifyVaultAccess(ntnClient, config.vault.pageId)
-  if (ntnResult.kind !== "ok") {
-    deps.error(
-      `  ✗ ntn-issued token cannot reach ${config.vault.pageId} (${ntnResult.kind}).`,
-    )
-    deps.error("")
-    const cls = classifyVaultError(ntnResult.kind)
-    if (cls === "permission") {
-      deps.error("  Most likely causes:")
-      deps.error(
-        "    1. You authenticated against the wrong workspace during ntn login.",
-      )
-      deps.error(
-        `       Re-run \`lore auth --migrate\`, picking the workspace containing ${config.vault.pageId}.`,
-      )
-      deps.error(
-        "       Lore will force NOTION_KEYRING=0 and preserve the same target environment.",
-      )
-      deps.error("    2. The vault page isn't shared with you (your Notion identity)")
-      deps.error("       in this workspace. ntn-first auth inherits your personal")
-      deps.error("       permissions; if you can't open the page in Notion's UI,")
-      deps.error("       the token can't read it either. Ask whoever owns the")
-      deps.error("       vault to share it with you, or check your workspace")
-      deps.error("       membership.")
-    } else if (cls === "auth") {
-      // 401 / 403 — rare immediately after `ntn login`. Most plausible
-      // cause: the operator picked a workspace during login that
-      // doesn't authorize the token Lore is trying to use, OR ntn
-      // wrote a malformed entry to auth.json. Retrying through Lore is
-      // the right next step because it preserves file-mode auth.json writes.
-      deps.error("  The ntn-issued token is invalid or expired (401 / 403). This is")
-      deps.error("  rare immediately after `ntn login` — the most plausible cause is")
-      deps.error(
-        `  picking the wrong workspace during login. Re-run \`lore auth --migrate\`,`,
-      )
-      deps.error(`  picking the workspace containing ${config.vault.pageId}.`)
-    } else if (cls === "throttle") {
-      deps.error("  Notion rate-limited the request (429). Wait a moment, then")
-      deps.error("  re-run `lore auth --migrate`.")
-    } else {
-      // transient — same retry advice as Step 1's parallel branch.
-      deps.error("  Notion returned an unexpected error (transient 5xx, network,")
-      deps.error("  or proxy outage). Retry in a moment, or check status.notion.so.")
-      deps.error("  Re-run `lore auth --migrate` once the underlying issue clears.")
-    }
-    deps.error("")
-    deps.error(
-      "  LORE_NOTION_TOKEN is unchanged — your existing setup still works.",
-    )
-    return { exitCode: 1 }
-  }
-  deps.log(
-    `  ✓ ntn-issued token reaches: ${ntnResult.pageTitle ?? config.vault.pageId}`,
-  )
-  deps.log(`  ✓ Workspace: ${ntnRecord.workspaceId}`)
-  deps.log("")
-
-  // Defensive: per the auth resolver chain, `NOTION_API_TOKEN` env
-  // outranks ntn-resolved auth. If the operator has both set, the
-  // next Lore process will use `NOTION_API_TOKEN`, not the ntn token
-  // Step 4 just verified. Confirm `NOTION_API_TOKEN` also reaches
-  // the vault — abort if it doesn't, since "migration succeeded but
-  // next session breaks" would be the worst possible silent
-  // failure. If both work, qualify the reassurance copy below so
-  // the operator knows which token is actually active.
-  const apiTokenEnv = env["NOTION_API_TOKEN"]
-  let notionApiTokenActive = false
-  if (apiTokenEnv) {
-    deps.log("NOTION_API_TOKEN is set and ranks above ntn; verifying it reaches the vault...")
-    // **Mirror `resolveAuth`'s `env-notion-api-token` source exactly.**
-    // That source resolves the base URL via `resolveOperatorBaseUrl()`,
-    // which honors (in priority order) `LORE_NOTION_BASE_URL` →
-    // `NOTION_BASE_URL` → `NOTION_API_BASE_URL` → `NOTION_ENV` mapped
-    // via `ntnEnvBaseUrl`. The guard MUST use the same resolver —
-    // anything narrower creates a false positive in the opposite
-    // direction:
-    //
-    //   - Narrower (only `LORE_NOTION_BASE_URL`): an operator with
-    //     `NOTION_API_TOKEN` + `NOTION_BASE_URL=https://api-dev.notion.com`
-    //     in their shell has `resolveAuth` verify against dev, but the
-    //     guard would verify against prod — falsely greenlight a
-    //     migration whose post-migrate session resolves to a host the
-    //     api token doesn't authorize, OR falsely abort a valid
-    //     migration when the api token IS valid for dev but not prod.
-    //
-    // The guard's job is to verify the same thing the next Lore process
-    // will. Use the same resolver.
-    const apiClient = deps.makeClient(apiTokenEnv, resolveOperatorBaseUrl(env))
-    const apiResult = await deps.verifyVaultAccess(apiClient, config.vault.pageId)
-    if (apiResult.kind !== "ok") {
-      deps.error(
-        `  ✗ NOTION_API_TOKEN cannot reach ${config.vault.pageId} (${apiResult.kind}).`,
-      )
-      deps.error("")
-      deps.error("  Per the resolver chain, NOTION_API_TOKEN ranks above ntn — so the")
-      deps.error("  next Lore process would use NOTION_API_TOKEN, even though the")
-      deps.error("  ntn-issued token Step 4 just verified is fine.")
-      deps.error("")
-      const cls = classifyVaultError(apiResult.kind)
-      if (cls === "permission") {
-        // Misconfigured api token — wrong workspace, wrong integration,
-        // or the integration doesn't have the page shared. Operator's
-        // remediation is to either fix the token or fall through to ntn.
-        deps.error("  To resolve, either:")
-        deps.error("    - unset NOTION_API_TOKEN to fall through to your ntn-issued token,")
-        deps.error("      OR")
-        deps.error("    - update NOTION_API_TOKEN to a value that reaches the vault.")
-        deps.error("")
-        deps.error("  Then re-run `lore auth --migrate` to confirm.")
-      } else if (cls === "auth") {
-        // 401 / 403 — NOTION_API_TOKEN is invalid or expired. Same two
-        // remediations as not-found; the underlying problem is
-        // structurally the same ("api token doesn't authorize this
-        // vault read"), just signalled by Notion via a different status.
-        deps.error("  NOTION_API_TOKEN is invalid or expired (401 / 403). To resolve:")
-        deps.error("    - unset NOTION_API_TOKEN to fall through to your ntn-issued token,")
-        deps.error("      OR")
-        deps.error("    - rotate NOTION_API_TOKEN to a working value.")
-        deps.error("")
-        deps.error("  Then re-run `lore auth --migrate` to confirm.")
-      } else if (cls === "throttle") {
-        deps.error("  Notion rate-limited the request (429) on the NOTION_API_TOKEN")
-        deps.error("  verify. Wait a moment, then re-run `lore auth --migrate`.")
-      } else {
-        // transient — same retry advice as Steps 1 / 4. The api
-        // token may be perfectly fine; the operator just needs to
-        // wait out the underlying outage.
-        deps.error("  Notion returned an unexpected error (transient 5xx, network,")
-        deps.error("  or proxy outage). Retry in a moment, or check status.notion.so.")
-        deps.error("  Re-run `lore auth --migrate` once the underlying issue clears.")
-      }
-      return { exitCode: 1 }
-    }
-    notionApiTokenActive = true
-    deps.log(
-      `  ✓ NOTION_API_TOKEN reaches: ${apiResult.pageTitle ?? config.vault.pageId}`,
-    )
-    deps.log("")
-  }
-
-  // Print unset instructions, source-aware. The dual-source case
-  // (operator has BOTH `LORE_NOTION_TOKEN` env AND `auth.token` in
-  // config) emits both housekeeping pointers; the resolver-priority
-  // case (`NOTION_API_TOKEN` is the actual active source) qualifies
-  // the reassurance copy so the operator knows ntn isn't winning.
-  const alsoSetSource: "config" | undefined =
-    legacySource === "env" && configToken ? "config" : undefined
-  for (const line of formatUnsetInstructions({
-    legacySource,
-    configPath: found.path,
-    alsoSetSource,
-    notionApiTokenActive,
-  })) {
-    deps.log(line)
-  }
-
-  // Shell-rc-location helper only for the env-source branch; an
-  // operator using `auth.token` already has the file path printed.
-  if (legacySource === "env") {
-    const matched = await deps.findShellRc()
-    if (matched) {
-      deps.log("")
-      deps.log(
-        `(Found LORE_NOTION_TOKEN reference in ${matched} — that's where to remove it.)`,
-      )
-    }
-  }
-
-  return { exitCode: 0 }
-}
-
-/**
- * Options that vary the unset-instructions block.
- *
- * - `legacySource` — primary source detected at Step 1. Determines
- *   the main copy (shell-rc edit for env, YAML field-removal for
- *   config).
- * - `configPath` — resolved .lore.yaml path. Surfaced verbatim in
- *   the config-source branch so the operator knows which file to
- *   edit.
- * - `alsoSetSource` — when set, BOTH legacy sources are present in
- *   the operator's environment. The primary block emits as normal;
- *   an additional housekeeping block points at the secondary source
- *   so the operator gets both pointers in the one-shot migrate run.
- *   In practice today the only value passed is `"config"`, since the
- *   resolver picks env over config when both are set, but the param
- *   is symmetric in case future resolver order changes.
- * - `notionApiTokenActive` — ntn-target only. When true, the
- *   operator has `NOTION_API_TOKEN` set AND it reaches the vault,
- *   so it (not the just-minted ntn token) is the active source.
- *   The "your ntn token is already active" reassurance is replaced
- *   with honest copy naming `NOTION_API_TOKEN` as the active token.
- *   Ignored when `target === "pat"` (the PAT flow IS migrating TO
- *   `NOTION_API_TOKEN` — the "outranks" framing doesn't apply).
- * - `target` — discriminates the migration destination. `"ntn"` (the
- *   pre-2026-05-13 default) shipped copy that says "To activate
- *   ntn-first auth …" and references the four-step ntn flow's Step
- *   4 verify in its reassurance footer. `"pat"` (the new default
- *   for `runPatMigrate`) ships copy that says "To activate the PAT
- *   in NOTION_API_TOKEN …" and a footer that names the PAT as the
- *   active token without mentioning ntn / Step 4 / ntn-first auth
- *   — the PAT flow never runs ntn login, never has a Step 4, and
- *   the operator's just-pasted PAT IS the active token by
- *   construction. Defaults to `"ntn"` for backward compatibility
- *   with the existing call site in `runMigrate`.
- */
-export interface FormatUnsetInstructionsOptions {
-  legacySource: "env" | "config"
-  configPath: string
-  alsoSetSource?: "env" | "config"
-  notionApiTokenActive?: boolean
-  target?: "ntn" | "pat"
-}
-
-/**
- * Build the unset-instructions block. Pure: takes a typed options
- * bag and returns the lines to emit. Tested in isolation so copy
- * regressions surface here rather than buried inside an integration
- * assertion.
- *
- * The env / config branches differ in mechanics (shell concern vs
- * file concern) so the main copy is source-shaped. The reassurance
- * footer is honest about which token is actually active — under the
- * default it's ntn (rank 2 in the resolver chain), but
- * `NOTION_API_TOKEN` (rank 1) overrides ntn whenever the operator has
- * the env var set, so the copy switches accordingly.
- */
-export function formatUnsetInstructions(
-  opts: FormatUnsetInstructionsOptions,
-): string[] {
-  const { legacySource, configPath, alsoSetSource, notionApiTokenActive } = opts
-  const target = opts.target ?? "ntn"
-  // The migration destination noun: "ntn-first auth" for the
-  // internal-engineer flow, "the PAT in NOTION_API_TOKEN" for the
-  // external-operator flow. Used in the legacy-unset preamble so a
-  // PAT operator doesn't read "To activate ntn-first auth" right
-  // after pasting their PAT.
-  const targetNoun =
-    target === "pat" ? "the PAT in NOTION_API_TOKEN" : "ntn-first auth"
-  const out: string[] = []
-  out.push("Migration verified!")
-  out.push("")
-
-  if (legacySource === "env") {
-    out.push(`To activate ${targetNoun}, remove LORE_NOTION_TOKEN from your shell:`)
-    out.push("")
-    out.push("  unset LORE_NOTION_TOKEN")
-    out.push("")
-    out.push(
-      "Then remove the export line from your shell rc (~/.zshrc, ~/.bashrc,",
-    )
-    out.push(
-      "or wherever it's set), source the rc (or open a new terminal) to pick",
-    )
-    out.push("up the change.")
-  } else {
-    out.push(`To activate ${targetNoun}, remove the auth.token field from`)
-    out.push(`${configPath}:`)
-    out.push("")
-    out.push("  # Before:")
-    out.push("  auth:")
-    out.push("    token: <secret>")
-    out.push("")
-    out.push("  # After:")
-    out.push("  # (remove the auth: section entirely if no other auth fields)")
-    out.push("")
-    out.push("Then commit the change.")
-  }
-
-  // Dual-source housekeeping: when both legacy sources are set,
-  // append the secondary pointer so the migrate's one-shot output
-  // covers both.
-  if (alsoSetSource === "config") {
-    out.push("")
-    out.push(`Also: \`auth.token\` is set in ${configPath} and will continue to`)
-    out.push("emit a soft-deprecation warning until removed. Once the env unset")
-    out.push("is done, also delete the `auth.token` line:")
-    out.push("")
-    out.push("  # Before:")
-    out.push("  auth:")
-    out.push("    token: <secret>")
-    out.push("")
-    out.push("  # After:")
-    out.push("  # (remove the auth: section entirely if no other auth fields)")
-    out.push("")
-    out.push("Then commit the change.")
-  } else if (alsoSetSource === "env") {
-    out.push("")
-    out.push("Also: `LORE_NOTION_TOKEN` is set in your shell and will continue")
-    out.push("to emit a soft-deprecation warning until removed. After committing")
-    out.push("the config edit:")
-    out.push("")
-    out.push("  unset LORE_NOTION_TOKEN")
-    out.push("")
-    out.push(
-      "Then remove the export line from your shell rc (~/.zshrc, ~/.bashrc,",
-    )
-    out.push(
-      "or wherever it's set), source the rc (or open a new terminal) to pick",
-    )
-    out.push("up the change.")
-  }
-
-  out.push("")
-
-  // Reassurance footer. Three shapes depending on `target` and
-  // `notionApiTokenActive`:
-  //
-  //   - `target === "pat"`: the PAT flow's destination IS
-  //     `NOTION_API_TOKEN`. The operator's just-pasted PAT is the
-  //     active token by construction. The footer names the PAT as
-  //     the active token and explicitly avoids ntn / Step 4 /
-  //     "ntn-first auth" framing (the PAT flow never runs `ntn
-  //     login` and has no Step 4). `notionApiTokenActive` is
-  //     ignored on this branch — it's tautologically true.
-  //   - `target === "ntn"` + `notionApiTokenActive`: the operator
-  //     ran the ntn-migrate flow but ALSO has `NOTION_API_TOKEN`
-  //     set; per the resolver priority chain, NOTION_API_TOKEN
-  //     wins. The footer says so honestly so the operator knows
-  //     the just-minted ntn token isn't actually active.
-  //   - `target === "ntn"` + !`notionApiTokenActive` (the
-  //     fall-through below): the ntn-migrate happy path. The
-  //     footer reassures the operator that ntn IS the active
-  //     token.
-  if (target === "pat") {
-    out.push(
-      "(Your PAT in NOTION_API_TOKEN is the active token right now — the migrate",
-    )
-    out.push(
-      " flow verified it reaches the configured vault before printing this. The",
-    )
-    out.push(
-      " legacy unset above is housekeeping: it stops the deprecation warning and",
-    )
-    out.push(
-      " avoids shadowed-source confusion in `lore auth --status` output. Per the",
-    )
-    out.push(
-      " resolver priority NOTION_API_TOKEN > ntn > LORE_NOTION_TOKEN > auth.token,",
-    )
-    out.push(" your PAT outranks every other source.)")
-    return out
-  }
-
-  if (notionApiTokenActive) {
-    out.push(
-      "(Per #01's resolver priority — NOTION_API_TOKEN > ntn > LORE_NOTION_TOKEN",
-    )
-    out.push(
-      " > auth.token — NOTION_API_TOKEN is in your environment and outranks ntn,",
-    )
-    out.push(
-      " so NOTION_API_TOKEN is the active token right now, not the ntn-issued",
-    )
-    out.push(
-      " one Step 4 verified. Both reach the vault, so this is fine — but if you",
-    )
-    out.push(
-      " want ntn to be active instead, also unset NOTION_API_TOKEN. The legacy",
-    )
-    out.push(" unset above is housekeeping either way.)")
-    return out
-  }
-
-  if (legacySource === "env") {
-    out.push(
-      "(Per #01's resolver priority — NOTION_API_TOKEN > ntn > LORE_NOTION_TOKEN >",
-    )
-    out.push(
-      " auth.token — your ntn-issued token is ALREADY active, since ntn ranks",
-    )
-    out.push(
-      " above LORE_NOTION_TOKEN. The unset is housekeeping: it stops the",
-    )
-    out.push(" deprecation warning and prevents shadowed-token confusion in")
-    out.push(" `lore auth --status` output. The new token is in use right now.)")
-    return out
-  }
-
-  out.push(
-    "(Per #01's resolver priority — NOTION_API_TOKEN > ntn > LORE_NOTION_TOKEN",
-  )
-  out.push(
-    " > auth.token — your ntn-issued token is ALREADY active, since ntn ranks",
-  )
-  out.push(" above auth.token. Removing the field is housekeeping: it deletes a")
-  out.push(
-    " deprecated fallback, stops the deprecation warning, and avoids future",
-  )
-  out.push(
-    " confusion when reading the config. The new token is in use right now.)",
-  )
-  return out
-}
-
-// ---------------------------------------------------------------------------
-// `lore auth --migrate` (PAT branch — default for 2026-05-13 onward)
-//
-// Three-step flow for external operators (and internal engineers who want a
-// PAT instead of ntn-issued auth):
-//
-//   Step 1: verify the legacy token reaches the configured vault.
-//   Step 2: walk the operator through creating a PAT at
-//           `notion.so/developers/tokens` and setting `NOTION_API_TOKEN`.
-//           If `NOTION_API_TOKEN` is not yet set when the command is
-//           invoked, exit with instructions; the operator re-runs after
-//           pasting.
-//   Step 3: verify the new PAT reaches the same vault, then print
-//           legacy-source unset instructions.
-//
-// `runPatMigrate` takes a dependency bag matching `runMigrate`'s posture
-// (`MigrateDeps` minus the ntn-only helpers); tests stub Notion-touching
-// pieces without driving process globals.
-//
-// ## Exit-code contract for script consumers
-//
-// `runPatMigrate` and `runMigrate` (the `--ntn` branch) have a deliberate
-// asymmetry that script consumers need to know about:
-//
-//   - `runMigrate` returns `exitCode: 1` on every non-success step
-//     because every step is Lore-controlled: install ntn, run `ntn login`,
-//     verify. An incomplete step is genuinely a failure.
-//   - `runPatMigrate` Step 2 (no `NOTION_API_TOKEN` set yet) returns
-//     `exitCode: 0` because creating the PAT is operator-controlled work
-//     that happens out-of-band (browser → `notion.so/developers/tokens` →
-//     `export NOTION_API_TOKEN`). The exit-0 with "re-run after pasting"
-//     copy is the success path for that phase. Step 1 (legacy verify
-//     fails) and Step 3 (PAT verify fails) still return `exitCode: 1`
-//     — those ARE failure modes.
-//
-// Script consumers writing `if ! lore auth --migrate; then ...` should
-// know this is two-phase: a 0 exit with NOTION_API_TOKEN unset is
-// "waiting for operator paste", not "done." Re-running after the paste
-// drives the command to its final exit code (0 on full success,
-// 1 on PAT-verify failure). The asymmetry matches the underlying
-// reality — `runMigrate`'s ntn flow is entirely automatable; the PAT
-// flow has an irreducible human step.
-// ---------------------------------------------------------------------------
-
-export interface PatMigrateDeps {
-  cwd: () => string
-  env: () => NodeJS.ProcessEnv
-  log: (line: string) => void
-  error: (line: string) => void
-  findConfigFile: typeof findConfigFile
-  loadConfig: typeof loadConfig
-  makeClient: NotionClientFactory
-  verifyVaultAccess: (client: Client, pageId: string) => Promise<VaultAccessResult>
-  findShellRc: ShellRcFinder
-}
-
-export function productionPatMigrateDeps(): PatMigrateDeps {
-  const home = homedir()
-  return {
-    cwd: () => process.cwd(),
-    env: () => process.env,
-    log: (line) => console.log(line),
-    error: (line) => console.error(line),
-    findConfigFile,
-    loadConfig,
-    makeClient: (token, baseUrl) => createLimitedClient(createClient(token, baseUrl)),
-    verifyVaultAccess,
-    findShellRc: () => findShellRcReferencingLoreToken(home),
-  }
-}
-
-export async function runPatMigrate(
-  opts: MigrateOptions,
-  deps: PatMigrateDeps,
-): Promise<MigrateResult> {
-  const cwd = deps.cwd()
-  const found = await deps.findConfigFile(cwd)
-
-  if (!found) {
-    deps.error("No .lore.yaml found. `lore auth --migrate` requires a vault context.")
-    deps.error("Run from inside a Lore-managed project directory.")
-    return { exitCode: 1 }
-  }
-
-  const config = await deps.loadConfig(found.path)
-  const env = deps.env()
-  const envLegacyToken = env["LORE_NOTION_TOKEN"]
-  const configToken = config.auth?.token
-  const patEnvToken = env["NOTION_API_TOKEN"]
-
-  deps.log("Lore migration: legacy auth → Personal Access Token (NOTION_API_TOKEN)")
-  deps.log("")
-
-  // Step 1 — verify the legacy token (if any) reaches the vault.
-  //
-  // Missing legacy token is fine when `NOTION_API_TOKEN` is already
-  // set: the operator has nothing to migrate FROM. We still verify the
-  // PAT reaches the vault below and emit the success copy; the only
-  // suppressed surface is the legacy-source unset block.
-  let hasLegacy = false
-  if (envLegacyToken || configToken) {
-    hasLegacy = true
-    const legacyToken = envLegacyToken ?? configToken!
-    const legacySourceLabel = envLegacyToken ? "LORE_NOTION_TOKEN" : "auth.token"
-    deps.log(`Step 1/3 — Verify legacy ${legacySourceLabel} reaches the configured vault...`)
-    const legacyClient = deps.makeClient(legacyToken, config.auth?.baseUrl)
-    const legacyResult = await deps.verifyVaultAccess(legacyClient, config.vault.pageId)
-    if (legacyResult.kind !== "ok") {
-      deps.error(
-        `  ✗ Legacy ${legacySourceLabel} cannot reach ${config.vault.pageId} (${legacyResult.kind}).`,
-      )
-      deps.error("")
-      deps.error("  Migration aborted — fix the legacy token first, OR run")
-      deps.error("  `lore install` directly with NOTION_API_TOKEN set to skip the")
-      deps.error("  pre-migrate verify.")
-      return { exitCode: 1 }
-    }
-    deps.log(
-      `  ✓ Legacy token reaches: ${legacyResult.pageTitle ?? config.vault.pageId}`,
-    )
-    deps.log("")
-  }
-
-  // Step 2 — confirm `NOTION_API_TOKEN` is set and is a PAT shape.
-  if (!patEnvToken) {
-    deps.log(
-      hasLegacy
-        ? "Step 2/3 — Create a Personal Access Token and paste it into your shell:"
-        : "Create a Personal Access Token and paste it into your shell:",
-    )
-    deps.log("")
-    deps.log("  1. Open https://www.notion.so/developers/tokens in your browser.")
-    deps.log("  2. Click `New token`, give it a name (the name becomes the")
-    deps.log("     integration identity that appears on edited pages), and pick")
-    deps.log("     the workspace + pages it should access.")
-    deps.log("  3. Copy the token (prefix `ntn_` for prod, `development_ntn_` for dev).")
-    deps.log("  4. Export it in your shell:")
-    deps.log("")
-    deps.log('       export NOTION_API_TOKEN="ntn_..."')
-    deps.log("")
-    deps.log("     Add the export to your shell rc (~/.zshrc, ~/.bashrc) so it")
-    deps.log("     persists across sessions.")
-    deps.log("")
-    deps.log("  5. Re-run `lore auth --migrate` to verify the PAT reaches the vault.")
-    deps.log("")
-    deps.log("  Do NOT paste an integration token from notion.so/profile/integrations —")
-    deps.log("  those are integration-level rate-limited and re-collapse Lore into")
-    deps.log("  one shared bucket. See docs/authentication.md for the full contract.")
-    return { exitCode: 0 }
-  }
-
-  // Step 3 — verify the PAT reaches the configured vault.
-  deps.log(
-    hasLegacy
-      ? "Step 3/3 — Verify NOTION_API_TOKEN reaches the configured vault..."
-      : "Verify NOTION_API_TOKEN reaches the configured vault...",
-  )
-  // Mirror `resolveAuth`'s `env-notion-api-token` source: resolve the
-  // base URL via `resolveOperatorBaseUrl` so verify hits the same host
-  // the next Lore process will use.
-  const patClient = deps.makeClient(patEnvToken, resolveOperatorBaseUrl(env))
-  const patResult = await deps.verifyVaultAccess(patClient, config.vault.pageId)
-  if (patResult.kind !== "ok") {
-    deps.error(
-      `  ✗ NOTION_API_TOKEN cannot reach ${config.vault.pageId} (${patResult.kind}).`,
-    )
-    deps.error("")
-    const cls = classifyVaultError(patResult.kind)
-    if (cls === "permission") {
-      deps.error("  Most likely causes:")
-      deps.error("    1. The PAT was created in a different workspace than the vault page.")
-      deps.error("       Re-create at https://www.notion.so/developers/tokens, picking the")
-      deps.error("       workspace containing the vault page.")
-      deps.error(
-        "    2. The vault page isn't shared with the PAT's owning Notion identity.",
-      )
-      deps.error("       PATs inherit the operator's personal permissions; share the page")
-      deps.error("       (or check workspace membership), then re-run.")
-    } else if (cls === "auth") {
-      deps.error("  The PAT is invalid, expired, or revoked (401 / 403). Create a")
-      deps.error("  fresh PAT at https://www.notion.so/developers/tokens, replace")
-      deps.error("  NOTION_API_TOKEN, then re-run `lore auth --migrate`.")
-    } else if (cls === "throttle") {
-      deps.error("  Notion rate-limited the request (429). Wait a moment, then")
-      deps.error("  re-run `lore auth --migrate`.")
-    } else {
-      deps.error("  Notion returned an unexpected error (transient 5xx, network,")
-      deps.error("  or proxy outage). Retry in a moment, or check status.notion.so.")
-    }
-    if (hasLegacy) {
-      deps.error("")
-      deps.error("  Legacy auth is unchanged — your existing setup still works.")
-    }
-    return { exitCode: 1 }
-  }
-  deps.log(
-    `  ✓ NOTION_API_TOKEN reaches: ${patResult.pageTitle ?? config.vault.pageId}`,
-  )
-  deps.log("")
-
-  // Token-shape advisory. The PAT path accepts any bearer, but pasting
-  // a `secret_…` integration token re-collapses isolation into one
-  // bucket. Flag it concretely so the operator can rotate before
-  // committing to the migration.
-  if (patEnvToken.startsWith("secret_")) {
-    deps.log(
-      "  ! NOTION_API_TOKEN looks like an integration token (`secret_…`), not a PAT.",
-    )
-    deps.log(
-      "    Integration tokens are integration-level rate-limited, which re-collapses",
-    )
-    deps.log("    Lore into one shared bucket. Rotate to a PAT from")
-    deps.log("    https://www.notion.so/developers/tokens for per-user isolation.")
-    deps.log("")
-  }
-
-  if (!hasLegacy) {
-    deps.log("Migration verified! No legacy LORE_NOTION_TOKEN / auth.token found,")
-    deps.log("so there is nothing to unset.")
-    return { exitCode: 0 }
-  }
-
-  // Source-aware unset instructions. Same `formatUnsetInstructions`
-  // helper as the ntn migrate, but with `target: "pat"` so the
-  // legacy-unset preamble says "activate the PAT in NOTION_API_TOKEN"
-  // (not "activate ntn-first auth") and the reassurance footer
-  // names the PAT as the active token without referencing the ntn
-  // flow's Step 4. `notionApiTokenActive` is intentionally omitted
-  // — under `target: "pat"` it's tautologically true (the PAT IS
-  // the destination) and the formatter ignores it on the PAT branch.
-  const legacySource: "env" | "config" = envLegacyToken ? "env" : "config"
-  const alsoSetSource: "config" | undefined =
-    legacySource === "env" && configToken ? "config" : undefined
-  for (const line of formatUnsetInstructions({
-    legacySource,
-    configPath: found.path,
-    alsoSetSource,
-    target: "pat",
-  })) {
-    deps.log(line)
-  }
-
-  if (legacySource === "env") {
-    const matched = await deps.findShellRc()
-    if (matched) {
-      deps.log("")
-      deps.log(
-        `(Found LORE_NOTION_TOKEN reference in ${matched} — that's where to remove it.)`,
-      )
-    }
-  }
-
-  return { exitCode: 0 }
 }

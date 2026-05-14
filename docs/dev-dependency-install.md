@@ -98,12 +98,9 @@ the MCP server and hooks.
 ## Migrating From a `~/.lore` Deployment
 
 Legacy `~/.lore` installs, where every engineer cloned Lore to home and the
-committed config used absolute paths, still work. `lore install --legacy-paths`
-opts back into the absolute-path output as a compatibility shim. Default
-`lore install` rewrites legacy entries to bin-dispatch and prints `MCP server:
-upgraded (legacy → bin-dispatch)` in the install summary. `--legacy-paths` and
-the absolute-path code path are planned for removal together in a future major
-release.
+committed config used absolute paths, still upgrade in place. Default
+`lore install` rewrites legacy entries to bin-dispatch and prints
+`MCP server: upgraded (legacy → bin-dispatch)` in the install summary.
 
 ## Legacy: Pre-#561 GitHub Packages Migration
 

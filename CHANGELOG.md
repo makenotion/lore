@@ -11,6 +11,13 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed deprecated auth fallbacks and compatibility exports. Lore now
+  resolves credentials only from `NOTION_API_TOKEN` or ntn `auth.json`;
+  `.lore.yaml` `auth.token` is rejected at config load, and the legacy
+  auth migration command and OAuth helper exports have been deleted.
+
 ## [0.13.0] - 2026-05-04
 
 ### Added

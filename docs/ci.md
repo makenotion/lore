@@ -231,7 +231,7 @@ Two quick checks before opening a PR that touches CI:
 #    apply to every command, not just the first one. `env -u VAR cmd1 &&
 #    cmd2` only scrubs cmd1; cmd2 inherits your caller environment and the
 #    self-test can falsely pass on a maintainer machine that has tokens set.
-env -u NOTION_API_TOKEN -u LORE_NOTION_TOKEN -u GITHUB_TOKEN CI=true \
+env -u NOTION_API_TOKEN -u GITHUB_TOKEN CI=true \
   bash -c '
     set -euo pipefail
     npm ci
@@ -272,8 +272,8 @@ external fork PR should confirm:
 - The run logs contain no `***` redactions. GitHub redacts any secret value
   it sees in step output; redactions in a fork-PR run mean a secret was
   expanded into the environment, which violates the contract.
-- Dump the relevant env on the fork-PR run and confirm `NOTION_API_TOKEN`,
-  `LORE_NOTION_TOKEN`, and any org-level secret are empty. An ad-hoc step
+- Dump the relevant env on the fork-PR run and confirm `NOTION_API_TOKEN`
+  and any org-level secret are empty. An ad-hoc step
   like `run: 'echo "notion=${NOTION_API_TOKEN:+SET}"'` (without the variable
   value itself) proves the absence without risking a leak if the contract
   has already broken. The GitHub-native equivalent is a step gated on

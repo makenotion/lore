@@ -41,21 +41,18 @@ profile: default@1.0.0
 # Authentication (0.10.0+)
 # Lore resolves a Notion bearer token from the first available source in
 # this priority order:
-#   1. NOTION_API_TOKEN env (canonical; honored by the Notion SDK)
-#   2. ntn-resolved (~/.config/notion/auth.json — the 0.10.0 dogfood path;
-#      run `lore auth --login` to seed it)
-#   3. LORE_NOTION_TOKEN env (soft-deprecated 0.10.0; emits a one-time-
-#      per-session warning; hard removal plausibly 0.11.0+)
-#   4. auth.token below (soft-deprecated 0.10.0; same posture)
-# Most operators leave this block alone and run `lore auth --login`.
-# Do not place auth.token in `.lore.yaml`. `.lore.yaml` is local-only,
-# but a token written there still rides every backup, sync, and editor
-# tab. Use `lore auth --login` (ntn) or NOTION_API_TOKEN instead.
+#   1. NOTION_API_TOKEN env. External operators put a Notion Personal
+#      Access Token here. PATs come from notion.so/developers/tokens and
+#      use the `ntn_` or `development_ntn_` prefix.
+#   2. ntn-resolved ~/.config/notion/auth.json. Internal operators can run
+#      `lore auth --login` to seed it.
+# Do not paste `secret_` integration tokens from notion.so/profile/integrations
+# into team setup; they share one rate-limit bucket across operators.
+# Do not place auth.token in `.lore.yaml`. Any auth.token value is rejected
+# at config load time.
 # auth:
-#   # Soft-deprecated. Only set if you cannot use ntn or NOTION_API_TOKEN.
-#   token: "ntn_..."
-#   # workspaceId (0.10.0): pin which workspace the ntn-token resolver picks
-#   # from auth.json when multiple are present. Falls back to the
+#   # Pin which workspace the ntn-token resolver picks from auth.json when
+#   # multiple are present. Falls back to the
 #   # NOTION_WORKSPACE_ID env var, then to single-workspace auto-pick.
 #   workspaceId: "<notion-workspace-id>"
 

@@ -44,8 +44,8 @@ vi.hoisted(() => {
 // Hoisted mocks — `vi.spyOn` can't redefine native ESM exports, so the
 // mocks must be set up via `vi.mock` + `vi.hoisted`.
 //
-// `execFileSyncMock` stands in for the `which claude` probe inside
-// `findClaudeBinary`: on CI runners `claude` isn't on PATH and the real probe
+// `execFileSyncMock` stands in for the configured background-binary probe:
+// on CI runners `claude` isn't on PATH and the real probe
 // would return null, short-circuiting `spawnBackgroundSave` before the
 // spawn-path assertions fire. The mock always resolves to a fake path so
 // the rest of the hook runs as if `claude` were installed.

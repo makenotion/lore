@@ -295,8 +295,8 @@ describe("updatePageContentViaRunTool", () => {
   )
 
   it("classifies 403 RestrictedResource as restricted_resource (fall-back-able, not a hard error)", async () => {
-    // Issue #534 security review: an integration-secret token (the
-    // `LORE_NOTION_TOKEN` / pre-ntn `NOTION_API_TOKEN` paths) cannot
+    // Issue #534 security review: an integration-secret token (for
+    // example, a pre-PAT `NOTION_API_TOKEN` value) cannot
     // pass RunTool's actor-type check; the server returns 403
     // RestrictedResource. The auth-refresh proxy CANNOT repair this
     // (it only refreshes on 401 Unauthorized). If the wrapper
@@ -330,9 +330,8 @@ describe("updatePageContentViaRunTool", () => {
       })
 
       // Once-per-process stderr warning is the observability surface.
-      // Without it, an operator on `LORE_NOTION_TOKEN` flipping
-      // `LORE_USE_RUNTOOL=1` would see flag-on calls silently downgrade
-      // with no diagnostic.
+      // Without it, an operator using integration-secret auth would see
+      // flag-on calls silently downgrade with no diagnostic.
       const writes = stderrSpy.mock.calls.map((args) => String(args[0]))
       expect(writes.some((w) => w.includes("RestrictedResource"))).toBe(true)
     } finally {

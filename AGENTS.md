@@ -168,22 +168,18 @@ Two operator personas, two recommended paths:
   per-user. The PAT prefix is `ntn_` on prod and `development_ntn_` on
   the dev environment (use `lore install --dev` for the latter).
 
-The four-source priority chain (highest first) backs both personas:
+The two-source priority chain (highest first) backs both personas:
 
 1. `NOTION_API_TOKEN` — PATs land here (and internal engineers may also
    set this explicitly).
 2. `ntn`-resolved token from `~/.config/notion/auth.json`.
-3. `LORE_NOTION_TOKEN` (soft-deprecated; hard-removal targeted for 0.14.0).
-4. `auth.token` in `.lore.yaml` (soft-deprecated; same removal target).
 
 `.lore.yaml` is local-only — keep it out of version control. Copy
 `.lore.example.yaml` to `.lore.yaml` per clone, and distribute shared team
 values (`vault.pageId`, `auth.workspaceId`) through onboarding docs rather
 than by committing config. The Lore repo gitignores `.lore.yaml` and its
 pre-commit guard (`tools/check-lore-config.mjs`) rejects any staged content.
-Lore also warns whenever `auth.token` is present in `.lore.yaml`, even if a
-higher-priority auth source wins, and rejects bearer-shaped values at config
-load time.
+Lore rejects any `auth.token` value at config-load time.
 
 Notion page IDs are access locators, not bearer secrets. Keeping them out of
 git is still the right default so external clones don't auto-target an

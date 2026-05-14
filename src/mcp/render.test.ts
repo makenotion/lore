@@ -404,7 +404,7 @@ describe("collapseOverlappingMemories", () => {
     const memories = [
       buildMemory({
         id: "3a85",
-        title: "Wakeup silent-failure root cause — missing LORE_NOTION_TOKEN",
+        title: "Wakeup silent-failure root cause — missing NOTION_API_TOKEN",
         tags,
       }),
       buildMemory({

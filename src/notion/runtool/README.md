@@ -244,23 +244,13 @@ issue #532**; a future issue must explicitly add any others.
 ## Auth And Capability Requirements For ntn-Resolved Tokens
 
 > **Lore-side scope warning.** RunTool requires a user-actor or
-> workflow-bot token. Two of Lore's four supported auth paths
-> (`LORE_NOTION_TOKEN` and the soft-deprecated `auth.token` in
-> `.lore.yaml`) are integration secrets — public OAuth integrations
-> from a Lore-team perspective — and will be rejected with 403 on
-> every RunTool call. `NOTION_API_TOKEN` is ambiguous: it can be
-> either an integration secret or an ntn-resolved token, depending
-> on what the operator exported. Only the ntn-resolved path
-> (`~/.config/notion/auth.json`, post-0.10.0 default) is guaranteed
-> to satisfy RunTool's actor-type check. Phase 1's wrapper must
-> detect the 403-from-integration-secret case explicitly — silently
-> degrading every legacy-auth caller to "RunTool unavailable" is
-> the correct behavior, but it must be loud enough that an operator
-> on `LORE_NOTION_TOKEN` knows why their flagged-on calls never use
-> the new path. The dogfood rollout messaging needs to call this
-> out: flipping `LORE_USE_RUNTOOL=1` while still using
-> `LORE_NOTION_TOKEN` is a no-op at best and an error-spam at
-> worst.
+> workflow-bot token. `NOTION_API_TOKEN` is ambiguous: it can be an
+> integration secret or a Personal Access Token, depending on what
+> the operator exported. Only ntn-resolved auth
+> (`~/.config/notion/auth.json`) is guaranteed to satisfy RunTool's
+> actor-type check. Phase 1's wrapper must detect the
+> 403-from-integration-secret case explicitly so operators understand
+> why flagged-on calls never use the new path.
 
 ### Confirmed from source
 
@@ -366,9 +356,8 @@ error to operators is a Phase 1+ UX decision.
 
 The Notion SDK v5 sends the resolved token as `Authorization: Bearer
 <token>` for every request, RunTool included. There is no separate header
-or capability namespace at the wire level. The auth resolution chain
-(`NOTION_API_TOKEN` > ntn-resolved `~/.config/notion/auth.json` >
-`LORE_NOTION_TOKEN` > `auth.token`) is unchanged.
+or capability namespace at the wire level. The auth resolution chain is
+`NOTION_API_TOKEN` > ntn-resolved `~/.config/notion/auth.json`.
 
 ### Open questions — runtime verification needed before Phase 2/3
 

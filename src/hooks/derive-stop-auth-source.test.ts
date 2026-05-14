@@ -4,7 +4,7 @@
  * The Stop hot path's "no new failure mode" guarantee rests entirely on
  * the four-branch failure matrix this helper documents: undefined
  * failureContext, null config, null configRoot, and `resolveAuth`
- * rejection all return `undefined` so the legacy every-key forward
+ * rejection all return `undefined` so the every-key forward
  * applies. The success branch returns the resolved `AuthSource` so
  * `spawnBackgroundSave` and `scheduleAutoDigestSpawn` apply the
  * ntn-source partition. A future refactor that quietly inverts the
@@ -18,16 +18,11 @@
  * the helper; the cross-file split keeps both fixtures simple.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-
 // Auth-relevant env vars that influence `resolveAuth` priority chain
 // resolution. Cleared per-test so a developer's local shell rc can't
 // drag the resolver onto a different priority than the test asserts.
 const AUTH_ENV_KEYS = [
   "NOTION_API_TOKEN",
-  "LORE_NOTION_TOKEN",
   "NOTION_WORKSPACE_ID",
   "LORE_NOTION_BASE_URL",
   "NOTION_BASE_URL",
@@ -129,8 +124,7 @@ describe("deriveStopAuthSource — failure branches preserve every-key forward",
 
   it("returns undefined when resolveAuth rejects (no token configured)", async () => {
     // Defensive try/catch: a `resolveAuth` rejection (no source
-    // resolves: NOTION_API_TOKEN unset, ntn returns null,
-    // LORE_NOTION_TOKEN unset, no `auth.token` in config) must NOT
+    // resolves: NOTION_API_TOKEN unset, ntn returns null) must NOT
     // propagate. Production: the spawned child re-runs resolveAuth
     // and surfaces auth problems through its own stderr log;
     // throwing here would convert a normal "no auth yet" state
@@ -178,9 +172,8 @@ describe("deriveStopAuthSource — success branches return the resolved source",
     expect(loadNtnTokenMock).toHaveBeenCalledTimes(1)
     // Pin the quiet propagation contract: `resolveAuth` calls
     // `loadNtnToken` with `quiet: true` unconditionally so the
-    // ntn-module's stderr ambiguity hints don't fight the
-    // deprecation emitter when an ntn fallback path coexists with
-    // a legacy token. A future refactor that drops the always-quiet
+    // ntn-module's stderr ambiguity hints don't produce duplicate
+    // operator-facing output. A future refactor that drops the always-quiet
     // posture (e.g., propagating the new `ResolveAuthOptions.quiet`
     // through to `loadNtnToken` literally — which would be a
     // semantics change the synthetic-resolver caller does NOT
@@ -190,88 +183,4 @@ describe("deriveStopAuthSource — success branches return the resolved source",
     )
   })
 
-  it("returns 'env-lore-notion-token' for the soft-deprecated env path", async () => {
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
-    const source = await deriveStopAuthSource(ctx())
-    expect(source).toBe("env-lore-notion-token")
-  })
-
-  it("returns 'config-auth-token' for the soft-deprecated repo-config path", async () => {
-    const source = await deriveStopAuthSource(
-      ctx({
-        config: {
-          vault: { pageId: "v" },
-          auth: { token: "secret_config_token" },
-        },
-      })
-    )
-    expect(source).toBe("config-auth-token")
-  })
-})
-
-describe("deriveStopAuthSource — quiet emission", () => {
-  // The synthetic resolver call must not emit a NEW deprecation
-  // warning on every Stop fire after the debounce window expires.
-  // The foreground host already paid that emission via its primary
-  // `resolveAuth`; re-emitting from the hot path would surface a
-  // stderr nag at hook cadence rather than the intended
-  // once-per-warning-window cadence (the fresh `lore hooks autosave`
-  // process is its own debounce key).
-  let stderrChunks: string[]
-  let stderrSpy: { mockRestore: () => void }
-  let realConfigRoot: string
-  const envGuard = withClearedRuntimeEnv(AUTH_ENV_KEYS)
-
-  beforeEach(() => {
-    envGuard.install()
-    realConfigRoot = mkdtempSync(join(tmpdir(), "lore-derive-auth-"))
-    stderrChunks = []
-    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
-      stderrChunks.push(String(chunk))
-      return true
-    })
-    loadNtnTokenMock.mockReset()
-    loadNtnTokenMock.mockResolvedValue(null)
-  })
-
-  afterEach(() => {
-    stderrSpy.mockRestore()
-    rmSync(realConfigRoot, { recursive: true, force: true })
-    envGuard.restore()
-  })
-
-  it("does NOT emit a deprecation warning for env-lore-notion-token (quiet: true)", async () => {
-    // Use a real configRoot so `emitDeprecationWarningOnce`'s
-    // filesystem marker key resolves cleanly. The marker would
-    // suppress the second emission anyway, but the first emission
-    // must ALSO be suppressed under quiet — a fresh hook process
-    // is its own marker bed and would otherwise emit on every fire.
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
-    const source = await deriveStopAuthSource({
-      config: BASE_CONFIG,
-      configRoot: realConfigRoot,
-    })
-    expect(source).toBe("env-lore-notion-token")
-    const stderr = stderrChunks.join("")
-    expect(stderr).not.toContain("LORE_NOTION_TOKEN")
-    expect(stderr).not.toContain("deprecated")
-  })
-
-  it("does NOT emit a deprecation warning for config-auth-token (quiet: true)", async () => {
-    // Save the .lore.yaml fixture so `emitDeprecationWarningOnce`
-    // can compute its config-key hash without falling back to a
-    // path-doesn't-exist branch.
-    writeFileSync(join(realConfigRoot, ".lore.yaml"), "vault:\n  pageId: v\n")
-    const source = await deriveStopAuthSource({
-      config: {
-        vault: { pageId: "v" },
-        auth: { token: "secret_config_token" },
-      },
-      configRoot: realConfigRoot,
-    })
-    expect(source).toBe("config-auth-token")
-    const stderr = stderrChunks.join("")
-    expect(stderr).not.toContain("auth.token")
-    expect(stderr).not.toContain("deprecated")
-  })
 })

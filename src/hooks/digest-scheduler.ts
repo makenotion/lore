@@ -357,7 +357,7 @@ export interface ScheduleAutoDigestSpawnOptions {
    * Stop → auto-digest-helper hop. When `"ntn-auth-json"`, the
    * detached helper's inherited env drops
    * `RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` so a stale
-   * `LORE_NOTION_TOKEN` (or any other auth-token key still set in
+   * `NOTION_API_TOKEN` (or any other auth-token key still set in
    * the parent shell) doesn't land in `/proc/<pid>/environ` /
    * `ps -wwwE` / the helper's third-party-agent debug logs before
    * the inner synthesizer spawn's own partition runs. The helper

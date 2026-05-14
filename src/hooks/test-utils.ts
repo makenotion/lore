@@ -17,8 +17,8 @@
  * The save-restore discipline matters because vitest runs every
  * test in a file inside the same Node process: a key set inside one
  * test would leak into the next one, silently flipping branches
- * (e.g. `LORE_NOTION_TOKEN` set in test A would make test B's
- * `deriveStopAuthSource` land on `env-lore-notion-token` instead of
+ * (e.g. `NOTION_API_TOKEN` set in test A would make test B's
+ * `deriveStopAuthSource` land on `env-notion-api-token` instead of
  * its intended branch). Clearing-then-restoring decouples each
  * test from process-global state without requiring a per-test
  * subprocess.

@@ -7,25 +7,29 @@
 ## Prerequisites
 
 Each engineer needs **one** of the following Notion auth paths working before
-`lore install` will write a useful config:
+the install command will write a useful config:
 
 - **`ntn` CLI** (recommended for teams). Per-user tokens that inherit each
   engineer's personal Notion permissions, with an independent rate-limit
   bucket per engineer. Lore tests against minimum version `0.12.0`
   (`MIN_NTN_VERSION` in `src/auth/ntn.ts`) and prints a non-blocking warning
-  below that tested minimum. Lore offers to install ntn automatically via the
-  canonical command (`curl -fsSL https://ntn.dev | bash`) when missing — see
-  the Auto-install section below.
-- **`NOTION_API_TOKEN`** environment variable. A Notion integration token
-  shared with the vault page through Notion's UI. This is the simplest path
-  if your team already has a Notion integration set up; the trade-off is that
-  every engineer hits the same rate-limit bucket because rate limits are
-  per token.
+  below that tested minimum. When the ntn path is selected with
+  `lore install --ntn`, `lore auth --login`, or no-arg `lore init`, Lore
+  offers to install ntn automatically via the canonical command
+  (`curl -fsSL https://ntn.dev | bash`) when missing — see the Auto-install
+  section below.
+- **`NOTION_API_TOKEN`** environment variable. External operators put a
+  Notion Personal Access Token (PAT) from `notion.so/developers/tokens`
+  here. PATs inherit the operator's personal Notion permissions and keep an
+  independent rate-limit bucket per operator.
 
-That's it. Both prerequisites are auto-remediated by Lore: missing ntn is
-offered for install, missing auth triggers a guided `ntn login`. If your team
-prefers the integration-token path, set `NOTION_API_TOKEN` in each engineer's
-shell rc and skip the ntn flow.
+That's it. The ntn path is auto-remediated by Lore once an engineer selects it
+with `lore install --ntn` or `lore auth --login`: missing ntn is offered for
+install, and missing auth triggers a guided `ntn login`. If your team prefers
+the PAT path, create one PAT per engineer, set `NOTION_API_TOKEN` in each
+engineer's shell rc, and run bare `lore install`. Do not distribute a shared
+`secret_` integration token from `notion.so/profile/integrations`; that
+re-collapses the team into one rate-limit bucket.
 
 ### Entities Database Cutover
 
@@ -60,20 +64,20 @@ write command. The supported repair path is to restore the missing
 database from backup or recreate it with the documented schema, then run
 `lore migrate`.
 
-**Vault-page sharing**: ntn-issued tokens inherit the engineer's
-personal Notion permissions. If the engineer can open the vault
-page in Notion's UI (because they're a member of the workspace
-containing it, or someone explicitly shared it with them), their
-Lore install reads the page. There is no separate "share the
-vault page with the Notion Workers CLI integration" step
-required.
+**Vault-page sharing**: ntn-issued tokens and PATs inherit the
+operator's personal Notion permissions. If the operator can open the
+vault page in Notion's UI (because they're a member of the workspace
+containing it, or someone explicitly shared it with them), Lore can
+read the page through that token. There is no separate "share the
+vault page with the Notion Workers CLI integration" or shared
+integration-token step required.
 
 ### Auto-install via Lore
 
 Engineers without `ntn` already installed don't need to look up
 the install command. Lore detects missing ntn during
-`lore install` / `lore auth --login` / `lore init` (no-arg) and
-offers to install it:
+`lore install --ntn` / `lore auth --login` / `lore init` (no-arg)
+and offers to install it:
 
 ```text
 ntn is not installed.
@@ -86,7 +90,7 @@ Install ntn now? [Y/n]
 The command is the same one ntn itself recommends (per ntn's own
 self-update error message). Engineers who answer "n" get manual
 install instructions and can re-run after installing. `--yes`
-(on `lore install`, `lore auth --login`, `lore init`)
+(on `lore install --ntn`, `lore auth --login`, `lore init`)
 auto-confirms for non-interactive automation.
 
 ### Version policy
@@ -150,12 +154,12 @@ For each team adopting Lore:
 - [ ] Send the team this runbook + the line-items each engineer
       needs to do.
 
-**No "share with integration" step** when using ntn-issued tokens.
-ntn-issued tokens inherit each engineer's personal Notion permissions, so
-as long as the engineer can open the vault page in Notion's UI, Lore can
-read it through their token. The `NOTION_API_TOKEN` path is different —
-share the page with the integration in Notion's UI before any engineer
-runs `lore install`.
+**No "share with integration" step** for ntn-issued tokens or PATs. Both
+paths inherit the operator's personal Notion permissions, so as long as the
+engineer can open the vault page in Notion's UI, Lore can read it through
+their token. For the `NOTION_API_TOKEN` path, create one PAT per operator at
+`notion.so/developers/tokens`; do not share the vault with one `secret_`
+integration and distribute that shared token.
 
 ### Step 2 — Each engineer runs (one-time, ~2 minutes)
 
@@ -178,8 +182,8 @@ runs `lore install`.
 # 1. Install Lore (if not already pinned as a devDependency in the team repo)
 npm install -g @makenotion/lore
 
-# 2. From the team repo:
-lore install
+# 2. From the team repo, select the internal ntn path:
+lore install --ntn
 # Lore probes prerequisites:
 #   - ntn installed? If no, offers to install via
 #       `curl -fsSL https://ntn.dev | bash`
@@ -199,16 +203,6 @@ lore auth --login
 # Same prerequisite probes + offer-install + offer-login flow,
 # but doesn't write MCP config. Use to re-auth without
 # re-installing.
-```
-
-If the engineer has `LORE_NOTION_TOKEN` set in their shell rc:
-
-```bash
-# Migrate from a legacy shared token to ntn-issued
-lore auth --migrate
-# Verifies the legacy token reaches the vault, confirms the new
-# ntn-issued token reaches the same vault, prints the unset
-# instruction. Run the unset, source the rc, done.
 ```
 
 ### Dev-environment onboarding (PnP-style)
@@ -270,7 +264,6 @@ re-authing. The recovery copy is source-aware:
 | ----------------------- | ------------------------------------------------------------------------------------------------- |
 | `ntn-auth-json`         | `ntn logout && NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`                                       |
 | `env-notion-api-token`  | `Unset NOTION_API_TOKEN` (fall through to ntn) OR `export LORE_NOTION_BASE_URL=<endpoint>`        |
-| `env-lore-notion-token` | `Unset LORE_NOTION_TOKEN` (fall through to ntn) OR migrate legacy auth with `lore auth --migrate` |
 
 ### Step 3 — Verification
 
@@ -295,17 +288,16 @@ and confirm the workspace selector during the ntn flow it spawns.
 
 | Symptom                                                                                         | Cause                                                                                                                                                 | Fix                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `No Notion auth configured`                                                                     | Engineer hasn't authenticated yet, OR ntn wrote the token to keychain (operator ran `ntn login` directly outside Lore without `NOTION_KEYRING=0` set) | Run `lore auth --login` — it auto-installs ntn if missing, runs `ntn login` with `NOTION_KEYRING=0` forced inside the spawn (writing to auth.json), and verifies vault access. The `NOTION_KEYRING=0` shell-rc edit is only needed for engineers who use ntn outside Lore and want their direct-ntn sessions to be Lore-readable.                                                    |
+| `No Notion auth configured`                                                                     | No supported token resolved, OR ntn wrote the token to keychain (operator ran `ntn login` directly outside Lore without `NOTION_KEYRING=0` set)       | Internal ntn path: run `lore auth --login` — it auto-installs ntn if missing, runs `ntn login` with `NOTION_KEYRING=0` forced inside the spawn (writing to auth.json), and verifies vault access. External PAT path: create a PAT at `notion.so/developers/tokens`, export it as `NOTION_API_TOKEN`, then rerun the command.                                                       |
 | `auth.json carries N workspaces; specify one`                                                   | Engineer is logged into multiple workspaces                                                                                                           | Set `NOTION_WORKSPACE_ID` env, OR add `auth.workspaceId` to `.lore.yaml`                                                                                                                                                                                                                                                                                                             |
-| `Vault page not accessible`                                                                     | Engineer authenticated against the wrong workspace, OR the vault page isn't shared with the engineer in this workspace                                | Re-run `lore auth --login` and pick the right workspace, OR ask the team / vault owner to share the page in Notion's UI. (Direct `NOTION_KEYRING=0 ntn login` works too if you prefer the manual path; Lore's wrapper is the canonical recovery because it forces the env var and runs vault preflight.)                                                                             |
-| Notion API returns 401 mid-session (assistant errors after working earlier in the same session) | ntn-issued token expired                                                                                                                              | Run `lore auth --login`. The running service re-runs auth resolution after the first 401, rebuilds its Notion client when the token or base URL changed, and retries the failed request once. Restart the assistant only if the refreshed auth is unchanged or still rejected.                                                                                                       |
-| `lore auth --migrate` legacy preflight fails                                                    | Legacy `LORE_NOTION_TOKEN` doesn't reach the vault                                                                                                    | Don't unset the env var; investigate the integration sharing                                                                                                                                                                                                                                                                                                                         |
+| `Vault page not accessible`                                                                     | The resolved token cannot read the vault page: wrong workspace, wrong page id, or the page is not shared with the token owner's Notion identity       | For ntn auth, re-run `lore auth --login` and pick the right workspace, OR ask the team / vault owner to share the page with your Notion user. For PAT auth, confirm the PAT was created in the vault workspace, confirm you can open the page in Notion's UI, export the PAT as `NOTION_API_TOKEN`, and rerun the command.                                                          |
+| Notion API returns 401 mid-session (assistant errors after working earlier in the same session) | The active token expired, was revoked, or no longer has access                                                                                         | For ntn auth, run `lore auth --login`. For PAT auth, rotate the PAT at `notion.so/developers/tokens`, export the new value as `NOTION_API_TOKEN`, and rerun the command. The running service re-runs auth resolution after the first 401, rebuilds its Notion client when the token or base URL changed, and retries the failed request once. Restart the assistant only if auth is still rejected. |
 | `auth.json malformed`                                                                           | ntn version mismatch, partial write, or storage corruption                                                                                            | Run `lore auth --login` to spawn ntn login with the right env and refresh the file. (Direct `NOTION_KEYRING=0 ntn login` is the manual fallback.)                                                                                                                                                                                                                                    |
-| `--ntn-env dev requested, but resolved auth points at <baseUrl>`                                | Engineer ran `lore init --ntn-env dev` but their existing ntn auth resolves to a different env                                                        | Source-aware recovery printed inline: `ntn-auth-json` → `ntn logout && NOTION_KEYRING=0 NOTION_ENV=dev ntn login`; `env-notion-api-token` → unset the token OR set `LORE_NOTION_BASE_URL`; `env-lore-notion-token` → unset/migrate the legacy token. The gate is fail-fast by design — silent prod-vault creation despite explicit dev request would be worse than re-auth friction. |
+| `--ntn-env dev requested, but resolved auth points at <baseUrl>`                                | Engineer ran `lore init --ntn-env dev` but their existing auth resolves to a different env                                                            | Source-aware recovery printed inline: `ntn-auth-json` → `ntn logout && NOTION_KEYRING=0 NOTION_ENV=dev ntn login`; `env-notion-api-token` → unset the token OR set `LORE_NOTION_BASE_URL`. The gate is fail-fast by design — silent prod-vault creation despite explicit dev request would be worse than re-auth friction. |
 
 ### What if `ntn` isn't installed?
 
-`lore install` detects missing ntn and offers to install it:
+`lore install --ntn` detects missing ntn and offers to install it:
 
 ```text
 ntn is not installed.
@@ -316,14 +308,14 @@ Install ntn now? [Y/n]
 ```
 
 If the engineer answers "n", Lore exits with manual-install
-instructions and a `lore install` re-run pointer. If "y" (or
+instructions and a `lore install --ntn` re-run pointer. If "y" (or
 `--yes` was passed), Lore runs the install command, waits for it
 to complete, then continues with the rest of the prerequisites
 flow.
 
 `lore auth --login` and `lore init` (no-arg) offer the same
-auto-install path. Operators have three entry points to the same
-auth-bootstrap behavior.
+auto-install path. Operators have three ntn-selected entry points to the
+same auth-bootstrap behavior.
 
 For team leads: the `--yes` flag is the no-prompt path for
 scripts and automation. For interactive engineer onboarding, the
@@ -332,8 +324,8 @@ what's about to happen.
 
 ## Known gotcha: direct ntn login outside Lore
 
-Lore-spawned ntn invocations (via `lore install`,
-`lore auth --login`, `lore init` no-arg, `lore auth --migrate`)
+Lore-spawned ntn invocations (via `lore install --ntn`,
+`lore auth --login`, `lore init` no-arg)
 force `NOTION_KEYRING=0` in their spawn env, so the resulting
 token lands in `~/.config/notion/auth.json` where Lore can read
 it. **Engineers don't need to set `NOTION_KEYRING=0` in their
@@ -381,9 +373,8 @@ path 2 as a one-time setup.
 ## Rollback during the rollout window
 
 If ntn-first surfaces real issues for your team — `auth.json` shape
-mismatches break Lore's reader, frequent mid-session token expiry, or
-your team's existing tooling depends on a shared integration token —
-you can fall back to `NOTION_API_TOKEN` per engineer with no Lore-side
+mismatches break Lore's reader or frequent mid-session token expiry —
+you can use per-operator PATs in `NOTION_API_TOKEN` with no Lore-side
 changes.
 
 ### Recommended path: `NOTION_API_TOKEN` (highest-priority source, no ntn mutation)
@@ -392,11 +383,13 @@ changes.
 priority chain, ahead of ntn-resolved auth. Setting it takes
 precedence over the ntn `auth.json` without touching ntn's private
 state, which keeps any other ntn-using tooling on the operator's
-machine working unchanged:
+machine working unchanged. Create one PAT per operator at
+`notion.so/developers/tokens`; do not use one shared `secret_` integration
+token as the rollback path:
 
 ```bash
-# 1. Set the shared integration token (e.g., from a secret manager) in shell rc:
-export NOTION_API_TOKEN=<value-from-secret-manager>
+# 1. Set the operator's PAT in shell rc:
+export NOTION_API_TOKEN=ntn_...
 
 # 2. New shell or source rc; verify with:
 lore auth --status
@@ -408,40 +401,6 @@ lore auth --status
 To restore ntn-first later: unset `NOTION_API_TOKEN`. ntn
 resolves again on the next `lore` invocation. No file moves,
 no auth.json surgery.
-
-### Legacy fallback: `LORE_NOTION_TOKEN` + auth.json move
-
-This path exists only for operators whose tooling already
-expects the soft-deprecated `LORE_NOTION_TOKEN` env var. Prefer
-`NOTION_API_TOKEN` above unless you have a concrete reason to
-stay on the legacy var.
-
-**Important:** because Lore ranks ntn-resolved auth ahead of
-`LORE_NOTION_TOKEN`, simply setting the env var on top of an
-existing ntn `auth.json` does NOT take precedence — Lore
-continues to resolve via ntn. To fall back via the legacy var,
-the operator must also rename the auth.json:
-
-```bash
-# 1. Set the legacy token in shell rc:
-export LORE_NOTION_TOKEN=<value-from-secret-manager>
-
-# 2. Move auth.json out of the way so ntn-resolution returns null:
-mv ~/.config/notion/auth.json ~/.config/notion/auth.json.rollback
-
-# 3. New shell or source rc; verify with:
-lore auth --status
-# Should now show:
-#   Source: LORE_NOTION_TOKEN (env, soft-deprecated)
-#   Status: ✓ active (legacy)
-```
-
-To restore ntn-first later: `mv ~/.config/notion/auth.json.rollback
-~/.config/notion/auth.json` and unset `LORE_NOTION_TOKEN`. ntn
-takes over again on the next `lore` invocation.
-
-Either fallback path is purely operator-side env manipulation;
-neither requires a Lore release rollback.
 
 ## The `auth.json` read is the contract
 
@@ -484,8 +443,6 @@ adoption":
 - [ ] At least 1 engineer has confirmed the multi-workspace flow
       (`NOTION_WORKSPACE_ID` env or `auth.workspaceId` config) works
       as documented.
-- [ ] At least 1 engineer has run `lore auth --migrate` from a
-      legacy `LORE_NOTION_TOKEN` setup successfully.
 - [ ] At least 1 engineer has hit a mid-session token expiry and
       the documented `lore auth --login` + bounded in-process retry has
       worked. If the refreshed auth is unchanged or still rejected, the
@@ -499,27 +456,12 @@ For the rollout window, optionally instrument:
 
 - [ ] One stderr line per `resolveAuth` resolution, recording
       which source produced the token (`source: env-notion-api-token`
-      / `ntn-auth-json` / `env-lore-notion-token` /
-      `config-auth-token`). Gated by `LORE_DEBUG=1`. Helps the
+      / `ntn-auth-json`). Gated by `LORE_DEBUG=1`. Helps the
       release coordinator see how many engineers are actually on ntn
-      vs. fallbacks.
+      vs. explicit PAT auth.
 
 This is optional and can ship as part of #01 / #06 if the team
 wants per-mode visibility during the rollout. Not a blocker.
-
-## Hard removal of `LORE_NOTION_TOKEN`
-
-Plausibly 0.11.0 or 1.0.0. Decision criteria:
-
-- All internal teams have completed migration to ntn-issued
-  tokens (target: 100%).
-- No CI scripts in any internal repo still reference
-  `LORE_NOTION_TOKEN` for anything other than service-account
-  workflows (which stay on integration-token auth deliberately —
-  CI is not an operator workflow).
-- No production hot path still uses it.
-
-Until those are met, the env-var path stays soft-deprecated.
 
 ## Shared-vault hook configuration (issue #281)
 

@@ -67,7 +67,7 @@ body:
         - Node:
         - npm:
         - Assistant host:
-        - Auth source, without token values (for example `NOTION_API_TOKEN`, ntn auth file present, `LORE_NOTION_TOKEN`, or `.lore.yaml` token):
+        - Auth source, without token values (for example `NOTION_API_TOKEN` with a PAT, or ntn auth file present):
   - type: textarea
     id: logs
     attributes:

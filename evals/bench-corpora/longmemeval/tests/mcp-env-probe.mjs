@@ -33,8 +33,8 @@
  *
  *   3. **Default redaction.** Values matching bearer-shaped prefixes
  *      (`ntn_`, `development_ntn_`, `secret_`) and values for the
- *      auth-token forward keys (`NOTION_API_TOKEN`,
- *      `LORE_NOTION_TOKEN`) are written as `"<redacted>"` regardless
+ *      auth-token forward keys (`NOTION_API_TOKEN`) are written as
+ *      `"<redacted>"` regardless
  *      of contents. The discovery harness inspects key presence /
  *      absence and a separate sentinel key it sets specifically for
  *      the probe (e.g., `LORE_BENCH_ROUTING_SENTINEL`) — never a real
@@ -153,7 +153,7 @@ if (!contained) {
  * the redaction is invisible to the discovery path while closing the
  * "real bearer landed on disk" leak.
  */
-const BEARER_KEYS = new Set(["NOTION_API_TOKEN", "LORE_NOTION_TOKEN"])
+const BEARER_KEYS = new Set(["NOTION_API_TOKEN"])
 const BEARER_VALUE_PREFIXES = ["ntn_", "development_ntn_", "secret_"]
 const INSECURE_KEEP = process.env["LORE_EVAL_BENCH_INSECURE_KEEP"] === "1"
 

@@ -48,8 +48,8 @@ export type InstallClient = "claude" | "codex" | "cursor" | "all"
  *   `buildCodexHookCommand()` byte-for-byte.
  * - `legacy-current` — entry is in the absolute-path form and matches
  *   `buildLegacyClaudeMcpEntry(...)` / etc. for the resolved `pkgRoot`.
- *   Default `lore install` (no `--legacy-paths`) reports this and
- *   rewrites to bin-dispatch; `lore install --legacy-paths` treats it
+ *   Default `lore install` (no legacy absolute-path mode) reports this and
+ *   rewrites to bin-dispatch; `lore install` treats it
  *   as `current`.
  * - `stale` — entry exists but matches neither shape (e.g., points at
  *   a different `pkgRoot`, hand-edited args). Reinstall replaces it.
@@ -80,8 +80,7 @@ export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
  *
  * The legacy absolute-path shape (an explicit `node` invocation
  * against the built MCP entry under the package root) is orthogonal
- * — selected via `legacyPaths`, not via this enum — and remains
- * unchanged through the deprecation window.
+ * — selected via `legacyPaths`, not via this enum.
  */
 export type BinDispatchShape = "bare" | "yarn"
 
@@ -98,25 +97,14 @@ export interface McpEnvBuild {
    *   - `LORE_CONFIG_ROOT`  — so the spawned MCP child resolves the
    *     right .lore.yaml even when the host's spawn-time cwd does
    *     not match the operator's vault directory.
-   *   - `LORE_SUPPRESS_DEPRECATIONS` — silences per-session
-   *     deprecation warnings in the spawned child; the parent CLI
-   *     emits them already.
+   *   - `LORE_SUPPRESS_DEPRECATIONS` — keeps older spawned children quiet
+   *     when an operator runs mixed local/global versions during upgrade.
    * Claude / Cursor consumers merge these into `env` directly. Codex
    * consumers prefix them onto its `bash -lc` launch command because
    * its `env_vars = [...]` shape only carries name-only references.
    */
   staticEnv: Record<string, string>
-  /**
-   * Which runtime-forwarded keys were detected in the install-time
-   * env. Used by the install action to print a one-line note when a
-   * legacy forwarder (`LORE_NOTION_TOKEN`) was picked up so the
-   * operator sees a deprecation reminder. `runInstall` consumes this
-   * via `formatLegacyForwardedNoteLines` (multi-line stdout for the
-   * file-write path); `runPrintConfig` consumes it via the compact
-   * stderr mirror (single-line, pipeline-clean). Both surfaces name
-   * `lore auth --migrate` (PAT default) and `lore auth --migrate --ntn`
-   * (internal-engineer ntn opt-in) and the 0.14.0 hard-removal target.
-   */
+  /** Which runtime-forwarded keys were detected in the install-time env. */
   forwarded: RuntimeForwardedKey[]
 }
 
@@ -144,15 +132,12 @@ export interface BuildMcpEnvOptions {
    * and produce host-validator warnings (e.g. Claude Code's
    * `/doctor`) when the underlying env vars later unset.
    *
-   * Other sources (`env-notion-api-token`, `env-lore-notion-token`,
-   * `config-auth-token`) keep the legacy conditional-forward
-   * behavior: a placeholder is still emitted for whichever auth-token
-   * env var the operator had set at install time, because their
-   * spawned MCP server's `resolveAuth` cannot fall back to ntn the
-   * way an `ntn-auth-json` install can. `undefined` (no opinion) also
-   * preserves the earlier behavior — used by the print-config and
-   * legacy-forwarded-note callers when they don't have an auth source
-   * to consult.
+   * The env-token source keeps the conditional forward: a placeholder
+   * is still emitted when the operator had NOTION_API_TOKEN set at
+   * install time because the spawned MCP server cannot fall back to
+   * ntn the way an `ntn-auth-json` install can. `undefined` preserves
+   * the same conditional-forward behavior for print-config callers
+   * that do not have an auth source to consult.
    */
   authSource?: AuthSource
   /**
@@ -181,9 +166,7 @@ export interface BuildMcpEnvOptions {
  *
  * Source-of-truth precedence matches `resolveAuth`
  * so the MCP server resolves identically to the CLI: NOTION_API_TOKEN
- * (env, canonical) > ntn-resolved (auth.json, no install-time
- * forwarding required) > LORE_NOTION_TOKEN (env, soft-deprecated) >
- * `auth.token` in .lore.yaml (soft-deprecated).
+ * (env) > ntn-resolved (auth.json, no install-time forwarding required).
  *
  * Forwarding posture in 0.10.0:
  * - **Conditional**: each `RUNTIME_FORWARDED_KEYS` entry forwards
@@ -197,7 +180,7 @@ export interface BuildMcpEnvOptions {
  *   (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) are NOT forwarded even if
  *   set in the install-time env. The spawned MCP server's
  *   `resolveAuth` picks the same `ntn-auth-json` path on its own
- *   from ~/.config/notion/auth.json (path 2), so the placeholders
+ *   from ~/.config/notion/auth.json, so the placeholders
  *   would fingerprint the operator's install-time shell and produce
  *   host-validator warnings (e.g. Claude Code `/doctor`'s "Missing
  *   environment variables") when the underlying vars later unset.
@@ -350,7 +333,7 @@ function mergeMcpEnvForClaudeOrCursor(build: McpEnvBuild): Record<string, string
  * (default), or `{ command: "yarn", args: ["lore", "mcp"], env: ... }`
  * for `shape: "yarn"` (Yarn Berry PnP consumers — see
  * `BinDispatchShape`). The env block carries:
- *   - Conditional `${NOTION_API_TOKEN}` / `${LORE_NOTION_TOKEN}` /
+ *   - Conditional `${NOTION_API_TOKEN}` /
  *     `${LORE_NOTION_BASE_URL}` placeholders for keys the operator
  *     had set at install time.
  *   - Always-on `LORE_CONFIG_ROOT` (literal vault directory) and
@@ -388,10 +371,8 @@ export function buildClaudeMcpEntry(
 }
 
 /**
- * Legacy absolute-path .mcp.json shape used by `~/.lore` consumers.
- * Preserved for the deprecation window; `lore install --legacy-paths`
- * opts back in. Targeted for removal alongside the standalone
- * bundled `mcp` entry.
+ * Legacy absolute-path .mcp.json shape used to detect and upgrade
+ * `~/.lore` consumers.
  *
  * The 0.10.0 ntn-first env shape applies on this path too — the MCP
  * server's startup `resolveAuth` consults `LORE_CONFIG_ROOT` to find
@@ -765,7 +746,6 @@ export function buildLegacyCodexMcpSection(
  */
 const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
 const CODEX_HOOKS_FEATURE_KEY = "hooks"
-const DEPRECATED_CODEX_HOOKS_FEATURE_KEY = "codex_hooks"
 
 /**
  * Build the shell-string form of a Codex hook invocation with the
@@ -796,7 +776,7 @@ const DEPRECATED_CODEX_HOOKS_FEATURE_KEY = "codex_hooks"
  * the consumer repo's `node_modules/.bin` for `lore` to resolve at
  * hook-fire time — Claude Code and many shells set this up
  * automatically; if Codex's hook context doesn't, operators may need to
- * fall back to `--legacy-paths` until Codex's hook runner exposes a
+ * fall back to legacy absolute-path mode until Codex's hook runner exposes a
  * project-local PATH hook.
  */
 /**
@@ -1006,7 +986,7 @@ async function confirm(
 
 function statusLabel(status: HookStatus, legacyPaths: boolean): string {
   if (status === "current") return "already installed"
-  // Under `--legacy-paths`, a `legacy-current` entry IS the desired
+  // Under legacy absolute-path mode, a `legacy-current` entry IS the desired
   // shape — it should read as already installed. Under bin-dispatch
   // (default), the same entry is upgrade-eligible.
   if (status === "legacy-current") {
@@ -1105,7 +1085,7 @@ export function detectClaudeHook(
  * - Writes the new entry verbatim from `newCommand`, which the caller
  *   selects based on `context.legacyPaths`.
  *
- * The two-shape filter is what lets `lore install --legacy-paths` rewrite
+ * The two-shape filter is what lets `lore install` rewrite
  * a bin-dispatch entry back to legacy without leaving the bin-dispatch
  * entry behind, and lets default `lore install` rewrite a legacy entry
  * without leaving the legacy entry behind. Without the dual filter, an
@@ -1164,8 +1144,8 @@ function upsertClaudeHookCommand(
  *
  * - Default install (bin-dispatch): only `current` (bin-dispatch shape)
  *   counts as effectively current.
- * - `--legacy-paths`: only `legacy-current` counts. A bin-dispatch
- *   entry on disk is NOT effectively current under `--legacy-paths`,
+ * - legacy absolute-path mode: only `legacy-current` counts. A bin-dispatch
+ *   entry on disk is NOT effectively current under legacy absolute-path mode,
  *   so the runner rewrites it back to the legacy shape — that's the
  *   intended downgrade semantic for an operator on `~/.lore` who
  *   accidentally upgraded.
@@ -1546,21 +1526,6 @@ function upsertTomlTableKey(
   return joinTomlLines(lines)
 }
 
-function removeTomlTableKey(text: string, tableName: string, key: string): string {
-  const lines = splitTomlLines(text)
-  const section = parseTomlSections(text).find((candidate) => candidate.name === tableName)
-  if (!section) return text
-
-  const keyPattern = new RegExp(`^\\s*${key}\\s*=`)
-  for (let i = section.end - 1; i > section.start; i--) {
-    if (keyPattern.test(lines[i])) {
-      lines.splice(i, 1)
-    }
-  }
-
-  return joinTomlLines(lines)
-}
-
 export interface InstallContext {
   projectDir: string
   pkgRoot: string
@@ -1582,7 +1547,7 @@ export interface InstallContext {
    */
   wakeUpConfig: boolean | null
   /**
-   * `--legacy-paths` opt-in. When `true`, the install path emits the
+   * legacy absolute-path mode opt-in. When `true`, the install path emits the
    * legacy absolute-path shape (an explicit `node` invocation against
    * the built MCP entry under `${HOME}/.lore/`, plus the matching shell
    * wakeup wrapper) and the prerequisite checks verify the legacy
@@ -1699,7 +1664,7 @@ export async function prepareInstallContext(
   const skipPrompts = opts.yes || !process.stdin.isTTY
   const legacyPaths = !!opts.legacyPaths
   // PnP auto-detection runs only on the bin-dispatch path. Under
-  // `--legacy-paths` the absolute-path shape doesn't depend on PATH
+  // legacy absolute-path mode the absolute-path shape doesn't depend on PATH
   // resolution at all, so the question is moot. An explicit
   // `opts.yarnPnp` override (true OR false) wins over auto-detection
   // — set via `--yarn-pnp` / `--no-yarn-pnp` so an operator can pin
@@ -1757,7 +1722,7 @@ export async function prepareInstallContext(
  * No-op on the bin-dispatch default path (`context.legacyPaths === false`)
  * because the bin-dispatch shape doesn't depend on `hooks/*.sh` — the
  * `lore` bin owns the hook entry points directly. Only the
- * `--legacy-paths` opt-in path needs the .sh prerequisites verified.
+ * legacy absolute-path mode opt-in path needs the .sh prerequisites verified.
  *
  * Cursor's runner does NOT call this — Cursor doesn't currently support
  * session-end / Stop hooks, so the hook scripts are irrelevant for that
@@ -1796,10 +1761,6 @@ function describeAuthSource(source: AuthSource): string {
       return "NOTION_API_TOKEN (env)"
     case "ntn-auth-json":
       return "ntn-issued (auth.json)"
-    case "env-lore-notion-token":
-      return "LORE_NOTION_TOKEN (env, legacy)"
-    case "config-auth-token":
-      return "auth.token in .lore.yaml (legacy)"
   }
 }
 
@@ -1961,10 +1922,6 @@ export function ntnLoginRecovery(
  *     ~/.config/notion/config.json (`undefined` baseUrl == prod,
  *     the SDK default; `resolveNtnBaseUrl` is the helper).
  *   - `env-notion-api-token`: shell-only; `undefined` baseUrl == prod.
- *   - legacy paths (`env-lore-notion-token` / `config-auth-token`)
- *     honor .lore.yaml `auth.baseUrl` directly via
- *     `legacyBaseUrlOverride`.
- *
  * Always returns a line on the auth-resolved branch — operators
  * benefit from "yes, this is targeting prod" being explicit even on
  * the silent-default case. The previous shell-env-only display
@@ -1988,9 +1945,8 @@ function describeNtnEnvSelectors(
  * `Notion environment:` display. Walks the same priority order as
  * `resolveOperatorBaseUrl` for shell vars, then falls back to
  * auth-source-specific knowledge: ntn-auth-json reads ntn's
- * config.json; env tokens consult shell only; legacy paths honor
- * `.lore.yaml auth.baseUrl`. Pure presentation — no further
- * resolution work happens here.
+ * config.json; env tokens consult shell only. Pure presentation — no
+ * further resolution work happens here.
  */
 function describeBaseUrlSource(
   auth: ResolvedAuth,
@@ -2023,11 +1979,6 @@ function describeBaseUrlSource(
         : "(ntn default; no shell or ntn config.json override)"
     case "env-notion-api-token":
       return "(default; no shell base-URL override)"
-    case "env-lore-notion-token":
-    case "config-auth-token":
-      return resolvedBaseUrl
-        ? "(from .lore.yaml auth.baseUrl)"
-        : "(default; no shell or .lore.yaml override)"
   }
 }
 
@@ -2096,6 +2047,15 @@ function describeAuthBaseUrlConfigMismatch(
     `consults ${sourceHint}. To target ${declared}, set NOTION_ENV in your shell or run`,
     `\`ntn login\` against the right env.`,
   ].join(" ")
+}
+
+function printPatIntegrationTokenPreflightHint(): void {
+  console.error("    The token shape is `secret_…` — an integration token from")
+  console.error("    notion.so/profile/integrations, NOT a PAT. This is almost")
+  console.error("    certainly the cause of the preflight failure.")
+  console.error("    Rotate to a PAT from notion.so/developers/tokens for per-user")
+  console.error("    isolation and personal-permission inheritance.")
+  console.error("")
 }
 
 /**
@@ -2169,11 +2129,9 @@ function describeConflictingDevSignal(env: NodeJS.ProcessEnv): string {
  * already verified the env var is set), surfaces the describe lines
  * the ntn path also emits, and runs `preflightAndReport`.
  *
- * On auth-resolution failure (e.g., .lore.yaml's `auth.token`
- * shadowing the env var, or a Zod validation error elsewhere in the
- * config), prints PAT-specific recovery guidance. The most common
- * cause of `auth.token` blocking the env PAT is a leftover legacy
- * field; `lore auth --migrate` walks operators through removing it.
+ * On auth-resolution failure (for example, `.lore.yaml` carrying the
+ * removed `auth.token` field or a Zod validation error elsewhere in
+ * the config), prints PAT-specific recovery guidance.
  *
  * Does NOT call `installNtn()` or `runNtnLogin()` — the PAT path
  * intentionally never touches `ntn`.
@@ -2210,7 +2168,7 @@ async function resolveAndPreflight(
     console.error("")
     console.error("    NOTION_API_TOKEN is set in your environment but Lore could not")
     console.error("    resolve it. The most common cause is an `auth.token` field in")
-    console.error("    .lore.yaml that fails the bearer-shape guard; remove it and")
+    console.error("    .lore.yaml; Lore rejects every auth.token value. Remove it and")
     console.error("    re-run `lore install`.")
     return { ready: false }
   }
@@ -2473,23 +2431,6 @@ export async function ensurePrerequisites(
       console.log(`                        ! ${mismatch}`)
     }
     console.log(`  Auth source:          ✓ ${describeAuthSource(auth.source)}`)
-    if (
-      auth.source === "env-lore-notion-token" ||
-      auth.source === "config-auth-token"
-    ) {
-      // The legacy-source annotation must name BOTH migrate
-      // branches under the post-2026-05-13 contract: PAT default
-      // (`lore auth --migrate`) and the internal-engineer ntn
-      // opt-in (`lore auth --migrate --ntn`). The pre-announcement
-      // "switch to ntn" wording silently routed legacy operators
-      // to the wrong contract.
-      console.log(
-        "                          (soft-deprecated; migrate via `lore auth --migrate` (PAT default)",
-      )
-      console.log(
-        "                          or `lore auth --migrate --ntn` for ntn-issued auth)",
-      )
-    }
     return await preflightAndReport(auth, found, config)
   }
 
@@ -2696,11 +2637,15 @@ async function preflightAndReport(
   // operator to "re-run ntn login" would be the wrong remediation
   // for the external-operator default path.
   const isPatSource = auth.source === "env-notion-api-token"
+  const isIntegrationToken = isPatSource && auth.token.startsWith("secret_")
 
   if (result.kind === "not-found") {
     console.error(`  Vault page:           ✗ not accessible (${config.vault.pageId})`)
     console.error("")
     if (isPatSource) {
+      if (isIntegrationToken) {
+        printPatIntegrationTokenPreflightHint()
+      }
       console.error("    Most likely causes for a PAT install:")
       console.error("      1. The PAT was created against a different workspace than the vault.")
       console.error("         Go to https://www.notion.so/developers/tokens, create a new PAT")
@@ -2711,13 +2656,6 @@ async function preflightAndReport(
       console.error("         open the page in Notion's UI, the PAT can't read it either.")
       console.error("         Ask whoever owns the vault to share it with you, or check")
       console.error("         workspace membership.")
-      if (auth.token.startsWith("secret_")) {
-        console.error("      3. The token shape is `secret_…` — an integration token from")
-        console.error("         notion.so/profile/integrations, NOT a PAT. Integration tokens")
-        console.error("         are integration-level rate-limited and need the page explicitly")
-        console.error("         shared with the integration. Rotate to a PAT for per-user")
-        console.error("         isolation and personal-permission inheritance.")
-      }
     } else {
       // ntn-source: env-aware ntn-login recovery. A project whose
       // .lore.yaml says dev (or whose operator has `NOTION_ENV=dev`
@@ -2752,6 +2690,9 @@ async function preflightAndReport(
     console.error(`  Vault page:           ✗ unauthorized (${config.vault.pageId})`)
     console.error("")
     if (isPatSource) {
+      if (isIntegrationToken) {
+        printPatIntegrationTokenPreflightHint()
+      }
       console.error("    The PAT is invalid, expired, revoked, or lacks permission for this page.")
       console.error("    Recovery:")
       console.error("      - Rotate the PAT at https://www.notion.so/developers/tokens (the")
@@ -2759,10 +2700,6 @@ async function preflightAndReport(
       console.error("      - Confirm the vault page is shared with the PAT's owning Notion")
       console.error("        identity; PATs cannot read pages you can't open in Notion's UI.")
       console.error("      - Export the new PAT as NOTION_API_TOKEN, then re-run `lore install`.")
-      if (auth.token.startsWith("secret_")) {
-        console.error("      - The token shape is `secret_…` — an integration token. Rotate to")
-        console.error("        a PAT from notion.so/developers/tokens for per-user isolation.")
-      }
     } else {
       // ntn-source: env-aware ntn-login recovery. 401/403 means the
       // resolved token is wrong (invalid, expired, or for the wrong
@@ -2878,7 +2815,7 @@ async function runClaudeInstall(
     context.authSource,
     context.notionBaseUrlLiteral,
   )
-  // Desired entry for the WRITE path (driven by --legacy-paths and
+  // Desired entry for the WRITE path (driven by legacy absolute-path mode and
   // --yarn-pnp). Detection below recognizes the canonical-for-this-mode
   // bin-dispatch entry exactly: a PnP project with a bare bin entry on
   // disk classifies as `stale` (write target shape mismatch) and gets
@@ -2949,7 +2886,7 @@ async function runClaudeInstall(
   // recognizes the legacy `.sh` paths. When upgrading from
   // legacy-current → bin-dispatch we run two passes: first strip the
   // legacy script entry, then write the bin-dispatch command. When
-  // downgrading bin-dispatch → legacy under `--legacy-paths`, we strip
+  // downgrading bin-dispatch → legacy under legacy absolute-path mode, we strip
   // any existing bin-dispatch entry (no `.sh` suffix), then write the
   // legacy path. The shared helper below covers both directions.
   const desiredAutosaveCommand = context.legacyPaths
@@ -3330,11 +3267,6 @@ export async function runCodexInstall(
     "features",
     CODEX_HOOKS_FEATURE_KEY,
   )
-  const deprecatedHooksFeatureValue = extractTomlKeyValue(
-    codexConfig,
-    "features",
-    DEPRECATED_CODEX_HOOKS_FEATURE_KEY,
-  )
   const binWakeupCommand = buildCodexHookCommand("wakeup", binShape)
   const binAutosaveCommand = buildCodexHookCommand("autosave", binShape)
   const legacyWakeupCommand = buildLegacyCodexHookCommand(context.wakeupPath)
@@ -3355,10 +3287,8 @@ export async function runCodexInstall(
   // narrow three-value taxonomy for this row only.
   const hooksFeatureStatus: "current" | "stale" | "missing" =
     hooksFeatureValue == null
-      ? deprecatedHooksFeatureValue == null
-        ? "missing"
-        : "stale"
-      : hooksFeatureValue === "true" && deprecatedHooksFeatureValue == null
+      ? "missing"
+      : hooksFeatureValue === "true"
         ? "current"
         : "stale"
   const wakeupStatus = detectCodexHook(
@@ -3438,7 +3368,6 @@ export async function runCodexInstall(
 
   let nextConfig = codexConfig
   nextConfig = removeTomlTableGroup(nextConfig, "mcp_servers.lore")
-  nextConfig = removeTomlTableKey(nextConfig, "features", DEPRECATED_CODEX_HOOKS_FEATURE_KEY)
   nextConfig = upsertTomlTableKey(nextConfig, "features", CODEX_HOOKS_FEATURE_KEY, "true")
   nextConfig = appendTomlBlock(nextConfig, desiredMcpSection)
 
@@ -3717,48 +3646,6 @@ export async function dispatchInstall(
   return errors
 }
 
-/**
- * Build the legacy-forwarded shell-rc-cleanup note that the install
- * summary prints when `LORE_NOTION_TOKEN` is still set in the
- * operator's install-time env. Returns the lines verbatim (each
- * including its leading two-space indent for the install-summary
- * indent level) when `legacyForwarded` is true; empty array
- * otherwise.
- *
- * Extracted from `runInstall` so the wording is testable directly
- * without driving a full install flow. The reviewer's regression
- * guard for the post-2026-05-13 migrate contract pins this helper's
- * output: it must name BOTH `lore auth --migrate` (PAT default) and
- * `lore auth --migrate --ntn` (ntn opt-in), and must not contain the
- * pre-announcement "switching to ntn-issued workspace tokens" or
- * "until `lore auth --migrate` ships" wording.
- *
- * Probes the **unfiltered** legacy-forwarded shape (no `authSource`)
- * upstream: a mid-migration operator on `ntn-auth-json` OR
- * `env-notion-api-token` (PAT) whose shell rc still exports
- * `LORE_NOTION_TOKEN` still sees the cleanup nudge — the note's job
- * is "your shell carries a stale legacy var; clean it up," not
- * "this install just baked one in." Under ntn-source or PAT-source
- * the install does NOT forward the token (runners pass
- * `context.authSource` into the build helpers), so the note advises
- * shell-rc cleanup independent of whether the committed .mcp.json
- * carries the placeholder.
- */
-export function formatLegacyForwardedNoteLines(
-  legacyForwarded: boolean,
-): string[] {
-  if (!legacyForwarded) return []
-  return [
-    "",
-    "  Note: LORE_NOTION_TOKEN is forwarded into the MCP entry. The legacy",
-    "  env-var path still works in 0.13.x, but it's soft-deprecated (removal",
-    "  targeted for 0.14.0). To migrate, run `lore auth --migrate` (PAT default,",
-    "  pastes a Personal Access Token into `NOTION_API_TOKEN`) or `lore auth",
-    "  --migrate --ntn` for ntn-issued auth, then unset LORE_NOTION_TOKEN from",
-    "  your shell rc. Both branches give per-user rate limits.",
-  ]
-}
-
 export async function runInstall(
   opts: {
     client: InstallClient
@@ -3819,17 +3706,6 @@ export async function runInstall(
     context.notionBaseUrlLiteral = ntnEnvBaseUrl("dev")
   }
 
-  // Detect legacy-forwarded env vars so the install summary can
-  // surface a deprecation reminder. Read here (not inside the
-  // runners) so the note prints once per install command, not once
-  // per host. See `formatLegacyForwardedNoteLines` for the
-  // wording rationale and shell-rc-cleanup framing.
-  const legacyForwarded = buildMcpEnv(context.configRoot).forwarded.filter(
-    (key): key is "LORE_NOTION_TOKEN" => key === "LORE_NOTION_TOKEN",
-  )
-  for (const line of formatLegacyForwardedNoteLines(legacyForwarded.length > 0)) {
-    console.log(line)
-  }
   console.log()
 
   // Codex preflight is gating only when Codex is the sole target — failing
@@ -3896,22 +3772,13 @@ function formatInstallError(err: unknown): string {
  * route to the unrecognized-value error path. Empty-string-means-default
  * would be a silent dispatch that no operator could reasonably expect.
  *
- * `"both"` is accepted as a deprecated alias for `"all"` so 0.8.x scripts
- * keep working through one minor version. Callers detect the deprecated
- * spelling via `isDeprecatedInstallClient` and emit a warning before
- * dispatching.
  */
 export function parseInstallClient(value: string | undefined): InstallClient | null {
   if (value === undefined) return "all"
   if (value === "claude" || value === "codex" || value === "cursor" || value === "all") {
     return value
   }
-  if (value === "both") return "all"
   return null
-}
-
-export function isDeprecatedInstallClient(value: string | undefined): boolean {
-  return value === "both"
 }
 
 export type PrintConfigFormat = "json" | "toml"
@@ -3925,16 +3792,11 @@ export function parsePrintConfigFormat(value: string): PrintConfigFormat | null 
  * Render a paste-ready MCP config snippet as a string.
  *
  * Pure: takes resolved paths in, returns the snippet out. Reuses
- * `buildClaudeMcpEntry` / `buildCodexMcpSection` (or their `Legacy`
- * counterparts when `legacyPaths === true`) so the snippet stays
+ * `buildClaudeMcpEntry` / `buildCodexMcpSection` so the snippet stays
  * byte-identical to what `--client claude` writes to .mcp.json and
- * what `--client codex` writes to .codex/config.toml for the same
- * `--legacy-paths` flag value. Drift between the printed shape and the
- * on-disk shape is the failure mode this reuse exists to prevent.
- *
- * `mcpJsPath` and `pkgRoot` are unused on the bin-dispatch path —
- * accepted for API compatibility with the legacy path, ignored when
- * `legacyPaths === false`.
+ * what `--client codex` writes to .codex/config.toml. Drift between
+ * the printed shape and the on-disk shape is the failure mode this
+ * reuse exists to prevent.
  */
 export function buildPrintConfigOutput(
   format: PrintConfigFormat,
@@ -3947,44 +3809,28 @@ export function buildPrintConfigOutput(
   authSource?: AuthSource,
   notionBaseUrlLiteral?: string,
 ): string {
-  const portableMcpJsPath = toPortablePath(mcpJsPath)
-  const portablePkgRoot = toPortablePath(pkgRoot)
+  void mcpJsPath
+  void pkgRoot
+  void legacyPaths
 
   if (format === "json") {
-    const entry = legacyPaths
-      ? buildLegacyClaudeMcpEntry(
-          portableMcpJsPath,
-          portablePkgRoot,
-          configRoot,
-          envSource,
-          authSource,
-          notionBaseUrlLiteral,
-        )
-      : buildClaudeMcpEntry(
-          binShape,
-          configRoot,
-          envSource,
-          authSource,
-          notionBaseUrlLiteral,
-        )
+    const entry = buildClaudeMcpEntry(
+      binShape,
+      configRoot,
+      envSource,
+      authSource,
+      notionBaseUrlLiteral,
+    )
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
 
-  const section = legacyPaths
-    ? buildLegacyCodexMcpSection(
-        portableMcpJsPath,
-        configRoot,
-        envSource,
-        authSource,
-        notionBaseUrlLiteral,
-      )
-    : buildCodexMcpSection(
-        binShape,
-        configRoot,
-        envSource,
-        authSource,
-        notionBaseUrlLiteral,
-      )
+  const section = buildCodexMcpSection(
+    binShape,
+    configRoot,
+    envSource,
+    authSource,
+    notionBaseUrlLiteral,
+  )
   return section + "\n"
 }
 
@@ -3997,23 +3843,9 @@ export function buildPrintConfigOutput(
  * snippet's `LORE_CONFIG_ROOT` static so the printed entry points the
  * spawned MCP server at the right .lore.yaml.
  *
- * On a legacy-forwarded source (operator has `LORE_NOTION_TOKEN` set),
- * a one-line stderr note surfaces a deprecation reminder so the
- * print-config path stays in lockstep with the file-write path's
- * messaging. The note intentionally stays compact (single stderr
- * line) so a pipeline like `lore install --print-config json | jq`
- * sees clean stdout — operator advice belongs on stderr, snippet
- * content on stdout. The note names both `lore auth --migrate`
- * branches (PAT default + `--ntn` opt-in) and the 0.14.0 removal
- * target, matching the post-2026-05-13 migrate contract every
- * other operator-facing migrate-recommendation surface ships.
- * `runInstall`'s install-summary mirror at
- * `formatLegacyForwardedNoteLines` covers the same surface for the
- * file-write path with the multi-line stdout-friendly shape.
  */
 async function runPrintConfig(
   format: PrintConfigFormat,
-  legacyPaths: boolean,
   binShape: BinDispatchShape,
   projectDir?: string,
   dev?: boolean,
@@ -4084,25 +3916,11 @@ async function runPrintConfig(
   // Best-effort auth-source resolution so the printed snippet matches
   // what `--client claude` / `--client codex` would write to disk:
   // under `ntn-auth-json`, suppress the auth-token placeholders that
-  // produce host-validator warnings. Note that `resolveAuth` also has
-  // the side effect of emitting deprecation warnings to stderr for
-  // the legacy paths (`config-auth-token`, `env-lore-notion-token`);
-  // print-config surfaces those warnings the same way the file-write
-  // path does. The two cadences differ:
-  // `env-lore-notion-token` warns once per 24h per config root and is
-  // silenceable via `LORE_SUPPRESS_DEPRECATIONS=1`; `config-auth-token`
-  // fires once per process and is NOT silenceable. Operators piping
-  // `lore install --print-config json` into `jq` see clean stdout
-  // (the snippet) on one stream and the warning on the other; standard
-  // shell redirection (`2>/dev/null`) suppresses the stderr noise for
-  // pipelines that don't want it, but the warning's whole point is to
-  // be visible until the operator removes `auth.token` from
-  // .lore.yaml. Print-config is intentionally non-interactive —
-  // auth resolution failure (no .lore.yaml, no token resolved) is
-  // silently treated as "no opinion" and the legacy unconditional-
-  // forward shape stands. The catch is narrow: print-config exists for
-  // unsupported hosts and a hard failure here would break the very
-  // escape hatch operators depend on.
+  // produce host-validator warnings. Print-config is intentionally
+  // non-interactive: auth resolution failure is silently treated as
+  // "no opinion" and the conditional-forward shape stands. The catch
+  // is narrow because print-config exists for unsupported hosts and a
+  // hard failure here would break the escape hatch operators depend on.
   let printConfigAuthSource: AuthSource | undefined
   if (found) {
     try {
@@ -4128,7 +3946,7 @@ async function runPrintConfig(
       mcpJsPath,
       pkgRoot,
       configRoot,
-      legacyPaths,
+      false,
       binShape,
       process.env,
       printConfigAuthSource,
@@ -4136,32 +3954,6 @@ async function runPrintConfig(
     ),
   )
 
-  // Mirror the file-write path's legacy-forwarded note so operators of
-  // unsupported hosts see the same shell-rc-cleanup recommendation.
-  // Probes the unfiltered shape (no `authSource`) for the same reason
-  // `runInstall` does: an ntn-source OR PAT-source operator with a
-  // stray `LORE_NOTION_TOKEN` in their shell rc gets the cleanup
-  // nudge even though the printed snippet itself does not forward
-  // the token.
-  //
-  // Print-config writes the note to **stderr** (not stdout) so a
-  // pipeline like `lore install --print-config json --dev | jq …`
-  // sees clean JSON on stdout — the note is operator advice, not
-  // structural output. The wording is compact (single line) for the
-  // same reason: stderr in a pipe context is best kept short, while
-  // the multi-line stdout-friendly variant in `runInstall` has room
-  // for the full elaboration. Both surfaces name BOTH `lore auth
-  // --migrate` branches — the PAT default and the `--ntn` opt-in —
-  // and avoid wording that routes operators through
-  // `NOTION_KEYRING=0 ntn login` to the wrong contract.
-  const build = buildMcpEnv(configRoot)
-  if (build.forwarded.includes("LORE_NOTION_TOKEN")) {
-    process.stderr.write(
-      "Note: LORE_NOTION_TOKEN forwarded — soft-deprecated (removal targeted for 0.14.0). " +
-        "Migrate via `lore auth --migrate` (PAT default) or `lore auth --migrate --ntn` " +
-        "(ntn-issued auth), then unset LORE_NOTION_TOKEN.\n",
-    )
-  }
 }
 
 export const installCommand = new Command("install")
@@ -4178,10 +3970,6 @@ export const installCommand = new Command("install")
   .option(
     "--print-config <format>",
     "print a paste-ready MCP config snippet to stdout (no files written); format: json or toml",
-  )
-  .option(
-    "--legacy-paths",
-    "emit the absolute-path 0.10.x config shape (node dist/mcp.js, hooks/*.sh) instead of the bin-dispatched 'lore mcp' / 'lore hooks <event>' default. Removal targeted for 0.12.0",
   )
   .option(
     "--yarn-pnp",
@@ -4207,7 +3995,6 @@ export const installCommand = new Command("install")
       printConfig?: string
       yes?: boolean
       cursorGlobal?: boolean
-      legacyPaths?: boolean
       yarnPnp?: boolean
       ntn?: boolean
       dev?: boolean
@@ -4230,13 +4017,12 @@ export const installCommand = new Command("install")
           // regardless of which assistant the operator nominally targeted;
           // `--ntn` is an internal-engineer install-flow opt-in (auto-install
           // ntn + ntn login), neither of which the print-config path performs.
-          // --legacy-paths, --yarn-pnp / --no-yarn-pnp, --project, AND --dev
-          // ARE honored — they control the shape and contents of the printed
-          // snippet so operators can copy-paste the right form for their
-          // consumer (bin-dispatch shape default; yarn-wrapped under
-          // --yarn-pnp; legacy absolute-path under --legacy-paths; dev-base-URL
-          // literal under --dev). Auto-detection from `.pnp.cjs` is skipped on
-          // this path because no project dir is resolved.
+          // --yarn-pnp / --no-yarn-pnp, --project, AND --dev are honored —
+          // they control the shape and contents of the printed snippet so
+          // operators can copy-paste the right form for their consumer
+          // (bin-dispatch shape default; yarn-wrapped under --yarn-pnp;
+          // dev-base-URL literal under --dev). Auto-detection from `.pnp.cjs`
+          // is skipped on this path because no project dir is resolved.
           const printBinShape: BinDispatchShape =
             opts.yarnPnp === true ? "yarn" : "bare"
           // --project resolves the configRoot embedded in the
@@ -4248,7 +4034,6 @@ export const installCommand = new Command("install")
           // for that one purpose only.
           await runPrintConfig(
             format,
-            !!opts.legacyPaths,
             printBinShape,
             opts.project,
             !!opts.dev,
@@ -4256,14 +4041,6 @@ export const installCommand = new Command("install")
           return
         }
 
-        if (isDeprecatedInstallClient(opts.client)) {
-          // `console.warn` writes to stderr — kept distinct from the install
-          // body's stdout so CI scripts that capture stdout for diffing don't
-          // see deprecation noise mixed with install output.
-          console.warn(
-            "Warning: --client both is deprecated; use --client all (mapped automatically).",
-          )
-        }
         const client = parseInstallClient(opts.client)
         if (!client) {
           console.error(
@@ -4285,7 +4062,6 @@ export const installCommand = new Command("install")
           project: opts.project,
           yes: opts.yes,
           cursorGlobal: opts.cursorGlobal,
-          legacyPaths: opts.legacyPaths,
           yarnPnp: opts.yarnPnp,
           ntn: opts.ntn,
           dev: opts.dev,

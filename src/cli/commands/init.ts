@@ -452,9 +452,8 @@ export async function runNoArgInit(opts: {
 
   const profile = resolveInitProfile(opts.profile)
 
-  // Resolve auth via the existing chain (NOTION_API_TOKEN env →
-  // ntn auth.json → LORE_NOTION_TOKEN → auth.token). No-arg
-  // init's only constraint: there must be a resolvable token.
+  // Resolve auth via the existing chain. No-arg init's only constraint:
+  // there must be a resolvable token.
   let auth = await tryResolveAuth(cwd)
 
   // `tryResolveAuth` returns null on at least two distinct failure
@@ -646,19 +645,8 @@ export async function runNoArgInit(opts: {
       console.error(
         `    export LORE_NOTION_BASE_URL=${expectedBaseUrlForEnv(ntnEnv) ?? "https://api.notion.so"}`
       )
-    } else if (auth.source === "env-lore-notion-token") {
-      // Soft-deprecated path. The right migration is `lore auth
-      // --migrate`. Unlike NOTION_API_TOKEN, this legacy path does
-      // not honor LORE_NOTION_BASE_URL from operator env.
-      console.error("  Unset LORE_NOTION_TOKEN to fall through to ntn-resolved auth,")
-      console.error("  or migrate legacy auth before retrying:")
-      console.error("    lore auth --migrate")
     } else {
-      // `config-auth-token` — structurally unreachable from the no-arg
-      // init flow because resolveAuth is called with config=undefined
-      // (no .lore.yaml exists yet). Branch handled defensively in case
-      // a future refactor changes the call shape.
-      console.error("  Remove auth.token from .lore.yaml and re-init via ntn.")
+      console.error("  Re-authenticate for the requested Notion environment.")
     }
     process.exit(1)
     return
@@ -691,8 +679,7 @@ export async function runNoArgInit(opts: {
     console.error("     workspace-level page creation. Per Notion's docs, this is")
     console.error("     'available only for bots of public connections.' Notion")
     console.error("     Workers CLI is a public connection, so this should work")
-    console.error("     under ntn-issued tokens. If you're on legacy")
-    console.error("     LORE_NOTION_TOKEN auth, the integration may not support it.")
+    console.error("     under ntn-issued tokens.")
     console.error("  2. Your token's capabilities don't include 'Insert Content'.")
     console.error("")
     console.error("Fallback: create a vault page manually in Notion's UI in a")
@@ -836,7 +823,7 @@ export const initCommand = new Command("init")
   )
   .option(
     "--token <token>",
-    "Notion integration token (or set NOTION_API_TOKEN / LORE_NOTION_TOKEN). Ignored under no-arg init."
+    "Notion Personal Access Token (or set NOTION_API_TOKEN). Ignored under no-arg init."
   )
   .option("-y, --yes", "Auto-confirm prompts (e.g., 'Install ntn?', 'Run ntn login?')")
   .option(

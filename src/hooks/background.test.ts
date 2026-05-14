@@ -5,12 +5,10 @@
  *
  * 1. **`safeEnv` env forwarding (#188).** The Stop-hook autosave / digest
  *    paths spawn a detached `claude -p` with a deliberately minimal env.
- *    Pre-#188 only the legacy `LORE_NOTION_TOKEN` /
- *    `LORE_NOTION_BASE_URL` / `LORE_USER_NAME` keys were forwarded, so an
- *    operator authenticated via `NOTION_API_TOKEN` (the canonical 0.10.0
- *    path) — or a multi-workspace ntn user with `NOTION_WORKSPACE_ID` —
- *    saw their foreground CLI / MCP calls succeed while hook workers
- *    silently failed auth or selected the wrong workspace. The
+ *    The `safeEnv` describe block pins that every key in
+ *    `RUNTIME_FORWARDED_KEYS` forwards conditionally from `process.env`
+ *    into the spawned child's env so hook workers resolve the same auth,
+ *    workspace, and Notion environment as the foreground process. The
  *    `safeEnv` describe block pins the post-#188 contract: every key in
  *    `RUNTIME_FORWARDED_KEYS` (the shared install/hooks allowlist —
  *    `src/auth/forwarded-env.ts`) forwards conditionally from
@@ -169,10 +167,7 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     expect(env["LORE_BACKGROUND_AGENT"]).toBe("true")
   })
 
-  it("forwards NOTION_API_TOKEN so a canonical-auth operator's hook worker auths without LORE_NOTION_TOKEN (#188)", () => {
-    // The 0.10.0 acceptance criterion. Pre-#188 a `NOTION_API_TOKEN`-
-    // only operator had to also export `LORE_NOTION_TOKEN` for the
-    // hook spawn to auth — surfacing as silent autosave failures.
+  it("forwards NOTION_API_TOKEN so an env-token operator's hook worker auths", () => {
     process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
@@ -180,9 +175,6 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
 
     const env = lastSpawnEnv()
     expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
-    // Legacy keys must not be conjured when only the canonical key
-    // is set — confirms the conditional-forward shape.
-    expect("LORE_NOTION_TOKEN" in env).toBe(false)
   })
 
   it("forwards NOTION_WORKSPACE_ID so multi-workspace ntn hook workers pick the right workspace (#188)", () => {
@@ -218,18 +210,6 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     expect(env["NOTION_ENV"]).toBe("dev")
   })
 
-  it("preserves the legacy LORE_NOTION_TOKEN forwarder so soft-deprecated operators keep working", () => {
-    // The 0.10.0 priority chain still honors `LORE_NOTION_TOKEN` —
-    // dropping the forward here would break hook workers for any
-    // operator who hasn't migrated to `lore auth --login` yet.
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
-
-    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
-    expect(result.kind).toBe("spawned")
-
-    expect(lastSpawnEnv()["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
-  })
-
   it("forwards LORE_USER_NAME (DEFERRED-ATTRIBUTION) when set so the spawned MCP child skips the users.me round-trip", () => {
     process.env["LORE_USER_NAME"] = "Test User"
 
@@ -258,29 +238,30 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     // chain in the spawned child. Same posture as `buildMcpEnv` in
     // `install.ts` — empty strings drop from the forward.
     process.env["NOTION_API_TOKEN"] = ""
-    process.env["LORE_NOTION_TOKEN"] = "non-empty"
+    process.env["LORE_NOTION_BASE_URL"] = "https://api-dev.notion.com"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
     expect(result.kind).toBe("spawned")
 
     const env = lastSpawnEnv()
     expect("NOTION_API_TOKEN" in env).toBe(false)
-    expect(env["LORE_NOTION_TOKEN"]).toBe("non-empty")
+    expect(env["LORE_NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
   })
 
-  it("forwards the full eight-key allowlist when the operator has a complete dev shell environment", () => {
+  it("forwards the full allowlist when the operator has a complete dev shell environment", () => {
     // Pathological-but-real: the full ntn-dev shell. Pinning every
     // key here means a future regression that drops a single
     // forwarder fails one assertion and surfaces the dropped key by
     // name in the diff.
     process.env["NOTION_API_TOKEN"] = "secret_api"
-    process.env["LORE_NOTION_TOKEN"] = "secret_lore"
     process.env["LORE_NOTION_BASE_URL"] = "https://api-dev.notion.com"
     process.env["NOTION_WORKSPACE_ID"] = "ws_dev"
     process.env["NOTION_ENV"] = "dev"
     process.env["NOTION_BASE_URL"] = "https://api-dev.notion.com"
     process.env["NOTION_API_BASE_URL"] = "https://api-dev.notion.com"
     process.env["LORE_USER_NAME"] = "Test User"
+    process.env["LORE_MCP_WRITE_BUDGET"] = "500"
+    process.env["LORE_MCP_BUDGET_STATE_FILE"] = "/tmp/state.json"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
     expect(result.kind).toBe("spawned")
@@ -313,10 +294,8 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
   // `skipAuthTokens`): under `authSource: "ntn-auth-json"` the
   // detached child re-reads `~/.config/notion/auth.json` directly
   // and the bearer token does not need to cross the fork boundary.
-  // Other sources (`env-notion-api-token`, `env-lore-notion-token`,
-  // `config-auth-token`) keep the legacy forward — those callers
-  // explicitly accept token-in-env as part of their contract and
-  // the child has no other way to land on the same source.
+  // The env-token source keeps the token forward because the child has no
+  // other way to land on the same source.
   let tmpDir: string
   const envGuard = withClearedRuntimeEnv(RUNTIME_FORWARDED_KEYS)
 
@@ -346,14 +325,13 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
     }
   })
 
-  it("under authSource=ntn-auth-json, drops NOTION_API_TOKEN and LORE_NOTION_TOKEN from safeEnv", () => {
+  it("under authSource=ntn-auth-json, drops NOTION_API_TOKEN from safeEnv", () => {
     // The 0.10.0 ntn-first invariant: a child whose own resolveAuth
     // can re-read auth.json directly does not need bearer tokens
     // forwarded via env — their presence increases blast radius
     // (process env reads, debug logs of third-party agents) without
     // changing the child's auth contract.
     process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
       authSource: "ntn-auth-json",
@@ -362,7 +340,6 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
 
     const env = lastSpawnEnv()
     expect("NOTION_API_TOKEN" in env).toBe(false)
-    expect("LORE_NOTION_TOKEN" in env).toBe(false)
   })
 
   it("under authSource=ntn-auth-json, still forwards workspace + base-URL + attribution selectors", () => {
@@ -397,7 +374,6 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
     // came from NOTION_API_TOKEN, so the child must see it too —
     // there is no on-disk source for the child to re-read.
     process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
       authSource: "env-notion-api-token",
@@ -406,58 +382,18 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
 
     const env = lastSpawnEnv()
     expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
-    expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
   })
 
-  it("under authSource=env-lore-notion-token, forwards LORE_NOTION_TOKEN as today", () => {
-    // Soft-deprecated path: legacy operators who haven't migrated to
-    // `lore auth --login` keep working. The child's resolveAuth
-    // priority chain reaches LORE_NOTION_TOKEN only through env.
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
-
-    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
-      authSource: "env-lore-notion-token",
-    })
-    expect(result.kind).toBe("spawned")
-
-    expect(lastSpawnEnv()["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
-  })
-
-  it("under authSource=config-auth-token, forwards NOTION_API_TOKEN and LORE_NOTION_TOKEN as today", () => {
-    // The deepest legacy path: token in `.lore.yaml`. The child
-    // reads its own config, so env-forward isn't strictly required
-    // for auth resolution — but the partition exists specifically
-    // for `ntn-auth-json` (where the security upgrade applies);
-    // every other source keeps the pre-#475 forward to avoid
-    // changing back-compat behavior on already-soft-deprecated paths.
+  it("with authSource omitted, forwards every set runtime key", () => {
     process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
-
-    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
-      authSource: "config-auth-token",
-    })
-    expect(result.kind).toBe("spawned")
-
-    const env = lastSpawnEnv()
-    expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
-    expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
-  })
-
-  it("with authSource omitted, preserves pre-#475 every-key forward (back-compat)", () => {
-    // The omitted-caller branch. Test fixtures, ad-hoc one-shot
-    // invocations, and any caller whose foreground hasn't resolved
-    // auth land here. Forwarding every set key matches pre-#475
-    // behavior verbatim — no observable regression for un-updated
-    // call sites.
-    process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
-    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
+    process.env["LORE_NOTION_BASE_URL"] = "https://api-dev.notion.com"
 
     const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
     expect(result.kind).toBe("spawned")
 
     const env = lastSpawnEnv()
     expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
-    expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
+    expect(env["LORE_NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
   })
 })
 

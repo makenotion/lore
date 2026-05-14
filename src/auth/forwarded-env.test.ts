@@ -31,7 +31,6 @@ function assertNever(_value: never): never {
 function exhaustiveAllKeys(key: RuntimeForwardedKey): RuntimeForwardedKey {
   switch (key) {
     case "NOTION_API_TOKEN":
-    case "LORE_NOTION_TOKEN":
     case "LORE_NOTION_BASE_URL":
     case "NOTION_WORKSPACE_ID":
     case "NOTION_ENV":
@@ -50,7 +49,6 @@ function exhaustiveAuthTokenKeys(
 ): RuntimeForwardedAuthTokenKey {
   switch (key) {
     case "NOTION_API_TOKEN":
-    case "LORE_NOTION_TOKEN":
       return key
     default:
       return assertNever(key)
@@ -67,7 +65,6 @@ describe("RUNTIME_FORWARDED_KEYS — declaration shape", () => {
     // accidental side effect of a sort or a structural cleanup.
     expect(RUNTIME_FORWARDED_KEYS).toEqual([
       "NOTION_API_TOKEN",
-      "LORE_NOTION_TOKEN",
       "LORE_NOTION_BASE_URL",
       "NOTION_WORKSPACE_ID",
       "NOTION_ENV",
@@ -87,7 +84,7 @@ describe("RUNTIME_FORWARDED_KEYS — declaration shape", () => {
     // as a second guard against an accidental dual-edit. Adding a key
     // is a deliberate change to both surfaces; the expected length
     // updates here in the same patch.
-    expect(RUNTIME_FORWARDED_KEYS).toHaveLength(10)
+    expect(RUNTIME_FORWARDED_KEYS).toHaveLength(9)
   })
 
   it("contains no duplicate keys", () => {
@@ -103,15 +100,7 @@ describe("RUNTIME_FORWARDED_KEYS — declaration shape", () => {
   })
 
   it("places auth tokens first so the array reads in resolveAuth precedence order", () => {
-    // The module JSDoc claims the array's auth-token prefix matches
-    // `resolveAuth`'s priority chain ("canonical first,
-    // soft-deprecated second"). Pin that prefix so a reorder that
-    // moved `LORE_NOTION_TOKEN` ahead of `NOTION_API_TOKEN` would
-    // fail loudly even if the full-sequence assertion was updated to
-    // match — protecting the documented contract that an operator
-    // reading the array sees the same precedence the runtime applies.
     expect(RUNTIME_FORWARDED_KEYS[0]).toBe("NOTION_API_TOKEN")
-    expect(RUNTIME_FORWARDED_KEYS[1]).toBe("LORE_NOTION_TOKEN")
   })
 
   it("excludes env names the source JSDoc documents as intentionally absent", () => {
@@ -147,24 +136,18 @@ describe("RUNTIME_FORWARDED_AUTH_TOKEN_KEYS — subset partition", () => {
     // under `authSource: "ntn-auth-json"`.
     expect(RUNTIME_FORWARDED_AUTH_TOKEN_KEYS).toEqual([
       "NOTION_API_TOKEN",
-      "LORE_NOTION_TOKEN",
     ])
   })
 
   it("pins length so a single-line append breaks the test", () => {
-    expect(RUNTIME_FORWARDED_AUTH_TOKEN_KEYS).toHaveLength(2)
+    expect(RUNTIME_FORWARDED_AUTH_TOKEN_KEYS).toHaveLength(1)
   })
 
   it("forms a contiguous prefix of RUNTIME_FORWARDED_KEYS in matching order", () => {
     // Strictly stronger than the `satisfies readonly
     // RuntimeForwardedKey[]` constraint already enforced at the type
-    // layer: the JSDoc claims auth tokens lead the array "canonical
-    // first, soft-deprecated second," which is a contiguous-prefix
-    // statement, not a subset statement. A reorder that moved
-    // `NOTION_WORKSPACE_ID` between the two token keys would still
-    // satisfy `satisfies` and still satisfy a plain subset probe,
-    // but would violate this assertion — and would silently break
-    // any consumer who reads the prefix to derive precedence.
+    // layer: the JSDoc claims auth tokens lead the array, which is a
+    // contiguous-prefix statement, not a subset statement.
     //
     // Pinning the prefix also subsumes the subset claim, so a
     // separate "every auth-token key appears in the parent" test
@@ -179,7 +162,6 @@ describe("buildSafeEnv — env partition shared by every Lore child spawn", () =
     PATH: "/usr/local/bin:/usr/bin",
     HOME: "/home/test",
     NOTION_API_TOKEN: "tok-canonical",
-    LORE_NOTION_TOKEN: "tok-legacy",
     NOTION_WORKSPACE_ID: "ws-abc",
     LORE_USER_NAME: "Test Operator",
     NOTION_ENV: "prod",
@@ -230,7 +212,6 @@ describe("buildSafeEnv — env partition shared by every Lore child spawn", () =
     // Auth tokens drop: the spawned child re-reads auth.json directly
     // and the bearer never crosses the fork boundary in env.
     expect(env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(env["LORE_NOTION_TOKEN"]).toBeUndefined()
     // Workspace + base-URL + attribution selectors still forward —
     // the spawned MCP child re-reads auth.json directly but still
     // needs to land on the same workspace as the foreground.
@@ -242,7 +223,6 @@ describe("buildSafeEnv — env partition shared by every Lore child spawn", () =
   it("forwards the auth-token subset under non-ntn auth sources", () => {
     const env = buildSafeEnv("env-notion-api-token", parent)
     expect(env["NOTION_API_TOKEN"]).toBe("tok-canonical")
-    expect(env["LORE_NOTION_TOKEN"]).toBe("tok-legacy")
   })
 
   it("defaults PATH and HOME to empty string when missing from parent env", () => {

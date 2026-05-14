@@ -141,18 +141,13 @@ export class SqlPartialResultError extends Error {
  * `RestrictedResource` per the README's "Auth And Capability
  * Requirements" section.
  *
- * The set is closed by design: `env-notion-api-token` is ambiguous
- * (could be either an integration secret or an ntn-resolved token,
+ * The set is currently empty: `env-notion-api-token` is ambiguous
+ * (could be either an integration secret or a personal token,
  * depending on what the operator exported), so it stays out of the
- * known-rejected set. `ntn-auth-json` is the canonical user-actor
- * path. Adding a future auth source requires explicit triage —
- * silent inclusion would surprise operators who relied on the
- * earlier silence.
+ * known-rejected set. Adding a future auth source requires explicit
+ * triage.
  */
-const KNOWN_INTEGRATION_SECRET_AUTH_SOURCES = new Set([
-  "env-lore-notion-token",
-  "config-auth-token",
-])
+const KNOWN_INTEGRATION_SECRET_AUTH_SOURCES = new Set<string>()
 
 /**
  * `true` when the auth source carries an integration-secret token
@@ -207,11 +202,7 @@ let warnedRunToolIntegrationSecret = false
  * Emit a one-time stderr warning at services init when a RunTool
  * feature flag is enabled (`LORE_USE_RUNTOOL` / sub-flag) AND the
  * resolved auth source is a known integration-secret path that
- * RunTool will reject with 403. Without this, an operator on
- * `LORE_NOTION_TOKEN` who flips `LORE_USE_RUNTOOL=1` to dogfood
- * the new path sees zero RunTool traffic — every flagged-on call
- * silently falls back to REST under the per-call 403 handling,
- * with no operator-visible signal.
+ * RunTool will reject with 403.
  *
  * Once-per-process so a long-lived MCP server doesn't spam stderr;
  * idempotent on services re-init.

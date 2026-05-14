@@ -642,8 +642,7 @@ describe("scheduleAutoDigestSpawn", () => {
     // The Stop → auto-digest-helper hop was the leak the second
     // PR review caught: pre-#475 fix this fork inherited
     // `process.env` via Node's default, so an ntn-resolved Stop
-    // path with a stale `LORE_NOTION_TOKEN` (transition operators,
-    // dual-shell-rc setups) still landed the bearer in the
+    // path with `NOTION_API_TOKEN` still landed the bearer in the
     // detached child's env BEFORE the inner synthesizer spawn's
     // partition got a chance to apply. Pin the partition shape
     // here so a future refactor that drops the explicit `env:`
@@ -651,7 +650,6 @@ describe("scheduleAutoDigestSpawn", () => {
     // loudly rather than silently re-introducing the leak.
     const envGuard = withClearedRuntimeEnv([
       "NOTION_API_TOKEN",
-      "LORE_NOTION_TOKEN",
       "NOTION_WORKSPACE_ID",
       "LORE_NOTION_BASE_URL",
     ] as const)
@@ -666,7 +664,6 @@ describe("scheduleAutoDigestSpawn", () => {
 
     it("under authSource=ntn-auth-json, drops auth tokens from the helper child's inherited env", () => {
       process.env["NOTION_API_TOKEN"] = "secret_canonical"
-      process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore"
       spawnMock.mockReset()
       spawnMock.mockReturnValue(fakeChild())
 
@@ -677,7 +674,6 @@ describe("scheduleAutoDigestSpawn", () => {
       }
       expect(options.env).toBeDefined()
       expect("NOTION_API_TOKEN" in options.env).toBe(false)
-      expect("LORE_NOTION_TOKEN" in options.env).toBe(false)
     })
 
     it("under authSource=ntn-auth-json, preserves every other operator-controlled runtime knob", () => {
@@ -741,7 +737,7 @@ describe("scheduleAutoDigestSpawn", () => {
       // that "optimizes" the omitted-authSource path by dropping the
       // `env:` option (relying on Node default) would silently re-
       // introduce the leak class — pin both halves here.
-      process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore"
+      process.env["NOTION_API_TOKEN"] = "secret_canonical"
       spawnMock.mockReset()
       spawnMock.mockReturnValue(fakeChild())
 
@@ -754,7 +750,7 @@ describe("scheduleAutoDigestSpawn", () => {
       // spawn options (not relying on Node default inherit).
       expect(options.env).toBeDefined()
       // Token preservation: pre-#475 behavior unchanged.
-      expect(options.env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore")
+      expect(options.env["NOTION_API_TOKEN"]).toBe("secret_canonical")
     })
 
     describe("buildAutoDigestHelperEnv", () => {
@@ -781,17 +777,14 @@ describe("scheduleAutoDigestSpawn", () => {
 
       it("preserves every parent env var for non-ntn sources", () => {
         process.env["NOTION_API_TOKEN"] = "secret_canonical"
-        process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore"
         try {
           const env = buildAutoDigestHelperEnv("env-notion-api-token")
           // Auth tokens stay forwarded under non-ntn sources — those
           // callers' `resolveAuth` priority chain reaches the bearer
           // only through env.
           expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical")
-          expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore")
         } finally {
           delete process.env["NOTION_API_TOKEN"]
-          delete process.env["LORE_NOTION_TOKEN"]
         }
       })
 
@@ -811,18 +804,14 @@ describe("scheduleAutoDigestSpawn", () => {
 
       it("returns a copy with auth tokens removed for ntn-auth-json", () => {
         process.env["NOTION_API_TOKEN"] = "secret_canonical"
-        process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore"
         try {
           const env = buildAutoDigestHelperEnv("ntn-auth-json")
           expect(env).not.toBe(process.env)
           expect("NOTION_API_TOKEN" in env).toBe(false)
-          expect("LORE_NOTION_TOKEN" in env).toBe(false)
           // The original process.env is untouched.
           expect(process.env["NOTION_API_TOKEN"]).toBe("secret_canonical")
-          expect(process.env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore")
         } finally {
           delete process.env["NOTION_API_TOKEN"]
-          delete process.env["LORE_NOTION_TOKEN"]
         }
       })
     })

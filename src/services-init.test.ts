@@ -139,7 +139,7 @@ describe("initServicesFromConfig — required Entities database", () => {
     vi.mocked(resolveAuth).mockResolvedValue({
       token: "tok",
       baseUrl: undefined,
-      source: "env-lore-notion-token",
+      source: "env-notion-api-token",
     })
   })
 

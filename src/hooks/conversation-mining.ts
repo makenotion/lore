@@ -138,7 +138,7 @@ export interface RunConversationMiningOptions {
    * auth file directly; under any other source the partition is a
    * no-op because the auth-token forward is the only resolution
    * path. Omitting under `ntn-auth-json` silently re-leaks
-   * `LORE_NOTION_TOKEN` into the spawned MCP child's env.
+   * `NOTION_API_TOKEN` into the spawned MCP child's env.
    */
   authSource?: AuthSource
   /**

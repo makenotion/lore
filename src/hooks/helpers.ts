@@ -451,23 +451,10 @@ async function clearStopFailure(
  * own startup `resolveAuth` calls surface genuine auth problems
  * through their stderr logs.
  *
- * Calls `resolveAuth` with `quiet: true` so the synthetic resolver
- * call cannot emit a NEW deprecation warning on every Stop fire
- * after the `DEPRECATION_DEBOUNCE_MS` window expires — the
- * foreground host (Claude Code / Codex) has already paid the
- * warning emission through its own primary `resolveAuth` (CLI
- * preflight, MCP server init, etc.). Without `quiet`, a legacy
- * operator would see a stderr nag at hook cadence rather than the
- * intended once-per-warning-window cadence.
- *
  * Cost reflects `resolveAuth`'s priority walk:
  * `NOTION_API_TOKEN`-source operators short-circuit at priority 1
- * with zero I/O; `ntn-auth-json`, `LORE_NOTION_TOKEN`, and
- * `config-auth-token` operators all pay the priority-2 auth.json
- * `readFile` plus a dynamic import of the ntn-token loader because
- * the walk checks priority 2 BEFORE falling through to the legacy
- * env / repo sources. `LORE_NOTION_TOKEN` and `config-auth-token` operators
- * then continue to priorities 3/4 after the priority-2 miss; only
+ * with zero I/O; `ntn-auth-json` operators pay the auth.json
+ * `readFile` plus a dynamic import of the ntn-token loader. Only
  * the `NOTION_API_TOKEN` path avoids any I/O. `loadNtnToken`'s
  * dynamic import is cached after the first call (rarely matters
  * since `lore hooks autosave` is a fresh process per Stop), and the
@@ -554,7 +541,7 @@ export async function handleStop(
     // the ntn-source partition. One disk read of
     // ~/.config/notion/auth.json covers both hops; the digest
     // helper would otherwise inherit the parent's full env (Node
-    // default) and leak `LORE_NOTION_TOKEN` even when the foreground
+    // default) and leak NOTION_API_TOKEN even when the foreground
     // resolved via ntn. Derived BEFORE the no-transcript early
     // return so that path's `scheduleAutoDigestSpawn` also gets the
     // partition. Defensive: a `resolveAuth` failure (no token

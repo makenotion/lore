@@ -88,7 +88,7 @@ function redactSensitiveText(value: string): string {
     .replace(/\bBearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
     .replace(/\bsecret_[A-Za-z0-9_-]+/g, "secret_[redacted]")
     .replace(/\bntn_[A-Za-z0-9_-]+/g, "ntn_[redacted]")
-    .replace(/\b(NOTION_API_TOKEN|LORE_NOTION_TOKEN)=\S+/g, "$1=[redacted]")
+    .replace(/\bNOTION_API_TOKEN=\S+/g, "NOTION_API_TOKEN=[redacted]")
 }
 
 function scopeHash(kind: BackgroundFailureKind, scope: BackgroundFailureScope): string {

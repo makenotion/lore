@@ -1991,21 +1991,16 @@ export interface LoreConfig {
   promotionTargets?: PromotionTargetConfig[]
   auth?: {
     /**
-     * Soft-deprecated in 0.10.0 — `resolveAuth` treats this as a fallback
-     * after `NOTION_API_TOKEN` env and the ntn-resolved token. A
-     * one-time-per-config-root stderr warning fires on each session that
-     * resolves through this branch; suppress with
-     * `LORE_SUPPRESS_DEPRECATIONS=1`. Hard removal is plausible for
-     * 1.0.0 contingent on telemetry.
+     * Rejected at config load. Kept in the type only so callers handling
+     * raw parsed objects can surface a targeted validation error.
      */
     token?: string
     baseUrl?: string
     /**
      * Workspace id to pick when ntn's auth.json carries multiple
      * workspaces. Optional; falls back to `NOTION_WORKSPACE_ID` env, then
-     * to single-workspace auto-pick. Has no effect on the
-     * `NOTION_API_TOKEN` / `LORE_NOTION_TOKEN` / `auth.token` paths —
-     * those carry whatever workspace the operator's token was issued
+     * to single-workspace auto-pick. Has no effect on `NOTION_API_TOKEN`,
+     * which carries whatever workspace the operator's token was issued
      * against and Lore can't introspect that without an API call.
      */
     workspaceId?: string

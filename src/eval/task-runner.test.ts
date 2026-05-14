@@ -1370,7 +1370,6 @@ describe("buildCodexChildEnv", () => {
       CODEX_TRACE: "1",
       // Secrets that must be stripped:
       NOTION_API_TOKEN: "secret-1",
-      LORE_NOTION_TOKEN: "secret-2",
       GITHUB_TOKEN: "secret-3",
       AWS_SECRET_ACCESS_KEY: "secret-4",
     })
@@ -1380,7 +1379,6 @@ describe("buildCodexChildEnv", () => {
     expect(env["OPENAI_API_KEY"]).toBe("sk-test")
     expect(env["CODEX_TRACE"]).toBe("1")
     expect(env["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(env["LORE_NOTION_TOKEN"]).toBeUndefined()
     expect(env["GITHUB_TOKEN"]).toBeUndefined()
     expect(env["AWS_SECRET_ACCESS_KEY"]).toBeUndefined()
   })
@@ -1611,7 +1609,6 @@ describe("bench spawn argv carries NO secrets", () => {
       OPENAI_API_KEY: "sk-operator-day-to-day",
       LORE_BENCH_OPENAI_API_KEY: "sk-bench-only",
       NOTION_API_TOKEN: "ntn_OPERATOR_DAY_TO_DAY_TOKEN_MUST_NOT_LEAK",
-      LORE_NOTION_TOKEN: "ntn_LEGACY_TOKEN_MUST_NOT_LEAK_EITHER",
       LORE_BENCH_NOTION_TOKEN: "ntn_BENCH_TOKEN_ALSO_NOT_FORWARDED_VIA_ENV",
       GITHUB_TOKEN: "ghp_must_not_leak",
       ANTHROPIC_API_KEY: "sk-ant-must-not-leak",
@@ -1626,7 +1623,6 @@ describe("bench spawn argv carries NO secrets", () => {
     // env inheritance — the Codex parent env carries nothing
     // Notion-shaped.
     expect(childEnv["NOTION_API_TOKEN"]).toBeUndefined()
-    expect(childEnv["LORE_NOTION_TOKEN"]).toBeUndefined()
     expect(childEnv["LORE_BENCH_NOTION_TOKEN"]).toBeUndefined()
     expect(childEnv["GITHUB_TOKEN"]).toBeUndefined()
     expect(childEnv["ANTHROPIC_API_KEY"]).toBeUndefined()
@@ -1635,7 +1631,6 @@ describe("bench spawn argv carries NO secrets", () => {
     // wrong key).
     const joined = JSON.stringify(childEnv)
     expect(joined).not.toMatch(/ntn_OPERATOR/)
-    expect(joined).not.toMatch(/ntn_LEGACY/)
     expect(joined).not.toMatch(/ntn_BENCH/)
     expect(joined).not.toMatch(/ghp_/)
     expect(joined).not.toMatch(/sk-ant/)
@@ -1644,10 +1639,9 @@ describe("bench spawn argv carries NO secrets", () => {
   it("BENCH_CHILD_CLEARED_ENV_KEYS lists every Notion-bearer key", () => {
     // Regression guard: if a future contributor adds a new bearer
     // key without listing it here, this test fails. The set must
-    // include both Notion forms (canonical + legacy) plus any other
-    // operator-day-to-day secrets the bench needs to clear.
+    // include canonical Notion auth plus any other operator-day-to-day
+    // secrets the bench needs to clear.
     expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("NOTION_API_TOKEN")
-    expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("LORE_NOTION_TOKEN")
     expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("GITHUB_TOKEN")
     expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("ANTHROPIC_API_KEY")
   })

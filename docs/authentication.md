@@ -21,8 +21,8 @@ its recovery, and shared-vault hook configuration. This document is the
 reference for the auth contract itself.
 
 Below the persona walkthroughs, the [Priority chain](#priority-chain) section
-documents the full four-source resolver for reference — operators rarely
-need to consult it.
+documents the two-source resolver for reference — operators rarely need to
+consult it.
 
 ## What is a PAT?
 
@@ -162,26 +162,16 @@ The flag surfaces dev-PAT guidance and configures the MCP environment so
 Lore's API calls target the dev base URL.
 
 **Do NOT paste your PAT into `auth.token` in `.lore.yaml`.** That file is
-committable shared config; pasting a bearer token there will:
+local config that can still be accidentally backed up, synced, or staged;
+pasting a bearer token there will:
 
 - Land the secret in git history on the next commit.
-- Trigger Lore's bearer-shape guard at config-load time and refuse to
-  resolve auth.
+- Trigger Lore's config schema, which rejects every `auth.token` value before
+  resolving auth.
 - Trigger the pre-commit hook (installed by `npm install`) which blocks
   commits adding `auth.token`.
 
 The right home for a PAT is `NOTION_API_TOKEN` in your shell environment.
-
-### Migrating an external operator from legacy auth
-
-If you previously set `LORE_NOTION_TOKEN` (env) or `auth.token` (in
-`.lore.yaml`), run `lore auth --migrate` (default — PAT branch) — the flow
-verifies the legacy token reaches the vault, asks you to paste a PAT,
-verifies the new token reaches the same vault, and prints shell-rc unset
-instructions (with shell-rc location detection for the env case).
-
-The internal-engineer branch of `--migrate` substitutes `ntn login` for the
-PAT paste — invoke it explicitly with `lore auth --migrate --ntn`.
 
 ## Priority chain
 
@@ -190,8 +180,6 @@ server, CLI, and hooks. The chain (highest priority first):
 
 1. `NOTION_API_TOKEN` environment variable (PATs land here).
 2. `ntn`-resolved token from `~/.config/notion/auth.json`.
-3. `LORE_NOTION_TOKEN` environment variable (soft-deprecated in 0.10.0).
-4. `auth.token` in `.lore.yaml` (soft-deprecated in 0.10.0).
 
 The first source available wins. The chain does not need a new source for
 PAT support: PATs are bearer tokens in `NOTION_API_TOKEN`, which has always
@@ -205,66 +193,14 @@ and integration tokens (`secret_…`) are accepted on the wire; `lore auth
 --whoami` surfaces the prefix classification so you can spot a wrong-token
 paste.
 
-Lore still inspects `.lore.yaml` for `auth.token` before returning the
-canonical env token. If that field is present, Lore emits the
-`auth.token in .lore.yaml is soft-deprecated` warning even though
-`NOTION_API_TOKEN` wins authentication. The warning is tied to removing the
-unsafe committed-config field, not to which source supplied the runtime
-token.
+`LORE_NOTION_TOKEN` is no longer read. If it is still set in your shell,
+move that value to `NOTION_API_TOKEN` only if it is a Personal Access
+Token. Integration tokens from `notion.so/profile/integrations` should be
+rotated to PATs from `notion.so/developers/tokens`.
 
-### Legacy sources
-
-`LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` remain soft-deprecated
-fallbacks. The two warnings have asymmetric cadences because they map to
-different threat models:
-
-- `LORE_NOTION_TOKEN` warns when it is the selected source. Debounced once
-  per 24-hour window per config root and silenceable via
-  `LORE_SUPPRESS_DEPRECATIONS=1`. The env var is ephemeral session state
-  (it dies with the shell), so a session-scoped debounce plus a silence
-  escape hatch is the right shape for log hygiene.
-- `auth.token` in `.lore.yaml` warns whenever the field is present,
-  including migration-window setups where a higher-priority source
-  supplies the runtime token. The warning fires on every invocation and
-  is **not silenceable**. `.lore.yaml` is local-only, but a token
-  written there still rides every backup, sync, and editor tab — a
-  different class of misconfiguration than an ephemeral env var.
-  Treating the two with the same noise budget would hide the signal
-  across CI runs and across engineers in the same worktree (issue
-  #484). Removing the field is the only way to clear the warning.
-
-Config load also rejects `auth.token` values that look like Notion
-bearer tokens (`ntn_…`, `development_ntn_…`, or `secret_…`); move those
-tokens to `NOTION_API_TOKEN` (external operators) or run `lore auth
---migrate --ntn` (internal engineers). `lore auth --migrate` walks
-operators through either path.
-
-#### Hard-removal target
-
-The 0.10.0 deprecations were soft because the canonical replacement
-(`ntn`) was internal-only — an external operator forced off
-`LORE_NOTION_TOKEN` without a public alternative would have nowhere to
-go. The 2026-05-13 PAT announcement closes that gap: every operator
-(internal or external) now has a supported replacement.
-
-Hard-removal is targeted for **0.14.0**. Operators on legacy sources
-should migrate before that release. The two deprecation warnings already
-point at `lore auth --migrate`; the migrate flow now supports both `ntn`
-and PAT destinations.
-
-If the 0.14.0 timing slips, hard-removal lands no later than 1.0.0. The
-soft-deprecation warnings will not be relaxed in the interim.
-
-The same 0.14.0 target applies to the deprecated public-API exports
-re-exported from `src/index.ts`: `runOAuthFlow`, `loadCredentials`,
-`getAuthorizationUrl`, `OAuthCredentials`, and `OAuthConfig` are
-`@deprecated`-tagged through 0.13.x for compatibility with downstream
-TypeScript / ESM consumers, and are deleted at 0.14.0 alongside the
-`LORE_NOTION_TOKEN` / `auth.token` deprecations. Lore is pre-1.0, so
-the deletion is a permitted pre-1.0 minor-version breaking change;
-out-of-tree consumers importing those names from `@makenotion/lore`
-should migrate to the PAT flow described above (or pin a 0.13.x
-range) before upgrading to 0.14.0.
+`auth.token` in `.lore.yaml` is rejected at config-load time for every
+value. Move credentials to `NOTION_API_TOKEN` or `lore auth --login`, then
+remove the field from `.lore.yaml`.
 
 ### `.lore.yaml` is local-only
 
@@ -276,10 +212,7 @@ write it), and rely on `NOTION_API_TOKEN` (external operators, PAT) or
 shared team values (`vault.pageId`, `auth.workspaceId`) through onboarding
 docs rather than by committing config. Never put `auth.token`, personal
 scratch vault page IDs, or personally identifying values in the file.
-Lore warns whenever `auth.token` is present in `.lore.yaml`, even if
-`NOTION_API_TOKEN`, `ntn` auth, or `LORE_NOTION_TOKEN` wins the priority
-chain, and refuses bearer-shaped `auth.token` values before any Notion
-call is made.
+Lore rejects any `auth.token` value before any Notion call is made.
 
 `vault.pageId` values are not bearer secrets. They identify a Notion page,
 but Notion still enforces access through the resolved token's permissions.
@@ -363,7 +296,7 @@ populate `bot.owner.user.name` on `users.me`.
 | `lore auth --status` shows multiple `ntn` workspaces | Set `NOTION_WORKSPACE_ID` or `auth.workspaceId` in `.lore.yaml`.                                                                                           |
 | 401 mid-session                                    | Run `lore auth --login` (internal) or rotate your PAT (external); the client wrapper re-runs auth resolution after the first 401 and retries once when auth changes. |
 | `auth.json` malformed or wrong root type           | `loadNtnToken` in `src/auth/ntn.ts` returns null with a stderr hint; run `lore auth --login`.                                                              |
-| `auth.json` absent or empty-workspace              | Silent null fallback by design — `resolveAuth` falls through to the next priority source (`LORE_NOTION_TOKEN`, then `.lore.yaml auth.token`). If you expected `ntn` auth to resolve, run `lore auth --login`. |
+| `auth.json` absent or empty-workspace              | Silent null fallback by design — `resolveAuth` falls through to the unsupported-auth diagnostic. If you expected `ntn` auth to resolve, run `lore auth --login`. |
 | Direct `ntn login` used keychain mode              | Re-run `lore auth --login`, or set `NOTION_KEYRING=0` before direct `ntn login`.                                                                           |
 | Hook-spawned background save cannot read the vault | Check `spawnBackgroundSave` in `src/hooks/background.ts`; the child gets minimal env and discovers `.lore.yaml` by walking upward from the hook event cwd. |
 

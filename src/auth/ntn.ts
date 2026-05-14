@@ -17,11 +17,11 @@
  * act on: malformed JSON, unexpected root type, unknown requested
  * workspace, and ambiguous multi-workspace selection. The missing-file
  * and empty-workspace paths return null silently so `resolveAuth` can
- * fall through to deprecated sources without noise. Callers pass
- * `quiet: true` to suppress every hint — `resolveAuth` uses this when
- * a legacy fallback is available so operators see at most one
- * consolidated stderr line. A future ntn shape change is handled by
- * bumping `MIN_NTN_VERSION` and teaching the reader the new shape.
+ * continue to its final recovery message without duplicate noise.
+ * Callers pass `quiet: true` to suppress every hint and surface one
+ * consolidated error at the call site. A future ntn shape change is
+ * handled by bumping `MIN_NTN_VERSION` and teaching the reader the
+ * new shape.
  */
 
 import { execFileSync, spawn } from "node:child_process"
@@ -53,13 +53,8 @@ export interface LoadNtnTokenInput {
    * those cases — the caller takes responsibility for surfacing a
    * user-visible hint at a moment of its choosing.
    *
-   * `resolveAuth` sets this to true so that an
-   * operator who has both auth.json AND a legacy fallback (e.g.
-   * `LORE_NOTION_TOKEN`) does not see two contradictory stderr lines —
-   * "set NOTION_WORKSPACE_ID" from this module followed by
-   * "LORE_NOTION_TOKEN is soft-deprecated, run lore auth --migrate"
-   * from the deprecation emitter. Instead, `resolveAuth` surfaces the
-   * ntn ambiguity hint only at the throw site (no source resolved).
+   * `resolveAuth` sets this to true so that the ntn ambiguity hint
+   * lands only in the final auth recovery error.
    */
   quiet?: boolean
 }
@@ -320,7 +315,7 @@ export const MIN_NTN_VERSION = "0.12.0"
  * to self-update on a package-manager install (per the binary's own
  * error message: "reinstall with `curl -fsSL https://ntn.dev | bash`").
  * Lore uses this for the auto-install path across `lore install`,
- * `lore init` no-arg, `lore auth --login`, and `lore auth --migrate`
+ * `lore init` no-arg, and `lore auth --login`
  * when the operator opts in.
  *
  * Hardcoded constant — no string concatenation, no user-controlled
@@ -469,9 +464,8 @@ export interface RunNtnLoginOpts {
  * "set when caller asks for it" surface, not a "default to prod"
  * surface.
  *
- * Used by `lore install`, `lore init` no-arg, `lore auth --login`,
- * and `lore auth --migrate` when the operator confirms they want to
- * log in.
+ * Used by `lore install`, `lore init` no-arg, and `lore auth --login`
+ * when the operator confirms they want to log in.
  *
  * The function does NOT prompt the operator — it just runs the
  * spawn. Confirmation prompts live in the consumer per their UX
@@ -548,8 +542,8 @@ export type NtnInstallResult =
  *
  * **Spawn env is scrubbed to an allowlist** rather than inheriting
  * the full `process.env`. The remote installer at `https://ntn.dev`
- * has no business reading `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
- * `GITHUB_TOKEN`, npm credentials, or any other token-bearing
+ * has no business reading `NOTION_API_TOKEN`, `GITHUB_TOKEN`, npm
+ * credentials, or any other token-bearing
  * variables that happen to live in the operator's shell. The
  * allowlist (`buildInstallNtnEnv`) covers what the install script
  * actually needs: shell + locale + proxy + `HOME`/`PATH`/`USER`/

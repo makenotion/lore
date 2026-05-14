@@ -1099,27 +1099,6 @@ describe("runNoArgInit", () => {
     expect(stderr).toContain("LORE_NOTION_BASE_URL=https://api-dev.notion.com")
   })
 
-  it("with --ntn-env dev + env-lore-notion-token (legacy) auth: exits 1 with the env-token recovery copy", async () => {
-    setupTestCwd()
-    vi.mocked(resolveAuth).mockResolvedValue({
-      token: "tok-legacy-env",
-      baseUrl: undefined,
-      source: "env-lore-notion-token",
-    })
-    const exitTrap = trapProcessExit()
-
-    await expect(runNoArgInit({ yes: true, ntnEnv: "dev" })).rejects.toBeInstanceOf(
-      ProcessExitSentinel
-    )
-
-    expect(exitTrap.lastCode()).toBe(1)
-    const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
-    expect(stderr).toContain("Auth source: env-lore-notion-token")
-    expect(stderr).toContain("Unset LORE_NOTION_TOKEN")
-    expect(stderr).toContain("lore auth --migrate")
-    expect(stderr).not.toContain("LORE_NOTION_BASE_URL=https://api-dev.notion.com")
-  })
-
   it("with --ntn-env prod + dev-baseUrl auth: exits 1 (mismatch in the other direction)", async () => {
     // Symmetric coverage: the gate fires in BOTH directions.
     // Operator on dev wants to switch to prod gets the same fail-fast
@@ -1275,9 +1254,10 @@ describe("runNoArgInit", () => {
   it("with pages.create throwing permission error: prints documented fallback message, exits 1", async () => {
     setupTestCwd()
     vi.mocked(resolveAuth).mockResolvedValue({
-      token: "tok-legacy",
+      token: "tok-ntn",
       baseUrl: undefined,
-      source: "env-lore-notion-token",
+      source: "ntn-auth-json",
+      workspaceId: "ws-x",
     })
     const create = vi
       .fn()

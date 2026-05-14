@@ -3,5 +3,5 @@ hooks = true
 
 [mcp_servers.lore]
 command = "bash"
-args = ["-lc", "LORE_CONFIG_ROOT=\"${HOME}\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' node \"${HOME}\"'/.lore/dist/mcp.js'"]
+args = ["-lc", "LORE_CONFIG_ROOT=\"${HOME}\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]
 env_vars = ["LORE_NOTION_BASE_URL"]

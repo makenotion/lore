@@ -592,8 +592,8 @@ export function classifyTailFallback(err: unknown): TailFallback {
  *
  * > silently degrading every legacy-auth caller to "RunTool
  * > unavailable" is the correct behavior, but it must be loud
- * > enough that an operator on `LORE_NOTION_TOKEN` knows why their
- * > flagged-on calls never use the new path.
+ * > enough that an operator using integration-secret auth knows why
+ * > their flagged-on calls never use the new path.
  *
  * The wrapper falls back per-input via `pages.create` regardless,
  * so the operator's writes still land — but without this warning

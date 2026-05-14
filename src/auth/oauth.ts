@@ -1,40 +1,9 @@
 /**
- * Notion API base-URL resolution, vault preflight, and (deprecated)
- * OAuth 2.0 flow helpers.
- *
- * The deprecated public OAuth surface — `runOAuthFlow`,
- * `loadCredentials`, `getAuthorizationUrl`, `OAuthCredentials`,
- * `OAuthConfig` — is marked `@deprecated` and remains exported for
- * downstream compatibility until the 0.14.0 hard-removal release.
- * (`exchangeCode` is a private internal helper used only by
- * `runOAuthFlow`; it has never been exported and is removed at the
- * same release.) The BYO-integration rollback path they served is
- * obsolete now that public PAT support (issued at
- * `notion.so/developers/tokens`) gives external operators a supported
- * path. New code MUST NOT use these symbols.
- *
- * What stays first-class:
- *   - `ntnEnvBaseUrl` / `ntnEnvFromBaseUrl` / `resolveOperatorBaseUrl`
- *     / `getBaseUrl` — env-name ↔ Notion API URL mapping consumed by
- *     every Lore-managed login surface.
- *   - `verifyVaultAccess` / `extractPageTitle` — post-auth-resolution
- *     vault preflight. Auth-mode-agnostic: works against any `Client`
- *     regardless of whether the token came from a PAT, `ntn`, or one
- *     of the legacy sources.
+ * Notion API base-URL resolution and vault preflight helpers.
  */
 
 import type { Client } from "@notionhq/client"
-import { spawn } from "node:child_process"
-import { randomBytes, timingSafeEqual } from "node:crypto"
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import type { NtnEnv } from "./ntn.js"
-
-const CREDENTIALS_DIR = join(homedir(), ".lore")
-const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json")
-const OAUTH_REDIRECT_HOST = "127.0.0.1"
 
 /**
  * Canonical Notion API base URLs per ntn environment selector. ntn's
@@ -86,8 +55,7 @@ const NTN_ENV_BASE_URL_ALIASES: Record<string, NtnEnv> = {
  * (e.g., a corporate proxy or a future env Lore doesn't know about).
  *
  * Single canonical helper for every Lore-managed ntn login surface
- * (`lore auth --login`, `lore auth --migrate`, `lore install`,
- * `lore init`). Centralized here so a future
+ * (`lore auth --login`, `lore install`, `lore init`). Centralized here so a future
  * canonical-URL change (Notion shipping a new env, retiring an old
  * one, adding another `.com` alias) lands in one place — surfaces
  * MUST NOT hand-roll their own URL → env mapping.
@@ -160,322 +128,6 @@ export function getBaseUrl(): string {
   return resolveOperatorBaseUrl() ?? "https://api.notion.so"
 }
 
-/**
- * @deprecated Removal targeted for 0.14.0. The BYO-integration OAuth
- * flow is obsolete now that public PATs (issued at
- * `notion.so/developers/tokens` and pasted into `NOTION_API_TOKEN`)
- * give external operators a supported path. New code MUST NOT
- * construct or persist `OAuthCredentials`. The authentication doc
- * carries the recommended PAT flow.
- */
-export interface OAuthCredentials {
-  access_token: string
-  workspace_id: string
-  workspace_name: string | null
-  bot_id: string
-  owner_type: string
-  base_url: string
-  created_at: string
-}
-
-/**
- * @deprecated Removal targeted for 0.14.0. See `OAuthCredentials`.
- */
-export interface OAuthConfig {
-  /** Drives both the browser authorization URL and token exchange. */
-  clientId: string
-  /** Used only in the token exchange Basic auth header; never sent to the browser. */
-  clientSecret: string
-  redirectPort?: number
-}
-
-/**
- * Run the interactive OAuth flow. Opens a browser, waits for the callback,
- * exchanges the code, and persists credentials.
- *
- * @deprecated Removal targeted for 0.14.0. Use a Personal Access Token
- * issued at `notion.so/developers/tokens` and pasted into
- * `NOTION_API_TOKEN` instead. The authentication doc carries the PAT
- * operator flow.
- */
-export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredentials> {
-  const port = config.redirectPort ?? 0 // 0 = OS picks a free port
-  const state = createOAuthState()
-  const { code, actualPort } = await startCallbackServer(port, config.clientId, state)
-
-  const redirectUri = `http://${OAUTH_REDIRECT_HOST}:${actualPort}/callback`
-
-  // Exchange authorization code for access token
-  const credentials = await exchangeCode({
-    code,
-    clientId: config.clientId,
-    clientSecret: config.clientSecret,
-    redirectUri,
-  })
-
-  // Persist to disk
-  await saveCredentials(credentials)
-
-  return credentials
-}
-
-/**
- * Get the OAuth authorization URL that the user should open in their browser.
- *
- * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
- */
-export function getAuthorizationUrl(
-  clientId: string,
-  redirectUri: string,
-  state?: string
-): string {
-  const base = getBaseUrl()
-  const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: "code",
-    owner: "user",
-    redirect_uri: redirectUri,
-  })
-  if (state) {
-    params.set("state", state)
-  }
-  return `${base}/v1/oauth/authorize?${params}`
-}
-
-/**
- * Load saved OAuth credentials from disk.
- * Returns null if no credentials are saved.
- *
- * @deprecated Removal targeted for 0.14.0. See `runOAuthFlow`.
- */
-export async function loadCredentials(): Promise<OAuthCredentials | null> {
-  try {
-    const raw = await readFile(CREDENTIALS_FILE, "utf-8")
-    return JSON.parse(raw) as OAuthCredentials
-  } catch {
-    return null
-  }
-}
-
-/**
- * Save OAuth credentials to disk.
- */
-async function saveCredentials(credentials: OAuthCredentials): Promise<void> {
-  await mkdir(CREDENTIALS_DIR, { recursive: true })
-  await writeFile(
-    CREDENTIALS_FILE,
-    JSON.stringify(credentials, null, 2),
-    { mode: 0o600 } // Read/write only for owner
-  )
-}
-
-/**
- * Exchange an authorization code for an access token.
- */
-async function exchangeCode(params: {
-  code: string
-  clientId: string
-  clientSecret: string
-  redirectUri: string
-}): Promise<OAuthCredentials> {
-  const basicAuth = Buffer.from(`${params.clientId}:${params.clientSecret}`).toString(
-    "base64"
-  )
-
-  const base = getBaseUrl()
-  const response = await fetch(`${base}/v1/oauth/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basicAuth}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code: params.code,
-      redirect_uri: params.redirectUri,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(
-      `OAuth token exchange failed (${response.status}). Check the OAuth client configuration and retry.`
-    )
-  }
-
-  const data = (await response.json()) as Record<string, unknown>
-
-  return {
-    access_token: data.access_token as string,
-    workspace_id: data.workspace_id as string,
-    workspace_name: (data.workspace_name as string) ?? null,
-    bot_id: data.bot_id as string,
-    owner_type: (data.owner as Record<string, string>)?.type ?? "unknown",
-    base_url: base,
-    created_at: new Date().toISOString(),
-  }
-}
-
-/**
- * Start a temporary HTTP server to receive the OAuth callback.
- * Returns a promise that resolves with the authorization code.
- * Validates the per-flow OAuth state before accepting any callback outcome.
- */
-function startCallbackServer(
-  port: number,
-  clientId: string,
-  expectedState: string
-): Promise<{ code: string; actualPort: number }> {
-  return new Promise((resolve, reject) => {
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    const clearCallbackTimeout = () => {
-      if (timeout) {
-        clearTimeout(timeout)
-        timeout = undefined
-      }
-    }
-
-    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const url = new URL(req.url ?? "/", `http://${OAUTH_REDIRECT_HOST}:${port}`)
-
-      if (url.pathname === "/callback") {
-        const state = url.searchParams.get("state")
-        const code = url.searchParams.get("code")
-        const error = url.searchParams.get("error")
-
-        if (!isExpectedOAuthState(state, expectedState)) {
-          writeHtmlResponse(
-            res,
-            400,
-            "<html><body><h2>Authorization failed</h2><p>The OAuth callback could not be verified. Retry authorization.</p><p>You can close this tab.</p></body></html>"
-          )
-          clearCallbackTimeout()
-          server.close()
-          reject(new Error("OAuth callback state mismatch. Retry authorization."))
-          return
-        }
-
-        if (error) {
-          writeHtmlResponse(
-            res,
-            200,
-            `<html><body><h2>Authorization failed</h2><p>${escapeHtml(error)}</p><p>You can close this tab.</p></body></html>`
-          )
-          clearCallbackTimeout()
-          server.close()
-          reject(new Error(`OAuth authorization denied: ${error}`))
-          return
-        }
-
-        if (code) {
-          writeHtmlResponse(
-            res,
-            200,
-            "<html><body><h2>Authorized</h2><p>Lore has been authorized. You can close this tab.</p></body></html>"
-          )
-          const addr = server.address()
-          const actualPort = typeof addr === "object" && addr ? addr.port : port
-          clearCallbackTimeout()
-          server.close()
-          resolve({ code, actualPort })
-          return
-        }
-      }
-
-      res.writeHead(404)
-      res.end("Not found")
-    })
-
-    server.listen(port, OAUTH_REDIRECT_HOST, () => {
-      const addr = server.address()
-      if (typeof addr === "object" && addr) {
-        // Open browser to the authorization URL
-        const redirectUri = `http://${OAUTH_REDIRECT_HOST}:${addr.port}/callback`
-        // Keep browser authorization and token exchange bound to one config value.
-        const authUrl = getAuthorizationUrl(clientId, redirectUri, expectedState)
-        openBrowser(authUrl)
-        console.log(`\nOpening browser for Notion authorization...`)
-        console.log(`If the browser doesn't open, visit:\n  ${authUrl}\n`)
-      }
-    })
-
-    server.on("error", (error) => {
-      clearCallbackTimeout()
-      reject(error)
-    })
-
-    // Timeout after 5 minutes
-    timeout = setTimeout(
-      () => {
-        server.close()
-        reject(new Error("OAuth callback timed out after 5 minutes"))
-      },
-      5 * 60 * 1000
-    )
-  })
-}
-
-function createOAuthState(): string {
-  return randomBytes(32).toString("base64url")
-}
-
-function isExpectedOAuthState(actual: string | null, expected: string): boolean {
-  if (!actual) return false
-  const actualBuffer = Buffer.from(actual)
-  const expectedBuffer = Buffer.from(expected)
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    timingSafeEqual(actualBuffer, expectedBuffer)
-  )
-}
-
-function writeHtmlResponse(res: ServerResponse, statusCode: number, html: string): void {
-  res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" })
-  res.end(html)
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => {
-    switch (char) {
-      case "&":
-        return "&amp;"
-      case "<":
-        return "&lt;"
-      case ">":
-        return "&gt;"
-      case '"':
-        return "&quot;"
-      default:
-        return "&#39;"
-    }
-  })
-}
-
-/**
- * Open a URL in the default browser.
- */
-function openBrowser(url: string): void {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "rundll32"
-        : "xdg-open"
-  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url]
-  const child = spawn(command, args, {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  })
-  child.on("error", (error) => {
-    console.error(
-      `Failed to open the browser automatically: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    )
-  })
-  child.unref()
-}
-
 // ---------------------------------------------------------------------------
 // verifyVaultAccess — post-auth-resolution preflight
 // ---------------------------------------------------------------------------
@@ -491,10 +143,10 @@ function openBrowser(url: string): void {
  *   to the team vault page).
  * - `unauthorized` — Notion returned 401 / 403 (`unauthorized` /
  *   `restricted_resource`). The token is invalid, expired, or
- *   revoked; a re-auth cycle is required. Distinct from `not-found`
- *   because the remediation differs: `not-found` points at workspace
- *   / share mismatch; `unauthorized` points at re-running
- *   `lore auth --login`.
+ *   revoked; source-specific auth recovery is required. Distinct from
+ *   `not-found` because the remediation differs: `not-found` points
+ *   at workspace / share mismatch; `unauthorized` points at PAT
+ *   rotation or ntn re-login depending on the resolved source.
  * - `rate-limited` — Notion returned 429 (`rate_limited`). Transient
  *   throttling; operator should wait and retry. Distinct from
  *   `unknown-error` because the remediation is "wait" rather than
@@ -556,13 +208,9 @@ export async function verifyVaultAccess(
         kind: "not-found",
         pageId: vaultPageId,
         message:
-          "Vault page not accessible. Most likely cause under " +
-          "ntn-first auth: you authenticated against the wrong " +
-          "workspace during ntn login, OR the vault page isn't " +
-          "shared with you (your Notion identity) in this " +
-          "workspace. ntn-issued tokens inherit your personal " +
-          "Notion permissions; if you can't open the page in " +
-          "Notion's UI, the token can't read it either.",
+          "Vault page not accessible. The resolved token cannot read " +
+          "this page. Confirm the page ID, workspace, and token/page " +
+          "permissions.",
       }
     }
 
@@ -577,11 +225,7 @@ export async function verifyVaultAccess(
         pageId: vaultPageId,
         message:
           "Notion rejected the bearer token. The token is invalid, " +
-          "expired, or revoked — re-run `lore auth --login` to issue " +
-          "a fresh token. (`restricted_resource` / 403 also lands " +
-          "here: the integration backing the token doesn't have " +
-          "permission for this page; re-auth via the wrapper picks " +
-          "up the engineer's current Notion identity.)",
+          "expired, revoked, or lacks permission for this page.",
       }
     }
 

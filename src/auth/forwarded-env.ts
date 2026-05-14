@@ -26,8 +26,8 @@
  *
  * Three families:
  *
- * - **Auth tokens** (`NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`) — the
- *   canonical and legacy bearer-token sources `resolveAuth` walks.
+ * - **Auth token** (`NOTION_API_TOKEN`) — the canonical explicit
+ *   bearer-token source `resolveAuth` walks.
  * - **Workspace + environment selectors** (`NOTION_WORKSPACE_ID`,
  *   `NOTION_ENV`, `NOTION_BASE_URL`, `NOTION_API_BASE_URL`,
  *   `LORE_NOTION_BASE_URL`) — every input `loadNtnToken` and
@@ -73,11 +73,9 @@
  * workspace from the foreground's cached one.
  */
 export const RUNTIME_FORWARDED_KEYS = [
-  // Auth tokens (canonical first, soft-deprecated second) match
-  // `resolveAuth`'s priority chain so an operator reading the array
-  // sees the same precedence the runtime applies.
+  // Explicit token source. ntn-issued auth is read from auth.json by
+  // the spawned child, so it is not represented as an env var here.
   "NOTION_API_TOKEN",
-  "LORE_NOTION_TOKEN",
   // Workspace + environment selectors. `NOTION_WORKSPACE_ID` lives
   // here — not next to the auth tokens — because it picks the
   // workspace from a multi-workspace auth.json, which is an
@@ -118,8 +116,8 @@ export const RUNTIME_FORWARDED_KEYS = [
 export type RuntimeForwardedKey = (typeof RUNTIME_FORWARDED_KEYS)[number]
 
 /**
- * Subset of `RUNTIME_FORWARDED_KEYS` that carry **auth tokens**
- * (`resolveAuth` paths 1 and 3). These are the keys an ntn-source
+ * Subset of `RUNTIME_FORWARDED_KEYS` that carry **auth tokens**.
+ * These are the keys an ntn-source
  * spawn does not need to forward — under `ntn-auth-json` the
  * spawned child's `resolveAuth` resolves the token directly from
  * ~/.config/notion/auth.json at startup (path 2), so the bearer
@@ -134,9 +132,9 @@ export type RuntimeForwardedKey = (typeof RUNTIME_FORWARDED_KEYS)[number]
  *
  * - `buildMcpEnv` ( when `authSource:
  *   "ntn-auth-json"`) skips these keys when assembling the MCP
- *   entry's `env` block. Motivation: a `${NOTION_API_TOKEN}` /
- *   `${LORE_NOTION_TOKEN}` placeholder in a committed .mcp.json
- *   is dead weight that fingerprints the operator's install-time
+ *   entry's `env` block. Motivation: a `${NOTION_API_TOKEN}`
+ *   placeholder in a committed .mcp.json is dead weight that
+ *   fingerprints the operator's install-time
  *   shell, and hosts whose config validators (e.g. Claude Code's
  *   `/doctor`) check referenced env vars at load time emit
  *   per-key warnings on every startup once those vars are unset,
@@ -161,7 +159,6 @@ export type RuntimeForwardedKey = (typeof RUNTIME_FORWARDED_KEYS)[number]
  */
 export const RUNTIME_FORWARDED_AUTH_TOKEN_KEYS = [
   "NOTION_API_TOKEN",
-  "LORE_NOTION_TOKEN",
 ] as const satisfies readonly RuntimeForwardedKey[]
 
 export type RuntimeForwardedAuthTokenKey =
@@ -201,9 +198,9 @@ import type { AuthSource } from "../config.js"
  * the same token without the bearer crossing the fork boundary in
  * env. Workspace and base-URL selectors still forward — the child
  * needs them to select the same workspace as the foreground. The
- * partition tightens blast radius for the dual-shell-rc operator
- * class (`LORE_NOTION_TOKEN` set in shell while ntn login also
- * present); under any other source the partition is a no-op because
+ * partition tightens blast radius for operators who keep a static
+ * token in their shell while ntn login is also present; under any
+ * other source the partition is a no-op because
  * the auth-token forward is the only resolution path.
  *
  * Single source of truth shared by every Lore-spawned-child path:

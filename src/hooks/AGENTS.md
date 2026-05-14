@@ -6,7 +6,7 @@
 
 This directory implements Lore's hook runner. Default Claude Code and Codex
 installs invoke `lore hooks <action>` at defined lifecycle events (or
-`yarn run -T lore hooks <action>` under Yarn PnP); legacy `--legacy-paths`
+`yarn run -T lore hooks <action>` under Yarn PnP). Older absolute-path
 installs invoke `node dist/hooks/helpers.js <action>` through the checked-in
 `hooks/*.sh` scripts. The helper reads the hook event from env vars, loads
 `.lore.yaml`, and either injects context (`wakeup`) or spawns a background
@@ -208,12 +208,9 @@ bands:
 3. **Allowlist hand-off missing** — the resolved args lack
    `{{allowedTools}}`; the agent's allowlist must be configured out-of-band.
 
-`LORE_BACKGROUND_COMMAND` is NOT deprecation-tracked — unlike
-`LORE_NOTION_TOKEN` (soft-deprecated 0.10.0; see root `AGENTS.md`'s
-**Authentication** section), this env var is the canonical
-operator-scoped knob for redirecting the background agent. The
-matching `.lore.yaml` shape is also canonical. Both paths persist
-through the deprecation horizon for `LORE_NOTION_TOKEN` and beyond.
+`LORE_BACKGROUND_COMMAND` is the canonical operator-scoped knob for
+redirecting the background agent. The matching `.lore.yaml` shape is
+also canonical.
 
 ## Autosave flow
 
@@ -262,9 +259,9 @@ its own autosave), `LORE_BACKGROUND_AGENT: "true"` (so the child's
 MCP server fails fast on init errors instead of staying alive as a
 diagnostic server), and every key in the shared
 `RUNTIME_FORWARDED_KEYS` list (`src/auth/forwarded-env.ts`) when
-the parent has it set: `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
-`LORE_NOTION_BASE_URL`, `NOTION_WORKSPACE_ID`, `NOTION_ENV`,
-`NOTION_BASE_URL`, `NOTION_API_BASE_URL`, and `LORE_USER_NAME`.
+the parent has it set: `NOTION_API_TOKEN`, `LORE_NOTION_BASE_URL`,
+`NOTION_WORKSPACE_ID`, `NOTION_ENV`, `NOTION_BASE_URL`,
+`NOTION_API_BASE_URL`, and `LORE_USER_NAME`.
 The same list drives `lore install`'s `${VAR}` placeholders for
 MCP host config, so a foreground CLI run, a host-spawned MCP
 child, and a hook worker all reach the same Notion workspace
@@ -272,10 +269,8 @@ and environment — pre-#188 the hook path forwarded only the three
 Lore-namespaced legacy keys, leaving canonical `NOTION_API_TOKEN`
 operators and multi-workspace ntn users with silent auth /
 workspace divergence between foreground and hook code paths. The
-legacy `LORE_NOTION_TOKEN` forwarding preserves access for
-operators still on the soft-deprecated env var while they migrate;
-under ntn-first the child ntn-resolves directly off `auth.json`
-because that file is on disk where the child can read it. If the
+child ntn-resolves directly off `auth.json` because that file is on
+disk where the child can read it. If the
 parent refreshed ntn (e.g., the operator re-ran `ntn login`)
 before spawning the child, the child sees the updated `auth.json`
 at startup. Empty-string values are skipped to mirror the install
@@ -292,8 +287,8 @@ read AND env-forward of the same token, just the disk read.
 When the foreground's resolved `AuthSource` is `ntn-auth-json`,
 callers thread that source into `spawnBackgroundSave` via the
 `authSource` option and the auth-token subset
-(`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` — `NOTION_API_TOKEN`,
-`LORE_NOTION_TOKEN`) is dropped from `safeEnv`. The detached
+(`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` — `NOTION_API_TOKEN`) is
+dropped from `safeEnv`. The detached
 child's `resolveAuth` lands at priority 2 (`loadNtnToken`)
 without the bearer ever crossing the fork boundary in env. This
 mirrors the install-time partition `buildMcpEnv` already applies
@@ -308,9 +303,8 @@ fire and threads it through BOTH the autosave
 `scheduleAutoDigestSpawn` (which spreads `process.env` and
 deletes the auth-token subset under `ntn-auth-json` so the
 detached `helpers.js auto-digest` child inherits everything
-EXCEPT bearer tokens). `quiet: true` suppresses the synthetic
-resolver call's deprecation warning emission; the foreground host
-already paid that emission via its primary `resolveAuth`. A
+EXCEPT bearer tokens). `quiet: true` suppresses duplicate resolver
+diagnostics during this synthetic auth check. A
 `resolveAuth` failure (no token configured, transient `auth.json`
 read error) falls back to the legacy every-key forward so the
 Stop hot path itself never gains a new failure mode. The digest
@@ -510,11 +504,8 @@ disk read). Defensive try/catch falls back to the legacy every-key
 forward on rejection so the Stop path itself never gains a new
 failure mode. Per-source cost reflects `resolveAuth`'s priority
 walk: `NOTION_API_TOKEN`-source operators short-circuit at
-priority 1 with zero I/O; `LORE_NOTION_TOKEN`-source operators
-(priority 3) pay the same priority-2 `auth.json` read + `auth/ntn.js`
-dynamic import as ntn-source operators because the walk checks
-priority 2 first; `config-auth-token`-source operators (priority 4)
-pay both the priority-2 read AND fall through to the config field.
+priority 1 with zero I/O; ntn-source operators pay the priority-2
+`auth.json` read + `auth/ntn.js` dynamic import.
 The "in-the-millisecond" budget claim still holds (the readFile is
 small and the failure-to-resolve path is fast), and the "never
 initializes a Notion client" claim still holds — the new I/O is

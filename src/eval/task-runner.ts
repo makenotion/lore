@@ -29,7 +29,7 @@
  * - Codex spawns inherit a scrubbed env (only `PATH` / `HOME` / `TZ` /
  *   `LANG` / `LC_*` / `CODEX_*` / `OPENAI_API_KEY` are forwarded, with
  *   `CODEX_HOME` pointed at an isolated runtime home);
- *   `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`, `GITHUB_TOKEN` and
+ *   `NOTION_API_TOKEN`, `GITHUB_TOKEN` and
  *   anything else stays out of the child env and the artifact.
  * - The Codex child runs in a detached process group; timeout
  *   cancellation kills `-pgid` so subprocesses Codex spawned (test
@@ -2056,7 +2056,6 @@ function buildLongitudinalMcpEnv(
     "PATH",
     "HOME",
     "NOTION_API_TOKEN",
-    "LORE_NOTION_TOKEN",
     "LORE_NOTION_BASE_URL",
     "NOTION_WORKSPACE_ID",
     "NOTION_ENV",
@@ -2064,10 +2063,7 @@ function buildLongitudinalMcpEnv(
     "NOTION_API_BASE_URL",
     "LORE_USER_NAME",
   ]) {
-    if (
-      authSource === "ntn-auth-json" &&
-      (key === "NOTION_API_TOKEN" || key === "LORE_NOTION_TOKEN")
-    ) {
+    if (authSource === "ntn-auth-json" && key === "NOTION_API_TOKEN") {
       continue
     }
     const value = process.env[key]
@@ -2313,7 +2309,7 @@ function renderLongitudinalWakeUpContext(contexts: ProjectContextItem[]): string
  * Allowlist of env vars forwarded to the Codex child. Anything not
  * listed here stays out of the child env (and out of the JSON artifact's
  * captured stdout/stderr if the model echoes its env). Secrets like
- * `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`, and `GITHUB_TOKEN` are
+ * `NOTION_API_TOKEN` and `GITHUB_TOKEN` are
  * deliberately absent.
  */
 export const CODEX_FORWARDED_ENV_KEYS = [
@@ -2540,7 +2536,6 @@ export const BENCH_CHILD_CLEARED_ENV_KEYS = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "NOTION_API_TOKEN",
-  "LORE_NOTION_TOKEN",
   "GITHUB_TOKEN",
 ] as const
 

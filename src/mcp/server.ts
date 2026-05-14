@@ -164,7 +164,7 @@ function formatStartupDiagnostic(
   const configRoot = process.env["LORE_CONFIG_ROOT"]?.trim()
   const recoverySteps = [
     "- If the error says no `.lore.yaml` was found, run `lore init` from the project directory or re-run `lore install` from the configured vault project.",
-    "- If the error mentions Notion auth, run `lore auth --login` or set `NOTION_API_TOKEN` with a Notion integration token.",
+    "- If the error mentions Notion auth, run `lore auth --login` or set `NOTION_API_TOKEN` with a Notion Personal Access Token from notion.so/developers/tokens.",
     "- If the error mentions missing `Entities`, run `lore vault ensure-entities`, then `lore migrate --build-entities --yes` in a quiet window.",
     "- If `LORE_CONFIG_ROOT` points at the wrong directory, re-run `lore install` from the project directory or unset `LORE_CONFIG_ROOT` so Lore can search upward from the MCP process cwd.",
     "- After fixing setup, restart or reconnect the MCP client so Lore can register the full tool surface.",
