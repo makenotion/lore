@@ -61,11 +61,41 @@ const profileSelectorSchema = z.string().superRefine((selector, ctx) => {
   }
 })
 
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/
+const MANIFEST_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/
+
+const profileAllowedInstallSourceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("git"),
+    url: z.string().min(1, "url is required for git allow-list entries"),
+    commit: z
+      .string()
+      .regex(COMMIT_SHA_PATTERN, "commit must be a 40-character lowercase hex SHA"),
+    manifestDigest: z
+      .string()
+      .regex(MANIFEST_DIGEST_PATTERN, "manifestDigest must be sha256:<64-hex>"),
+  }),
+  z.object({
+    kind: z.literal("path"),
+    path: z.string().min(1, "path is required for path allow-list entries"),
+    manifestDigest: z
+      .string()
+      .regex(MANIFEST_DIGEST_PATTERN, "manifestDigest must be sha256:<64-hex>"),
+  }),
+])
+
+const profilesConfigSchema = z
+  .object({
+    allowedInstallSources: z.array(profileAllowedInstallSourceSchema).optional(),
+  })
+  .optional()
+
 const configSchema = z.object({
   vault: z.object({
     pageId: pageIdSchema("vault.pageId is required"),
   }),
   profile: profileSelectorSchema.optional(),
+  profiles: profilesConfigSchema,
   upstreamVaults: z
     .array(
       namedVaultRefSchema.extend({

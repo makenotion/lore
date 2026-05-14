@@ -16,6 +16,28 @@ vault:
 # `lore init` configs write this explicitly.
 profile: default@1.0.0
 
+# Phase 3 profile distribution settings (optional).
+#
+# `profiles.allowedInstallSources` is the closed allow-list that
+# authorizes `lore profile install --yes` to write under
+# `.lore/profiles/installed/`. The CLI stages the source, validates
+# the bundle, computes its manifest digest, and requires an exact
+# entry match before touching disk. Interactive installs (without
+# `--yes`) print the digest so an operator can pre-populate the list
+# before CI/automation runs.
+#
+# Each entry is one of two shapes:
+#   - kind: git, url, commit (40-hex SHA), manifestDigest (sha256:<64-hex>)
+#   - kind: path, path (absolute or configRoot-relative), manifestDigest
+#
+# Example:
+# profiles:
+#   allowedInstallSources:
+#     - kind: git
+#       url: git@github.com:org/lore-sales-profile.git
+#       commit: 0123456789abcdef0123456789abcdef01234567
+#       manifestDigest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
 # Authentication (0.10.0+)
 # Lore resolves a Notion bearer token from the first available source in
 # this priority order:

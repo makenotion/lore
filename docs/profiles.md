@@ -45,18 +45,19 @@ the active profile vocabulary and point free-form labels at `keywords`.
 A profile root contains:
 
 - `profile.yaml` with `name`, `version`, and optional `taxonomy`, `schema`,
-  and `prompts` paths
+  `prompts`, and `evals` paths
 - `taxonomy.yaml` with `tags`, `entityKinds`, and `writableFactPredicates`
 - `schema.yaml` with additive database properties only
 - prompt text files referenced by the prompt registry
+- optional eval-suite YAML files referenced by `evals`
 
 `profile.yaml extends` is reserved for profile composition and is rejected
 with an explicit error until that later phase lands.
 
 Profile names are kebab-case and selectors are exact `<name>@<semver>` values.
-Ranges and floating versions are intentionally unsupported. Phase 2 resolves
-built-in first-party profiles only. Local, installed, registry-backed, and
-external profiles wait for the profile distribution phase.
+Ranges and floating versions are intentionally unsupported. Built-in,
+project-local, and installed external profiles resolve through the Phase 3
+priority order below; registry-backed profiles remain out of scope.
 
 Fresh vaults can select a built-in profile during bootstrap:
 
@@ -70,10 +71,11 @@ mutated by read-only startup paths, and switching an existing vault to another
 profile waits for the explicit profile-management workflow.
 
 `manifestDigest` is `sha256:<hex>` over the normalized `profile.yaml` and every
-schema, taxonomy, and prompt file that participates in the effective profile.
+schema, taxonomy, prompt, and declared eval-suite file that participates in the
+effective profile.
 Relative paths and normalized content are included in stable sorted order.
-Docs, READMEs, and eval fixtures do not participate unless a later phase makes
-them part of resolution.
+Docs, READMEs, and undeclared fixtures do not participate unless a later phase
+makes them part of resolution.
 
 ## Schema Contract
 
@@ -170,3 +172,185 @@ not change core safety, review, or maintenance policy.
 The support profile is deliberately a profile-bundle exercise, not a profile
 distribution exercise. It does not add profile memory kinds, registry install,
 profile migration, `profile.yaml extends`, or a broad profile-management CLI.
+
+## Distribution (Phase 3)
+
+Phase 3 adds the `lore profile` CLI surface for distributing, validating,
+selecting, and migrating profiles without expanding the contract matrix.
+The five-database semantic core stays code-owned; nothing here lets an
+external profile redefine memory kinds, claim reserved predicates, or
+edit profile files via migration.
+
+### Resolution priority
+
+A `<name>@<version>` selector resolves through three tiers in order:
+
+1. Project-authored local: `<configRoot>/.lore/profiles/local/<name>/<version>/`
+2. Built-in (bundled with this Lore release): `profiles/<name>/`
+3. Installed external: `<configRoot>/.lore/profiles/installed/<name>/<version>/`
+
+`lore profile list` surfaces every profile this config root can resolve.
+The active profile is marked with `*`; lower-priority resolutions of the
+same selector are marked with `↳` so an operator can see when a local
+override shadows a built-in or installed bundle.
+
+### Install sources
+
+`lore profile install` accepts two source forms in Phase 3:
+
+- **Local filesystem path** pointing directly at a profile bundle root
+  containing `profile.yaml`. No subdirectory discovery, no repo-root
+  guessing. The CLI prints the manifest digest so an operator can add
+  the path to `profiles.allowedInstallSources` for later CI runs.
+- **Git URL pinned to a 40-hex commit SHA**:
+  `git@host:org/repo.git#0123456789abcdef0123456789abcdef01234567` or
+  the `https://…` equivalent. Branches and tags are rejected at parse
+  time. The repo root, after checkout, must itself be the profile
+  bundle root.
+
+External installs always write under
+`<configRoot>/.lore/profiles/installed/<name>/<version>/`. The installer
+never writes to the project-authored local path.
+
+### Collision behavior
+
+`lore profile install` is intentionally fail-closed. The matrix:
+
+| State | Behavior |
+| --- | --- |
+| Target directory does not exist | install proceeds after validation + confirmation |
+| Target exists, same `manifestDigest` | no-op; only the lock entry is refreshed |
+| Target exists, different `manifestDigest` | install fails with `Refusing to install … already exists with a different manifest digest`. Phase 3 has no `--force`; pick a new version or remove the directory manually |
+| Target exists but is not a valid profile bundle | install fails closed; the installer never writes into an ambiguous existing directory |
+| Local profile at same selector with different digest | install fails because the local override would shadow the install |
+| Built-in profile at same selector with different digest | install fails because built-in resolution wins over installed external |
+
+### Lock file
+
+Successful installs write `<configRoot>/.lore/profiles/installed/profiles.lock.json`:
+
+```json
+{
+  "profiles": {
+    "sales@1.2.0": {
+      "name": "sales",
+      "version": "1.2.0",
+      "source": {
+        "kind": "git",
+        "url": "git@github.com:org/lore-sales-profile.git",
+        "commit": "<40-hex-sha>"
+      },
+      "manifestDigest": "sha256:<64-hex>",
+      "installedAt": "2026-05-13T00:00:00.000Z"
+    }
+  }
+}
+```
+
+The lock authorizes a same-digest, no-op reinstall under `--yes` when
+the install directory still exists and the recorded source matches.
+First installs always require an explicit allow-list match (see below).
+
+### Non-interactive allow-list
+
+`lore profile install --yes` must match an entry in
+`profiles.allowedInstallSources` in `.lore.yaml`. The discriminated
+union is enforced by the config schema:
+
+```yaml
+profiles:
+  allowedInstallSources:
+    - kind: git
+      url: git@github.com:org/lore-sales-profile.git
+      commit: 0123456789abcdef0123456789abcdef01234567
+      manifestDigest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    - kind: path
+      path: /absolute/path/to/profile
+      manifestDigest: sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd
+```
+
+Rules:
+
+- Git entries require `url`, an exact 40-hex `commit`, and `manifestDigest`.
+- Path entries require `path` and `manifestDigest`. Relative paths
+  resolve against `configRoot` before comparison.
+- Interactive installs (without `--yes`) print the digest so operators
+  can pre-populate the allow-list. Adding an entry without first running
+  the interactive preview is rejected because the digest will not match.
+
+### Migration DSL
+
+Profile migrations live inside the source bundle:
+
+```text
+<profileRoot>/migrations/<from>__<to>.yaml
+```
+
+`lore profile migrate <name@version>` discovers the file via the source
+selector (the currently pinned profile, unless `--from` overrides it),
+parses every step, and prints a step table. The dry-run output names
+every step's id, kind, planned status, optional reason, and estimated
+Notion writes. `--apply` re-checks live state per step before committing
+and writes an audit ledger to:
+
+```text
+<configRoot>/.lore/profile-migrations/<safe-profile-name>/<from>__<to>.<vault-page-sha12>.json
+```
+
+The ledger is local-only operator state — it is not committed and is
+safe to delete; a rerun recomputes live state before deciding what to
+skip. The migration lock infrastructure (the same lock that gates
+`lore migrate`) prevents concurrent profile-migration apply runs against
+the same config root.
+
+The supported Phase 3 step kinds:
+
+- `add_property` — append an additive Notion property to one of the
+  five core data sources. Cannot redefine core columns; the property
+  type must be one of `rich_text`, `number`, `select`, `multi_select`,
+  `date`, `checkbox`, `url`, `email`, `phone_number`.
+- `add_select_options` / `add_multi_select_options` — append options
+  to an existing select / multi_select column. Live option ids are
+  preserved on apply so Notion does not duplicate. For core columns,
+  Phase 3 allows appends only to profile-owned taxonomy surfaces:
+  Memories `Tags`, Entities `Kind`, and Facts `Predicate`; reserved
+  fact predicates stay rejected.
+- `write_config_profile_pin` — rewrite `.lore.yaml profile:` to the
+  target selector. Runs last so a partial failure leaves the operator
+  on the source pin.
+- `backfill_empty_property` — write a literal value to empty cells
+  that match a bounded filter. Capped at 500 rows per run. The filter
+  MUST contain an empty/unset check for the target property; the
+  apply path re-checks each row at write time and never overwrites
+  non-empty cells. Backfills cannot target core columns.
+
+The validator rejects every destructive or out-of-scope step kind —
+`delete_property`, `rename_property`, `replace_select_options`,
+`archive_pages`, `delete_pages`, `overwrite_property`,
+`add_profile_prompt`, `add_taxonomy_values`, `edit_profile_files`,
+`run_shell`, `run_js` — with an explicit error pointing at the
+rejected `kind` field. Prompt and taxonomy changes are represented by
+the target profile version's immutable files; migrations never edit
+profile files.
+
+### Trust UX
+
+Interactive `lore profile install` confirmation prints:
+
+- profile name / version
+- source path or git URL + commit SHA
+- manifest digest
+- install target path under `.lore/profiles/installed/`
+- collision status (`none`, `same-digest`, `different-digest`)
+- shadowing status (`none`, `local-shadow`, `built-in-shadow`)
+- schema additions count per database
+- taxonomy counts (tags, entity kinds, writable predicates)
+- prompt keys included in the bundle
+- eval suites included in the bundle
+- migration versions included in the bundle
+- the warning that profile prompts directly affect what agents save
+  to Notion
+
+Operators copy the printed manifest digest into
+`profiles.allowedInstallSources` to authorize subsequent CI / scripted
+installs against the same source + digest.

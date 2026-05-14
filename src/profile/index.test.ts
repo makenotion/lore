@@ -173,6 +173,44 @@ version: banana
     )
   })
 
+  it("rejects out-of-scope memory kind declarations", () => {
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "profile.yaml": `
+name: fixture
+version: 1.0.0
+taxonomy: taxonomy.yaml
+schema: schema.yaml
+memoryKinds:
+  - sales-call
+`,
+      },
+      (dir) => {
+        expect(() => loadProfileFromRoot(dir)).toThrow(/cannot define memory kinds/)
+      }
+    )
+
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "taxonomy.yaml": `
+tags:
+  - alpha
+entityKinds:
+  - component
+writableFactPredicates:
+  - owns
+memoryKinds:
+  - sales-call
+`,
+      },
+      (dir) => {
+        expect(() => loadProfileFromRoot(dir)).toThrow(/cannot define memory kinds/)
+      }
+    )
+  })
+
   it("resolves a non-default built-in profile by exact selector", () => {
     const profile = resolveProfileFromConfig({ profile: "support@1.0.0" })
 
@@ -230,6 +268,53 @@ writableFactPredicates:
     })
   })
 
+  it("loads declared eval suites and includes them in the manifest digest", () => {
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "profile.yaml": `
+name: fixture
+version: 1.0.0
+taxonomy: taxonomy.yaml
+schema: schema.yaml
+evals:
+  - evals/profile.yaml
+`,
+        "evals/profile.yaml": "suite: fixture\nprofile: fixture@1.0.0\ncases: []\n",
+      },
+      (dir) => {
+        const profile = loadProfileFromRoot(dir)
+        const first = profile.manifestDigest
+        expect(profile.evalSuites).toEqual(["evals/profile.yaml"])
+
+        writeFileSync(
+          join(dir, "evals", "profile.yaml"),
+          "suite: fixture\nprofile: fixture@1.0.0\ncases:\n  - id: changed\n"
+        )
+        expect(loadProfileFromRoot(dir).manifestDigest).not.toBe(first)
+      }
+    )
+  })
+
+  it("rejects declared eval suites that are missing", () => {
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "profile.yaml": `
+name: fixture
+version: 1.0.0
+taxonomy: taxonomy.yaml
+schema: schema.yaml
+evals:
+  - evals/missing.yaml
+`,
+      },
+      (dir) => {
+        expect(() => loadProfileFromRoot(dir)).toThrow(/Failed to read/)
+      }
+    )
+  })
+
   it("rejects core-property overrides and unsupported additive schema types", () => {
     withProfileDir(
       {
@@ -259,6 +344,50 @@ databases:
       },
       (dir) => {
         expect(() => loadProfileFromRoot(dir)).toThrow(/supported additive property type/)
+      }
+    )
+  })
+
+  it("rejects unsupported schema file structure", () => {
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "schema.yaml": `
+databases:
+  memories:
+    properties: {}
+memoryKinds:
+  - decision
+`,
+      },
+      (dir) => {
+        expect(() => loadProfileFromRoot(dir)).toThrow(/unsupported schema field "memoryKinds"/)
+      }
+    )
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "schema.yaml": `
+databases:
+  memores:
+    properties: {}
+`,
+      },
+      (dir) => {
+        expect(() => loadProfileFromRoot(dir)).toThrow(/unsupported schema database field "memores"/)
+      }
+    )
+    withProfileDir(
+      {
+        ...minimalProfileFiles(),
+        "schema.yaml": `
+databases:
+  memories:
+    propreties: {}
+`,
+      },
+      (dir) => {
+        expect(() => loadProfileFromRoot(dir)).toThrow(/unsupported schema database field "propreties"/)
       }
     )
   })

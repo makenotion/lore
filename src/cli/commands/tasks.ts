@@ -28,7 +28,7 @@ import {
   type TaskSummary,
 } from "../../types.js"
 import { parsePositiveDecimalInteger, parseUnitIntervalDecimal } from "../parse.js"
-import { resolveProfileFromConfig } from "../../profile/index.js"
+import { resolveProfileFromConfigAtRoot } from "../../profile/index.js"
 
 const PROJECT_LIST_HINT = "run `lore status projects` to list configured projects"
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
@@ -281,8 +281,10 @@ async function loadActiveTagVocabularyForCli(): Promise<readonly string[]> {
   const rawRoot = process.env["LORE_CONFIG_ROOT"]
   const explicitRoot = rawRoot?.trim() ? rawRoot.trim() : undefined
   let configPath: string
+  let configRoot: string
   if (explicitRoot) {
     const root = resolve(explicitRoot)
+    configRoot = root
     configPath = resolve(root, ".lore.yaml")
     try {
       await access(configPath)
@@ -297,9 +299,10 @@ async function loadActiveTagVocabularyForCli(): Promise<readonly string[]> {
     const found = await findConfigFile(process.cwd())
     if (!found) return TAG_VOCABULARY
     configPath = found.path
+    configRoot = found.root
   }
   const config = await loadConfig(configPath)
-  return resolveProfileFromConfig(config).taxonomy.tags
+  return resolveProfileFromConfigAtRoot(config, configRoot).taxonomy.tags
 }
 
 function validateState(

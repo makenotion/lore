@@ -42,7 +42,10 @@ import { STALE_TASK_DAYS, type LoreConfig, type TaskSummary } from "../types.js"
 import { resolveProjectPathFromCwd } from "../core/context.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
-import { resolveProfileFromConfig } from "../profile/index.js"
+import {
+  resolveProfileFromConfig,
+  resolveProfileFromConfigAtRoot,
+} from "../profile/index.js"
 import { indentUntrustedText, UNTRUSTED_VAULT_PREAMBLE } from "./untrusted-text.js"
 import {
   DEFAULT_WAKEUP_TASK_LIMIT,
@@ -601,7 +604,12 @@ export async function handleStop(
         const proposeLearnings =
           learningExtractionEnabled && config.proposeAutosaveLearnings
         const profilePrompts = failureContext?.config
-          ? resolveProfileFromConfig(failureContext.config).prompts
+          ? failureContext.configRoot
+            ? resolveProfileFromConfigAtRoot(
+                failureContext.config,
+                failureContext.configRoot
+              ).prompts
+            : resolveProfileFromConfig(failureContext.config).prompts
           : undefined
         const prompt = buildBackgroundSavePrompt(
           config.subProjects,

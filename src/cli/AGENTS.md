@@ -33,6 +33,7 @@ debugging, manual search).
 | `commands/promote.ts`   | `lore promote <memoryId> --to <name>` -- copy a primary-vault memory into a configured `promotionTargets` entry, with origin audit block (issue #286)                       |
 | `commands/mcp.ts`       | `lore mcp` -- start the MCP stdio server for host assistant integrations                                                                                                    |
 | `commands/hooks.ts`     | `lore hooks` -- dispatch host-assistant hook events (`wakeup`, `autosave`, `session-end`)                                                                                   |
+| `commands/profile.ts`   | `lore profile` -- Phase 3 profile distribution surface: `list` / `show` / `validate` / `preview` / `install` / `set` / `migrate`. See [`docs/profiles.md`](../../docs/profiles.md#distribution-phase-3) for the resolution priority, install collision matrix, allow-list contract, and migration DSL. |
 
 ## Commander Patterns
 

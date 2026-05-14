@@ -54,7 +54,10 @@ import {
   touchDriftMarker,
 } from "./hooks/drift-marker.js"
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
-import { resolveProfileFromConfig, type ResolvedProfile } from "./profile/index.js"
+import {
+  resolveProfileFromConfigAtRoot,
+  type ResolvedProfile,
+} from "./profile/index.js"
 import type {
   LoreConfig,
   MemoryScopeContext,
@@ -490,7 +493,7 @@ export async function initServicesFromConfig(
   config: LoreConfig,
   options: InitServicesOptions = {}
 ): Promise<LoreServices> {
-  const profile = resolveProfileFromConfig(config)
+  const profile = resolveProfileFromConfigAtRoot(config, configRoot)
   const auth = await resolveAuth(config, configRoot)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
   const authSnapshotRef = { current: toClientAuth(auth) }

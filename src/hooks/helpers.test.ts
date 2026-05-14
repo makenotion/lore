@@ -20,9 +20,15 @@
  * `handleSessionEnd`, and `handleAutoDigest` directly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 // Isolate from sibling test files that also touch the lock dir. Each test
 // file gets its own subtree under $TMPDIR via `LORE_HOOK_STATE_DIR`. The
@@ -182,6 +188,26 @@ function writeTranscript(path: string, userMessages: number): void {
     )
   }
   writeFileSync(path, lines.join("\n"))
+}
+
+function writeFiles(dir: string, files: Record<string, string>): void {
+  for (const [rel, content] of Object.entries(files)) {
+    const path = join(dir, rel)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+  }
+}
+
+function minimalExternalProfileFiles(
+  name: string,
+  version = "1.0.0"
+): Record<string, string> {
+  return {
+    "profile.yaml": `name: ${name}\nversion: ${version}\ntaxonomy: taxonomy.yaml\nschema: schema.yaml\nprompts:\n  autosaveExtractionFilter: prompts/filter.txt\n`,
+    "taxonomy.yaml": `tags:\n  - support\nentityKinds:\n  - account\nwritableFactPredicates:\n  - owns\n`,
+    "schema.yaml": `databases:\n  projects:\n    properties: {}\n  topics:\n    properties: {}\n  memories:\n    properties: {}\n  entities:\n    properties: {}\n  facts:\n    properties: {}\n`,
+    "prompts/filter.txt": "Installed profile autosave filter.",
+  }
 }
 
 function failureContext(tmpDir: string): {
@@ -814,6 +840,39 @@ describe("handleStop", () => {
     )
 
     expect(lastExtractLearnings()).toBe(true)
+  })
+
+  it("resolves installed external profile prompts for Stop autosave", async () => {
+    const context = failureContext(tmpDir)
+    context.config.profile = "external-support@1.0.0"
+    writeFiles(
+      join(tmpDir, ".lore", "profiles", "installed", "external-support", "1.0.0"),
+      minimalExternalProfileFiles("external-support")
+    )
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-installed-profile-prompts",
+        transcript_path: transcriptPath,
+        cwd: context.cwd,
+      },
+      defaultConfig(),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    const call = buildBackgroundSavePromptMock.mock.calls.at(-1)!
+    const options = call[5] as {
+      profilePrompts?: {
+        autosaveExtractionFilter?: { text?: string; source?: string }
+      }
+    }
+    expect(options.profilePrompts?.autosaveExtractionFilter?.text).toBe(
+      "Installed profile autosave filter."
+    )
+    expect(options.profilePrompts?.autosaveExtractionFilter?.source).toBe(
+      "active-profile"
+    )
   })
 
   it("passes extractLearnings: false when LORE_DISABLE_LEARNING_EXTRACTION=1", async () => {

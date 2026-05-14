@@ -19,6 +19,7 @@ import { evalCommand } from "./commands/eval.js"
 import { promoteCommand } from "./commands/promote.js"
 import { mcpCommand } from "./commands/mcp.js"
 import { hooksCommand } from "./commands/hooks.js"
+import { profileCommand } from "./commands/profile.js"
 
 const program = new Command()
 
@@ -44,5 +45,6 @@ program.addCommand(evalCommand)
 program.addCommand(promoteCommand)
 program.addCommand(mcpCommand)
 program.addCommand(hooksCommand)
+program.addCommand(profileCommand)
 
 program.parse()

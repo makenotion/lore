@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { parse as parseYaml } from "yaml"
@@ -11,11 +11,45 @@ const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$
 const PROFILE_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const PROFILE_SELECTOR_PATTERN =
   /^([a-z0-9]+(?:-[a-z0-9]+)*)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/
+const PROFILE_MANIFEST_FIELDS = new Set([
+  "name",
+  "version",
+  "taxonomy",
+  "schema",
+  "prompts",
+  "evals",
+  "extends",
+])
+const PROFILE_TAXONOMY_FIELDS = new Set([
+  "tags",
+  "entityKinds",
+  "writableFactPredicates",
+])
+const PROFILE_SCHEMA_FIELDS = new Set(["databases"])
+const PROFILE_SCHEMA_DATABASE_FIELDS = new Set(["properties"])
 
 const DATABASE_KEYS = ["projects", "topics", "memories", "entities", "facts"] as const
+const DATABASE_KEY_SET = new Set<string>(DATABASE_KEYS)
 export type ProfileDatabaseKey = (typeof DATABASE_KEYS)[number]
 
 export type ProfileSource = "built-in" | "local" | "external"
+
+/**
+ * Phase 3 resolution priority for a `<name>@<version>` selector when a
+ * `configRoot` is known:
+ *
+ *   1. Project-local: `<configRoot>/.lore/profiles/local/<name>/<version>/`
+ *   2. Built-in: bundled in the Lore release at `profiles/<name>/`
+ *   3. Installed external: `<configRoot>/.lore/profiles/installed/<name>/<version>/`
+ *
+ * Selectors without a known `configRoot` (the bare `resolveProfileFromConfig`
+ * entrypoint used by built-in tests and startup-before-config paths) only
+ * resolve against the built-in directory.
+ */
+export const LOCAL_PROFILES_REL = ".lore/profiles/local"
+export const INSTALLED_PROFILES_REL = ".lore/profiles/installed"
+export const INSTALLED_PROFILES_LOCK_FILENAME = "profiles.lock.json"
+export const PROFILE_MIGRATIONS_LEDGER_REL = ".lore/profile-migrations"
 
 export interface ProfileManifest {
   name: string
@@ -23,6 +57,7 @@ export interface ProfileManifest {
   taxonomy?: string
   schema?: string
   prompts?: Partial<Record<ProfilePromptKey, string>>
+  evals?: string[]
 }
 
 export interface ResolvedProfileTaxonomy {
@@ -67,6 +102,7 @@ export interface ResolvedProfile {
   taxonomy: ResolvedProfileTaxonomy
   prompts: ResolvedPromptRegistry
   schema: ResolvedProfileSchema
+  evalSuites: string[]
 }
 
 export interface ParsedProfileSelector {
@@ -301,6 +337,15 @@ export function bundledProfileRoot(name: string): string {
   return findBundledProfileRoot(name)
 }
 
+export function tryBundledProfileRoot(name: string): string | null {
+  try {
+    return findBundledProfileRoot(name)
+  } catch (err) {
+    if (err instanceof ProfileLoadError) return null
+    throw err
+  }
+}
+
 export function resolveProfileFromConfig(config: { profile?: string }): ResolvedProfile {
   const selector = config.profile ?? defaultProfileSelector()
   const parsed = parseProfileSelector(selector)
@@ -314,6 +359,202 @@ export function resolveProfileFromConfig(config: { profile?: string }): Resolved
     )
   }
   return loadProfileFromRoot(root, { source: "built-in", selector: parsed.selector })
+}
+
+/**
+ * Resolve a profile honoring Phase 3's three-tier priority order:
+ * project-local → built-in → installed external. Returns the first hit
+ * (whether the selector is implicit-default or explicit).
+ *
+ * The `configRoot` form differs from bare `resolveProfileFromConfig`
+ * because only this entrypoint knows where to look for local /
+ * installed-external bundles. Callers without a config root (built-in
+ * tests, no-vault `lore profile validate <path>` flows) keep using the
+ * bare form.
+ */
+export function resolveProfileFromConfigAtRoot(
+  config: { profile?: string },
+  configRoot: string
+): ResolvedProfile {
+  const selector = config.profile ?? defaultProfileSelector()
+  const parsed = parseProfileSelector(selector)
+  const resolution = resolveProfileSelector(parsed, configRoot)
+  if (resolution === null) {
+    throw new ProfileLoadError(
+      `Profile not found: ${parsed.selector}. Looked under ${join(configRoot, LOCAL_PROFILES_REL, parsed.name, parsed.version)} (local), bundled profiles, and ${join(configRoot, INSTALLED_PROFILES_REL, parsed.name, parsed.version)} (installed).`
+    )
+  }
+  return loadProfileFromRoot(resolution.rootDir, {
+    source: resolution.source,
+    selector: parsed.selector,
+  })
+}
+
+export interface ProfileLocationCandidate {
+  source: ProfileSource
+  rootDir: string
+}
+
+/**
+ * Walk the three-tier resolution priority and return the first matching
+ * location, or `null` when the selector is not resolvable.
+ */
+export function resolveProfileSelector(
+  parsed: ParsedProfileSelector,
+  configRoot: string
+): ProfileLocationCandidate | null {
+  const localDir = join(
+    configRoot,
+    LOCAL_PROFILES_REL,
+    parsed.name,
+    parsed.version
+  )
+  if (isProfileBundleRoot(localDir)) {
+    return { source: "local", rootDir: resolve(localDir) }
+  }
+  try {
+    const builtIn = bundledProfileRoot(parsed.name)
+    const manifest = readManifest(builtIn)
+    if (manifest.version === parsed.version) {
+      return { source: "built-in", rootDir: builtIn }
+    }
+  } catch (err) {
+    if (!(err instanceof ProfileLoadError)) throw err
+  }
+  const installedDir = join(
+    configRoot,
+    INSTALLED_PROFILES_REL,
+    parsed.name,
+    parsed.version
+  )
+  if (isProfileBundleRoot(installedDir)) {
+    return { source: "external", rootDir: resolve(installedDir) }
+  }
+  return null
+}
+
+/**
+ * Return true when `dir` looks like a profile bundle root: it exists,
+ * is a directory, and contains a `profile.yaml` file. Used to gate
+ * resolution and install-target checks.
+ */
+export function isProfileBundleRoot(dir: string): boolean {
+  try {
+    const st = statSync(dir)
+    if (!st.isDirectory()) return false
+  } catch {
+    return false
+  }
+  return existsSync(join(dir, "profile.yaml"))
+}
+
+export interface DiscoveredProfile {
+  source: ProfileSource
+  rootDir: string
+  name: string
+  version: string
+  manifestDigest: string
+}
+
+/**
+ * Enumerate every profile resolvable from a config root:
+ *
+ *   - all built-in profiles (one per directory under repo `profiles/`)
+ *   - local overrides under `<configRoot>/.lore/profiles/local/<name>/<version>/`
+ *   - installed external profiles under
+ *     `<configRoot>/.lore/profiles/installed/<name>/<version>/`
+ *
+ * The result is unsorted; callers (e.g., `lore profile list`) sort and
+ * compute shadowing relationships using the canonical priority.
+ */
+export function discoverProfiles(configRoot: string): DiscoveredProfile[] {
+  const out: DiscoveredProfile[] = []
+  for (const candidate of enumerateBuiltInProfiles()) {
+    const summary = safeLoadDiscovery(candidate, "built-in")
+    if (summary) out.push(summary)
+  }
+  for (const candidate of enumerateConfigProfileTree(
+    join(configRoot, LOCAL_PROFILES_REL)
+  )) {
+    const summary = safeLoadDiscovery(candidate, "local")
+    if (summary) out.push(summary)
+  }
+  for (const candidate of enumerateConfigProfileTree(
+    join(configRoot, INSTALLED_PROFILES_REL)
+  )) {
+    const summary = safeLoadDiscovery(candidate, "external")
+    if (summary) out.push(summary)
+  }
+  return out
+}
+
+function safeLoadDiscovery(
+  rootDir: string,
+  source: ProfileSource
+): DiscoveredProfile | null {
+  try {
+    const profile = loadProfileFromRoot(rootDir, { source })
+    return {
+      source,
+      rootDir: profile.rootDir,
+      name: profile.name,
+      version: profile.version,
+      manifestDigest: profile.manifestDigest,
+    }
+  } catch {
+    return null
+  }
+}
+
+function enumerateBuiltInProfiles(): string[] {
+  const start = dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    join(start, "..", "profiles"),
+    join(start, "..", "..", "profiles"),
+    join(start, "..", "..", "..", "profiles"),
+  ]
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue
+    const out: string[] = []
+    let entries: string[]
+    try {
+      entries = readdirSync(candidate)
+    } catch {
+      continue
+    }
+    for (const name of entries) {
+      const dir = join(candidate, name)
+      if (isProfileBundleRoot(dir)) out.push(dir)
+    }
+    return out
+  }
+  return []
+}
+
+function enumerateConfigProfileTree(treeRoot: string): string[] {
+  const out: string[] = []
+  let names: string[]
+  try {
+    names = readdirSync(treeRoot)
+  } catch {
+    return out
+  }
+  for (const name of names) {
+    const profileDir = join(treeRoot, name)
+    let versions: string[]
+    try {
+      const st = statSync(profileDir)
+      if (!st.isDirectory()) continue
+      versions = readdirSync(profileDir)
+    } catch {
+      continue
+    }
+    for (const version of versions) {
+      const versionDir = join(profileDir, version)
+      if (isProfileBundleRoot(versionDir)) out.push(versionDir)
+    }
+  }
+  return out
 }
 
 export function loadProfileFromRoot(
@@ -334,6 +575,8 @@ export function loadProfileFromRoot(
   const taxonomy = loadTaxonomy(root, manifest, files)
   const schema = loadSchema(root, manifest, files)
   const prompts = loadPromptRegistry(root, manifest, files)
+  const evalSuites = loadEvalSuites(root, manifest, files)
+  loadMigrationFilesForDigest(root, files)
 
   return {
     selector,
@@ -346,6 +589,7 @@ export function loadProfileFromRoot(
     taxonomy,
     prompts,
     schema,
+    evalSuites,
   }
 }
 
@@ -386,6 +630,10 @@ function findBundledProfileRoot(name: string): string {
   )
 }
 
+export function readProfileManifest(rootDir: string): ProfileManifest {
+  return readManifest(rootDir)
+}
+
 function readManifest(rootDir: string, files?: Map<string, string>): ProfileManifest {
   const path = join(rootDir, "profile.yaml")
   const raw = readText(path)
@@ -398,6 +646,12 @@ function readManifest(rootDir: string, files?: Map<string, string>): ProfileMani
   if ("extends" in record) {
     throw new ProfileLoadError(`${path}: ${PROFILE_EXTENDS_RESERVED_MESSAGE}`)
   }
+  rejectUnsupportedFields(
+    record,
+    PROFILE_MANIFEST_FIELDS,
+    path,
+    "profile.yaml"
+  )
   const name = expectString(record["name"], `${path}: name`)
   const version = expectString(record["version"], `${path}: version`)
   if (!PROFILE_NAME_PATTERN.test(name)) {
@@ -433,6 +687,10 @@ function readManifest(rootDir: string, files?: Map<string, string>): ProfileMani
         ? undefined
         : expectString(record["schema"], `${path}: schema`),
     prompts,
+    evals:
+      record["evals"] === undefined
+        ? undefined
+        : readStringList(record["evals"], `${path}: evals`, []),
   }
 }
 
@@ -457,6 +715,12 @@ function loadTaxonomy(
     throw new ProfileLoadError(`${path}: taxonomy must be a mapping.`)
   }
   const record = parsed as Record<string, unknown>
+  rejectUnsupportedFields(
+    record,
+    PROFILE_TAXONOMY_FIELDS,
+    path,
+    "taxonomy"
+  )
   const taxonomy = {
     tags: readStringList(record["tags"], `${path}: tags`, DEFAULT_TAGS),
     entityKinds: readStringList(
@@ -487,6 +751,20 @@ function loadTaxonomy(
   return taxonomy
 }
 
+function rejectUnsupportedFields(
+  record: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  path: string,
+  context: string
+): void {
+  for (const [key, value] of Object.entries(record)) {
+    if (allowed.has(key)) continue
+    throw new ProfileLoadError(
+      `${path}: unsupported ${context} field "${key}" with value ${stableStringify(value)}. Remove this field; Phase 3 profiles cannot define memory kinds or replace core locked enums.`
+    )
+  }
+}
+
 function loadSchema(
   rootDir: string,
   manifest: ProfileManifest,
@@ -501,10 +779,23 @@ function loadSchema(
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new ProfileLoadError(`${path}: schema must be a mapping.`)
   }
-  const databases = (parsed as Record<string, unknown>)["databases"]
+  const schemaRecord = parsed as Record<string, unknown>
+  rejectUnsupportedFields(
+    schemaRecord,
+    PROFILE_SCHEMA_FIELDS,
+    path,
+    "schema"
+  )
+  const databases = schemaRecord["databases"]
   if (!databases || typeof databases !== "object" || Array.isArray(databases)) {
     throw new ProfileLoadError(`${path}: databases must be a mapping.`)
   }
+  rejectUnsupportedFields(
+    databases as Record<string, unknown>,
+    DATABASE_KEY_SET,
+    `${path}: databases`,
+    "schema database"
+  )
   const out = cloneSchema(EMPTY_SCHEMA)
   for (const key of DATABASE_KEYS) {
     const db = (databases as Record<string, unknown>)[key]
@@ -512,7 +803,14 @@ function loadSchema(
     if (!db || typeof db !== "object" || Array.isArray(db)) {
       throw new ProfileLoadError(`${path}: databases.${key} must be a mapping.`)
     }
-    const properties = (db as Record<string, unknown>)["properties"] ?? {}
+    const dbRecord = db as Record<string, unknown>
+    rejectUnsupportedFields(
+      dbRecord,
+      PROFILE_SCHEMA_DATABASE_FIELDS,
+      `${path}: databases.${key}`,
+      "schema database"
+    )
+    const properties = dbRecord["properties"] ?? {}
     if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
       throw new ProfileLoadError(
         `${path}: databases.${key}.properties must be a mapping.`
@@ -566,6 +864,50 @@ function loadPromptRegistry(
     }
   }
   return out
+}
+
+function loadEvalSuites(
+  rootDir: string,
+  manifest: ProfileManifest,
+  files: Map<string, string>
+): string[] {
+  const out: string[] = []
+  for (const relRaw of manifest.evals ?? []) {
+    const rel = normalizeRelPath(relRaw)
+    const path = join(rootDir, rel)
+    const raw = readText(path)
+    files.set(rel, normalizeYamlForDigest(path, raw))
+    out.push(rel)
+  }
+  validateUniqueStrings(out, `${join(rootDir, "profile.yaml")}: evals`)
+  return out
+}
+
+function loadMigrationFilesForDigest(
+  rootDir: string,
+  files: Map<string, string>
+): void {
+  const dir = join(rootDir, "migrations")
+  if (!existsSync(dir)) return
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new ProfileLoadError(`Failed to read ${dir}: ${message}`)
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".yaml")) continue
+    const base = entry.slice(0, -".yaml".length)
+    const parts = base.split("__")
+    if (parts.length !== 2) continue
+    const [from, to] = parts
+    if (!from || !to) continue
+    const rel = `migrations/${entry}`
+    const path = join(rootDir, rel)
+    const raw = readText(path)
+    files.set(rel, normalizeYamlForDigest(path, raw))
+  }
 }
 
 function validateAdditivePropertyConfig(config: unknown, path: string): void {
@@ -713,8 +1055,14 @@ function normalizeRelPath(rel: string): string {
 
 function readText(path: string): string {
   try {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new ProfileLoadError(
+        `${path}: profile bundle files cannot be symlinks.`
+      )
+    }
     return readFileSync(path, "utf-8")
   } catch (err) {
+    if (err instanceof ProfileLoadError) throw err
     const message = err instanceof Error ? err.message : String(err)
     throw new ProfileLoadError(`Failed to read ${path}: ${message}`)
   }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -1782,6 +1782,60 @@ describe("tasksCommand create/update/close/list actions", () => {
     expect(exitTrap.exitCodes).toEqual([])
     expect(tasksCreate).toHaveBeenCalledWith(
       expect.objectContaining({ tags: ["escalation"] })
+    )
+  })
+
+  it("create validates --tags against an installed external profile", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lore-tasks-external-profile-"))
+    const profileDir = join(
+      cwd,
+      ".lore",
+      "profiles",
+      "installed",
+      "phase-three",
+      "1.0.0"
+    )
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(
+      join(cwd, ".lore.yaml"),
+      "vault:\n  pageId: test-page\nprofile: phase-three@1.0.0\n"
+    )
+    writeFileSync(
+      join(profileDir, "profile.yaml"),
+      "name: phase-three\nversion: 1.0.0\ntaxonomy: taxonomy.yaml\nschema: schema.yaml\n"
+    )
+    writeFileSync(
+      join(profileDir, "taxonomy.yaml"),
+      "tags:\n  - phase-three\nentityKinds:\n  - validation-artifact\nwritableFactPredicates:\n  - validates\n"
+    )
+    writeFileSync(
+      join(profileDir, "schema.yaml"),
+      "databases:\n  projects:\n    properties: {}\n  topics:\n    properties: {}\n  memories:\n    properties: {}\n  entities:\n    properties: {}\n  facts:\n    properties: {}\n"
+    )
+    vi.spyOn(process, "cwd").mockReturnValue(cwd)
+    const tasksCreate = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-external",
+        title: "Validate profile distribution",
+        taskState: "open",
+      }) as unknown as Task
+    )
+    const services = makeServices({ contextProject: null, tasksCreate })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    try {
+      await tasksCommand.parseAsync(
+        ["create", "Validate profile distribution", "--tags", "phase-three"],
+        { from: "user" }
+      )
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(exitTrap.exitCodes).toEqual([])
+    expect(tasksCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: ["phase-three"] })
     )
   })
 

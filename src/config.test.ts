@@ -195,6 +195,39 @@ profile: default
     ).toThrow(/Expected exact <name>@<semver>/)
   })
 
+  it("parses profile install allow-list entries", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+profiles:
+  allowedInstallSources:
+    - kind: git
+      url: git@github.com:org/lore-sales-profile.git
+      commit: 0123456789abcdef0123456789abcdef01234567
+      manifestDigest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    - kind: path
+      path: ./profiles/sales
+      manifestDigest: sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.profiles?.allowedInstallSources).toHaveLength(2)
+  })
+
+  it("rejects allow-list entries with malformed manifest digests", () => {
+    expect(() =>
+      parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+profiles:
+  allowedInstallSources:
+    - kind: path
+      path: ./profiles/sales
+      manifestDigest: sha256:not-a-digest
+`)
+    ).toThrow(/manifestDigest must be sha256:<64-hex>/)
+  })
+
   it("rejects bearer-shaped auth.token values at parse time", () => {
     for (const token of [
       "secret_real_notion_integration_token",

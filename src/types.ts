@@ -1926,6 +1926,43 @@ export interface PromotionTargetConfig {
   requireReview?: boolean
 }
 
+export interface ProfilesAllowedGitInstallSource {
+  kind: "git"
+  /** Git URL of the source repository. */
+  url: string
+  /** 40-character lowercase hex commit SHA. */
+  commit: string
+  /** `sha256:<64-hex>` manifest digest computed at allow-list authoring time. */
+  manifestDigest: string
+}
+
+export interface ProfilesAllowedPathInstallSource {
+  kind: "path"
+  /**
+   * Absolute or `<configRoot>`-relative path to a profile bundle root
+   * (the directory that contains `profile.yaml`).
+   */
+  path: string
+  /** `sha256:<64-hex>` manifest digest of the bundle at allow-list authoring time. */
+  manifestDigest: string
+}
+
+export type ProfilesAllowedInstallSource =
+  | ProfilesAllowedGitInstallSource
+  | ProfilesAllowedPathInstallSource
+
+export interface ProfilesConfig {
+  /**
+   * Closed allow-list of install sources that `lore profile install --yes`
+   * may write under `<configRoot>/.lore/profiles/installed/`. The CLI
+   * stages the source, validates it, computes its `manifestDigest`, and
+   * requires an exact entry match before writing anything to disk.
+   * Interactive installs without `--yes` print the digest so an operator
+   * can add an entry for later CI/scripted runs.
+   */
+  allowedInstallSources?: ProfilesAllowedInstallSource[]
+}
+
 export interface LoreConfig {
   vault: {
     pageId: string
@@ -1936,6 +1973,13 @@ export interface LoreConfig {
    * never write this field back to disk.
    */
   profile?: string
+  /**
+   * Optional profile distribution settings (Phase 3). Currently scoped to
+   * `allowedInstallSources`, the closed allow-list that authorizes
+   * `lore profile install --yes` to write under
+   * `<configRoot>/.lore/profiles/installed/`.
+   */
+  profiles?: ProfilesConfig
   /**
    * Read-only vaults whose memories can be inherited by topology-aware read
    * paths. The primary vault remains the only normal write target.
