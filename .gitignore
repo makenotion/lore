@@ -29,6 +29,7 @@ Thumbs.db
 # per-developer Bash() permission allowlist.
 .claude/settings.json
 .claude/settings.local.json
+.claude/worktrees/
 .claudio/
 
 # Ad-hoc / empirical verification scripts — intentionally not part of the
