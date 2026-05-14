@@ -29,7 +29,7 @@ import type {
   MemorySource,
   MemoryKind,
   MemoryStatus,
-  MemoryConfidence,
+  MemoryConfidence as MemoryConfidenceLevel,
   MemoryScopeContext,
   MemoryScopeInput,
   TaskState,
@@ -76,13 +76,7 @@ import {
 import { LruCache } from "./cache.js"
 import { redactDebugMessage } from "../debug-redact.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
-import {
-  bumpConfidenceScore,
-  confidenceFactor,
-  decayConfidenceScore,
-  decrementConfidenceScore,
-  seedConfidenceScore,
-} from "./decay.js"
+import { confidenceFactor } from "./decay.js"
 import { todayUtc } from "./task.js"
 import {
   isFullPage,
@@ -114,6 +108,11 @@ import {
   extractMemoryPinned,
   pinnedInputToBuilderProps,
 } from "./memory-pinned.js"
+import { MemoryConfidence } from "./memory-confidence.js"
+import {
+  cleanupOrphanExclusionFilter,
+  withCleanupOrphanExclusion,
+} from "./memory-filters.js"
 
 export { matchesDefaultScope } from "./memory-scope.js"
 export {
@@ -179,68 +178,6 @@ function scopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
   if (scope.lifetime !== undefined) out.lifetime = scope.lifetime
   if (scope.expiresAt !== undefined) out.expiresAt = scope.expiresAt
   return out
-}
-
-/**
- * Server-side filter clause that excludes memories carrying the
- * cleanup-orphan sentinel (`MEMORY_CLEANUP_ORPHAN_SENTINEL`) in their
- * `Keywords` column.
- *
- * Threaded into every `dataSources.query` walker that surfaces live
- * memories to readers or other write paths — `findByTopicKey`,
- * `list`, `fetchContainsPages`, `listForScan`, `listAllForBackfill`,
- * `queryStaleConfidence`. The semantic-search post-filter
- * (`applySemanticPostFilters`) applies the same exclusion client-side
- * because `client.search` has no property-filter support.
- *
- * **Notion `rich_text.does_not_contain` semantics on empty values.**
- * Notion's filter contract is "the property does not contain the
- * substring" — empty rich_text columns satisfy this (nothing to
- * contain), so memories whose `Keywords` is empty are NOT silently
- * excluded. This is the intuitive answer and the only one consistent
- * with the existing `Keywords contains` filter on the contains-search
- * path. Verified empirically against the internal vault on
- * 2026-05-04 by the author; the empty-keywords unit test on
- * `findByTopicKey` pins the request shape so a future contributor
- * adding a `is_empty` short-circuit can't silently regress.
- *
- * Built as a function (not a frozen constant) so each call returns a
- * fresh literal — the `and: [...]` arrays in caller filters mutate
- * via `push` and Notion's SDK accepts the structure by-reference, so
- * sharing one constant across multiple in-flight queries on the same
- * client risks a future refactor mutating shared state.
- */
-function cleanupOrphanExclusionFilter(): Record<string, unknown> {
-  return {
-    property: MEMORY_PROPS.KEYWORDS,
-    rich_text: { does_not_contain: MEMORY_CLEANUP_ORPHAN_SENTINEL },
-  }
-}
-
-/**
- * Compose the cleanup-orphan exclusion onto whatever filter shape the
- * caller already has. Three input shapes:
- *
- * - `undefined` → returns the bare exclusion clause (single-filter form).
- * - A pre-built `{ and: [...] }` → appends the clause to the array.
- * - A bare property filter → wraps both into a fresh `{ and: [...] }`.
- *
- * Centralizing the composition keeps each walker's call site
- * one-liner-clean and prevents the "two walkers diverge their filter
- * shapes" failure mode that the filter-symmetry review called out.
- */
-function withCleanupOrphanExclusion(
-  filter: Record<string, unknown> | undefined
-): Record<string, unknown> {
-  const exclusion = cleanupOrphanExclusionFilter()
-  if (filter === undefined) return exclusion
-  if (Array.isArray((filter as { and?: unknown[] }).and)) {
-    return {
-      ...filter,
-      and: [...((filter as { and: unknown[] }).and as unknown[]), exclusion],
-    }
-  }
-  return { and: [filter, exclusion] }
 }
 
 /**
@@ -1193,7 +1130,7 @@ export interface ListMemoriesOptions {
    * posture.
    */
   excludeKinds?: MemoryKind[]
-  confidence?: MemoryConfidence
+  confidence?: MemoryConfidenceLevel
   status?: MemoryStatus
   reviewBefore?: string
   tags?: string[]
@@ -1414,7 +1351,7 @@ interface TopicUpsertSnapshot {
   synopsis: string
   keywords: string
   source: MemorySource
-  confidence: MemoryConfidence
+  confidence: MemoryConfidenceLevel
   author: string
 }
 
@@ -1838,6 +1775,7 @@ export class MemoryService {
    */
   private scopeCtx: MemoryScopeContext = {}
   private readonly pinned: MemoryPinned
+  private readonly confidence: MemoryConfidence
 
   /**
    * Whether default-retrieval paths should apply the scope filter.
@@ -1865,6 +1803,9 @@ export class MemoryService {
       () => this.scopeCtx,
       () => this.scopeFilterEnabled,
       (pages, includeContent) => this.materializeMemories(pages, includeContent)
+    )
+    this.confidence = new MemoryConfidence(client, db, (page, content) =>
+      this.pageToMemory(page, content)
     )
     if (scopeCtx) {
       this.scopeCtx = scopeCtx
@@ -2506,7 +2447,7 @@ export class MemoryService {
     kind: MemoryKind
     source?: MemorySource
     status?: MemoryStatus
-    confidence?: MemoryConfidence
+    confidence?: MemoryConfidenceLevel
     topicId?: string
     synopsis?: string
     keywords?: string
@@ -3818,62 +3759,7 @@ export class MemoryService {
       onError?: (memoryId: string, error: unknown) => void
     }
   ): Promise<void> {
-    const today = opts?.today ?? todayUtc()
-    await Promise.all(
-      memories.map(async (memory) => {
-        if (memory.lastReferencedAt === today && memory.confidenceScore !== null) {
-          return
-        }
-        try {
-          let nextScore: number
-          if (memory.confidenceScore === null) {
-            const seeded = seedConfidenceScore(memory.confidence)
-            const decayed = decayConfidenceScore(
-              seeded,
-              memory.createdAt.slice(0, 10),
-              today
-            )
-            nextScore = bumpConfidenceScore(decayed)
-          } else {
-            // `lastReferencedAt` may be null on this branch in
-            // theory — production callers always write both columns
-            // together, but `decayConfidenceScore` is null-tolerant
-            // (returns the input unchanged) so the corner case is
-            // safe without a cast.
-            const decayed = decayConfidenceScore(
-              memory.confidenceScore,
-              memory.lastReferencedAt,
-              today
-            )
-            nextScore = bumpConfidenceScore(decayed)
-          }
-          await this.client.pages.update({
-            page_id: memory.id,
-            properties: {
-              [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
-              [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: nextScore },
-            },
-          })
-          // Mirror the post-write state onto the caller's
-          // `Memory` reference. Without this, a cached
-          // `WakeUpData` whose memories were touched on the prior
-          // render still says `lastReferencedAt: <yesterday>` —
-          // every subsequent cache hit would re-fire `touchOnRead`
-          // because the once-per-day gate above keys on
-          // `memory.lastReferencedAt === today`. The mutation
-          // closes the gate without rewriting the touch contract:
-          // the in-memory shape now matches what Notion holds.
-          // Mutation is safe under `ReadonlyArray<Pick<...>>` — the
-          // array itself is read-only but element fields stay
-          // writable, and the picked properties are intentionally
-          // non-readonly on `Memory`.
-          memory.lastReferencedAt = today
-          memory.confidenceScore = nextScore
-        } catch (error) {
-          opts?.onError?.(memory.id, error)
-        }
-      })
-    )
+    return this.confidence.touchOnRead(memories, opts)
   }
 
   /**
@@ -3911,39 +3797,7 @@ export class MemoryService {
     >,
     opts?: { today?: string; compareNotes?: string }
   ): Promise<number> {
-    const today = opts?.today ?? todayUtc()
-    // Mirror `touchOnRead`'s structure: gate only on the null-score
-    // branch and let `decayConfidenceScore`'s null-tolerance + same-day
-    // zero-stale-days behavior carry the rest. `decay(score, today,
-    // today)` returns `score` (zero days elapsed); `decay(score, null,
-    // today)` returns `score` (null-tolerant short-circuit). Same
-    // result as the prior tri-branch shape, one call instead of two.
-    let current: number
-    if (memory.confidenceScore === null) {
-      const seeded = seedConfidenceScore(memory.confidence)
-      current = decayConfidenceScore(seeded, memory.createdAt.slice(0, 10), today)
-    } else {
-      current = decayConfidenceScore(
-        memory.confidenceScore,
-        memory.lastReferencedAt,
-        today
-      )
-    }
-    const next = decrementConfidenceScore(current)
-    const properties: CreatePageParameters["properties"] = {
-      [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: next },
-      [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
-    }
-    if (opts?.compareNotes !== undefined) {
-      properties[MEMORY_PROPS.COMPARE_NOTES] = {
-        rich_text: encodeCompareNotesRichText(opts.compareNotes),
-      }
-    }
-    await this.client.pages.update({
-      page_id: memory.id,
-      properties,
-    })
-    return next
+    return this.confidence.decrementConfidence(memory, opts)
   }
 
   /**
@@ -4268,30 +4122,7 @@ export class MemoryService {
       projectId?: string
     } = {}
   ): AsyncGenerator<Memory, void, void> {
-    let cursor: string | undefined
-    do {
-      const baseFilter = opts.projectId
-        ? projectOrUnscopedFilter(opts.projectId)
-        : undefined
-      // Resurfaced cleanup-orphan exclusion. The
-      // confidence-score backfill seeds a numeric score onto every
-      // unscored row; without this filter, the orphan would receive a
-      // seeded score (cosmetically wrong, but worse: working against
-      // intent — the orphan is a row Lore deliberately removed from
-      // its working set).
-      const filter = withCleanupOrphanExclusion(baseFilter)
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "ascending" }],
-        page_size: 100,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isLiveFullPage)) {
-        yield await this.pageToMemory(page, "")
-      }
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
+    yield* this.confidence.listAllForBackfill(opts)
   }
 
   /**
@@ -4311,13 +4142,7 @@ export class MemoryService {
     score: number,
     lastReferencedAt: string
   ): Promise<void> {
-    await this.client.pages.update({
-      page_id: memoryId,
-      properties: {
-        [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: score },
-        [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: lastReferencedAt } },
-      },
-    })
+    return this.confidence.applyBackfillScore(memoryId, score, lastReferencedAt)
   }
 
   /**
@@ -4384,22 +4209,7 @@ export class MemoryService {
     averageScore: number
     belowThreshold: number
   }> {
-    let totalMemories = 0
-    let scoredMemories = 0
-    let scoreSum = 0
-    let belowThreshold = 0
-    for await (const memory of this.listAllForBackfill(opts)) {
-      totalMemories += 1
-      if (memory.confidenceScore !== null) {
-        scoredMemories += 1
-        scoreSum += memory.confidenceScore
-        if (memory.confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD) {
-          belowThreshold += 1
-        }
-      }
-    }
-    const averageScore = scoredMemories > 0 ? scoreSum / scoredMemories : 0
-    return { totalMemories, scoredMemories, averageScore, belowThreshold }
+    return this.confidence.confidenceStats(opts)
   }
 
   /**
@@ -6650,7 +6460,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     confidence: extractSelect(
       props[MEMORY_PROPS.CONFIDENCE],
       "certain"
-    ) as MemoryConfidence,
+    ) as MemoryConfidenceLevel,
     confidenceScore: extractNumber(props[MEMORY_PROPS.CONFIDENCE_SCORE]),
     reviewBy: extractDate(props[MEMORY_PROPS.REVIEW_BY]),
     doneAt: extractDate(props[MEMORY_PROPS.DONE_AT]),
