@@ -66,6 +66,22 @@ describe("tryAcquireSessionLock", () => {
     expect(second).toBeNull()
   })
 
+  it("allows only one holder in a same-session contender storm", async () => {
+    const sessionId = `storm-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        Promise.resolve().then(() => tryAcquireSessionLock(sessionId, process.pid))
+      )
+    )
+
+    const acquired = results.filter((path): path is string => path !== null)
+    const skipped = results.filter((path) => path === null)
+    expect(acquired).toHaveLength(1)
+    expect(acquired[0]).toBe(lockPath(sessionId))
+    expect(skipped).toHaveLength(9)
+    expect(activeSaveCount()).toBe(1)
+  })
+
   it("reclaims a stale lock whose owner PID is no longer alive", () => {
     const sessionId = `test-${Date.now()}-${Math.random().toString(16).slice(2)}`
     // Simulate a crashed prior save by seeding a lock with a dead PID.

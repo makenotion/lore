@@ -71,20 +71,21 @@ function readLock(path: string): LockRecord | null {
   return null
 }
 
-function fileAgeMs(path: string): number {
+function fileAgeMs(path: string): number | null {
   try {
     return Date.now() - statSync(path).mtimeMs
   } catch {
-    return 0
+    return null
   }
 }
 
 function removeStaleLock(path: string): void {
   const record = readLock(path)
-  if (record && isProcessAlive(record.pid) && fileAgeMs(path) < LOCK_STALE_MS) {
+  const age = fileAgeMs(path)
+  if (record && age !== null && isProcessAlive(record.pid) && age < LOCK_STALE_MS) {
     return
   }
-  if (record === null && fileAgeMs(path) < LOCK_STALE_MS) return
+  if (record === null && age !== null && age < LOCK_STALE_MS) return
 
   try {
     unlinkSync(path)

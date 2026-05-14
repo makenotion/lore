@@ -2,6 +2,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  readdirSync,
   rmSync,
   unlinkSync,
   utimesSync,
@@ -28,6 +30,10 @@ function writeLock(path: string, pid: number, createdAt = Date.now()): void {
   )
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 describe("withAutosaveLearningLock", () => {
   let stateDir: string
 
@@ -38,6 +44,7 @@ describe("withAutosaveLearningLock", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs()
+    vi.restoreAllMocks()
     rmSync(stateDir, { recursive: true, force: true })
   })
 
@@ -70,6 +77,94 @@ describe("withAutosaveLearningLock", () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual(["first", "second"])
     expect(secondEntered).toBe(true)
+  })
+
+  it("serializes a storm of contenders for the same learning key", async () => {
+    let active = 0
+    let maxActive = 0
+    const completed: number[] = []
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        withAutosaveLearningLock("storm-key", async () => {
+          active += 1
+          try {
+            maxActive = Math.max(maxActive, active)
+            expect(active).toBe(1)
+            await delay(5)
+            completed.push(index)
+            return index
+          } finally {
+            active -= 1
+          }
+        })
+      )
+    )
+
+    expect(results).toHaveLength(10)
+    expect(new Set(completed).size).toBe(10)
+    expect(maxActive).toBe(1)
+  })
+
+  it("uses wall-clock time for contender creation timestamps", async () => {
+    const createdAt = 1_725_000_000_123
+    let calls = 0
+    vi.spyOn(Date, "now").mockImplementation(() =>
+      calls++ === 0 ? createdAt : createdAt + 1
+    )
+
+    await withAutosaveLearningLock("clock-key", async () => {
+      const dir = __autosaveLearningLockPathForTests("clock-key")
+      const contenders = readdirSync(dir).filter((name) => name.endsWith(".json"))
+      expect(contenders).toHaveLength(1)
+      const record = JSON.parse(readFileSync(join(dir, contenders[0]!), "utf-8")) as {
+        createdAt: number
+      }
+      expect(record.createdAt).toBe(createdAt)
+    })
+  })
+
+  it("samples contender creation time after the contender file is visible", async () => {
+    const createdAt = 1_725_000_000_123
+    const dir = __autosaveLearningLockPathForTests("visibility-key")
+    let firstNow = true
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      if (firstNow) {
+        firstNow = false
+        expect(readdirSync(dir).filter((name) => name.endsWith(".json"))).toHaveLength(1)
+        return createdAt
+      }
+      return createdAt + 1
+    })
+
+    await withAutosaveLearningLock("visibility-key", async () => {
+      const contenders = readdirSync(dir).filter((name) => name.endsWith(".json"))
+      expect(contenders).toHaveLength(1)
+      const record = JSON.parse(readFileSync(join(dir, contenders[0]!), "utf-8")) as {
+        createdAt: number
+      }
+      expect(record.createdAt).toBe(createdAt)
+    })
+  })
+
+  it("waits behind a fresh contender that has not finalized its timestamp", async () => {
+    const dir = __autosaveLearningLockPathForTests("placeholder-key")
+    mkdirSync(dir, { recursive: true })
+    const placeholderPath = join(dir, "placeholder.json")
+    writeFileSync(placeholderPath, "", { mode: 0o600 })
+
+    let entered = false
+    const waiter = withAutosaveLearningLock("placeholder-key", async () => {
+      entered = true
+      return "waiter"
+    })
+
+    await delay(120)
+    expect(entered).toBe(false)
+    expect(existsSync(placeholderPath)).toBe(true)
+
+    unlinkSync(placeholderPath)
+    await expect(waiter).resolves.toBe("waiter")
   })
 
   it("takes over a stale dead-process lock", async () => {

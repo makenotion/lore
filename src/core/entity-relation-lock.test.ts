@@ -1,8 +1,10 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs"
@@ -13,6 +15,10 @@ import {
   __removeStaleEntityRelationLockForTests,
   withEntityRelationLocks,
 } from "./entity-relation-lock.js"
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 let stateDir: string
 
@@ -97,6 +103,33 @@ describe("withEntityRelationLocks", () => {
     ).resolves.toBe("ok")
   })
 
+  it("serializes a storm of contenders for the same entity id", async () => {
+    let active = 0
+    let maxActive = 0
+    const completed: number[] = []
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        withEntityRelationLocks(["ent-storm"], async () => {
+          active += 1
+          try {
+            maxActive = Math.max(maxActive, active)
+            expect(active).toBe(1)
+            await delay(5)
+            completed.push(index)
+            return index
+          } finally {
+            active -= 1
+          }
+        })
+      )
+    )
+
+    expect(results).toHaveLength(10)
+    expect(new Set(completed).size).toBe(10)
+    expect(maxActive).toBe(1)
+  })
+
   it("does not steal an old lock whose owner pid is still alive", async () => {
     vi.useFakeTimers()
     const path = __entityRelationLockPathForTests("ent-live")
@@ -160,6 +193,18 @@ describe("withEntityRelationLocks", () => {
     __removeStaleEntityRelationLockForTests(path)
 
     expect(existsSync(path)).toBe(true)
+  })
+
+  it("removes a lock path whose stat target is gone", () => {
+    const lockRoot = join(stateDir, ".lore", "entity-relation-locks")
+    mkdirSync(lockRoot, { recursive: true })
+    const path = __entityRelationLockPathForTests("ent-broken-symlink")
+    symlinkSync(join(lockRoot, "missing-target"), path)
+    expect(lstatSync(path).isSymbolicLink()).toBe(true)
+
+    __removeStaleEntityRelationLockForTests(path)
+
+    expect(() => lstatSync(path)).toThrow()
   })
 
   it("removes an old malformed lock", () => {

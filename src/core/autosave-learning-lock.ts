@@ -10,7 +10,6 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { performance } from "node:perf_hooks"
 
 const LOCK_STALE_MS = 10 * 60 * 1000
 const LOCK_HEARTBEAT_MS = 30_000
@@ -51,8 +50,8 @@ function legacyLockPath(lockKey: string): string {
   return join(lockDir(), `${lockDigest(lockKey)}.lock`)
 }
 
-function contenderPath(path: string, record: LockRecord): string {
-  return join(path, `${record.createdAt}-${record.pid}-${record.token}.json`)
+function contenderPath(path: string, pid: number, token: string): string {
+  return join(path, `${pid}-${token}.json`)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -178,29 +177,40 @@ async function acquireLock(lockKey: string): Promise<HeldLock> {
   const path = lockPath(lockKey)
   const oldPath = legacyLockPath(lockKey)
   mkdirSync(path, { recursive: true })
+  const token = randomUUID()
+  const pid = process.pid
+  const ownPath = contenderPath(path, pid, token)
+  writeFileSync(ownPath, "", { flag: "wx", mode: 0o600 })
   const record: LockRecord = {
-    token: randomUUID(),
-    pid: process.pid,
-    createdAt: performance.timeOrigin + performance.now(),
+    token,
+    pid,
+    createdAt: Date.now(),
   }
-  const ownPath = contenderPath(path, record)
-  writeFileSync(ownPath, JSON.stringify(record), { flag: "wx", mode: 0o600 })
+  try {
+    writeFileSync(ownPath, JSON.stringify(record), { flag: "w", mode: 0o600 })
+  } catch (err) {
+    removeIfExists(ownPath)
+    throw err
+  }
   let nextRefreshAt = Date.now() + LOCK_HEARTBEAT_MS
 
   while (true) {
-    if (Date.now() >= nextRefreshAt) {
+    const now = Date.now()
+    if (now >= nextRefreshAt) {
       refreshLock(ownPath, record)
       nextRefreshAt = Date.now() + LOCK_HEARTBEAT_MS
     }
 
-    if (!hasFreshLegacyLock(oldPath)) {
+    // Do not enter during the creation millisecond; a same-ms contender could
+    // still appear with a lower token and reorder ahead of an active holder.
+    if (now > record.createdAt && !hasFreshLegacyLock(oldPath)) {
       const { contenders, hasFreshUnknown } = listActiveContenders(path)
       if (!hasFreshUnknown && contenders[0]?.record.token === record.token) {
         return { path: ownPath, record }
       }
     }
 
-    await sleep(LOCK_POLL_MS)
+    await sleep(now <= record.createdAt ? 1 : LOCK_POLL_MS)
   }
 }
 
