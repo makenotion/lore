@@ -7,6 +7,7 @@ import {
   type Logger,
 } from "@notionhq/client"
 import { redactDebugExtraInfo, redactDebugMessage } from "../debug-redact.js"
+import { normalizeNotionApiBaseUrl } from "../auth/oauth.js"
 
 const USER_AGENT = "lore/0.14.0"
 
@@ -121,7 +122,13 @@ export function resolveSdkDebugOptions(
  * the sleep is indistinguishable from a deadlock.
  */
 export function createClient(token: string, baseUrl?: string): Client {
-  const resolvedBaseUrl = baseUrl ?? process.env["LORE_NOTION_BASE_URL"] ?? undefined
+  const resolvedBaseUrl =
+    baseUrl !== undefined
+      ? normalizeNotionApiBaseUrl(baseUrl, "createClient baseUrl parameter")
+      : normalizeNotionApiBaseUrl(
+          process.env["LORE_NOTION_BASE_URL"],
+          "LORE_NOTION_BASE_URL"
+        )
   const debugOptions = resolveSdkDebugOptions()
 
   const sdkClient = new Client({

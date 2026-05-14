@@ -501,6 +501,28 @@ describe("resolveAuth", () => {
     expect(result.baseUrl).toBe("https://lore-explicit.notion.com")
   })
 
+  it("rejects invalid base URL env on the NOTION_API_TOKEN path before client construction", async () => {
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
+    process.env["LORE_NOTION_BASE_URL"] = "api.notion.so"
+
+    await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
+      /Invalid Notion API base URL from LORE_NOTION_BASE_URL/
+    )
+  })
+
+  it("rejects invalid NOTION_ENV selectors on the NOTION_API_TOKEN path", async () => {
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
+    process.env["NOTION_ENV"] = "qa"
+
+    await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
+      /Invalid Notion API base URL from NOTION_ENV/
+    )
+  })
+
   it("REJECTS auth.baseUrl from .lore.yaml on the ntn-auth-json path (security)", async () => {
     // Same security rationale as the NOTION_API_TOKEN path. ntn-issued
     // tokens are bearer credentials inheriting the engineer's Notion

@@ -2,8 +2,11 @@ import type { Client } from "@notionhq/client"
 import { describe, expect, it } from "vitest"
 import {
   extractPageTitle,
+  InvalidNotionBaseUrlError,
+  normalizeNotionApiBaseUrl,
   ntnEnvFromBaseUrl,
   resolveOperatorBaseUrl,
+  resolveOperatorBaseUrlWithSource,
   verifyVaultAccess,
 } from "./oauth.js"
 
@@ -443,6 +446,83 @@ describe("resolveOperatorBaseUrl", () => {
         LORE_NOTION_BASE_URL: "https://my-proxy.example",
       })
     ).toBe("https://my-proxy.example")
+  })
+})
+
+describe("Notion API base URL validation", () => {
+  it("accepts known Notion API hosts and absolute proxy URLs", () => {
+    expect(normalizeNotionApiBaseUrl("https://api.notion.so", "test")).toBe(
+      "https://api.notion.so"
+    )
+    expect(normalizeNotionApiBaseUrl("https://api.notion.com", "test")).toBe(
+      "https://api.notion.com"
+    )
+    expect(normalizeNotionApiBaseUrl("https://api-dev.notion.com", "test")).toBe(
+      "https://api-dev.notion.com"
+    )
+    expect(normalizeNotionApiBaseUrl("https://api-stg.notion.com", "test")).toBe(
+      "https://api-stg.notion.com"
+    )
+    expect(normalizeNotionApiBaseUrl("http://localhost:8787", "test")).toBe(
+      "http://localhost:8787"
+    )
+    expect(
+      normalizeNotionApiBaseUrl("  https://proxy.example.test/notion  ", "test")
+    ).toBe("https://proxy.example.test/notion")
+  })
+
+  it("rejects malformed values without echoing the value", () => {
+    for (const value of [
+      "",
+      "   ",
+      "notion.internal.invalid",
+      "https:api.notion.so",
+      "ftp://notion.internal.invalid",
+      "http://[::1",
+    ]) {
+      expect(() => normalizeNotionApiBaseUrl(value, "LORE_NOTION_BASE_URL")).toThrow(
+        InvalidNotionBaseUrlError
+      )
+      try {
+        normalizeNotionApiBaseUrl(value, "LORE_NOTION_BASE_URL")
+      } catch (err) {
+        expect(err).toBeInstanceOf(InvalidNotionBaseUrlError)
+        expect((err as Error).message).toContain("LORE_NOTION_BASE_URL")
+        if (value.trim().length > 0) {
+          expect((err as Error).message).not.toContain(value)
+        }
+      }
+    }
+  })
+
+  it("resolves operator env with source attribution in priority order", () => {
+    expect(
+      resolveOperatorBaseUrlWithSource({
+        LORE_NOTION_BASE_URL: "https://lore.example",
+        NOTION_BASE_URL: "https://ntn.example",
+      })
+    ).toEqual({
+      baseUrl: "https://lore.example",
+      source: "LORE_NOTION_BASE_URL",
+    })
+
+    expect(resolveOperatorBaseUrlWithSource({ NOTION_ENV: "dev" })).toEqual({
+      baseUrl: "https://api-dev.notion.com",
+      source: "NOTION_ENV",
+    })
+  })
+
+  it("rejects invalid operator env instead of falling through to a lower source", () => {
+    expect(() =>
+      resolveOperatorBaseUrlWithSource({
+        LORE_NOTION_BASE_URL: "",
+        NOTION_BASE_URL: "https://api-dev.notion.com",
+      })
+    ).toThrow(/LORE_NOTION_BASE_URL/)
+
+    expect(() => resolveOperatorBaseUrlWithSource({ NOTION_ENV: "qa" })).toThrow(
+      /Set NOTION_ENV to "prod", "dev", or "stg"/
+    )
   })
 })
 

@@ -68,7 +68,7 @@ import {
   runNoArgInit,
 } from "./init.js"
 import { resolveAuth } from "../../config.js"
-import { verifyVaultAccess } from "../../auth/oauth.js"
+import { InvalidNotionBaseUrlError, verifyVaultAccess } from "../../auth/oauth.js"
 import {
   installNtn,
   isNtnInstalled,
@@ -658,6 +658,44 @@ describe("runNoArgInit", () => {
     expect(stderr).toContain("Unknown built-in profile")
   })
 
+  it("preserves invalid base-URL setup errors instead of entering ntn recovery", async () => {
+    setupTestCwd()
+    vi.mocked(resolveAuth).mockRejectedValue(
+      new InvalidNotionBaseUrlError(
+        "LORE_NOTION_BASE_URL",
+        "value is missing a URL protocol"
+      )
+    )
+
+    await expect(runNoArgInit({ yes: true })).rejects.toThrow(
+      /Invalid Notion API base URL from LORE_NOTION_BASE_URL/
+    )
+
+    expect(isNtnInstalled).not.toHaveBeenCalled()
+    expect(installNtn).not.toHaveBeenCalled()
+    expect(runNtnLogin).not.toHaveBeenCalled()
+    expect(VaultManager).not.toHaveBeenCalled()
+  })
+
+  it("preserves invalid NOTION_ENV setup errors instead of entering ntn recovery", async () => {
+    setupTestCwd()
+    vi.mocked(resolveAuth).mockRejectedValue(
+      new InvalidNotionBaseUrlError(
+        "NOTION_ENV",
+        'selector is not recognized; expected "prod", "dev", or "stg"'
+      )
+    )
+
+    await expect(runNoArgInit({ yes: true })).rejects.toThrow(
+      /Set NOTION_ENV to "prod", "dev", or "stg"/
+    )
+
+    expect(isNtnInstalled).not.toHaveBeenCalled()
+    expect(installNtn).not.toHaveBeenCalled()
+    expect(runNtnLogin).not.toHaveBeenCalled()
+    expect(VaultManager).not.toHaveBeenCalled()
+  })
+
   it("post-init output prints the issue #560 hook-disclosure block before Next steps", async () => {
     // The no-arg flow is the primary onboarding path for external
     // users (`lore init` with no page id). The disclosure must
@@ -850,6 +888,34 @@ describe("runNoArgInit", () => {
     expect(resolveAuth).toHaveBeenCalledTimes(2)
     const yaml = await readFile(join(cwd, ".lore.yaml"), "utf-8")
     expect(yaml).toContain("pageId: page-after-login")
+  })
+
+  it("preserves invalid base-URL setup errors after ntn login succeeds", async () => {
+    setupTestCwd()
+    vi.mocked(resolveAuth)
+      .mockRejectedValueOnce(new Error("No Notion auth configured."))
+      .mockRejectedValueOnce(
+        new InvalidNotionBaseUrlError(
+          "LORE_NOTION_BASE_URL",
+          "value is missing a URL protocol"
+        )
+      )
+    vi.mocked(isNtnInstalled).mockReturnValue(true)
+    vi.mocked(listNtnWorkspaces).mockResolvedValue([])
+    vi.mocked(runNtnLogin).mockResolvedValue({ kind: "success" })
+
+    await expect(runNoArgInit({ yes: true })).rejects.toThrow(
+      /Invalid Notion API base URL from LORE_NOTION_BASE_URL/
+    )
+
+    expect(resolveAuth).toHaveBeenCalledTimes(2)
+    expect(installNtn).not.toHaveBeenCalled()
+    expect(runNtnLogin).toHaveBeenCalledTimes(1)
+    expect(VaultManager).not.toHaveBeenCalled()
+    const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
+    expect(stderr).not.toContain(
+      "ntn login completed, but Lore could not resolve a token."
+    )
   })
 
   it("with no auth + --yes: skips prompts, invokes installNtn/runNtnLogin without confirmation", async () => {

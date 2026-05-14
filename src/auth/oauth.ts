@@ -20,6 +20,83 @@ const NTN_ENV_BASE_URLS: Record<NtnEnv, string> = {
   stg: "https://api-stg.notion.com",
 }
 
+const OPERATOR_BASE_URL_ENV_KEYS = [
+  "LORE_NOTION_BASE_URL",
+  "NOTION_BASE_URL",
+  "NOTION_API_BASE_URL",
+] as const
+
+export class InvalidNotionBaseUrlError extends Error {
+  constructor(source: string, reason: string) {
+    super(
+      `Invalid Notion API base URL from ${source}: ${reason}. ` +
+        invalidBaseUrlRecovery(source)
+    )
+    this.name = "InvalidNotionBaseUrlError"
+  }
+}
+
+function invalidBaseUrlRecovery(source: string): string {
+  if (source === "NOTION_ENV") {
+    return 'Set NOTION_ENV to "prod", "dev", or "stg", or unset it to use the default.'
+  }
+  if (source === "ntn config.json env") {
+    return 'Set ntn config.json env to "prod", "dev", or "stg", or remove it to use the default.'
+  }
+  if (source === "createClient baseUrl parameter") {
+    return (
+      "Pass an absolute http(s) URL such as https://api.notion.so, " +
+      "or omit the parameter to use the default."
+    )
+  }
+  return (
+    `Set ${source} to an absolute http(s) URL such as ` +
+    `https://api.notion.so, or unset it to use the default.`
+  )
+}
+
+export interface ResolvedNotionBaseUrl {
+  baseUrl: string
+  source: string
+}
+
+export function normalizeNotionApiBaseUrl(
+  value: string | undefined,
+  source: string
+): string | undefined {
+  if (value === undefined) return undefined
+
+  const trimmed = value.trim()
+  if (trimmed.length === 0) {
+    throw new InvalidNotionBaseUrlError(source, "value is empty or whitespace-only")
+  }
+
+  const protocolMatch = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(trimmed)
+  if (!protocolMatch) {
+    throw new InvalidNotionBaseUrlError(source, "value is missing a URL protocol")
+  }
+
+  const protocol = protocolMatch[1]!.toLowerCase()
+  if (protocol !== "http" && protocol !== "https") {
+    throw new InvalidNotionBaseUrlError(source, "value uses a non-http URL protocol")
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    throw new InvalidNotionBaseUrlError(source, "value is missing a URL authority")
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    throw new InvalidNotionBaseUrlError(source, "value is malformed")
+  }
+  if (!parsed.hostname) {
+    throw new InvalidNotionBaseUrlError(source, "value is missing a URL host")
+  }
+
+  return trimmed
+}
+
 /**
  * Map a `NOTION_ENV` selector to its canonical base URL. Returns
  * `undefined` for unrecognized values (including empty string) so
@@ -117,6 +194,43 @@ export function resolveOperatorBaseUrl(
   )
 }
 
+export function resolveOperatorBaseUrlWithSource(
+  envSource: NodeJS.ProcessEnv = process.env
+): ResolvedNotionBaseUrl | undefined {
+  for (const key of OPERATOR_BASE_URL_ENV_KEYS) {
+    const value = envSource[key]
+    if (value === undefined) continue
+    return {
+      baseUrl: normalizeNotionApiBaseUrl(value, key)!,
+      source: key,
+    }
+  }
+
+  const ntnEnv = envSource["NOTION_ENV"]
+  if (ntnEnv !== undefined) {
+    const trimmed = ntnEnv.trim()
+    if (trimmed.length === 0) {
+      throw new InvalidNotionBaseUrlError(
+        "NOTION_ENV",
+        'selector is empty; expected "prod", "dev", or "stg"'
+      )
+    }
+    const mapped = ntnEnvBaseUrl(trimmed)
+    if (!mapped) {
+      throw new InvalidNotionBaseUrlError(
+        "NOTION_ENV",
+        'selector is not recognized; expected "prod", "dev", or "stg"'
+      )
+    }
+    return {
+      baseUrl: normalizeNotionApiBaseUrl(mapped, "NOTION_ENV")!,
+      source: "NOTION_ENV",
+    }
+  }
+
+  return undefined
+}
+
 /**
  * Resolve the Notion API base URL with a prod default.
  *
@@ -125,7 +239,7 @@ export function resolveOperatorBaseUrl(
  * `"https://api.dev.notion.com"`).
  */
 export function getBaseUrl(): string {
-  return resolveOperatorBaseUrl() ?? "https://api.notion.so"
+  return resolveOperatorBaseUrlWithSource()?.baseUrl ?? "https://api.notion.so"
 }
 
 // ---------------------------------------------------------------------------

@@ -81,17 +81,19 @@ Operators who want to bypass the on-disk read entirely set
 the highest-priority source.
 
 The `auth.json` shape is undocumented but stable across the `ntn`
-versions Lore supports (`MIN_NTN_VERSION` onward). No failure mode
-throws. The reader returns null on every failure path, but emits a
-stderr hint only on recoverable mismatches the operator can act on:
-malformed JSON, unexpected root type, unknown requested workspace,
-and ambiguous multi-workspace selection. The missing-file and
-empty-workspace paths return null silently so `resolveAuth` can fall
-through to a consolidated auth recovery message. Callers pass
-`quiet: true` to suppress every hint. Future shape changes are handled
-by bumping `MIN_NTN_VERSION` and updating the reader; future
-contributors should NOT reintroduce a "temporary" framing or wait on
-an export command that isn't coming.
+versions Lore supports (`MIN_NTN_VERSION` onward). Auth.json read
+failure modes do not throw. The reader returns null for those paths,
+but emits a stderr hint only on recoverable mismatches the operator can
+act on: malformed JSON, unexpected root type, unknown requested
+workspace, and ambiguous multi-workspace selection. The missing-file
+and empty-workspace paths return null silently so `resolveAuth` can
+fall through to a consolidated auth recovery message. Invalid resolved
+Notion API base URLs are the exception: they throw a targeted setup
+error after token selection so the SDK never receives a malformed host.
+Callers pass `quiet: true` to suppress every auth.json hint. Future
+shape changes are handled by bumping `MIN_NTN_VERSION` and updating the
+reader; future contributors should NOT reintroduce a "temporary"
+framing or wait on an export command that isn't coming.
 
 ## ntn version policy
 

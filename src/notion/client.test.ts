@@ -1,13 +1,22 @@
 import { APIErrorCode, APIResponseError, LogLevel } from "@notionhq/client"
 import type { Client } from "@notionhq/client"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createAuthRefreshingClient,
+  createClient,
   resolveSdkDebugOptions,
   stderrSdkLogger,
   wrapWithRunToolEnvelopeNormalizer,
 } from "./client.js"
 import { createLimitedClient } from "./rate-limit.js"
+
+beforeEach(() => {
+  delete process.env["LORE_NOTION_BASE_URL"]
+})
+
+afterEach(() => {
+  delete process.env["LORE_NOTION_BASE_URL"]
+})
 
 describe("resolveSdkDebugOptions", () => {
   it("returns null when LORE_DEBUG is unset so the SDK keeps its default LogLevel.WARN", () => {
@@ -306,6 +315,26 @@ describe("stderrSdkLogger", () => {
     stderrSpy.mockRestore()
 
     expect(stderrChunks).toEqual(["[lore] notion-sdk warn: hello\n"])
+  })
+})
+
+describe("createClient", () => {
+  it("accepts a valid explicit baseUrl without making a request", () => {
+    expect(createClient("token", "https://api-dev.notion.com")).toBeDefined()
+  })
+
+  it("rejects an invalid explicit baseUrl before the SDK sees it", () => {
+    expect(() => createClient("token", "api.notion.so")).toThrow(
+      /Invalid Notion API base URL from createClient baseUrl parameter/
+    )
+  })
+
+  it("rejects an invalid LORE_NOTION_BASE_URL fallback before the SDK sees it", () => {
+    process.env["LORE_NOTION_BASE_URL"] = "api.notion.so"
+
+    expect(() => createClient("token")).toThrow(
+      /Invalid Notion API base URL from LORE_NOTION_BASE_URL/
+    )
   })
 })
 

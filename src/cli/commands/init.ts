@@ -7,7 +7,12 @@ import { createClient } from "../../notion/client.js"
 import { createLimitedClient } from "../../notion/rate-limit.js"
 import { VaultManager } from "../../core/vault.js"
 import { resolveAuth, type ResolvedAuth } from "../../config.js"
-import { ntnEnvBaseUrl, ntnEnvFromBaseUrl, verifyVaultAccess } from "../../auth/oauth.js"
+import {
+  InvalidNotionBaseUrlError,
+  ntnEnvBaseUrl,
+  ntnEnvFromBaseUrl,
+  verifyVaultAccess,
+} from "../../auth/oauth.js"
 import {
   installNtn,
   isNtnInstalled,
@@ -174,15 +179,15 @@ export function defaultVaultTitle(cwd: string): string {
 
 /**
  * Best-effort `resolveAuth` wrapper that converts the throw-on-no-source
- * shape into a `null` return. The no-arg init flow uses the null path to
- * branch into the ntn-install / ntn-login interactive recovery; bubbling
- * the throw would skip the recovery and force operators back to the
- * shell.
+ * shape into a `null` return. Targeted setup errors still bubble so
+ * operators see the offending source rather than being routed through
+ * unrelated ntn install/login recovery.
  */
 async function tryResolveAuth(cwd: string): Promise<ResolvedAuth | null> {
   try {
     return await resolveAuth(undefined, cwd)
-  } catch {
+  } catch (err) {
+    if (err instanceof InvalidNotionBaseUrlError) throw err
     return null
   }
 }

@@ -11,17 +11,19 @@
  * which `resolveAuth` honors as the highest-priority source.
  *
  * The file format is undocumented but has been stable across the
- * `ntn` versions Lore supports (`MIN_NTN_VERSION` onward). No failure
- * mode throws. The reader returns null on every failure path, but
- * emits a stderr hint only on recoverable mismatches the operator can
- * act on: malformed JSON, unexpected root type, unknown requested
- * workspace, and ambiguous multi-workspace selection. The missing-file
- * and empty-workspace paths return null silently so `resolveAuth` can
- * continue to its final recovery message without duplicate noise.
- * Callers pass `quiet: true` to suppress every hint and surface one
- * consolidated error at the call site. A future ntn shape change is
- * handled by bumping `MIN_NTN_VERSION` and teaching the reader the
- * new shape.
+ * `ntn` versions Lore supports (`MIN_NTN_VERSION` onward). Auth.json
+ * read failures return null rather than throwing, but an invalid
+ * operator-selected API base URL throws a targeted setup error after
+ * token selection so the SDK never receives a malformed host. The
+ * reader emits a stderr hint only on recoverable auth.json mismatches
+ * the operator can act on: malformed JSON, unexpected root type,
+ * unknown requested workspace, and ambiguous multi-workspace selection.
+ * The missing-file and empty-workspace paths return null silently so
+ * `resolveAuth` can continue to its final recovery message without
+ * duplicate noise. Callers pass `quiet: true` to suppress every hint
+ * and surface one consolidated error at the call site. A future ntn
+ * shape change is handled by bumping `MIN_NTN_VERSION` and teaching
+ * the reader the new shape.
  */
 
 import { execFileSync, spawn } from "node:child_process"
@@ -143,10 +145,12 @@ export async function loadNtnToken(
     return null
   }
 
+  const resolvedBaseUrl = await resolveNtnBaseUrl()
+
   return {
     token: pick[1],
     workspaceId: pick[0],
-    baseUrl: await resolveNtnBaseUrl(),
+    baseUrl: resolvedBaseUrl?.baseUrl,
   }
 }
 
@@ -240,7 +244,7 @@ function ntnAuthJsonPath(): string {
  * Priority order:
  *   1. Operator env override (`LORE_NOTION_BASE_URL` →
  *      `NOTION_BASE_URL` → `NOTION_API_BASE_URL`, see
- *      `resolveOperatorBaseUrl`).
+ *      `resolveOperatorBaseUrlWithSource`).
  *   2. ntn's ~/.config/notion/config.json `env` field
  *      (`prod`/`dev`/`stg`) mapped to the canonical host.
  *   3. `undefined` — the SDK applies its prod default.
@@ -251,21 +255,37 @@ function ntnAuthJsonPath(): string {
  * deterministic override set `LORE_NOTION_BASE_URL` rather than
  * relying on the config.json read.
  */
-async function resolveNtnBaseUrl(): Promise<string | undefined> {
-  const { resolveOperatorBaseUrl, ntnEnvBaseUrl } = await import("./oauth.js")
-  const fromEnv = resolveOperatorBaseUrl()
-  if (fromEnv) return fromEnv
+async function resolveNtnBaseUrl(): Promise<{ baseUrl: string } | undefined> {
+  const {
+    InvalidNotionBaseUrlError,
+    normalizeNotionApiBaseUrl,
+    ntnEnvBaseUrl,
+    resolveOperatorBaseUrlWithSource,
+  } = await import("./oauth.js")
+  const fromEnv = resolveOperatorBaseUrlWithSource()
+  if (fromEnv) return { baseUrl: fromEnv.baseUrl }
   const configPath = ntnAuthJsonPath().replace(/auth\.json$/, "config.json")
   try {
     const raw = await readFile(configPath, "utf-8")
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    const env = typeof parsed["env"] === "string" ? parsed["env"] : "prod"
+    const env = typeof parsed["env"] === "string" ? parsed["env"].trim() : "prod"
     // Share the ntn-env → URL mapping table with the oauth module
     // so the canonical URLs land in one place. Returning `undefined`
     // for `prod` is intentional: prod is the SDK default, no
     // override needed.
-    return env === "prod" ? undefined : ntnEnvBaseUrl(env)
-  } catch {
+    if (env === "prod") return undefined
+    const baseUrl = ntnEnvBaseUrl(env)
+    if (!baseUrl) {
+      throw new InvalidNotionBaseUrlError(
+        "ntn config.json env",
+        'selector is not recognized; expected "prod", "dev", or "stg"'
+      )
+    }
+    return {
+      baseUrl: normalizeNotionApiBaseUrl(baseUrl, "ntn config.json env")!,
+    }
+  } catch (err) {
+    if (err instanceof InvalidNotionBaseUrlError) throw err
     return undefined
   }
 }

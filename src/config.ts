@@ -360,10 +360,11 @@ export async function resolveAuth(
   // repo config is intentionally ignored here.
   const fromApiTokenEnv = process.env["NOTION_API_TOKEN"]
   if (fromApiTokenEnv) {
-    const { resolveOperatorBaseUrl } = await import("./auth/oauth.js")
+    const { resolveOperatorBaseUrlWithSource } = await import("./auth/oauth.js")
+    const resolvedBaseUrl = resolveOperatorBaseUrlWithSource()
     return {
       token: fromApiTokenEnv,
-      baseUrl: resolveOperatorBaseUrl(),
+      baseUrl: resolvedBaseUrl?.baseUrl,
       source: "env-notion-api-token",
     }
   }

@@ -88,6 +88,9 @@ afterEach(() => {
   vi.restoreAllMocks()
   delete process.env["XDG_CONFIG_HOME"]
   delete process.env["LORE_NOTION_BASE_URL"]
+  delete process.env["NOTION_BASE_URL"]
+  delete process.env["NOTION_API_BASE_URL"]
+  delete process.env["NOTION_ENV"]
   delete process.env["NTN_INSTALL_DIR"]
   spawnMock.mockReset()
   execFileSyncMock.mockReset()
@@ -242,6 +245,16 @@ describe("loadNtnToken", () => {
     })
   })
 
+  it("rejects invalid env baseUrl overrides after selecting the auth.json token", async () => {
+    setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
+    process.env["LORE_NOTION_BASE_URL"] = "api.notion.so"
+
+    await expect(loadNtnToken()).rejects.toThrow(
+      /Invalid Notion API base URL from LORE_NOTION_BASE_URL/
+    )
+    expect(stderrText()).not.toContain("tok-1")
+  })
+
   it("resolves baseUrl from ntn config.json env=dev", async () => {
     const xdg = setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
     writeFileSync(join(xdg, "notion", "config.json"), JSON.stringify({ env: "dev" }), {
@@ -255,7 +268,20 @@ describe("loadNtnToken", () => {
     })
   })
 
-  it("falls through to undefined baseUrl on missing or unknown config.json env", async () => {
+  it("rejects unknown ntn config.json env with source-attributed setup error", async () => {
+    const xdg = setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
+    writeFileSync(join(xdg, "notion", "config.json"), JSON.stringify({ env: "qa" }), {
+      mode: 0o600,
+    })
+
+    await expect(loadNtnToken()).rejects.toThrow(
+      /Invalid Notion API base URL from ntn config\.json env/
+    )
+    await expect(loadNtnToken()).rejects.toThrow(/Set ntn config\.json env/)
+    expect(stderrText()).not.toContain("tok-1")
+  })
+
+  it("falls through to undefined baseUrl on prod config.json env", async () => {
     const xdg = setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
     writeFileSync(join(xdg, "notion", "config.json"), JSON.stringify({ env: "prod" }), {
       mode: 0o600,

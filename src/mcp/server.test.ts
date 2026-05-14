@@ -89,6 +89,7 @@ vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
 }))
 
 import { startServer } from "./server.js"
+import { InvalidNotionBaseUrlError } from "../auth/oauth.js"
 
 const DIAGNOSTIC_TOOL_NAMES = [
   "lore-context",
@@ -309,6 +310,37 @@ describe("startServer", () => {
       expect(frameMatches.length).toBeGreaterThanOrEqual(2)
       expect(stderr).toHaveBeenCalledWith(
         expect.stringContaining("Caused by: TypeError: Invalid URL")
+      )
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("surfaces invalid base URL diagnostics with source-specific recovery", async () => {
+    mocks.initServices.mockRejectedValue(
+      new InvalidNotionBaseUrlError(
+        "LORE_NOTION_BASE_URL",
+        "value is missing a URL protocol"
+      )
+    )
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+    try {
+      await startServer()
+
+      const text =
+        (
+          await mocks.servers[0]!.tools.get("lore-context")!.handler({
+            action: "status",
+          })
+        ).content[0]?.text ?? ""
+      expect(text).toContain("InvalidNotionBaseUrlError")
+      expect(text).toContain("LORE_NOTION_BASE_URL")
+      expect(text).toContain("absolute http(s) URL")
+      expect(text).toContain("fix or unset the named base-URL environment variable")
+      expect(text).not.toContain("TypeError: Invalid URL")
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringContaining("InvalidNotionBaseUrlError")
       )
     } finally {
       stderr.mockRestore()
