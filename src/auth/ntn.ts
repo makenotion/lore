@@ -311,18 +311,223 @@ let cachedVersion: string | null | undefined = undefined
 export const MIN_NTN_VERSION = "0.12.0"
 
 /**
- * The canonical install command `ntn` itself recommends when asked
- * to self-update on a package-manager install (per the binary's own
- * error message: "reinstall with `curl -fsSL https://ntn.dev | bash`").
- * Lore uses this for the auto-install path across `lore install`,
- * `lore init` no-arg, and `lore auth --login`
- * when the operator opts in.
- *
- * Hardcoded constant — no string concatenation, no user-controlled
- * interpolation. Confirmed by `installNtn` test that asserts the
- * spawn command argument equals this constant exactly.
+ * Release Lore installs when ntn is missing. The installer pins both
+ * the release URL and the per-platform archive hash in this module so
+ * a Lore package upgrade is the authority boundary for a new ntn
+ * binary.
  */
-export const NTN_INSTALL_COMMAND = "curl -fsSL https://ntn.dev | bash"
+export const NTN_INSTALL_VERSION = "v0.13.2"
+
+export const NTN_INSTALL_BASE_URL = "https://ntn.dev"
+
+export const NTN_VERIFIED_INSTALL_DESCRIPTION =
+  `ntn ${NTN_INSTALL_VERSION} from ` +
+  `${NTN_INSTALL_BASE_URL}/releases/${NTN_INSTALL_VERSION} ` +
+  "(sha256 pinned by Lore)"
+
+/**
+ * Operator-driven fallback command from ntn's upstream installer
+ * surface. Lore's auto-install path uses `installNtn()` instead,
+ * which verifies the release archive against the hashes below.
+ */
+export const NTN_MANUAL_INSTALL_COMMAND = "curl -fsSL https://ntn.dev | bash"
+
+/**
+ * Compatibility alias for consumers that import Lore's manual install
+ * string. CLI code should prefer `NTN_MANUAL_INSTALL_COMMAND` when
+ * it is specifically printing the upstream fallback.
+ *
+ * @deprecated Use `NTN_MANUAL_INSTALL_COMMAND` for manual fallback
+ * copy. `installNtn()` uses Lore's verified installer.
+ */
+export const NTN_INSTALL_COMMAND = NTN_MANUAL_INSTALL_COMMAND
+
+export const NTN_INSTALL_ARCHIVE_SHA256 = {
+  "aarch64-apple-darwin":
+    "40ce5ed7490f9371bc52a28918723f5c2010bf7d9b7a7b30273d8b63b30d5054",
+  "x86_64-apple-darwin":
+    "18dd6f6c289d24f6ef609160923d4ca02f66ea46910b45feae44a028096d7254",
+  "x86_64-unknown-linux-musl":
+    "44bbcf91e113bd33ef5275d1ee45160f4463bddae53beaeb381273f797d349c9",
+  "aarch64-unknown-linux-musl":
+    "21c6b57dd7e7dbf8bd653191b3b8c0c0142042c24939ebab46048a7b9f22e2e7",
+} as const
+
+function buildPinnedChecksumCases(): string {
+  return Object.entries(NTN_INSTALL_ARCHIVE_SHA256)
+    .map(([target, checksum]) => `  ${target}) printf '%s\\n' "${checksum}" ;;`)
+    .join("\n")
+}
+
+const VERIFIED_NTN_INSTALL_SCRIPT = `set -euo pipefail
+
+readonly BASE_URL="${NTN_INSTALL_BASE_URL}"
+readonly VERSION="${NTN_INSTALL_VERSION}"
+readonly INSTALL_DIR="\${NTN_INSTALL_DIR:-/usr/local/bin}"
+
+function info() {
+  printf '==> %s\\n' "$*" >&2
+}
+
+function fail() {
+  printf 'error: %s\\n' "$*" >&2
+  exit 1
+}
+
+function require_command() {
+  local command_name="$1"
+  command -v "$command_name" >/dev/null 2>&1 || fail "Missing required command: \${command_name}"
+}
+
+function detect_downloader() {
+  if command -v curl >/dev/null 2>&1; then
+    DOWNLOADER="curl"
+  elif command -v wget >/dev/null 2>&1; then
+    DOWNLOADER="wget"
+  else
+    fail "Either curl or wget is required but neither is installed"
+  fi
+}
+
+function download() {
+  local url="$1"
+  local output="$2"
+
+  if [[ "\${DOWNLOADER}" == "curl" ]]; then
+    curl --proto '=https' --tlsv1.2 -fsSL -o "\${output}" "\${url}"
+  else
+    wget -q -O "\${output}" "\${url}"
+  fi
+}
+
+function detect_target() {
+  local os
+  local arch
+
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  if [[ "\${os}" == "Darwin" && "\${arch}" == "x86_64" ]]; then
+    if [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" == "1" ]]; then
+      arch="arm64"
+    fi
+  fi
+
+  case "\${os}" in
+  MINGW* | MSYS* | CYGWIN*)
+    fail "ntn does not currently support Windows"
+    ;;
+  esac
+
+  case "\${os}:\${arch}" in
+  Darwin:arm64 | Darwin:aarch64)
+    NTN_TARGET="aarch64-apple-darwin"
+    NTN_PLATFORM_LABEL="darwin-arm64"
+    ;;
+  Darwin:x86_64)
+    NTN_TARGET="x86_64-apple-darwin"
+    NTN_PLATFORM_LABEL="darwin-x64"
+    ;;
+  Linux:x86_64)
+    NTN_TARGET="x86_64-unknown-linux-musl"
+    NTN_PLATFORM_LABEL="linux-x64"
+    ;;
+  Linux:arm64 | Linux:aarch64)
+    NTN_TARGET="aarch64-unknown-linux-musl"
+    NTN_PLATFORM_LABEL="linux-arm64"
+    ;;
+  *)
+    fail "ntn does not support \${os} \${arch}"
+    ;;
+  esac
+}
+
+function expected_sha256() {
+  case "$1" in
+${buildPinnedChecksumCases()}
+  *) fail "Lore does not ship a checksum for target $1" ;;
+  esac
+}
+
+function file_sha256() {
+  local file="$1"
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "\${file}" | {
+      read -r checksum _
+      printf '%s\\n' "\${checksum}"
+    }
+    return
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "\${file}" | {
+      read -r checksum _
+      printf '%s\\n' "\${checksum}"
+    }
+    return
+  fi
+
+  fail "No checksum tool found (need shasum or sha256sum)"
+}
+
+function install_binary() {
+  local binary_path="$1"
+  local destination_path="\${INSTALL_DIR}/ntn"
+
+  if mkdir -p "\${INSTALL_DIR}" 2>/dev/null && install -m 0755 "\${binary_path}" "\${destination_path}" 2>/dev/null; then
+    return
+  fi
+
+  command -v sudo >/dev/null 2>&1 || fail "Cannot write to \${INSTALL_DIR}; re-run with sudo or set NTN_INSTALL_DIR"
+
+  sudo mkdir -p "\${INSTALL_DIR}"
+  sudo install -m 0755 "\${binary_path}" "\${destination_path}"
+}
+
+detect_downloader
+require_command tar
+require_command uname
+require_command mktemp
+require_command install
+
+detect_target
+EXPECTED_SHA256="$(expected_sha256 "\${NTN_TARGET}")"
+readonly EXPECTED_SHA256
+
+readonly ARCHIVE_NAME="ntn-\${NTN_TARGET}.tar.gz"
+readonly ARCHIVE_URL="\${BASE_URL}/releases/\${VERSION}/\${ARCHIVE_NAME}"
+
+TMP_DIR="$(mktemp -d)"
+readonly TMP_DIR
+trap 'rm -rf "\${TMP_DIR}"' EXIT
+
+ARCHIVE_PATH="\${TMP_DIR}/\${ARCHIVE_NAME}"
+readonly ARCHIVE_PATH
+
+info "Downloading \${VERSION} for \${NTN_PLATFORM_LABEL}"
+if ! download "\${ARCHIVE_URL}" "\${ARCHIVE_PATH}"; then
+  rm -f "\${ARCHIVE_PATH}"
+  fail "Failed to download \${ARCHIVE_URL}"
+fi
+
+ACTUAL_SHA256="$(file_sha256 "\${ARCHIVE_PATH}")"
+readonly ACTUAL_SHA256
+if [[ "\${ACTUAL_SHA256}" != "\${EXPECTED_SHA256}" ]]; then
+  rm -f "\${ARCHIVE_PATH}"
+  fail "Checksum verification failed for \${ARCHIVE_NAME}: expected \${EXPECTED_SHA256}, got \${ACTUAL_SHA256}"
+fi
+
+tar -xzf "\${ARCHIVE_PATH}" -C "\${TMP_DIR}"
+
+BINARY_PATH="\${TMP_DIR}/ntn-\${NTN_TARGET}/ntn"
+readonly BINARY_PATH
+[[ -f "\${BINARY_PATH}" ]] || fail "Downloaded archive did not contain an ntn binary"
+
+install_binary "\${BINARY_PATH}"
+
+printf 'Installed ntn %s to %s/ntn\\n' "\${VERSION}" "\${INSTALL_DIR}" >&2
+`
 
 /**
  * Read the installed ntn version. Returns the parsed SemVer string
@@ -529,30 +734,25 @@ export type NtnInstallResult =
   | { kind: "spawn-error"; error: unknown }
 
 /**
- * Install `ntn` via the canonical command Lore knows about
- * (`NTN_INSTALL_COMMAND`).
+ * Install `ntn` from the Lore-pinned release archive.
  *
  * Inherits stdio so the operator sees the install progress and can
  * interrupt if needed. Blocks until completion. Sets
  * `NOTION_KEYRING=0` in the spawn env for parity with `runNtnLogin`
- * — if the install script chains into a first-run ntn invocation,
- * that invocation also targets file mode. Most `curl ... | bash`
- * installers don't auto-run the binary, but the env-forcing is
- * cheap defense in depth.
+ * — if a platform-specific package hook chains into a first-run ntn
+ * invocation, that invocation also targets file mode.
  *
  * **Spawn env is scrubbed to an allowlist** rather than inheriting
- * the full `process.env`. The remote installer at `https://ntn.dev`
- * has no business reading `NOTION_API_TOKEN`, `GITHUB_TOKEN`, npm
- * credentials, or any other token-bearing
- * variables that happen to live in the operator's shell. The
- * allowlist (`buildInstallNtnEnv`) covers what the install script
- * actually needs: shell + locale + proxy + `HOME`/`PATH`/`USER`/
- * temp-dir variables, plus `NOTION_KEYRING=0`.
+ * the full `process.env`. The install process has no business
+ * reading `NOTION_API_TOKEN`, `GITHUB_TOKEN`, npm credentials, or
+ * any other token-bearing variables that happen to live in the
+ * operator's shell. The allowlist (`buildInstallNtnEnv`) covers what
+ * the installer actually needs: shell + locale + proxy +
+ * `HOME`/`PATH`/`USER`/temp-dir variables, optional
+ * `NTN_INSTALL_DIR`, plus `NOTION_KEYRING=0`.
  *
  * The function does NOT prompt for confirmation. Consumers must
- * confirm with the operator before calling — auto-installing
- * without explicit consent would surprise operators with a
- * curl-pipe-bash they didn't authorize.
+ * confirm with the operator before calling.
  *
  * On success, drops the `isNtnInstalled` / `getNtnVersion` probe
  * cache so a follow-up probe in the same process sees the freshly
@@ -561,12 +761,9 @@ export type NtnInstallResult =
 export async function installNtn(): Promise<NtnInstallResult> {
   return new Promise((resolve) => {
     try {
-      // Run via shell so the curl-pipe-bash composition resolves.
-      // shell: true is intentional and acceptable here — the command
-      // is a hardcoded constant, not user-controlled input.
-      const child = spawn(NTN_INSTALL_COMMAND, {
+      const child = spawn("bash", ["-c", VERIFIED_NTN_INSTALL_SCRIPT], {
         stdio: "inherit",
-        shell: true,
+        shell: false,
         env: buildInstallNtnEnv(),
       })
       child.on("error", (error) => resolve({ kind: "spawn-error", error }))
@@ -597,11 +794,7 @@ export async function installNtn(): Promise<NtnInstallResult> {
  *   `COLORTERM`
  * - Proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (lower- and
  *   upper-case variants)
- *
- * Verified against ntn's own `https://ntn.dev` installer needs: it's
- * a `curl ... | bash` script, so it needs the shell + path + proxy
- * vars to fetch; it does not need any Notion / Lore / git / npm
- * credentials.
+ * - Install location: `NTN_INSTALL_DIR`
  */
 const INSTALL_NTN_ENV_ALLOWLIST: ReadonlyArray<string> = [
   "HOME",
@@ -624,6 +817,7 @@ const INSTALL_NTN_ENV_ALLOWLIST: ReadonlyArray<string> = [
   "http_proxy",
   "https_proxy",
   "no_proxy",
+  "NTN_INSTALL_DIR",
 ]
 
 /**

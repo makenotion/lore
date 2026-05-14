@@ -14,7 +14,8 @@ import {
   listNtnWorkspaces,
   parseNtnEnv,
   runNtnLogin,
-  NTN_INSTALL_COMMAND,
+  NTN_MANUAL_INSTALL_COMMAND,
+  NTN_VERIFIED_INSTALL_DESCRIPTION,
   type NtnEnv,
 } from "../../auth/ntn.js"
 import type { LoreConfig } from "../../types.js"
@@ -542,13 +543,13 @@ export async function runNoArgInit(opts: {
 
     if (!ntnInstalled) {
       console.log("ntn is not installed.")
-      console.log("Lore can install it via the canonical command:")
-      console.log(`  ${NTN_INSTALL_COMMAND}`)
+      console.log("Lore can install it using a verified release archive:")
+      console.log(`  ${NTN_VERIFIED_INSTALL_DESCRIPTION}`)
       console.log("")
       const ok = await confirmPrompt("Install ntn now? [Y/n] ", yesFlag)
       if (!ok) {
         console.error("ntn is required for `lore init`. Install manually:")
-        console.error(`  ${NTN_INSTALL_COMMAND}`)
+        console.error(`  ${NTN_MANUAL_INSTALL_COMMAND}`)
         console.error("Then re-run `lore init`.")
         process.exit(1)
         return

@@ -40,7 +40,8 @@ import {
   isNtnInstalled,
   MIN_NTN_VERSION,
   type NtnEnv,
-  NTN_INSTALL_COMMAND,
+  NTN_MANUAL_INSTALL_COMMAND,
+  NTN_VERIFIED_INSTALL_DESCRIPTION,
   parseNtnEnv,
   runNtnLogin,
 } from "../../auth/ntn.js"
@@ -2088,8 +2089,8 @@ function printPatIntegrationTokenPreflightHint(): void {
  * Three probes:
  *   1. **ntn installed**: probes via `isNtnInstalled` (memoized
  *      `execFileSync ntn --version`). On miss, offers
- *      `installNtn()` (curl-pipe-bash via the canonical
- *      `NTN_INSTALL_COMMAND`); operator must confirm explicitly.
+ *      `installNtn()` (verified release archive with Lore-pinned
+ *      sha256); operator must confirm explicitly.
  *   2. **ntn version**: non-blocking warning when
  *      `checkNtnVersion()` returns `"too-old"`. Lore never
  *      auto-upgrades — operators pin ntn versions for other tooling
@@ -2393,13 +2394,13 @@ export async function ensurePrerequisites(
   if (!ntnInstalled) {
     console.log("")
     console.log("    ntn is required for the --ntn install path.")
-    console.log("    Lore can install it via the canonical command:")
-    console.log(`      ${NTN_INSTALL_COMMAND}`)
+    console.log("    Lore can install it using a verified release archive:")
+    console.log(`      ${NTN_VERIFIED_INSTALL_DESCRIPTION}`)
     console.log("")
     const ok = opts.yes ?? (await confirmPrompt("    Install ntn now? [Y/n] "))
     if (!ok) {
       console.log("    Skipping install. Re-run after installing ntn manually:")
-      console.log(`      ${NTN_INSTALL_COMMAND}`)
+      console.log(`      ${NTN_MANUAL_INSTALL_COMMAND}`)
       return { ready: false }
     }
     const installResult = await installNtn()

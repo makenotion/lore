@@ -3,8 +3,9 @@
  *
  * Surfaces:
  *   --status   Show authentication status (default; runs vault preflight)
- *   --login    Auto-install ntn (if missing), shell out to `ntn login`,
- *              and run a post-login `verifyVaultAccess` preflight.
+ *   --login    Auto-install a verified ntn release (if missing), shell
+ *              out to `ntn login`, and run a post-login
+ *              `verifyVaultAccess` preflight.
  *   --whoami   Resolve the active token and print the bot identity from
  *              `users.me` on a single line (script-friendly).
  *   --logout   Print source-specific logout instructions (informational
@@ -30,7 +31,8 @@ import {
   listNtnWorkspaces,
   MIN_NTN_VERSION,
   type NtnEnv,
-  NTN_INSTALL_COMMAND,
+  NTN_MANUAL_INSTALL_COMMAND,
+  NTN_VERIFIED_INSTALL_DESCRIPTION,
   parseNtnEnv,
   resetNtnProbeCache,
   runNtnLogin,
@@ -402,22 +404,24 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
       console.error(
         "ntn is not installed and `lore auth --login` is running in a non-interactive context."
       )
-      console.error("Pass --yes to consent to the canonical install non-interactively:")
-      console.error(`  ${NTN_INSTALL_COMMAND}`)
+      console.error(
+        "Pass --yes to consent to the verified ntn install non-interactively:"
+      )
+      console.error(`  ${NTN_VERIFIED_INSTALL_DESCRIPTION}`)
       process.exit(1)
       return
     }
 
     console.log("ntn is not installed.")
     console.log("")
-    console.log("Lore can install it for you using the canonical path:")
-    console.log(`  ${NTN_INSTALL_COMMAND}`)
+    console.log("Lore can install it for you using a verified release archive:")
+    console.log(`  ${NTN_VERIFIED_INSTALL_DESCRIPTION}`)
     console.log("")
 
     const okToInstall = opts.yes || (await confirmPrompt("Install ntn now?"))
     if (!okToInstall) {
       console.error("ntn is required for `lore auth --login`. Install manually:")
-      console.error(`  ${NTN_INSTALL_COMMAND}`)
+      console.error(`  ${NTN_MANUAL_INSTALL_COMMAND}`)
       process.exit(1)
       return
     }
@@ -508,12 +512,10 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
         if (opts.yes || process.stdin.isTTY) {
           const reinstall =
             opts.yes ||
-            (await confirmPrompt(
-              "Re-install ntn now via the canonical curl-pipe-bash path?"
-            ))
+            (await confirmPrompt("Re-install ntn now using Lore's verified installer?"))
           if (reinstall) {
             console.error("")
-            console.error(`Re-installing via: ${NTN_INSTALL_COMMAND}`)
+            console.error(`Re-installing: ${NTN_VERIFIED_INSTALL_DESCRIPTION}`)
             const installResult = await installNtn()
             if (installResult.kind === "success") {
               // No checkmark — the current `--login` invocation
@@ -527,19 +529,19 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
               console.error(
                 "ntn re-install failed. Install manually and re-run `lore auth --login`:"
               )
-              console.error(`  ${NTN_INSTALL_COMMAND}`)
+              console.error(`  ${NTN_MANUAL_INSTALL_COMMAND}`)
             }
             process.exit(1)
             return
           }
         }
-        console.error(`  Manual re-install: ${NTN_INSTALL_COMMAND}`)
+        console.error(`  Manual re-install: ${NTN_MANUAL_INSTALL_COMMAND}`)
         console.error("  Then re-run `lore auth --login`.")
         if (!opts.yes && !process.stdin.isTTY) {
           // Mirror the install-from-missing branch's hint so a script
           // consumer hitting this in CI sees the auto-recovery option.
           console.error(
-            "  Pass --yes (next run) to consent to the canonical re-install non-interactively."
+            "  Pass --yes (next run) to consent to the verified re-install non-interactively."
           )
         }
       } else {

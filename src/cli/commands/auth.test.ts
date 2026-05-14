@@ -883,7 +883,7 @@ describe("runLogin", () => {
     // from exit-non-zero; surfaces 'ntn not found on PATH' and offers
     // re-install if appropriate."
     expect(stderrText()).toContain("`ntn` does not appear to be on PATH")
-    expect(stderrText()).toContain("Re-installing via:")
+    expect(stderrText()).toContain("Re-installing: ntn v0.13.2")
     expect(ntnMocks.installNtn).toHaveBeenCalledTimes(1)
     // Re-install success copy is phrased as the next step (not as a
     // success of the current --login invocation) — pin both the
@@ -917,7 +917,7 @@ describe("runLogin", () => {
     // this knows about the auto-recovery option, mirroring the
     // install-from-missing branch's hint.
     expect(stderrText()).toContain(
-      "Pass --yes (next run) to consent to the canonical re-install"
+      "Pass --yes (next run) to consent to the verified re-install"
     )
     expect(ntnMocks.installNtn).not.toHaveBeenCalled()
     exit.restore()

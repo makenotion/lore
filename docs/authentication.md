@@ -112,8 +112,10 @@ Lore tests against `MIN_NTN_VERSION` in `src/auth/ntn.ts`, currently
 
 - Operators with `ntn` already installed keep their existing version.
 - Versions below the minimum print a non-blocking warning and continue.
-- Operators without `ntn` are offered installation via
-  `curl -fsSL https://ntn.dev | bash`.
+- Operators without `ntn` are offered installation of
+  `NTN_INSTALL_VERSION` from a pinned release archive whose sha256 is
+  embedded in Lore. The upstream `curl -fsSL https://ntn.dev | bash`
+  path is printed only as a manual fallback.
 - Lore never auto-upgrades `ntn`.
 
 ## External operators (PAT)

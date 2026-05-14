@@ -205,7 +205,8 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
   it("auto-installs ntn under --ntn --yes and proceeds", async () => {
     // The auto-install branch is `--ntn`-only since the
     // 2026-05-13 PAT announcement. Default `lore install` does NOT
-    // curl-pipe-bash; only the explicit internal-engineer opt-in does.
+    // run an ntn installer; only the explicit internal-engineer
+    // opt-in does.
     vi.mocked(isNtnInstalled).mockReturnValue(false)
     vi.mocked(installNtn).mockResolvedValue({ kind: "success" })
     vi.mocked(checkNtnVersion).mockReturnValue("ok")
@@ -219,7 +220,7 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
     expect(installNtn).toHaveBeenCalled()
     expect(result.ready).toBe(true)
     const out = captured(consoleLogSpy)
-    expect(out).toContain("curl -fsSL https://ntn.dev | bash")
+    expect(out).toContain("sha256 pinned by Lore")
     expect(out).toMatch(/ntn installed/)
   })
 
@@ -236,7 +237,7 @@ describe("ensurePrerequisites — ntn auto-install branch", () => {
     expect(captured(consoleErrorSpy)).toMatch(/ntn install failed/)
   })
 
-  it("returns ready=false when installNtn spawn-errors under --ntn (laptop offline during curl-pipe-bash)", async () => {
+  it("returns ready=false when installNtn spawn-errors under --ntn (laptop offline during install)", async () => {
     // The most likely real-world failure mode for the install path —
     // the auto-install spawn fails before the script can run. The
     // `kind: "spawn-error"` branch is what `auth/ntn.ts` returns

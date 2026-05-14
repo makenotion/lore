@@ -15,8 +15,8 @@ the install command will write a useful config:
   (`MIN_NTN_VERSION` in `src/auth/ntn.ts`) and prints a non-blocking warning
   below that tested minimum. When the ntn path is selected with
   `lore install --ntn`, `lore auth --login`, or no-arg `lore init`, Lore
-  offers to install ntn automatically via the canonical command
-  (`curl -fsSL https://ntn.dev | bash`) when missing — see the Auto-install
+  offers to install ntn automatically from a pinned release archive with
+  Lore-shipped sha256 verification when missing — see the Auto-install
   section below.
 - **`NOTION_API_TOKEN`** environment variable. External operators put a
   Notion Personal Access Token (PAT) from `notion.so/developers/tokens`
@@ -81,17 +81,19 @@ and offers to install it:
 
 ```text
 ntn is not installed.
-Lore can install it via the canonical command:
-  curl -fsSL https://ntn.dev | bash
+Lore can install it using a verified release archive:
+  ntn v0.13.2 from https://ntn.dev/releases/v0.13.2 (sha256 pinned by Lore)
 
 Install ntn now? [Y/n]
 ```
 
-The command is the same one ntn itself recommends (per ntn's own
-self-update error message). Engineers who answer "n" get manual
-install instructions and can re-run after installing. `--yes`
-(on `lore install --ntn`, `lore auth --login`, `lore init`)
-auto-confirms for non-interactive automation.
+Lore downloads the pinned release archive for the operator's platform,
+verifies the archive against a sha256 embedded in the Lore package,
+and installs the extracted `ntn` binary. Engineers who answer "n" get
+manual install instructions (`curl -fsSL https://ntn.dev | bash`) and
+can re-run after installing. `--yes` (on `lore install --ntn`,
+`lore auth --login`, `lore init`) auto-confirms for non-interactive
+automation.
 
 ### Version policy
 
@@ -103,8 +105,8 @@ Lore's tested-against minimum ntn version is **0.12.0**. The policy:
   (`! 0.11.5 (below tested minimum 0.12.0)`) and proceeds.
   Operators who hit auth resolution issues run `ntn update` to
   upgrade.
-- **If ntn is missing**, Lore offers to install latest via the
-  canonical command above.
+- **If ntn is missing**, Lore offers to install the pinned
+  `NTN_INSTALL_VERSION` release archive with sha256 verification.
 
 This policy lets engineers who pin specific ntn versions for
 other tooling continue with that version; Lore degrades
@@ -187,7 +189,8 @@ npm install -g @makenotion/lore
 lore install --ntn
 # Lore probes prerequisites:
 #   - ntn installed? If no, offers to install via
-#       `curl -fsSL https://ntn.dev | bash`
+#       `ntn v0.13.2 from https://ntn.dev/releases/v0.13.2
+#        (sha256 pinned by Lore)`
 #     (engineer confirms with [Y/n], or pass --yes for
 #      automation). Lore proceeds after install.
 #   - ntn version OK? Warns if below 0.12.0; proceeds.
@@ -302,8 +305,8 @@ and confirm the workspace selector during the ntn flow it spawns.
 
 ```text
 ntn is not installed.
-Lore can install it via the canonical command:
-  curl -fsSL https://ntn.dev | bash
+Lore can install it using a verified release archive:
+  ntn v0.13.2 from https://ntn.dev/releases/v0.13.2 (sha256 pinned by Lore)
 
 Install ntn now? [Y/n]
 ```

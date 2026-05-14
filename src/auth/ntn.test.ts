@@ -30,7 +30,10 @@ import {
   listNtnWorkspaces,
   loadNtnToken,
   MIN_NTN_VERSION,
-  NTN_INSTALL_COMMAND,
+  NTN_INSTALL_ARCHIVE_SHA256,
+  NTN_INSTALL_VERSION,
+  NTN_MANUAL_INSTALL_COMMAND,
+  NTN_VERIFIED_INSTALL_DESCRIPTION,
   parseNtnEnv,
   resetNtnProbeCache,
   runNtnLogin,
@@ -85,6 +88,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   delete process.env["XDG_CONFIG_HOME"]
   delete process.env["LORE_NOTION_BASE_URL"]
+  delete process.env["NTN_INSTALL_DIR"]
   spawnMock.mockReset()
   execFileSyncMock.mockReset()
   // The per-process probe cache (`isNtnInstalled` / `getNtnVersion`)
@@ -653,11 +657,7 @@ describe("installNtn", () => {
     expect(result).toEqual({ kind: "spawn-error", error: err })
   })
 
-  it("invokes spawn with the documented NTN_INSTALL_COMMAND constant verbatim", async () => {
-    // No string concatenation, no user-controlled interpolation. The
-    // command is a hardcoded constant; this test is the regression
-    // gate against any future contributor wiring user input into the
-    // shell composition.
+  it("spawns Lore's verified install script without shell interpolation", async () => {
     const child = makeFakeChild()
     spawnMock.mockReturnValue(child)
     const promise = installNtn()
@@ -665,14 +665,37 @@ describe("installNtn", () => {
     await promise
 
     expect(spawnMock).toHaveBeenCalledTimes(1)
-    const [cmd, options] = spawnMock.mock.calls[0]! as [
+    const [cmd, args, options] = spawnMock.mock.calls[0]! as [
       string,
+      string[],
       { env: Record<string, string>; stdio: string; shell: boolean },
     ]
-    expect(cmd).toBe(NTN_INSTALL_COMMAND)
-    expect(NTN_INSTALL_COMMAND).toBe("curl -fsSL https://ntn.dev | bash")
-    expect(options.shell).toBe(true)
+    expect(cmd).toBe("bash")
+    expect(args[0]).toBe("-c")
+    expect(args[1]).toContain(`readonly VERSION="${NTN_INSTALL_VERSION}"`)
+    expect(args[1]).toContain("EXPECTED_SHA256")
+    expect(args[1]).toContain("tar -xzf")
+    expect(args[1]).not.toContain("| bash")
+    expect(options.shell).toBe(false)
     expect(options.stdio).toBe("inherit")
+  })
+
+  it("ships the upstream curl-pipe-bash command only as a manual fallback string", () => {
+    expect(NTN_MANUAL_INSTALL_COMMAND).toBe("curl -fsSL https://ntn.dev | bash")
+    expect(NTN_VERIFIED_INSTALL_DESCRIPTION).toContain(NTN_INSTALL_VERSION)
+  })
+
+  it("pins sha256 checksums for every install target the script can select", async () => {
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = installNtn()
+    child.triggerExit(0)
+    await promise
+
+    const script = (spawnMock.mock.calls[0]![1] as string[])[1]!
+    for (const [target, checksum] of Object.entries(NTN_INSTALL_ARCHIVE_SHA256)) {
+      expect(script).toContain(`${target}) printf '%s\\n' "${checksum}" ;;`)
+    }
   })
 
   it("sets NOTION_KEYRING=0 in the spawn env (parity / defense-in-depth)", async () => {
@@ -682,15 +705,14 @@ describe("installNtn", () => {
     child.triggerExit(0)
     await promise
 
-    const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
     expect(options.env["NOTION_KEYRING"]).toBe("0")
   })
 
   it("scrubs the spawn env to an allowlist — token-bearing variables do NOT leak to the installer", async () => {
-    // The remote installer at https://ntn.dev does not need
-    // NOTION_API_TOKEN, GITHUB_TOKEN, npm credentials, or any other
-    // Lore/CI-injected secret. Pin the
-    // scrub so a future contributor who reverts to
+    // The install process does not need NOTION_API_TOKEN,
+    // GITHUB_TOKEN, npm credentials, or any other Lore/CI-injected
+    // secret. Pin the scrub so a future contributor who reverts to
     // `{ ...process.env, NOTION_KEYRING: "0" }` exfiltration breaks
     // this test loudly.
     process.env["NOTION_API_TOKEN"] = "tok-canonical-must-not-leak"
@@ -704,7 +726,7 @@ describe("installNtn", () => {
     child.triggerExit(0)
     await promise
 
-    const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
     expect(options.env).not.toHaveProperty("NOTION_API_TOKEN")
     expect(options.env).not.toHaveProperty("GITHUB_TOKEN")
     expect(options.env).not.toHaveProperty("NPM_TOKEN")
@@ -718,14 +740,15 @@ describe("installNtn", () => {
 
   it("forwards the allowlisted shell + locale + proxy variables", async () => {
     // The allowlist must keep enough of process.env intact for the
-    // curl-pipe-bash composition to actually fetch and run. Pin the
-    // load-bearing entries so a future contributor tightening the
-    // allowlist into uselessness fails this test.
+    // verified installer to fetch and install. Pin the load-bearing
+    // entries so a future contributor tightening the allowlist into
+    // uselessness fails this test.
     process.env["HOME"] = "/test-home"
     process.env["PATH"] = "/test/bin:/usr/bin"
     process.env["SHELL"] = "/bin/bash"
     process.env["LANG"] = "en_US.UTF-8"
     process.env["HTTPS_PROXY"] = "http://proxy.example:3128"
+    process.env["NTN_INSTALL_DIR"] = "/tmp/ntn-bin"
 
     const child = makeFakeChild()
     spawnMock.mockReturnValue(child)
@@ -733,12 +756,14 @@ describe("installNtn", () => {
     child.triggerExit(0)
     await promise
 
-    const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
     expect(options.env["HOME"]).toBe("/test-home")
     expect(options.env["PATH"]).toBe("/test/bin:/usr/bin")
     expect(options.env["SHELL"]).toBe("/bin/bash")
     expect(options.env["LANG"]).toBe("en_US.UTF-8")
     expect(options.env["HTTPS_PROXY"]).toBe("http://proxy.example:3128")
+    expect(options.env["NTN_INSTALL_DIR"]).toBe("/tmp/ntn-bin")
+    delete process.env["NTN_INSTALL_DIR"]
   })
 
   it("invalidates the isNtnInstalled / getNtnVersion cache on success", async () => {

@@ -733,7 +733,7 @@ env-forwarding rewrite). Runtime env names come from
 entries are assembled by `buildMcpEnv()` in `src/cli/commands/install.ts`.
 
 Install detects ntn install / login state and prompts on missing
-pieces (auto-install via `curl -fsSL https://ntn.dev | bash` with
+pieces (auto-install via Lore's pinned ntn release archive with
 operator confirmation; `--yes` skips). The MCP server resolves
 auth on its own at startup via `resolveAuth` rather than relying
 on static token forwarding for ntn-source operators. Static values
