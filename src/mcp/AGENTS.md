@@ -747,17 +747,45 @@ To add a new family:
 
 ## Error Handling
 
-The `toolError()` helper in `helpers.ts` formats errors for MCP:
+The `toolError()` helper in `helpers.ts` formats errors for MCP. MCP-visible
+error text is a security boundary: every non-sentinel message must pass through
+`redactDebugMessage(..., { truncate: false })` before it is returned to the
+host. The `truncate: false` option preserves recovery guidance in long error
+messages while still scrubbing SDK fields, bearer tokens, and page-id-shaped
+substrings.
+
+`WriteBudgetExceededError` is the explicit exception. It is returned verbatim,
+without an `Error: ` prefix, because the bench/mining child grep-matches that
+sentinel to halt gracefully.
 
 ```typescript
 export function toolError(err: unknown): ToolResult {
-  const message = err instanceof Error ? err.message : String(err)
+  if (err instanceof WriteBudgetExceededError) {
+    return {
+      content: [{ type: "text" as const, text: err.message }],
+      isError: true,
+    }
+  }
+
+  const rawMessage = err instanceof Error ? err.message : String(err)
+  const message = redactDebugMessage(rawMessage, { truncate: false })
+  const retryable = isRetryableError(err)
+    ? `\n\n\`\`\`json\n${JSON.stringify({
+        code: err.code,
+        retryable: true,
+      })}\n\`\`\``
+    : ""
+
   return {
-    content: [{ type: "text" as const, text: `Error: ${message}` }],
+    content: [{ type: "text" as const, text: `Error: ${message}${retryable}` }],
     isError: true,
   }
 }
 ```
+
+Do not interpolate `err.message` directly into MCP content, even for validation
+or dispatch errors. Wrap thrown and string errors in `toolError()` and let the
+helper handle redaction and retryable metadata consistently.
 
 **Rule**: Never let exceptions propagate out of a tool callback. The MCP transport
 does not handle thrown errors gracefully. Always catch and return `toolError()`.

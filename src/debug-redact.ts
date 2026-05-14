@@ -392,10 +392,16 @@ function isWhitespace(c: string): boolean {
  * `LORE_DEBUG=1`-gated stderr emitter. See module docstring for the
  * threat model and per-defense rationale.
  *
- * Idempotent: applying the helper twice produces the same output as
- * applying it once.
+ * Callers that surface user-facing recovery guidance can disable truncation;
+ * the same SDK-field, token, and page-id scrubbing still applies.
+ *
+ * Idempotent under the default truncating mode: applying the helper twice
+ * produces the same output as applying it once.
  */
-export function redactDebugMessage(message: string): string {
+export function redactDebugMessage(
+  message: string,
+  options: { truncate?: boolean } = {}
+): string {
   if (message.length === 0) return message
 
   const scrubbed = scrubSdkFields(message)
@@ -403,7 +409,7 @@ export function redactDebugMessage(message: string): string {
     .replace(PAGE_ID_UUID, "<page-id>")
     .replace(PAGE_ID_HEX32, "<page-id>")
 
-  if (scrubbed.length > MAX_DEBUG_MESSAGE_LENGTH) {
+  if ((options.truncate ?? true) && scrubbed.length > MAX_DEBUG_MESSAGE_LENGTH) {
     return scrubbed.slice(0, MAX_DEBUG_MESSAGE_LENGTH) + TRUNCATION_SUFFIX
   }
   return scrubbed

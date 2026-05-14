@@ -6,7 +6,9 @@ import {
   debugLogFactTouchFailure,
   debugLogPartialFailures,
   debugLogTouchFailure,
+  toolError,
 } from "./helpers.js"
+import { WriteBudgetExceededError } from "../notion/rate-limit.js"
 
 // Wrapper around `vi.spyOn(process.stderr, "write")` that returns the
 // spy at the loose `MockInstance` shape vitest infers. The
@@ -18,6 +20,81 @@ import {
 function spyStderr() {
   return vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 }
+
+describe("toolError", () => {
+  it("redacts sensitive substrings before returning MCP error content", () => {
+    const pageId = "abcdef0123456789abcdef0123456789"
+    const token = "secret_aaaaaaaaaaaaaaaaaaaaaaaa"
+    const result = toolError(
+      new Error(
+        `APIError body={"token":"${token}","page":"${pageId}"} page=${pageId} headers={Authorization: Bearer ${token}} status=500`
+      )
+    )
+
+    expect(result).toEqual({
+      content: [
+        {
+          type: "text",
+          text: "Error: APIError body=<redacted> page=<page-id> headers=<redacted> status=500",
+        },
+      ],
+      isError: true,
+    })
+    expect(result.content[0].text).not.toContain(pageId)
+    expect(result.content[0].text).not.toContain(token)
+  })
+
+  it("redacts thrown non-Error values before returning MCP error content", () => {
+    const pageId = "fedcba9876543210fedcba9876543210"
+    const result = toolError(`Failed to load page ${pageId}`)
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "Error: Failed to load page <page-id>" }],
+      isError: true,
+    })
+  })
+
+  it("keeps retryable metadata while redacting the user-visible message", () => {
+    const pageId = "abcdef0123456789abcdef0123456789"
+    const err = new Error(`Transient failure for page ${pageId}`) as Error & {
+      code: string
+      retryable: true
+    }
+    err.code = "project_scope_retry"
+    err.retryable = true
+
+    const result = toolError(err)
+
+    expect(result.content[0].text).toBe(
+      'Error: Transient failure for page <page-id>\n\n```json\n{"code":"project_scope_retry","retryable":true}\n```'
+    )
+    expect(result.content[0].text).not.toContain(pageId)
+  })
+
+  it("does not truncate recovery guidance in MCP error content", () => {
+    const pageId = "abcdef0123456789abcdef0123456789"
+    const recovery = `${"Inspect the saved row before retrying. ".repeat(20)}final recovery marker`
+    const result = toolError(new Error(`Partial failure on ${pageId}. ${recovery}`))
+
+    expect(result.content[0].text).toContain("<page-id>")
+    expect(result.content[0].text).not.toContain(pageId)
+    expect(result.content[0].text).toContain("final recovery marker")
+    expect(result.content[0].text).not.toContain("…(truncated)")
+  })
+
+  it("preserves write-budget errors verbatim", () => {
+    const err = new WriteBudgetExceededError(
+      "lore-memory.abcdef0123456789abcdef0123456789",
+      10,
+      11
+    )
+
+    expect(toolError(err)).toEqual({
+      content: [{ type: "text", text: err.message }],
+      isError: true,
+    })
+  })
+})
 
 describe("debugLogAutoFactFailure (0.8.0/07)", () => {
   it("is a no-op when LORE_DEBUG is unset (zero stderr writes)", () => {

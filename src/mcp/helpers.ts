@@ -10,7 +10,7 @@ import type { Fact } from "../types.js"
 import type { WakeUpCache } from "../core/wakeup-cache.js"
 import { isRetryableError } from "../core/project-scope.js"
 import { WriteBudgetExceededError } from "../notion/rate-limit.js"
-import { redactDebugError } from "../debug-redact.js"
+import { redactDebugError, redactDebugMessage } from "../debug-redact.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -97,7 +97,10 @@ export function toolError(err: unknown): ToolResult {
       isError: true,
     }
   }
-  const message = err instanceof Error ? err.message : String(err)
+  // MCP errors carry recovery guidance, so scrub sensitive SDK details without
+  // applying the debug-log length cap.
+  const rawMessage = err instanceof Error ? err.message : String(err)
+  const message = redactDebugMessage(rawMessage, { truncate: false })
   const retryable = isRetryableError(err)
     ? `\n\n\`\`\`json\n${JSON.stringify({
         code: err.code,

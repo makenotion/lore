@@ -303,6 +303,16 @@ describe("redactDebugMessage (issue #488)", () => {
     expect(out.endsWith("…(truncated)")).toBe(true)
   })
 
+  it("can skip truncation while still redacting sensitive substrings", () => {
+    const id = "abcdef0123456789abcdef0123456789"
+    const tail = "y".repeat(MAX_DEBUG_MESSAGE_LENGTH + 100)
+    const out = redactDebugMessage(`page ${id}: ${tail}`, { truncate: false })
+    expect(out).toContain("<page-id>")
+    expect(out).not.toContain(id)
+    expect(out).not.toContain("…(truncated)")
+    expect(out.endsWith(tail)).toBe(true)
+  })
+
   it("composes truncation with redaction (page id present in long message)", () => {
     // A long message whose page-id substring sits inside the kept
     // window still gets redacted before truncation runs.
