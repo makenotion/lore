@@ -20,6 +20,9 @@ import { promoteCommand } from "./commands/promote.js"
 import { mcpCommand } from "./commands/mcp.js"
 import { hooksCommand } from "./commands/hooks.js"
 import { profileCommand } from "./commands/profile.js"
+import { memoryCommand } from "./commands/memory.js"
+import { decisionCommand } from "./commands/decision.js"
+import { askCommand } from "./commands/ask.js"
 
 const program = new Command()
 
@@ -46,5 +49,8 @@ program.addCommand(promoteCommand)
 program.addCommand(mcpCommand)
 program.addCommand(hooksCommand)
 program.addCommand(profileCommand)
+program.addCommand(memoryCommand)
+program.addCommand(decisionCommand)
+program.addCommand(askCommand)
 
 program.parse()

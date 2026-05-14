@@ -365,6 +365,9 @@ Core commands:
   to select the internal ntn bootstrap path.
 - `lore auth --login` refreshes ntn auth and verifies vault access.
 - `lore search <query>` searches memories.
+- `lore memory save <title>` saves a manual memory from the shell.
+- `lore decision create <statement>` records a decision with rationale.
+- `lore ask <entity>` queries facts and tasks about an entity.
 - `lore status` reports vault health and active project resolution.
 - `lore migrate` runs schema and one-shot data migrations.
 - `lore entities merge --from <loser-id> --into <winner-id>` previews or applies
