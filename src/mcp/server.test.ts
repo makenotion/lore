@@ -196,6 +196,7 @@ describe("startServer", () => {
       expect(text).toMatch(/\n {4}at .+:\d+:\d+/)
       expect(text).toContain("```shell\nlore init\n```")
       expect(text).toContain("lore init")
+      expect(text).toContain("lore doctor")
       expect(text).toContain("lore auth --login")
       expect(text).toContain("restart or reconnect the MCP client")
       expect(stderr).toHaveBeenCalledWith(
@@ -272,7 +273,7 @@ describe("startServer", () => {
       expect(result.isError).toBe(true)
       expect(text).toContain("missing databases: Entities")
       expect(text).toContain("lore vault ensure-entities")
-      expect(text).toContain("lore migrate --build-entities --yes")
+      expect(text).toContain("lore migrate --build-entities --allow-unscoped --yes")
       expect(stderr).toHaveBeenCalledWith(
         expect.stringContaining("starting diagnostic MCP server")
       )

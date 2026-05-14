@@ -51,6 +51,7 @@ import {
   type RuntimeForwardedKey,
 } from "../../auth/forwarded-env.js"
 import { buildHookDisclosureLines } from "../hook-disclosure.js"
+import { resolveClaudeSettingsPath } from "./claude-paths.js"
 
 export type InstallClient = "claude" | "codex" | "cursor" | "all"
 
@@ -312,10 +313,6 @@ export async function detectYarnPnp(projectDir: string): Promise<boolean> {
   }
 }
 
-function encodeProjectPath(absPath: string): string {
-  return absPath.replace(/\//g, "-")
-}
-
 interface ClaudeMcpEntry {
   command: string
   args: string[]
@@ -556,6 +553,85 @@ export function buildLegacyCursorMcpEntry(
   }
 }
 
+export interface McpLauncherClassificationOptions {
+  configRoot: string
+  yarnPnp?: boolean
+  envSource?: NodeJS.ProcessEnv
+  authSource?: AuthSource
+  notionBaseUrlLiteral?: string
+}
+
+export interface CursorMcpLauncherClassificationOptions extends McpLauncherClassificationOptions {
+  useGlobalScope?: boolean
+  launchCwd?: string
+}
+
+function installerMcpPaths(): { portableMcpJsPath: string; portablePkgRoot: string } {
+  const pkgRoot = resolvePkgRoot()
+  return {
+    portableMcpJsPath: toPortablePath(join(pkgRoot, "dist", "mcp.js")),
+    portablePkgRoot: toPortablePath(pkgRoot),
+  }
+}
+
+export function classifyClaudeMcpLauncher(
+  existingMcp: Record<string, unknown> | undefined,
+  options: McpLauncherClassificationOptions
+): HookStatus {
+  if (!existingMcp) return "missing"
+  const { portableMcpJsPath, portablePkgRoot } = installerMcpPaths()
+  const binShape: BinDispatchShape = options.yarnPnp ? "yarn" : "bare"
+  const binMcpEntry = buildClaudeMcpEntry(
+    binShape,
+    options.configRoot,
+    options.envSource,
+    options.authSource,
+    options.notionBaseUrlLiteral
+  )
+  const legacyMcpEntry = buildLegacyClaudeMcpEntry(
+    portableMcpJsPath,
+    portablePkgRoot,
+    options.configRoot,
+    options.envSource,
+    options.authSource,
+    options.notionBaseUrlLiteral
+  )
+  if (deepEqual(existingMcp, binMcpEntry)) return "current"
+  if (deepEqual(existingMcp, legacyMcpEntry)) return "legacy-current"
+  return "stale"
+}
+
+export function classifyCursorMcpLauncher(
+  existingMcp: Record<string, unknown> | undefined,
+  options: CursorMcpLauncherClassificationOptions
+): HookStatus {
+  if (!existingMcp) return "missing"
+  const { portableMcpJsPath, portablePkgRoot } = installerMcpPaths()
+  const binShape: BinDispatchShape = options.yarnPnp ? "yarn" : "bare"
+  const binMcpEntry = buildCursorMcpEntry(
+    binShape,
+    options.configRoot,
+    options.envSource,
+    {
+      useGlobalScope: options.useGlobalScope,
+      launchCwd: options.launchCwd ?? options.configRoot,
+      authSource: options.authSource,
+      notionBaseUrlLiteral: options.notionBaseUrlLiteral,
+    }
+  )
+  const legacyMcpEntry = buildLegacyCursorMcpEntry(
+    portableMcpJsPath,
+    portablePkgRoot,
+    options.configRoot,
+    options.envSource,
+    options.authSource,
+    options.notionBaseUrlLiteral
+  )
+  if (deepEqual(existingMcp, binMcpEntry)) return "current"
+  if (deepEqual(existingMcp, legacyMcpEntry)) return "legacy-current"
+  return "stale"
+}
+
 /**
  * Resolve the on-disk path for Cursor's mcp.json. Cursor reads MCP servers
  * from <projectDir>/.cursor/mcp.json (project-scoped, takes precedence) and
@@ -753,6 +829,33 @@ export function buildLegacyCodexMcpSection(
     `args = ["-lc", ${JSON.stringify(launchCommand)}]`,
     `env_vars = ${formatTomlArray(runtimeForwardedKeys(build))}`,
   ].join("\n")
+}
+
+export function classifyCodexMcpLauncher(
+  existingMcpSection: string | null,
+  options: McpLauncherClassificationOptions
+): HookStatus {
+  if (!existingMcpSection) return "missing"
+  const { portableMcpJsPath } = installerMcpPaths()
+  const binShape: BinDispatchShape = options.yarnPnp ? "yarn" : "bare"
+  const binMcpSection = buildCodexMcpSection(
+    binShape,
+    options.configRoot,
+    options.envSource,
+    options.authSource,
+    options.notionBaseUrlLiteral
+  )
+  const legacyMcpSection = buildLegacyCodexMcpSection(
+    portableMcpJsPath,
+    options.configRoot,
+    options.envSource,
+    options.authSource,
+    options.notionBaseUrlLiteral
+  )
+  const normalized = existingMcpSection.trim()
+  if (normalized === binMcpSection.trim()) return "current"
+  if (normalized === legacyMcpSection.trim()) return "legacy-current"
+  return "stale"
 }
 
 /**
@@ -2833,14 +2936,7 @@ async function runClaudeInstall(
   rl: ReturnType<typeof createInterface> | null
 ): Promise<void> {
   await ensureHookPrerequisites(context)
-  const encodedPath = encodeProjectPath(context.projectDir)
-  const settingsPath = join(
-    homedir(),
-    ".claude",
-    "projects",
-    encodedPath,
-    "settings.json"
-  )
+  const settingsPath = resolveClaudeSettingsPath(context.projectDir, homedir())
   const settings = await readJsonSafe(settingsPath)
   const mcpJsonPath = join(context.projectDir, ".mcp.json")
   const mcpJson = await readJsonSafe(mcpJsonPath)

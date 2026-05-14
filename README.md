@@ -138,6 +138,11 @@ The first source available wins. See
 [`docs/authentication.md`](docs/authentication.md) for the full priority chain,
 multi-workspace selection, and troubleshooting.
 
+If setup is broken and the next command is unclear, run `lore doctor` from the
+project. It performs read-only checks across config discovery, auth, vault
+access, MCP host config, hooks, and recent background hook failures, then ends
+with one prioritized next action.
+
 ### 3. Configure Your Assistant
 
 ```bash
@@ -409,6 +414,7 @@ Core commands:
 - `lore install` writes assistant MCP config and supported hooks; add `--ntn`
   to select the internal ntn bootstrap path.
 - `lore auth --login` refreshes ntn auth and verifies vault access.
+- `lore doctor` diagnoses setup health and prints the next repair action.
 - `lore search <query>` searches memories.
 - `lore memory save <title>` saves a manual memory from the shell.
 - `lore decision create <statement>` records a decision with rationale.
