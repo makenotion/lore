@@ -15,7 +15,9 @@ describe("SessionMemoryTracker", () => {
 
   it("returns undefined for an unknown key", () => {
     const tracker = new SessionMemoryTracker()
-    expect(tracker.get({ agent: "claude-code", session: "never-recorded" })).toBeUndefined()
+    expect(
+      tracker.get({ agent: "claude-code", session: "never-recorded" })
+    ).toBeUndefined()
   })
 
   it("keeps entries isolated across agents even with identical session values", () => {
@@ -30,8 +32,12 @@ describe("SessionMemoryTracker", () => {
       { agent: "codex", session: "default" },
       { memoryId: "mem-codex", projectIds: [] }
     )
-    expect(tracker.get({ agent: "claude-code", session: "default" })?.memoryId).toBe("mem-claude")
-    expect(tracker.get({ agent: "codex", session: "default" })?.memoryId).toBe("mem-codex")
+    expect(tracker.get({ agent: "claude-code", session: "default" })?.memoryId).toBe(
+      "mem-claude"
+    )
+    expect(tracker.get({ agent: "codex", session: "default" })?.memoryId).toBe(
+      "mem-codex"
+    )
   })
 
   it("overwrites within the same key when a new memory is recorded", () => {
@@ -46,7 +52,10 @@ describe("SessionMemoryTracker", () => {
     // callers and produce wrong auto-links.
     const tracker = new SessionMemoryTracker()
     tracker.record({ agent: "a", session: "" }, { memoryId: "mem-x", projectIds: [] })
-    tracker.record({ agent: "b", session: undefined }, { memoryId: "mem-y", projectIds: [] })
+    tracker.record(
+      { agent: "b", session: undefined },
+      { memoryId: "mem-y", projectIds: [] }
+    )
     expect(tracker.get({ agent: "a", session: "" })).toBeUndefined()
     expect(tracker.get({ agent: "b", session: undefined })).toBeUndefined()
   })

@@ -6,8 +6,7 @@ const LIVE_PAGE_CURSOR_PREFIX = "lore-live-page:"
 const LIVE_PAGE_QUERY_SIZE = 100
 
 export const LIVE_PAGE_REFILL_MAX_PAGES = 5
-export const LIVE_PAGE_REFILL_MAX_ROWS =
-  LIVE_PAGE_REFILL_MAX_PAGES * LIVE_PAGE_QUERY_SIZE
+export const LIVE_PAGE_REFILL_MAX_ROWS = LIVE_PAGE_REFILL_MAX_PAGES * LIVE_PAGE_QUERY_SIZE
 
 type QueryPage = (args: {
   page_size: number
@@ -88,9 +87,7 @@ export async function collectLivePages(input: {
 
     if (visiblePages.length > selected.length) {
       const livePageIds = new Set(livePages.map((page) => page.id))
-      const carriedSkipIds = new Set(
-        [...skipIds].filter((id) => livePageIds.has(id)),
-      )
+      const carriedSkipIds = new Set([...skipIds].filter((id) => livePageIds.has(id)))
       for (const page of selected) carriedSkipIds.add(page.id)
       // `skipIds` is bounded by one Notion query page. A cursor may re-read
       // the same 100-row response several times with small caller limits, but

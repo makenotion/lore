@@ -43,9 +43,7 @@ describe("eval vault registry", () => {
     const registry = await loadEvalVaultRegistry()
 
     expect(findEvalVault(registry, "lore-dev-sandbox")).toBeDefined()
-    expect(await resolveDefaultEvalVaultRegistryPath()).toMatch(
-      /evals\/vaults\.yaml$/
-    )
+    expect(await resolveDefaultEvalVaultRegistryPath()).toMatch(/evals\/vaults\.yaml$/)
   })
 
   it("publishes the registry with the package files", async () => {
@@ -102,8 +100,6 @@ vaults:
 `
     )
 
-    await expect(loadEvalVaultRegistry(path)).rejects.toThrow(
-      /duplicate eval vault id/
-    )
+    await expect(loadEvalVaultRegistry(path)).rejects.toThrow(/duplicate eval vault id/)
   })
 })

@@ -27,9 +27,7 @@ function uniqueRoot(label: string): string {
 
 afterAll(async () => {
   await Promise.all(
-    TEST_MARKERS.map((root) =>
-      rm(driftMarkerPath(root), { force: true }),
-    ),
+    TEST_MARKERS.map((root) => rm(driftMarkerPath(root), { force: true }))
   )
 })
 
@@ -74,7 +72,9 @@ describe("drift-marker", () => {
     const stateDir = getStateDir()
     await rm(stateDir, { recursive: true, force: true })
     await expect(touchDriftMarker(root)).resolves.toBeUndefined()
-    await expect(stat(stateDir)).resolves.toMatchObject({ isDirectory: expect.any(Function) })
+    await expect(stat(stateDir)).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    })
   })
 
   it("DRIFT_DEBOUNCE_DAYS matches the auto-digest cadence so the two filesystem markers behave the same", () => {

@@ -89,9 +89,9 @@ export const HOOK_DOCS_REFERENCE = "Full reference: docs/hooks.md."
  */
 export function buildOptOutHint(): string[] {
   const knobs = HOOK_DISCLOSURE_ROWS.map((r) => `hooks.${r.knob}: false`).join(" / ")
-  const envs = HOOK_DISCLOSURE_ROWS.flatMap((r) => (r.envOverride ? [r.envOverride] : [])).join(
-    " / "
-  )
+  const envs = HOOK_DISCLOSURE_ROWS.flatMap((r) =>
+    r.envOverride ? [r.envOverride] : []
+  ).join(" / ")
   return [
     `Disable in .lore.yaml with any of: ${knobs}.`,
     `Per-session env overrides: ${envs}.`,

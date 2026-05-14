@@ -80,15 +80,12 @@ export async function loadExpiringScopedStatus(
  * out-of-context" rows; the line shows up only when there's
  * something to act on.
  */
-export function formatExpiringScopedSummary(
-  report: ExpiringScopedReport
-): string[] {
+export function formatExpiringScopedSummary(report: ExpiringScopedReport): string[] {
   const lines: string[] = []
   const expired = report.expiredMemories + report.expiredFacts
   const expiringSoon = report.expiringSoonMemories + report.expiringSoonFacts
   const outOfContext =
-    report.narrowScopeOutOfContextMemories +
-    report.narrowScopeOutOfContextFacts
+    report.narrowScopeOutOfContextMemories + report.narrowScopeOutOfContextFacts
 
   if (expired > 0) {
     lines.push(

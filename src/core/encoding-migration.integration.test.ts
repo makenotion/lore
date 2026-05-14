@@ -24,14 +24,8 @@ import { describe, expect, it } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import type { DatabaseRef, FactPredicate } from "../types.js"
 import { computeFactDedupKey } from "../notion/normalize.js"
-import {
-  fixFactEncoding,
-  findEncodedFacts,
-} from "./fact-encoding.js"
-import {
-  findEncodedMemories,
-  fixMemoryEncoding,
-} from "./memory-encoding.js"
+import { fixFactEncoding, findEncodedFacts } from "./fact-encoding.js"
+import { findEncodedMemories, fixMemoryEncoding } from "./memory-encoding.js"
 
 /**
  * Stateful in-memory fixture for Notion `pages` + `dataSources` surfaces.
@@ -79,9 +73,7 @@ class FixtureVault {
         } as unknown,
         DedupKey: {
           type: "rich_text",
-          rich_text: row.dedupKey
-            ? [{ plain_text: row.dedupKey }]
-            : [],
+          rich_text: row.dedupKey ? [{ plain_text: row.dedupKey }] : [],
         } as unknown,
         "Valid Until": {
           type: "date",
@@ -188,9 +180,9 @@ class FixtureVault {
             if (Array.isArray(v.title)) {
               merged[propName] = {
                 type: "title",
-                title: (v.title as Array<{ text: { content: string } }>).map(
-                  (t) => ({ plain_text: t.text.content })
-                ),
+                title: (v.title as Array<{ text: { content: string } }>).map((t) => ({
+                  plain_text: t.text.content,
+                })),
               } as unknown
             } else if (Array.isArray(v.rich_text)) {
               merged[propName] = {
@@ -249,15 +241,10 @@ class FixtureVault {
           }
           if (args.type === "insert_content" && args.insert_content) {
             const existing = this.markdown.get(args.page_id) ?? ""
-            this.markdown.set(
-              args.page_id,
-              existing + args.insert_content.content
-            )
+            this.markdown.set(args.page_id, existing + args.insert_content.content)
             return {}
           }
-          throw new Error(
-            `fixture does not model updateMarkdown type=${args.type}`
-          )
+          throw new Error(`fixture does not model updateMarkdown type=${args.type}`)
         },
       },
     } as unknown as Client

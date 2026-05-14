@@ -17,9 +17,13 @@ function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
     registerTool: vi.fn(
-      (name: string, _config: unknown, handler: (...args: never[]) => Promise<unknown>) => {
+      (
+        name: string,
+        _config: unknown,
+        handler: (...args: never[]) => Promise<unknown>
+      ) => {
         handlers.set(name, handler)
-      },
+      }
     ),
   } as unknown as McpServer
   return {
@@ -27,8 +31,7 @@ function createMockServer() {
     getActionHandler(toolName: string, action: string) {
       const handler = handlers.get(toolName)
       if (!handler) throw new Error(`missing handler ${toolName}`)
-      return (args: Record<string, unknown>) =>
-        handler({ ...args, action } as never)
+      return (args: Record<string, unknown>) => handler({ ...args, action } as never)
     },
   }
 }
@@ -168,10 +171,10 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
       const result = await handler(args)
       const text = (result as { content: Array<{ text: string }> }).content[0].text
       expect(text, `action=${action} must not render framing block`).not.toContain(
-        "Project: Widget",
+        "Project: Widget"
       )
       expect(text, `action=${action} must not render Siblings line`).not.toContain(
-        "Siblings:",
+        "Siblings:"
       )
     }
   })
@@ -273,10 +276,9 @@ describe("lore-query action='ask' — touch-on-read wiring (issue 0.8.0/05)", ()
       makeFact({ id: "fact-2", predicate: "depends_on", sourceMemoryId: "mem-source-2" }),
       makeFact({ id: "fact-3", predicate: "uses", sourceMemoryId: null }),
     ]
-    const getManyById = vi.fn().mockResolvedValue([
-      { id: "mem-source-1" },
-      { id: "mem-source-2" },
-    ])
+    const getManyById = vi
+      .fn()
+      .mockResolvedValue([{ id: "mem-source-1" }, { id: "mem-source-2" }])
     const touchOnRead = vi.fn().mockResolvedValue(undefined)
     const services = {
       ...makeAskServices(),
@@ -365,9 +367,9 @@ describe("lore-query action='ask' — touch-on-read wiring (issue 0.8.0/05)", ()
     const services = {
       ...makeAskServices(),
       facts: {
-        queryByEntity: vi.fn().mockResolvedValue([
-          makeFact({ id: "fact-1", sourceMemoryId: null }),
-        ]),
+        queryByEntity: vi
+          .fn()
+          .mockResolvedValue([makeFact({ id: "fact-1", sourceMemoryId: null })]),
         queryByObject: vi.fn().mockResolvedValue([]),
       },
       memories: {
@@ -414,9 +416,7 @@ describe("lore-query action='ask' — touch-on-read wiring (issue 0.8.0/05)", ()
       subjectEntityId: null,
       objectEntityId: null,
     }))
-    const getManyById = vi.fn(async (ids: string[]) =>
-      ids.map((id) => ({ id })),
-    )
+    const getManyById = vi.fn(async (ids: string[]) => ids.map((id) => ({ id })))
     const touchOnRead = vi.fn().mockResolvedValue(undefined)
     const services = {
       ...makeAskServices(),

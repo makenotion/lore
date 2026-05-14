@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { initServices } from "../../services.js"
-import {
-  MemoryReviewAuditError,
-  MemoryReviewStateError,
-} from "../../core/memory.js"
+import { MemoryReviewAuditError, MemoryReviewStateError } from "../../core/memory.js"
 import { inboxCommand } from "./inbox.js"
 
 vi.mock("../../services.js", () => ({
@@ -30,9 +27,7 @@ function makeHarness(): CommandHarness {
   const exitCodes: number[] = []
   vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
     exitCodes.push(typeof code === "number" ? code : 0)
-    throw new Error(
-      `__process_exit_${typeof code === "number" ? code : 0}__`,
-    )
+    throw new Error(`__process_exit_${typeof code === "number" ? code : 0}__`)
   }) as never)
   vi.spyOn(console, "error").mockImplementation(errorSpy)
   vi.spyOn(console, "log").mockImplementation(logSpy)
@@ -78,7 +73,7 @@ describe("inboxCommand", () => {
         includeContent: false,
       })
       expect(logSpy.mock.calls.join("\n")).toContain(
-        "No proposed memories pending review",
+        "No proposed memories pending review"
       )
     })
   })
@@ -101,7 +96,7 @@ describe("inboxCommand", () => {
       } as never)
 
       await expect(
-        inboxCommand.parseAsync(["archive", "mem-accepted"], { from: "user" }),
+        inboxCommand.parseAsync(["archive", "mem-accepted"], { from: "user" })
       ).rejects.toThrow("__process_exit_1__")
 
       expect(archive).not.toHaveBeenCalled()
@@ -157,7 +152,7 @@ describe("inboxCommand", () => {
       } as never)
 
       await expect(
-        inboxCommand.parseAsync(["archive", "dec-proposed"], { from: "user" }),
+        inboxCommand.parseAsync(["archive", "dec-proposed"], { from: "user" })
       ).rejects.toThrow("__process_exit_1__")
 
       // Archive must NOT fire — the kind guard is pre-write fail-fast.
@@ -182,10 +177,9 @@ describe("inboxCommand", () => {
         identity: { resolveAuthor },
       } as never)
 
-      await inboxCommand.parseAsync(
-        ["approve", "mem-1", "--reviewer", "Alice"],
-        { from: "user" },
-      )
+      await inboxCommand.parseAsync(["approve", "mem-1", "--reviewer", "Alice"], {
+        from: "user",
+      })
 
       expect(resolveAuthor).not.toHaveBeenCalled()
       expect(recordReview).toHaveBeenCalledWith({
@@ -218,9 +212,7 @@ describe("inboxCommand", () => {
         reviewer: "Engineer From users.me",
         reason: undefined,
       })
-      expect(logSpy.mock.calls.join("\n")).toContain(
-        "Reviewer: Engineer From users.me",
-      )
+      expect(logSpy.mock.calls.join("\n")).toContain("Reviewer: Engineer From users.me")
     })
 
     it("exits 1 with an actionable error when no reviewer identity resolves", async () => {
@@ -233,7 +225,7 @@ describe("inboxCommand", () => {
       } as never)
 
       await expect(
-        inboxCommand.parseAsync(["approve", "mem-3"], { from: "user" }),
+        inboxCommand.parseAsync(["approve", "mem-3"], { from: "user" })
       ).rejects.toThrow("__process_exit_1__")
 
       expect(recordReview).not.toHaveBeenCalled()
@@ -262,7 +254,7 @@ describe("inboxCommand", () => {
             previousStatus: "proposed",
             newStatus: "accepted",
             cause: new Error("notion 5xx"),
-          },
+          }
         )
       })
       const resolveAuthor = vi.fn(async () => "Alice")
@@ -272,14 +264,12 @@ describe("inboxCommand", () => {
       } as never)
 
       await expect(
-        inboxCommand.parseAsync(["approve", "mem-4"], { from: "user" }),
+        inboxCommand.parseAsync(["approve", "mem-4"], { from: "user" })
       ).rejects.toThrow("__process_exit_2__")
 
       expect(exitCodes[0]).toBe(2)
       const errText = errorSpy.mock.calls.map((c) => String(c[0])).join("\n")
-      expect(errText).toContain(
-        "Inbox approve completed with audit-trail failure:",
-      )
+      expect(errText).toContain("Inbox approve completed with audit-trail failure:")
     })
 
     it("exits 1 (not 2) on MemoryReviewStateError", async () => {
@@ -290,7 +280,7 @@ describe("inboxCommand", () => {
       const recordReview = vi.fn(async () => {
         throw new MemoryReviewStateError(
           'Cannot approve memory mem-5: current status is "accepted"',
-          { memoryId: "mem-5", currentStatus: "accepted" },
+          { memoryId: "mem-5", currentStatus: "accepted" }
         )
       })
       const resolveAuthor = vi.fn(async () => "Alice")
@@ -300,7 +290,7 @@ describe("inboxCommand", () => {
       } as never)
 
       await expect(
-        inboxCommand.parseAsync(["approve", "mem-5"], { from: "user" }),
+        inboxCommand.parseAsync(["approve", "mem-5"], { from: "user" })
       ).rejects.toThrow("__process_exit_1__")
 
       // The mock makes process.exit throw, which gets caught by the
@@ -327,7 +317,7 @@ describe("inboxCommand", () => {
 
       await inboxCommand.parseAsync(
         ["reject", "mem-6", "--reason", "Duplicate of an earlier note"],
-        { from: "user" },
+        { from: "user" }
       )
 
       expect(recordReview).toHaveBeenCalledWith({
@@ -337,7 +327,7 @@ describe("inboxCommand", () => {
         reason: "Duplicate of an earlier note",
       })
       expect(logSpy.mock.calls.join("\n")).toContain(
-        "Reason: Duplicate of an earlier note",
+        "Reason: Duplicate of an earlier note"
       )
     })
   })

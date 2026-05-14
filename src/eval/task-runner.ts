@@ -57,16 +57,10 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
 import type { AuthSource } from "../config.js"
 import { resolveProjectByName } from "../core/project-scope.js"
-import {
-  loadWakeUpData,
-  type WakeUpData,
-} from "../core/wakeup.js"
+import { loadWakeUpData, type WakeUpData } from "../core/wakeup.js"
 import { initServices, type LoreServices } from "../services.js"
 import type { Fact, Memory, Project } from "../types.js"
-import {
-  runConversationMining,
-  type MiningResult,
-} from "../hooks/conversation-mining.js"
+import { runConversationMining, type MiningResult } from "../hooks/conversation-mining.js"
 import { mergeHookDefaults } from "../hooks/config.js"
 import { formatTranscriptSessionContent } from "../hooks/transcript.js"
 import {
@@ -146,9 +140,7 @@ const taskEvalTaskSchema = z
      * runs once with no memory seeded — the agent's tools see whatever
      * the workspace fixture itself includes (typically nothing).
      */
-    memoryConditions: z
-      .record(memoryConditionSchema, z.string().min(1))
-      .default({}),
+    memoryConditions: z.record(memoryConditionSchema, z.string().min(1)).default({}),
     verifiers: z.array(verifierSchema).min(1),
     /** Per-task timeout cap on the agent invocation, in milliseconds. */
     timeoutMs: z.number().int().positive().default(300_000),
@@ -275,12 +267,8 @@ export type TaskEvalVerifier = z.infer<typeof verifierSchema>
 export type TaskEvalTask = z.infer<typeof taskEvalTaskSchema>
 export type TaskEvalStandardSuite = z.infer<typeof taskEvalStandardSuiteSchema>
 export type LongitudinalTaskCondition = z.infer<typeof longitudinalConditionSchema>
-export type LongitudinalTaskScenario = z.infer<
-  typeof longitudinalTaskScenarioSchema
->
-export type LongitudinalTaskEvalSuite = z.infer<
-  typeof longitudinalTaskEvalSuiteSchema
->
+export type LongitudinalTaskScenario = z.infer<typeof longitudinalTaskScenarioSchema>
+export type LongitudinalTaskEvalSuite = z.infer<typeof longitudinalTaskEvalSuiteSchema>
 export type TaskEvalSuite = TaskEvalStandardSuite | LongitudinalTaskEvalSuite
 
 export interface AgentRunInput {
@@ -632,8 +620,7 @@ async function runLongitudinalTaskEvalSuite(
 ): Promise<{ artifact: LongitudinalTaskArtifact; outPath: string }> {
   const adapters = options.adapters ?? defaultAdapters()
   const startedAt = (options.now ?? new Date()).toISOString()
-  const loreAdapter =
-    options.longitudinalLoreAdapter ?? defaultLongitudinalLoreAdapter()
+  const loreAdapter = options.longitudinalLoreAdapter ?? defaultLongitudinalLoreAdapter()
 
   const results: LongitudinalTaskResult[] = []
   for (const scenario of loaded.suite.scenarios) {
@@ -869,9 +856,8 @@ async function runLongitudinalFormationPhase(input: {
       }
     } catch (err) {
       if (failureReason === null) {
-        failureReason = err instanceof LongitudinalAdapterRefusedError
-          ? "adapter-refused"
-          : "formation"
+        failureReason =
+          err instanceof LongitudinalAdapterRefusedError ? "adapter-refused" : "formation"
         failureMessage = err instanceof Error ? err.message : String(err)
       }
     }
@@ -907,10 +893,7 @@ async function runLongitudinalUsePhase(input: {
 }): Promise<LongitudinalPhaseResult> {
   const startedAt = new Date().toISOString()
   const before = performance.now()
-  if (
-    input.wakeUp.failureMessage !== null &&
-    input.wakeUp.failureMessage !== undefined
-  ) {
+  if (input.wakeUp.failureMessage !== null && input.wakeUp.failureMessage !== undefined) {
     const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
     return {
       phase: "use",
@@ -951,7 +934,9 @@ async function runLongitudinalUsePhase(input: {
   })
   const verifierResults: VerifierResult[] = []
   for (const verifier of input.scenario.verifiers) {
-    verifierResults.push(await runVerifier(verifier, input.workspace, input.workspaceSource))
+    verifierResults.push(
+      await runVerifier(verifier, input.workspace, input.workspaceSource)
+    )
   }
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
   const expectedSurfaced =
@@ -1076,10 +1061,7 @@ function summarizeLongitudinalResults(
   scenarioIds: string[],
   results: LongitudinalTaskResult[]
 ): LongitudinalTaskArtifact["summary"] {
-  const conditions: Record<
-    LongitudinalTaskCondition,
-    LongitudinalConditionSummary
-  > = {
+  const conditions: Record<LongitudinalTaskCondition, LongitudinalConditionSummary> = {
     "no-memory": emptyConditionSummary(),
     "lore-full-loop": emptyConditionSummary(),
   }
@@ -1111,8 +1093,7 @@ function summarizeLongitudinalResults(
   const noMemoryRate = conditions["no-memory"].successRate
   const fullLoopRate = conditions["lore-full-loop"].successRate
   const successRateDelta =
-    conditions["no-memory"].trials === 0 ||
-    conditions["lore-full-loop"].trials === 0
+    conditions["no-memory"].trials === 0 || conditions["lore-full-loop"].trials === 0
       ? null
       : roundRate(fullLoopRate - noMemoryRate)
   const passedTrials = results.filter((r) => r.success).length
@@ -1282,11 +1263,7 @@ async function seedMemoryCondition(input: {
   const contents = await readFile(absolute, "utf-8")
   // Conventional drop point: .lore-memories.json at the workspace
   // root. Agent prompts that are matrix-aware reference this path.
-  await writeFile(
-    join(input.workspace, ".lore-memories.json"),
-    contents,
-    "utf-8"
-  )
+  await writeFile(join(input.workspace, ".lore-memories.json"), contents, "utf-8")
 }
 
 function deriveFailureReason(
@@ -1687,7 +1664,9 @@ function firstAgentFailureMessage(agentRun: AgentRunResult): string | null {
   if (agentRun.refused) return firstNonEmptyLine(agentRun.stderr) ?? "Adapter refused"
   if (agentRun.timedOut) return "Agent timed out"
   if (agentRun.exitCode !== 0) {
-    return firstNonEmptyLine(agentRun.stderr) ?? `Agent exited with code ${agentRun.exitCode}`
+    return (
+      firstNonEmptyLine(agentRun.stderr) ?? `Agent exited with code ${agentRun.exitCode}`
+    )
   }
   return null
 }
@@ -1814,9 +1793,7 @@ class LiveLongitudinalLoreAdapter implements LongitudinalLoreAdapter {
     } catch (err) {
       await Promise.allSettled([
         services.projects.archive(project.id),
-        configRoot
-          ? rm(configRoot, { recursive: true, force: true })
-          : Promise.resolve(),
+        configRoot ? rm(configRoot, { recursive: true, force: true }) : Promise.resolve(),
       ])
       throw err
     }
@@ -1865,7 +1842,11 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
     sessionId: string
   }): Promise<LongitudinalLoreFormationResult> {
     const before = await snapshotProjectContext(this.input.services, this.projectId)
-    const hooks = mergeHookDefaults(this.input.services.config.hooks, this.projectName, [])
+    const hooks = mergeHookDefaults(
+      this.input.services.config.hooks,
+      this.projectName,
+      []
+    )
     const codexHome = await createIsolatedCodexHome()
     let mining: MiningResult
     try {
@@ -1939,10 +1920,7 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
 const LONGITUDINAL_SANDBOX_NAME_MARKERS =
   /\b(?:sandbox|eval|test|scratch|staging|dev|playground)\b/i
 
-export type LongitudinalAgentConfigServices = Pick<
-  LoreServices,
-  "authSource" | "config"
->
+export type LongitudinalAgentConfigServices = Pick<LoreServices, "authSource" | "config">
 
 function assertLongitudinalSandboxProjectName(projectName: string): void {
   if (LONGITUDINAL_SANDBOX_NAME_MARKERS.test(projectName)) return
@@ -1988,7 +1966,11 @@ async function writeLongitudinalAgentConfig(input: {
   await mkdir(join(input.workspace, ".codex"), { recursive: true, mode: 0o700 })
   await writeFile(
     join(input.workspace, ".codex", "config.toml"),
-    renderCodexMcpConfig({ command: mcpCommand.command, args: mcpCommand.args, env: mcpEnv }),
+    renderCodexMcpConfig({
+      command: mcpCommand.command,
+      args: mcpCommand.args,
+      env: mcpEnv,
+    }),
     { mode: 0o600 }
   )
   await writeFile(
@@ -2331,7 +2313,7 @@ const CODEX_HOME_CONFIG_KEYS = new Set([
 ])
 
 export async function createIsolatedCodexHome(
-  parentEnv: NodeJS.ProcessEnv = process.env,
+  parentEnv: NodeJS.ProcessEnv = process.env
 ): Promise<string> {
   const codexHome = await mkdtemp(join(tmpdir(), "lore-eval-codex-home-"))
   try {
@@ -2389,7 +2371,7 @@ async function removeIsolatedCodexHome(codexHome: string): Promise<void> {
 
 export function buildCodexChildEnv(
   parentEnv: NodeJS.ProcessEnv = process.env,
-  options: { codexHome?: string } = {},
+  options: { codexHome?: string } = {}
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
   for (const key of CODEX_FORWARDED_ENV_KEYS) {
@@ -2546,7 +2528,7 @@ export const BENCH_CHILD_CLEARED_ENV_KEYS = [
  * `LORE_BENCH_OPENAI_API_KEY → OPENAI_API_KEY` mapping.
  */
 export function buildBenchCodexChildEnv(
-  parentEnv: NodeJS.ProcessEnv = process.env,
+  parentEnv: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
   for (const key of ["PATH", "HOME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE"]) {

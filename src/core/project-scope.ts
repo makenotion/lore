@@ -178,11 +178,7 @@ export async function resolveProjectScopeName(
     includeArchived?: boolean
   } = {}
 ): Promise<Project> {
-  const result = await resolveProjectNameResult(
-    projects,
-    name,
-    options.includeArchived
-  )
+  const result = await resolveProjectNameResult(projects, name, options.includeArchived)
 
   if (result === null) {
     throw new Error(formatUnresolvedProjectScopeError([name], scopeFields, options))
@@ -223,11 +219,7 @@ export async function resolveProjectScopeNames(
   const resolved = await Promise.all(
     names.map(async (name) => ({
       name,
-      result: await resolveProjectNameResult(
-        projects,
-        name,
-        options.includeArchived
-      ),
+      result: await resolveProjectNameResult(projects, name, options.includeArchived),
     }))
   )
 

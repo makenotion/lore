@@ -10,10 +10,7 @@
 
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
-import {
-  readBenchCorpusChecksums,
-  sha256Hex,
-} from "./bench-corpus.js"
+import { readBenchCorpusChecksums, sha256Hex } from "./bench-corpus.js"
 
 export interface FetchReport {
   path: string
@@ -44,14 +41,8 @@ export interface FetchOptions {
   }) => Promise<Buffer>
 }
 
-function huggingFaceUrl(
-  repository: string,
-  revision: string,
-  filename: string,
-): string {
-  return (
-    `https://huggingface.co/datasets/${repository}/resolve/${revision}/${filename}`
-  )
+function huggingFaceUrl(repository: string, revision: string, filename: string): string {
+  return `https://huggingface.co/datasets/${repository}/resolve/${revision}/${filename}`
 }
 
 /**
@@ -81,7 +72,7 @@ async function defaultDownload(input: {
     const response = await fetch(url, { signal: controller.signal })
     if (!response.ok) {
       throw new Error(
-        `HuggingFace fetch failed: HTTP ${response.status} ${response.statusText} for ${url}`,
+        `HuggingFace fetch failed: HTTP ${response.status} ${response.statusText} for ${url}`
       )
     }
     const contentLength = response.headers.get("content-length")
@@ -90,7 +81,7 @@ async function defaultDownload(input: {
       if (Number.isFinite(declared) && declared > HF_MAX_DOWNLOAD_BYTES) {
         throw new Error(
           `HuggingFace download rejected: declared content-length ${declared} ` +
-            `exceeds cap ${HF_MAX_DOWNLOAD_BYTES} bytes for ${url}`,
+            `exceeds cap ${HF_MAX_DOWNLOAD_BYTES} bytes for ${url}`
         )
       }
     }
@@ -98,7 +89,7 @@ async function defaultDownload(input: {
     if (buffer.length > HF_MAX_DOWNLOAD_BYTES) {
       throw new Error(
         `HuggingFace download rejected: actual ${buffer.length} bytes ` +
-          `exceeds cap ${HF_MAX_DOWNLOAD_BYTES} bytes for ${url}`,
+          `exceeds cap ${HF_MAX_DOWNLOAD_BYTES} bytes for ${url}`
       )
     }
     return buffer
@@ -108,18 +99,17 @@ async function defaultDownload(input: {
 }
 
 export async function fetchLongMemEvalCorpus(
-  options: FetchOptions = {},
+  options: FetchOptions = {}
 ): Promise<FetchReport> {
   const checksumsPath = resolve(
-    options.checksumsPath ??
-      "evals/bench-corpora/longmemeval/checksums.json",
+    options.checksumsPath ?? "evals/bench-corpora/longmemeval/checksums.json"
   )
   const checksums = await readBenchCorpusChecksums(checksumsPath)
   if (checksums.revision === "pending-bootstrap-fetch") {
     throw new Error(
       `checksums.json at ${checksumsPath} carries the placeholder revision ` +
         `"pending-bootstrap-fetch". Update the manifest to a real HF commit ` +
-        `SHA before fetching — operator must pin a deliberate revision.`,
+        `SHA before fetching — operator must pin a deliberate revision.`
     )
   }
   const entries = Object.entries(checksums.files)
@@ -158,7 +148,7 @@ export async function fetchLongMemEvalCorpus(
     if (actual !== manifest.sha256) {
       throw new Error(
         `Downloaded ${filename} sha256 mismatch: expected ${manifest.sha256}, ` +
-          `got ${actual}. Either the HF revision drifted or the manifest is stale.`,
+          `got ${actual}. Either the HF revision drifted or the manifest is stale.`
       )
     }
     await writeFile(out, buffer)

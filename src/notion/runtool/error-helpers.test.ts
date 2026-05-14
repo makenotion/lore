@@ -125,5 +125,4 @@ describe("warnRunToolIntegrationSecretOnce + isKnownIntegrationSecretAuthSource"
     warnRunToolIntegrationSecretOnce("env-notion-api-token")
     expect(stderrSpy).not.toHaveBeenCalled()
   })
-
 })

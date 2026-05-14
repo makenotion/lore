@@ -1,11 +1,25 @@
 import { Command } from "commander"
-import { readFile, writeFile, mkdir, access, chmod, rename, unlink } from "node:fs/promises"
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  access,
+  chmod,
+  rename,
+  unlink,
+} from "node:fs/promises"
 import { join, dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { createInterface } from "node:readline/promises"
-import { findConfigFile, loadConfig, resolveAuth, type AuthSource, type ResolvedAuth } from "../../config.js"
+import {
+  findConfigFile,
+  loadConfig,
+  resolveAuth,
+  type AuthSource,
+  type ResolvedAuth,
+} from "../../config.js"
 import type { LoreConfig } from "../../types.js"
 import {
   ntnEnvBaseUrl,
@@ -203,13 +217,13 @@ export interface BuildMcpEnvOptions {
 export function buildMcpEnv(
   configRoot: string,
   envSource: NodeJS.ProcessEnv = process.env,
-  options: BuildMcpEnvOptions = {},
+  options: BuildMcpEnvOptions = {}
 ): McpEnvBuild {
   const env: Record<string, string> = {}
   const forwarded: RuntimeForwardedKey[] = []
   const skipAuthTokens = options.authSource === "ntn-auth-json"
   const authTokenKeys: ReadonlySet<RuntimeForwardedKey> = new Set(
-    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
+    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS
   )
 
   // When `notionBaseUrlLiteral` is set, suppress ALL four base-URL
@@ -350,7 +364,7 @@ export function buildClaudeMcpEntry(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
-  notionBaseUrlLiteral?: string,
+  notionBaseUrlLiteral?: string
 ): ClaudeMcpEntry {
   const build = buildMcpEnv(configRoot, envSource, {
     // PnP entries are committed to the workspace root and shared
@@ -384,7 +398,7 @@ export function buildLegacyClaudeMcpEntry(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
-  notionBaseUrlLiteral?: string,
+  notionBaseUrlLiteral?: string
 ): ClaudeMcpEntry {
   const build = buildMcpEnv(configRoot, envSource, {
     authSource,
@@ -489,7 +503,7 @@ export function buildCursorMcpEntry(
   shape: BinDispatchShape = "bare",
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
-  options: BuildCursorMcpEntryOptions = {},
+  options: BuildCursorMcpEntryOptions = {}
 ): CursorMcpEntry {
   const useGlobalScope = options.useGlobalScope ?? false
   // PnP omission rationale only applies to committed config. Under
@@ -527,7 +541,7 @@ export function buildLegacyCursorMcpEntry(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
-  notionBaseUrlLiteral?: string,
+  notionBaseUrlLiteral?: string
 ): CursorMcpEntry {
   const build = buildMcpEnv(configRoot, envSource, {
     authSource,
@@ -548,7 +562,10 @@ export function buildLegacyCursorMcpEntry(
  * project-vs-user split. `useGlobalScope` opts into the global file (driven
  * by `--cursor-global`).
  */
-export function resolveCursorMcpPath(projectDir: string, useGlobalScope: boolean): string {
+export function resolveCursorMcpPath(
+  projectDir: string,
+  useGlobalScope: boolean
+): string {
   return useGlobalScope
     ? join(homedir(), ".cursor", "mcp.json")
     : join(projectDir, ".cursor", "mcp.json")
@@ -567,7 +584,7 @@ export function resolveCursorMcpPath(projectDir: string, useGlobalScope: boolean
  */
 export function buildCursorGlobalIgnoredNotice(
   cursorGlobal: boolean | undefined,
-  client: InstallClient,
+  client: InstallClient
 ): string | null {
   if (!cursorGlobal) return null
   if (client === "cursor" || client === "all") return null
@@ -679,7 +696,7 @@ export function buildCodexMcpSection(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
-  notionBaseUrlLiteral?: string,
+  notionBaseUrlLiteral?: string
 ): string {
   const build = buildMcpEnv(configRoot, envSource, {
     omitConfigRoot: shape === "yarn",
@@ -701,7 +718,7 @@ export function buildLegacyCodexMcpSection(
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
-  notionBaseUrlLiteral?: string,
+  notionBaseUrlLiteral?: string
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const build = buildMcpEnv(configRoot, envSource, {
@@ -726,7 +743,7 @@ export function buildLegacyCodexMcpSection(
   // defense.
   const launchCommand = codexLaunchCommand(
     build.staticEnv,
-    `node ${shellQuotePortablePath(portableMcpJsPath)}`,
+    `node ${shellQuotePortablePath(portableMcpJsPath)}`
   )
 
   return [
@@ -803,7 +820,7 @@ const CODEX_HOOKS_FEATURE_KEY = "hooks"
  */
 export function buildClaudeHookCommand(
   eventName: HookEventName,
-  shape: BinDispatchShape = "bare",
+  shape: BinDispatchShape = "bare"
 ): string {
   const tail =
     shape === "yarn" ? `yarn run -T lore hooks ${eventName}` : `lore hooks ${eventName}`
@@ -821,7 +838,7 @@ export function buildClaudeHookCommand(
  */
 export function buildCodexHookCommand(
   eventName: HookEventName,
-  shape: BinDispatchShape = "bare",
+  shape: BinDispatchShape = "bare"
 ): string {
   const tail =
     shape === "yarn" ? `yarn run -T lore hooks ${eventName}` : `lore hooks ${eventName}`
@@ -914,7 +931,7 @@ async function readJsonSafe(filePath: string): Promise<Record<string, unknown>> 
     } catch (err) {
       throw new Error(
         `Failed to parse ${filePath}: ${err instanceof Error ? err.message : err}`,
-        { cause: err },
+        { cause: err }
       )
     }
   } catch (err: unknown) {
@@ -934,7 +951,7 @@ async function readTextSafe(filePath: string): Promise<string> {
 
 async function writeJsonFile(
   filePath: string,
-  data: Record<string, unknown>,
+  data: Record<string, unknown>
 ): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
   // Write to a sibling temp file and rename so a failed write never leaves a
@@ -974,7 +991,7 @@ async function fileExists(path: string): Promise<boolean> {
 async function confirm(
   rl: ReturnType<typeof createInterface> | null,
   message: string,
-  defaultYes = true,
+  defaultYes = true
 ): Promise<boolean> {
   if (!rl) return defaultYes
   const suffix = defaultYes ? "[Y/n]" : "[y/N]"
@@ -1038,7 +1055,7 @@ export function detectClaudeHook(
   entries: ClaudeHookEntry[] | undefined,
   scriptName: string,
   legacyExpectedPath: string,
-  binDispatchCommand?: string,
+  binDispatchCommand?: string
 ): HookStatus {
   if (!entries) return "missing"
 
@@ -1096,7 +1113,7 @@ function upsertClaudeHookCommand(
   existing: ClaudeHookEntry[] | undefined,
   scriptName: string,
   newCommand: string,
-  config: { matcher: string; timeout?: number; runOnce?: boolean },
+  config: { matcher: string; timeout?: number; runOnce?: boolean }
 ): ClaudeHookEntry[] {
   // Recognize ALL Lore-owned bin-dispatch hook shapes so an upgrade
   // path strips the old entry before writing the new one — preventing
@@ -1123,16 +1140,18 @@ function upsertClaudeHookCommand(
         if (hook.command.endsWith(`/${scriptName}`)) return true
         if (binDispatchPattern.test(hook.command)) return true
         return false
-      }),
+      })
   )
   filtered.push({
     matcher: config.matcher,
-    hooks: [{
-      type: "command",
-      command: newCommand,
-      ...(config.timeout != null ? { timeout: config.timeout } : {}),
-      ...(config.runOnce != null ? { runOnce: config.runOnce } : {}),
-    }],
+    hooks: [
+      {
+        type: "command",
+        command: newCommand,
+        ...(config.timeout != null ? { timeout: config.timeout } : {}),
+        ...(config.runOnce != null ? { runOnce: config.runOnce } : {}),
+      },
+    ],
   })
   return filtered
 }
@@ -1156,14 +1175,15 @@ function isEffectivelyCurrent(status: HookStatus, legacyPaths: boolean): boolean
 
 export function removeClaudeScriptEntries(
   entries: ClaudeHookEntry[] | undefined,
-  scriptName: string,
+  scriptName: string
 ): ClaudeHookEntry[] | undefined {
   if (!entries) return undefined
   const filtered = entries.filter(
     (entry) =>
       !entry.hooks?.some(
-        (hook) => typeof hook.command === "string" && hook.command.endsWith(`/${scriptName}`),
-      ),
+        (hook) =>
+          typeof hook.command === "string" && hook.command.endsWith(`/${scriptName}`)
+      )
   )
   return filtered.length > 0 ? filtered : undefined
 }
@@ -1187,9 +1207,7 @@ export function removeClaudeScriptEntries(
  * Lore's writer never produces that shape, but it's a sharp edge worth
  * being aware of.
  */
-export function stripLoreOwnedSessionEndEntries(
-  entries: ClaudeHookEntry[] | undefined,
-): {
+export function stripLoreOwnedSessionEndEntries(entries: ClaudeHookEntry[] | undefined): {
   /** Post-cleanup entries, or `undefined` when every entry was Lore-owned. */
   result: ClaudeHookEntry[] | undefined
   /** True when a `session-end.sh` registration was removed. */
@@ -1198,8 +1216,7 @@ export function stripLoreOwnedSessionEndEntries(
   removedLegacyAutosave: boolean
 } {
   const removedShim = detectClaudeHook(entries, "session-end.sh", "") !== "missing"
-  const removedLegacyAutosave =
-    detectClaudeHook(entries, "autosave.sh", "") !== "missing"
+  const removedLegacyAutosave = detectClaudeHook(entries, "autosave.sh", "") !== "missing"
 
   let next = entries
   if (removedShim) next = removeClaudeScriptEntries(next, "session-end.sh")
@@ -1277,7 +1294,7 @@ export function detectCodexHook(
   entries: CodexHookEntry[] | undefined,
   scriptName: string,
   legacyExpectedCommand: string,
-  binDispatchCommand?: string,
+  binDispatchCommand?: string
 ): HookStatus {
   if (!entries) return "missing"
 
@@ -1323,17 +1340,19 @@ export function detectCodexHook(
 function mergeCodexHookEntries(
   existing: CodexHookEntry[] | undefined,
   command: string,
-  config: { matcher?: string; timeout?: number; statusMessage?: string },
+  config: { matcher?: string; timeout?: number; statusMessage?: string }
 ): CodexHookEntry[] {
   const next = [...(existing ?? [])]
   next.push({
     ...(config.matcher ? { matcher: config.matcher } : {}),
-    hooks: [{
-      type: "command",
-      command,
-      ...(config.timeout != null ? { timeout: config.timeout } : {}),
-      ...(config.statusMessage ? { statusMessage: config.statusMessage } : {}),
-    }],
+    hooks: [
+      {
+        type: "command",
+        command,
+        ...(config.timeout != null ? { timeout: config.timeout } : {}),
+        ...(config.statusMessage ? { statusMessage: config.statusMessage } : {}),
+      },
+    ],
   })
   return next
 }
@@ -1351,11 +1370,9 @@ function mergeCodexHookEntries(
  */
 function stripCodexBinDispatchHook(
   hooks: Record<string, CodexHookEntry[]>,
-  eventName: HookEventName,
+  eventName: HookEventName
 ): Record<string, CodexHookEntry[]> {
-  const tailPattern = new RegExp(
-    `^(?:yarn (?:run -T )?)?lore hooks ${eventName}$`,
-  )
+  const tailPattern = new RegExp(`^(?:yarn (?:run -T )?)?lore hooks ${eventName}$`)
   const next: Record<string, CodexHookEntry[]> = {}
   for (const [event, entries] of Object.entries(hooks)) {
     const filtered = entries.filter(
@@ -1364,7 +1381,7 @@ function stripCodexBinDispatchHook(
           if (typeof hook.command !== "string") return false
           const tail = stripShellEnvPrefix(hook.command)
           return tailPattern.test(tail)
-        }),
+        })
     )
     if (filtered.length > 0) next[event] = filtered
   }
@@ -1373,21 +1390,23 @@ function stripCodexBinDispatchHook(
 
 function removeCodexScriptEntries(
   entries: CodexHookEntry[] | undefined,
-  scriptName: string,
+  scriptName: string
 ): CodexHookEntry[] | undefined {
   if (!entries) return undefined
   const filtered = entries.filter(
     (entry) =>
       !entry.hooks?.some(
-        (hook) => typeof hook.command === "string" && commandTargetsScript(hook.command, scriptName),
-      ),
+        (hook) =>
+          typeof hook.command === "string" &&
+          commandTargetsScript(hook.command, scriptName)
+      )
   )
   return filtered.length > 0 ? filtered : undefined
 }
 
 function stripCodexScriptFromAllEvents(
   hooks: Record<string, CodexHookEntry[]>,
-  scriptName: string,
+  scriptName: string
 ): Record<string, CodexHookEntry[]> {
   const next: Record<string, CodexHookEntry[]> = {}
   for (const [eventName, entries] of Object.entries(hooks)) {
@@ -1447,7 +1466,7 @@ function assertTomlSupportsLoreRewrite(text: string, filePath: string): void {
   const displayPath = displayHomePath(filePath)
   throw new Error(
     `${displayPath} contains TOML array-of-tables ([[...]]). ` +
-      "lore install cannot safely rewrite that file yet; update the Lore sections manually instead.",
+      "lore install cannot safely rewrite that file yet; update the Lore sections manually instead."
   )
 }
 
@@ -1461,7 +1480,10 @@ function appendTomlBlock(text: string, block: string): string {
 function removeTomlTableGroup(text: string, tablePrefix: string): string {
   const lines = splitTomlLines(text)
   const sections = parseTomlSections(text)
-    .filter((section) => section.name === tablePrefix || section.name.startsWith(`${tablePrefix}.`))
+    .filter(
+      (section) =>
+        section.name === tablePrefix || section.name.startsWith(`${tablePrefix}.`)
+    )
     .sort((a, b) => b.start - a.start)
 
   for (const section of sections) {
@@ -1474,7 +1496,8 @@ function removeTomlTableGroup(text: string, tablePrefix: string): string {
 function extractTomlTableGroup(text: string, tablePrefix: string): string | null {
   const lines = splitTomlLines(text)
   const matches = parseTomlSections(text).filter(
-    (section) => section.name === tablePrefix || section.name.startsWith(`${tablePrefix}.`),
+    (section) =>
+      section.name === tablePrefix || section.name.startsWith(`${tablePrefix}.`)
   )
   if (matches.length === 0) return null
 
@@ -1486,10 +1509,12 @@ function extractTomlTableGroup(text: string, tablePrefix: string): string | null
 function extractTomlKeyValue(
   text: string,
   tableName: string,
-  key: string,
+  key: string
 ): string | undefined {
   const lines = splitTomlLines(text)
-  const section = parseTomlSections(text).find((candidate) => candidate.name === tableName)
+  const section = parseTomlSections(text).find(
+    (candidate) => candidate.name === tableName
+  )
   if (!section) return undefined
 
   const keyPattern = new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*(?:#.*)?$`)
@@ -1504,7 +1529,7 @@ function upsertTomlTableKey(
   text: string,
   tableName: string,
   key: string,
-  value: string,
+  value: string
 ): string {
   const lines = splitTomlLines(text)
   const sections = parseTomlSections(text)
@@ -1624,7 +1649,7 @@ async function readWakeUpConfig(projectDir: string): Promise<boolean | null> {
     const displayPath = displayHomePath(found.path)
     process.stderr.write(
       `[lore] Could not read hooks.wakeUp from ${displayPath}: ${err instanceof Error ? err.message : err}\n` +
-        `[lore] Installer status may not reflect hooks.wakeUp — fix the config and re-run 'lore install'.\n`,
+        `[lore] Installer status may not reflect hooks.wakeUp — fix the config and re-run 'lore install'.\n`
     )
     return null
   }
@@ -1651,14 +1676,12 @@ function wakeupStatusSuffix(wakeUpConfig: boolean | null): string {
  * arg → upward `.pnp.cjs` walk → runner-bound `yarnPnp`).
  * Production callers go through `runInstall`.
  */
-export async function prepareInstallContext(
-  opts: {
-    yes?: boolean
-    project?: string
-    legacyPaths?: boolean
-    yarnPnp?: boolean
-  },
-): Promise<InstallContext> {
+export async function prepareInstallContext(opts: {
+  yes?: boolean
+  project?: string
+  legacyPaths?: boolean
+  yarnPnp?: boolean
+}): Promise<InstallContext> {
   const projectDir = resolve(opts.project ?? process.cwd())
   const pkgRoot = resolvePkgRoot()
   const skipPrompts = opts.yes || !process.stdin.isTTY
@@ -1739,7 +1762,7 @@ export async function ensureHookPrerequisites(context: InstallContext): Promise<
     if (!hasAutosave) missing.push("hooks/autosave.sh")
     if (!hasWakeup) missing.push("hooks/wakeup.sh")
     throw new Error(
-      `Required hook scripts not found: ${missing.join(", ")}. Run 'npm run build' first.`,
+      `Required hook scripts not found: ${missing.join(", ")}. Run 'npm run build' first.`
     )
   }
   await Promise.all([
@@ -1779,7 +1802,7 @@ function describeAuthSource(source: AuthSource): string {
 async function confirmPrompt(message: string): Promise<boolean> {
   if (!process.stdin.isTTY) {
     console.error(
-      "Non-interactive context detected. Pass --yes to confirm prompts non-interactively.",
+      "Non-interactive context detected. Pass --yes to confirm prompts non-interactively."
     )
     return false
   }
@@ -1874,7 +1897,7 @@ interface NtnLoginRecovery {
  */
 export function ntnLoginRecovery(
   config: LoreConfig | undefined,
-  envSource: NodeJS.ProcessEnv = process.env,
+  envSource: NodeJS.ProcessEnv = process.env
 ): NtnLoginRecovery {
   const operatorEnv = envSource["NOTION_ENV"]
   if (operatorEnv) {
@@ -1931,7 +1954,7 @@ export function ntnLoginRecovery(
  */
 function describeNtnEnvSelectors(
   auth: ResolvedAuth,
-  envSource: NodeJS.ProcessEnv = process.env,
+  envSource: NodeJS.ProcessEnv = process.env
 ): string {
   const baseUrl = auth.baseUrl
   const env = baseUrl ? ntnEnvFromBaseUrl(baseUrl) : "prod"
@@ -1951,7 +1974,7 @@ function describeNtnEnvSelectors(
 function describeBaseUrlSource(
   auth: ResolvedAuth,
   envSource: NodeJS.ProcessEnv,
-  resolvedBaseUrl: string | undefined,
+  resolvedBaseUrl: string | undefined
 ): string {
   for (const key of [
     "LORE_NOTION_BASE_URL",
@@ -2010,7 +2033,7 @@ function describeBaseUrlSource(
 function describeAuthBaseUrlConfigMismatch(
   auth: ResolvedAuth,
   config: LoreConfig | undefined,
-  envSource: NodeJS.ProcessEnv = process.env,
+  envSource: NodeJS.ProcessEnv = process.env
 ): string | undefined {
   if (auth.source !== "ntn-auth-json" && auth.source !== "env-notion-api-token") {
     return undefined
@@ -2138,7 +2161,7 @@ function describeConflictingDevSignal(env: NodeJS.ProcessEnv): string {
  */
 async function resolveAndPreflight(
   context: InstallContext,
-  opts: EnsurePrerequisitesOptions,
+  opts: EnsurePrerequisitesOptions
 ): Promise<{ ready: boolean; authSource?: AuthSource }> {
   const found = await findConfigFile(context.projectDir)
   let config: LoreConfig | undefined
@@ -2163,7 +2186,7 @@ async function resolveAndPreflight(
   } catch (err) {
     console.error("")
     console.error(
-      `    Auth resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+      `    Auth resolution failed: ${err instanceof Error ? err.message : String(err)}`
     )
     console.error("")
     console.error("    NOTION_API_TOKEN is set in your environment but Lore could not")
@@ -2196,13 +2219,13 @@ async function resolveAndPreflight(
   // either way.
   if (auth.token.startsWith("secret_")) {
     console.log(
-      "                          ! Token shape is `secret_…` (integration token from notion.so/profile/integrations).",
+      "                          ! Token shape is `secret_…` (integration token from notion.so/profile/integrations)."
     )
     console.log(
-      "                          Integration tokens are integration-level rate-limited, which",
+      "                          Integration tokens are integration-level rate-limited, which"
     )
     console.log(
-      "                          re-collapses Lore into one shared bucket. Rotate to a PAT",
+      "                          re-collapses Lore into one shared bucket. Rotate to a PAT"
     )
     console.log("                          from https://www.notion.so/developers/tokens.")
   }
@@ -2219,7 +2242,7 @@ async function resolveAndPreflight(
 
 export async function ensurePrerequisites(
   context: InstallContext,
-  opts: EnsurePrerequisitesOptions = {},
+  opts: EnsurePrerequisitesOptions = {}
 ): Promise<{ ready: boolean; authSource?: AuthSource }> {
   console.log("Checking prerequisites...")
 
@@ -2245,28 +2268,25 @@ export async function ensurePrerequisites(
   // shell signal, or drop `--dev`.
   if (opts.dev) {
     const operatorBaseUrl = resolveOperatorBaseUrl(process.env)
-    if (
-      operatorBaseUrl !== undefined &&
-      ntnEnvFromBaseUrl(operatorBaseUrl) !== "dev"
-    ) {
+    if (operatorBaseUrl !== undefined && ntnEnvFromBaseUrl(operatorBaseUrl) !== "dev") {
       const conflicting = describeConflictingDevSignal(process.env)
       console.log(`  --dev:                ✗ conflicts with operator-set base URL`)
       console.error("")
       console.error(
-        `    --dev was passed but ${conflicting} routes auth to ${operatorBaseUrl}`,
+        `    --dev was passed but ${conflicting} routes auth to ${operatorBaseUrl}`
       )
       console.error(
-        "    (not the dev base URL). Lore cannot install a coherent --dev MCP",
+        "    (not the dev base URL). Lore cannot install a coherent --dev MCP"
       )
       console.error(
-        "    config while the shell carries a conflicting signal — preflight would",
+        "    config while the shell carries a conflicting signal — preflight would"
       )
-      console.error(
-        "    verify one base URL and the MCP child would read another.",
-      )
+      console.error("    verify one base URL and the MCP child would read another.")
       console.error("")
       console.error("    Recovery (pick one):")
-      console.error("      1. Unset the conflicting shell variable, then re-run `lore install --dev`.")
+      console.error(
+        "      1. Unset the conflicting shell variable, then re-run `lore install --dev`."
+      )
       console.error("      2. Drop --dev and re-run `lore install` to target prod.")
       return { ready: false }
     }
@@ -2291,8 +2311,7 @@ export async function ensurePrerequisites(
   //     `auth.baseUrl` chain in `resolveOperatorBaseUrl`.
   const ntnInstalled = isNtnInstalled()
   const patEnv = process.env["NOTION_API_TOKEN"]
-  const personaIsExternal =
-    !opts.ntn && (patEnv !== undefined || !ntnInstalled)
+  const personaIsExternal = !opts.ntn && (patEnv !== undefined || !ntnInstalled)
 
   if (personaIsExternal && !patEnv && !opts.ntn) {
     // No PAT, no `--ntn`, and `ntn` is not installed. The operator
@@ -2312,11 +2331,17 @@ export async function ensurePrerequisites(
     console.log("      https://www.notion.so/developers/tokens")
     console.log("      then export it and re-run `lore install`:")
     console.log("")
-    console.log(`        export NOTION_API_TOKEN="${opts.dev ? "development_ntn_" : "ntn_"}..."`)
+    console.log(
+      `        export NOTION_API_TOKEN="${opts.dev ? "development_ntn_" : "ntn_"}..."`
+    )
     console.log(`        lore install${opts.dev ? " --dev" : ""}`)
     console.log("")
-    console.log("    Do NOT paste an integration token from notion.so/profile/integrations —")
-    console.log("    those are integration-level rate-limited and re-collapse Lore into one")
+    console.log(
+      "    Do NOT paste an integration token from notion.so/profile/integrations —"
+    )
+    console.log(
+      "    those are integration-level rate-limited and re-collapse Lore into one"
+    )
     console.log("    shared bucket. See docs/authentication.md for the full contract.")
     return { ready: false }
   }
@@ -2341,13 +2366,19 @@ export async function ensurePrerequisites(
   if (opts.ntn && patEnv !== undefined) {
     console.log(`  NOTION_API_TOKEN:     ! set in shell — outranks ntn`)
     console.log("")
-    console.log("    Per the resolver chain (NOTION_API_TOKEN > ntn-auth-json), the spawned")
-    console.log("    MCP child will use NOTION_API_TOKEN even though --ntn just ran `ntn login`.")
+    console.log(
+      "    Per the resolver chain (NOTION_API_TOKEN > ntn-auth-json), the spawned"
+    )
+    console.log(
+      "    MCP child will use NOTION_API_TOKEN even though --ntn just ran `ntn login`."
+    )
     console.log("    If you intended ntn to be active, also run:")
     console.log("")
     console.log("        unset NOTION_API_TOKEN")
     console.log("")
-    console.log("    and remove the export from your shell rc. If NOTION_API_TOKEN is the")
+    console.log(
+      "    and remove the export from your shell rc. If NOTION_API_TOKEN is the"
+    )
     console.log("    PAT you want Lore to use, drop --ntn instead — `lore install` will")
     console.log("    skip ntn entirely.")
     console.log("")
@@ -2385,7 +2416,7 @@ export async function ensurePrerequisites(
   const installedVersion = getNtnVersion()
   if (versionStatus === "too-old") {
     console.log(
-      `  ntn version:          ! ${installedVersion ?? "unknown"} (below tested minimum ${MIN_NTN_VERSION})`,
+      `  ntn version:          ! ${installedVersion ?? "unknown"} (below tested minimum ${MIN_NTN_VERSION})`
     )
     console.log("    Lore will proceed, but consider running `ntn update` if you")
     console.log("    hit auth resolution issues.")
@@ -2449,7 +2480,8 @@ export async function ensurePrerequisites(
   const operatorEnv = process.env["NOTION_ENV"]
   const operatorEnvParsed = parseNtnEnv(operatorEnv)
   let resolvedNtnEnv: NtnEnv | undefined
-  let resolvedNtnEnvSource: "cli-flag" | "operator-env" | "config-baseurl" | "default" = "default"
+  let resolvedNtnEnvSource: "cli-flag" | "operator-env" | "config-baseurl" | "default" =
+    "default"
   if (opts.dev) {
     // `--dev` is the most explicit signal — wins over both env vars
     // and .lore.yaml's `auth.baseUrl`. The operator typed it just
@@ -2464,12 +2496,12 @@ export async function ensurePrerequisites(
       // surface a clearer message at the install seam.
       console.log("  Auth source:          ✗ no token resolved")
       console.error("")
-      console.error(
-        `    NOTION_ENV=${operatorEnv} is not a recognized ntn environment.`,
-      )
+      console.error(`    NOTION_ENV=${operatorEnv} is not a recognized ntn environment.`)
       console.error("    Expected one of: prod, dev, stg.")
       console.error("")
-      console.error("    Recovery: unset or correct NOTION_ENV in your shell, then re-run")
+      console.error(
+        "    Recovery: unset or correct NOTION_ENV in your shell, then re-run"
+      )
       console.error("    `lore install`.")
       return { ready: false }
     }
@@ -2486,10 +2518,16 @@ export async function ensurePrerequisites(
       // for a project whose config disagrees with prod.
       console.log("  Auth source:          ✗ no token resolved")
       console.error("")
-      console.error(`    .lore.yaml carries auth.baseUrl=${config.auth.baseUrl}, which doesn't`)
-      console.error("    match a known ntn environment. Lore can't safely pick a `NOTION_ENV`")
+      console.error(
+        `    .lore.yaml carries auth.baseUrl=${config.auth.baseUrl}, which doesn't`
+      )
+      console.error(
+        "    match a known ntn environment. Lore can't safely pick a `NOTION_ENV`"
+      )
       console.error("    target for `ntn login` from this — minting a prod token for a")
-      console.error("    non-prod project would land you on the generic vault-not-accessible")
+      console.error(
+        "    non-prod project would land you on the generic vault-not-accessible"
+      )
       console.error("    error after install.")
       console.error("")
       console.error("    Recovery: run `NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`")
@@ -2503,20 +2541,22 @@ export async function ensurePrerequisites(
   console.log("")
   if (resolvedNtnEnvSource === "cli-flag") {
     console.log(
-      `    --dev was passed — Lore will pass NOTION_ENV=${resolvedNtnEnv} to ntn login so the`,
+      `    --dev was passed — Lore will pass NOTION_ENV=${resolvedNtnEnv} to ntn login so the`
     )
     console.log("    resulting token authorizes against the dev deployment.")
     console.log("")
   } else if (resolvedNtnEnvSource === "config-baseurl") {
     console.log(
-      `    .lore.yaml's auth.baseUrl maps to ntn env "${resolvedNtnEnv}" — Lore will`,
+      `    .lore.yaml's auth.baseUrl maps to ntn env "${resolvedNtnEnv}" — Lore will`
     )
-    console.log(`    pass NOTION_ENV=${resolvedNtnEnv} to ntn login so the resulting token`)
+    console.log(
+      `    pass NOTION_ENV=${resolvedNtnEnv} to ntn login so the resulting token`
+    )
     console.log("    authorizes against the right Notion deployment.")
     console.log("")
   } else if (resolvedNtnEnvSource === "operator-env") {
     console.log(
-      `    Using NOTION_ENV=${resolvedNtnEnv} from your shell — ntn login will mint a`,
+      `    Using NOTION_ENV=${resolvedNtnEnv} from your shell — ntn login will mint a`
     )
     console.log("    token for that environment.")
     console.log("")
@@ -2538,17 +2578,17 @@ export async function ensurePrerequisites(
     // keychain.
     const manualEnvPrefix = resolvedNtnEnv ? `NOTION_ENV=${resolvedNtnEnv} ` : ""
     console.log(
-      `    Skipping. Run \`NOTION_KEYRING=0 ${manualEnvPrefix}ntn login\` directly when you're`,
+      `    Skipping. Run \`NOTION_KEYRING=0 ${manualEnvPrefix}ntn login\` directly when you're`
     )
-    console.log("    ready, then re-run `lore install`. The env var prefix is required so")
+    console.log(
+      "    ready, then re-run `lore install`. The env var prefix is required so"
+    )
     console.log("    the token lands in auth.json (where Lore reads from) instead of the")
     console.log("    macOS keychain.")
     return { ready: false }
   }
 
-  const loginResult = await runNtnLogin(
-    resolvedNtnEnv ? { env: resolvedNtnEnv } : {},
-  )
+  const loginResult = await runNtnLogin(resolvedNtnEnv ? { env: resolvedNtnEnv } : {})
   if (loginResult.kind !== "success") {
     console.error("    ntn login did not complete successfully.")
     if (loginResult.kind === "exit-non-zero") {
@@ -2579,7 +2619,9 @@ export async function ensurePrerequisites(
   console.error("    Auth resolution still failed after ntn login.")
   // `lore auth --status` is the diagnostic surface for the ntn-aware
   // path; the manual fallback is checking auth.json contents directly.
-  console.error("    Inspect `~/.config/notion/auth.json` to confirm a workspace token landed,")
+  console.error(
+    "    Inspect `~/.config/notion/auth.json` to confirm a workspace token landed,"
+  )
   console.error("    or re-run with `LORE_DEBUG=1` for verbose resolveAuth tracing.")
   return { ready: false }
 }
@@ -2613,7 +2655,7 @@ export async function ensurePrerequisites(
 async function preflightAndReport(
   auth: ResolvedAuth,
   found: { root: string; path: string } | null,
-  config: LoreConfig | undefined,
+  config: LoreConfig | undefined
 ): Promise<{ ready: boolean; authSource?: AuthSource }> {
   if (!found || !config) {
     return { ready: true, authSource: auth.source }
@@ -2647,13 +2689,25 @@ async function preflightAndReport(
         printPatIntegrationTokenPreflightHint()
       }
       console.error("    Most likely causes for a PAT install:")
-      console.error("      1. The PAT was created against a different workspace than the vault.")
-      console.error("         Go to https://www.notion.so/developers/tokens, create a new PAT")
-      console.error(`         in the workspace that contains ${config.vault.pageId}, then`)
+      console.error(
+        "      1. The PAT was created against a different workspace than the vault."
+      )
+      console.error(
+        "         Go to https://www.notion.so/developers/tokens, create a new PAT"
+      )
+      console.error(
+        `         in the workspace that contains ${config.vault.pageId}, then`
+      )
       console.error("         export it as NOTION_API_TOKEN and re-run `lore install`.")
-      console.error("      2. The vault page isn't shared with the PAT's owning Notion identity.")
-      console.error("         PATs inherit the operator's personal permissions; if you can't")
-      console.error("         open the page in Notion's UI, the PAT can't read it either.")
+      console.error(
+        "      2. The vault page isn't shared with the PAT's owning Notion identity."
+      )
+      console.error(
+        "         PATs inherit the operator's personal permissions; if you can't"
+      )
+      console.error(
+        "         open the page in Notion's UI, the PAT can't read it either."
+      )
       console.error("         Ask whoever owns the vault to share it with you, or check")
       console.error("         workspace membership.")
     } else {
@@ -2663,9 +2717,13 @@ async function preflightAndReport(
       // `NOTION_KEYRING=0 NOTION_ENV=dev ntn login` command.
       const recovery = ntnLoginRecovery(config)
       console.error("    Most likely causes:")
-      console.error("      1. You authenticated against the wrong workspace during ntn login,")
+      console.error(
+        "      1. You authenticated against the wrong workspace during ntn login,"
+      )
       console.error("         OR the auth.json on disk carries a token for the wrong env")
-      console.error("         (e.g., a prod token while this project's auth.baseUrl is dev).")
+      console.error(
+        "         (e.g., a prod token while this project's auth.baseUrl is dev)."
+      )
       console.error("         Re-auth with the right env selector:")
       console.error("")
       console.error(`           ${recovery.command}`)
@@ -2674,15 +2732,23 @@ async function preflightAndReport(
       }
       console.error("")
       console.error(`         then pick the workspace containing ${config.vault.pageId}.`)
-      console.error("      2. The vault page isn't shared with you (your Notion identity)")
+      console.error(
+        "      2. The vault page isn't shared with you (your Notion identity)"
+      )
       console.error("         in this workspace. ntn-issued tokens inherit your personal")
-      console.error("         Notion permissions; if you can't open the page in Notion's UI,")
-      console.error("         the token can't read it either. Ask whoever owns the vault to")
+      console.error(
+        "         Notion permissions; if you can't open the page in Notion's UI,"
+      )
+      console.error(
+        "         the token can't read it either. Ask whoever owns the vault to"
+      )
       console.error("         share it with you, or check that you're a member of the")
       console.error("         workspace.")
     }
     console.error("")
-    console.error("    Refusing to write MCP config — fix vault access and re-run `lore install`.")
+    console.error(
+      "    Refusing to write MCP config — fix vault access and re-run `lore install`."
+    )
     return { ready: false }
   }
 
@@ -2693,13 +2759,25 @@ async function preflightAndReport(
       if (isIntegrationToken) {
         printPatIntegrationTokenPreflightHint()
       }
-      console.error("    The PAT is invalid, expired, revoked, or lacks permission for this page.")
+      console.error(
+        "    The PAT is invalid, expired, revoked, or lacks permission for this page."
+      )
       console.error("    Recovery:")
-      console.error("      - Rotate the PAT at https://www.notion.so/developers/tokens (the")
-      console.error("        existing PAT may have been revoked; a fresh one is the cleanest fix).")
-      console.error("      - Confirm the vault page is shared with the PAT's owning Notion")
-      console.error("        identity; PATs cannot read pages you can't open in Notion's UI.")
-      console.error("      - Export the new PAT as NOTION_API_TOKEN, then re-run `lore install`.")
+      console.error(
+        "      - Rotate the PAT at https://www.notion.so/developers/tokens (the"
+      )
+      console.error(
+        "        existing PAT may have been revoked; a fresh one is the cleanest fix)."
+      )
+      console.error(
+        "      - Confirm the vault page is shared with the PAT's owning Notion"
+      )
+      console.error(
+        "        identity; PATs cannot read pages you can't open in Notion's UI."
+      )
+      console.error(
+        "      - Export the new PAT as NOTION_API_TOKEN, then re-run `lore install`."
+      )
     } else {
       // ntn-source: env-aware ntn-login recovery. 401/403 means the
       // resolved token is wrong (invalid, expired, or for the wrong
@@ -2716,7 +2794,9 @@ async function preflightAndReport(
       console.error("    then re-run `lore install`.")
     }
     console.error("")
-    console.error("    Refusing to write MCP config — fix auth and re-run `lore install`.")
+    console.error(
+      "    Refusing to write MCP config — fix auth and re-run `lore install`."
+    )
     return { ready: false }
   }
 
@@ -2729,8 +2809,12 @@ async function preflightAndReport(
   }
 
   // unknown-error: genuine 5xx / network blip. Warn but proceed.
-  console.warn(`  Vault page:           ? preflight returned an unexpected error (${config.vault.pageId})`)
-  console.warn("    Lore will install anyway; if the issue persists, re-run `lore install`")
+  console.warn(
+    `  Vault page:           ? preflight returned an unexpected error (${config.vault.pageId})`
+  )
+  console.warn(
+    "    Lore will install anyway; if the issue persists, re-run `lore install`"
+  )
   console.warn("    or check Notion's status page.")
   return { ready: true, authSource: auth.source }
 }
@@ -2745,11 +2829,17 @@ async function preflightCodexInstall(context: InstallContext): Promise<void> {
 
 async function runClaudeInstall(
   context: InstallContext,
-  rl: ReturnType<typeof createInterface> | null,
+  rl: ReturnType<typeof createInterface> | null
 ): Promise<void> {
   await ensureHookPrerequisites(context)
   const encodedPath = encodeProjectPath(context.projectDir)
-  const settingsPath = join(homedir(), ".claude", "projects", encodedPath, "settings.json")
+  const settingsPath = join(
+    homedir(),
+    ".claude",
+    "projects",
+    encodedPath,
+    "settings.json"
+  )
   const settings = await readJsonSafe(settingsPath)
   const mcpJsonPath = join(context.projectDir, ".mcp.json")
   const mcpJson = await readJsonSafe(mcpJsonPath)
@@ -2770,13 +2860,13 @@ async function runClaudeInstall(
     hooks["Stop"],
     "autosave.sh",
     context.autosavePath,
-    binAutosaveCommand,
+    binAutosaveCommand
   )
   const wakeupStatus = detectClaudeHook(
     hooks["UserPromptSubmit"],
     "wakeup.sh",
     context.wakeupPath,
-    binWakeupCommand,
+    binWakeupCommand
   )
 
   // Active SessionEnd registration was removed in 0.6.0. The cleanup planner
@@ -2793,7 +2883,7 @@ async function runClaudeInstall(
   const hasLegacyPreCompact =
     detectClaudeHook(hooks["PreCompact"], "autosave.sh", "") !== "missing"
   const hasLegacyMcp = Boolean(
-    (settings.mcpServers as Record<string, unknown> | undefined)?.["lore"],
+    (settings.mcpServers as Record<string, unknown> | undefined)?.["lore"]
   )
 
   const mcpServers = (mcpJson.mcpServers ?? {}) as Record<string, unknown>
@@ -2805,7 +2895,7 @@ async function runClaudeInstall(
     configRoot,
     process.env,
     context.authSource,
-    context.notionBaseUrlLiteral,
+    context.notionBaseUrlLiteral
   )
   const legacyMcpEntry = buildLegacyClaudeMcpEntry(
     portableMcpJsPath,
@@ -2813,7 +2903,7 @@ async function runClaudeInstall(
     configRoot,
     process.env,
     context.authSource,
-    context.notionBaseUrlLiteral,
+    context.notionBaseUrlLiteral
   )
   // Desired entry for the WRITE path (driven by legacy absolute-path mode and
   // --yarn-pnp). Detection below recognizes the canonical-for-this-mode
@@ -2833,15 +2923,17 @@ async function runClaudeInstall(
   console.log(`  MCP server:        ${statusLabel(mcpStatus, context.legacyPaths)}`)
   console.log(`  Autosave hook:     ${statusLabel(autosaveStatus, context.legacyPaths)}`)
   console.log(
-    `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+    `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`
   )
   if (hasSessionEndShim) console.log("  Session-end hook:  will remove")
-  if (hasLegacyAutosave) console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
+  if (hasLegacyAutosave)
+    console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
   if (hasLegacyWakeup) console.log("  Legacy hook:       PreToolUse/Task -> will migrate")
   if (hasLegacySessionEndAutosave)
     console.log("  Legacy hook:       SessionEnd/autosave.sh -> will remove")
   if (hasLegacyPreCompact) console.log("  Legacy hook:       PreCompact -> will remove")
-  if (hasLegacyMcp) console.log("  Legacy MCP:        settings.json -> will migrate to .mcp.json")
+  if (hasLegacyMcp)
+    console.log("  Legacy MCP:        settings.json -> will migrate to .mcp.json")
   // Surface background-agent install-time health on Claude Code
   // installs too. An operator who set `LORE_BACKGROUND_COMMAND` or
   // overrode `hooks.backgroundAgent` on a Claude Code project is just
@@ -2871,7 +2963,10 @@ async function runClaudeInstall(
   }
 
   console.log()
-  const proceed = await confirm(rl, "Install Lore Claude Code integration for this project?")
+  const proceed = await confirm(
+    rl,
+    "Install Lore Claude Code integration for this project?"
+  )
   if (!proceed) {
     console.log("  Skipped.")
     return
@@ -2892,9 +2987,7 @@ async function runClaudeInstall(
   const desiredAutosaveCommand = context.legacyPaths
     ? context.autosavePath
     : binAutosaveCommand
-  const desiredWakeupCommand = context.legacyPaths
-    ? context.wakeupPath
-    : binWakeupCommand
+  const desiredWakeupCommand = context.legacyPaths ? context.wakeupPath : binWakeupCommand
 
   if (!isEffectivelyCurrent(autosaveStatus, context.legacyPaths)) {
     mergedHooks["Stop"] = upsertClaudeHookCommand(
@@ -2902,7 +2995,7 @@ async function runClaudeInstall(
       "autosave.sh",
       desiredAutosaveCommand,
       // Claude settings use hook timeouts in milliseconds.
-      { matcher: "", timeout: 10000 },
+      { matcher: "", timeout: 10000 }
     )
   }
 
@@ -2912,16 +3005,22 @@ async function runClaudeInstall(
       "wakeup.sh",
       desiredWakeupCommand,
       // Claude settings use hook timeouts in milliseconds.
-      { matcher: "", timeout: 10000, runOnce: true },
+      { matcher: "", timeout: 10000, runOnce: true }
     )
   }
 
   if (hasLegacyAutosave) {
-    mergedHooks["PostToolUse"] = removeClaudeScriptEntries(hooks["PostToolUse"], "autosave.sh")
+    mergedHooks["PostToolUse"] = removeClaudeScriptEntries(
+      hooks["PostToolUse"],
+      "autosave.sh"
+    )
     if (!mergedHooks["PostToolUse"]) delete mergedHooks["PostToolUse"]
   }
   if (hasLegacyWakeup) {
-    mergedHooks["PreToolUse"] = removeClaudeScriptEntries(hooks["PreToolUse"], "wakeup.sh")
+    mergedHooks["PreToolUse"] = removeClaudeScriptEntries(
+      hooks["PreToolUse"],
+      "wakeup.sh"
+    )
     if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
   }
   // Lore does not register a SessionEnd hook. The pre-computed cleanup
@@ -2936,7 +3035,10 @@ async function runClaudeInstall(
     }
   }
   if (hasLegacyPreCompact) {
-    mergedHooks["PreCompact"] = removeClaudeScriptEntries(hooks["PreCompact"], "autosave.sh")
+    mergedHooks["PreCompact"] = removeClaudeScriptEntries(
+      hooks["PreCompact"],
+      "autosave.sh"
+    )
     if (!mergedHooks["PreCompact"]) delete mergedHooks["PreCompact"]
   }
 
@@ -2981,17 +3083,17 @@ async function runClaudeInstall(
   console.log()
   if (!isEffectivelyCurrent(mcpStatus, context.legacyPaths)) {
     console.log(
-      `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (.mcp.json)`,
+      `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (.mcp.json)`
     )
   }
   if (!isEffectivelyCurrent(autosaveStatus, context.legacyPaths)) {
     console.log(
-      `  Autosave hook:     ${postWriteLabel(autosaveStatus, context.legacyPaths)}`,
+      `  Autosave hook:     ${postWriteLabel(autosaveStatus, context.legacyPaths)}`
     )
   }
   if (!isEffectivelyCurrent(wakeupStatus, context.legacyPaths)) {
     console.log(
-      `  Wakeup hook:       ${postWriteLabel(wakeupStatus, context.legacyPaths)}`,
+      `  Wakeup hook:       ${postWriteLabel(wakeupStatus, context.legacyPaths)}`
     )
   }
   if (hasSessionEndShim || hasLegacySessionEndAutosave)
@@ -3045,7 +3147,7 @@ export async function resolveBackgroundAgentForInstall(
    * which doesn't inject any agent prefix on hook commands and falls
    * through to the historical Claude-default at hook-fire time.
    */
-  agentNameOverride?: string,
+  agentNameOverride?: string
 ): Promise<{
   command: string
   args: string[]
@@ -3086,7 +3188,7 @@ export async function resolveBackgroundAgentForInstall(
   // even though the runtime resolver picked up the codex preset.
   const presetMatched = lookupCommandPreset(command) !== undefined
   const argsContainAllowedToolsPlaceholder = args.some((a) =>
-    a.includes(ALLOWED_TOOLS_PLACEHOLDER),
+    a.includes(ALLOWED_TOOLS_PLACEHOLDER)
   )
   return {
     command,
@@ -3129,37 +3231,31 @@ type BackgroundAgentInstallSummary = Awaited<
  * a system where aider isn't installed).
  */
 export function printBackgroundAgentSummary(
-  summary: BackgroundAgentInstallSummary,
+  summary: BackgroundAgentInstallSummary
 ): void {
   console.log(
     `  Background agent:  ${summary.command}${
       summary.present ? " (found on PATH)" : " (NOT FOUND on PATH)"
-    }`,
+    }`
   )
   if (!summary.present) {
     console.warn("")
+    console.warn(`  Warning: background command "${summary.command}" is not on PATH.`)
     console.warn(
-      `  Warning: background command "${summary.command}" is not on PATH.`,
+      "    Stop hooks will fire, but the autosave / auto-digest spawn will skip"
     )
-    console.warn(
-      "    Stop hooks will fire, but the autosave / auto-digest spawn will skip",
-    )
-    console.warn(
-      "    with a `[lore] binary-missing` stderr line until the binary is",
-    )
+    console.warn("    with a `[lore] binary-missing` stderr line until the binary is")
     console.warn("    installed. Recovery options:")
     console.warn("      - Install Claude Code (default), or")
+    console.warn("      - Override hooks.backgroundAgent in .lore.yaml to point at a")
     console.warn(
-      "      - Override hooks.backgroundAgent in .lore.yaml to point at a",
-    )
-    console.warn(
-      "        different agent CLI (Lore ships presets for `claude` and `codex`):",
+      "        different agent CLI (Lore ships presets for `claude` and `codex`):"
     )
     console.warn("            hooks:")
     console.warn("              backgroundAgent:")
     console.warn("                command: codex")
     console.warn(
-      "      - Or set LORE_BACKGROUND_COMMAND=<binary> in your shell rc for an",
+      "      - Or set LORE_BACKGROUND_COMMAND=<binary> in your shell rc for an"
     )
     console.warn("        ad-hoc override.")
   }
@@ -3169,20 +3265,14 @@ export function printBackgroundAgentSummary(
     // which works for Claude variants only. Operators on an unknown
     // binary need to supply their own `args` shape.
     console.warn("")
+    console.warn(`  Warning: "${summary.command}" is not a known agent — Lore is using`)
     console.warn(
-      `  Warning: "${summary.command}" is not a known agent — Lore is using`,
+      `    Claude's flag dialect (\`-p --allowedTools ... --model sonnet\`) by`
     )
+    console.warn("    default. If your binary doesn't accept those flags, the spawn will")
+    console.warn("    fail at runtime. Override hooks.backgroundAgent.args in .lore.yaml")
     console.warn(
-      `    Claude's flag dialect (\`-p --allowedTools ... --model sonnet\`) by`,
-    )
-    console.warn(
-      "    default. If your binary doesn't accept those flags, the spawn will",
-    )
-    console.warn(
-      "    fail at runtime. Override hooks.backgroundAgent.args in .lore.yaml",
-    )
-    console.warn(
-      "    with the binary's headless-mode flags. Use `{{allowedTools}}` where",
+      "    with the binary's headless-mode flags. Use `{{allowedTools}}` where"
     )
     console.warn("    the tool allowlist string should be substituted.")
   }
@@ -3194,18 +3284,12 @@ export function printBackgroundAgentSummary(
     // error: Codex's preset (and any Codex install) lands here by
     // design.
     console.warn("")
+    console.warn(`  Note: "${summary.command}" args do not carry the {{allowedTools}}`)
     console.warn(
-      `  Note: "${summary.command}" args do not carry the {{allowedTools}}`,
+      "    placeholder. The lore tool allowlist will not be passed through; you"
     )
-    console.warn(
-      "    placeholder. The lore tool allowlist will not be passed through; you",
-    )
-    console.warn(
-      "    must configure the agent's allowlist out-of-band (for Codex, set",
-    )
-    console.warn(
-      "    `mcp_servers.lore.allowed_tools` in `.codex/config.toml`).",
-    )
+    console.warn("    must configure the agent's allowlist out-of-band (for Codex, set")
+    console.warn("    `mcp_servers.lore.allowed_tools` in `.codex/config.toml`).")
   }
 }
 
@@ -3235,7 +3319,7 @@ export function printHookDisclosure(): void {
 
 export async function runCodexInstall(
   context: InstallContext,
-  rl: ReturnType<typeof createInterface> | null,
+  rl: ReturnType<typeof createInterface> | null
 ): Promise<void> {
   await ensureHookPrerequisites(context)
   const codexConfigPath = join(context.projectDir, ".codex", "config.toml")
@@ -3251,28 +3335,32 @@ export async function runCodexInstall(
     context.configRoot,
     process.env,
     context.authSource,
-    context.notionBaseUrlLiteral,
+    context.notionBaseUrlLiteral
   )
   const legacyMcpSection = buildLegacyCodexMcpSection(
     context.mcpJsPath,
     context.configRoot,
     process.env,
     context.authSource,
-    context.notionBaseUrlLiteral,
+    context.notionBaseUrlLiteral
   )
   const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
   const hooksFeatureValue = extractTomlKeyValue(
     codexConfig,
     "features",
-    CODEX_HOOKS_FEATURE_KEY,
+    CODEX_HOOKS_FEATURE_KEY
   )
   const binWakeupCommand = buildCodexHookCommand("wakeup", binShape)
   const binAutosaveCommand = buildCodexHookCommand("autosave", binShape)
   const legacyWakeupCommand = buildLegacyCodexHookCommand(context.wakeupPath)
   const legacyAutosaveCommand = buildLegacyCodexHookCommand(context.autosavePath)
-  const desiredWakeupCommand = context.legacyPaths ? legacyWakeupCommand : binWakeupCommand
-  const desiredAutosaveCommand = context.legacyPaths ? legacyAutosaveCommand : binAutosaveCommand
+  const desiredWakeupCommand = context.legacyPaths
+    ? legacyWakeupCommand
+    : binWakeupCommand
+  const desiredAutosaveCommand = context.legacyPaths
+    ? legacyAutosaveCommand
+    : binAutosaveCommand
 
   const mcpStatus: HookStatus = !existingMcpSection
     ? "missing"
@@ -3295,20 +3383,20 @@ export async function runCodexInstall(
     codexHooks["UserPromptSubmit"],
     "wakeup.sh",
     legacyWakeupCommand,
-    binWakeupCommand,
+    binWakeupCommand
   )
   const autosaveStatus = detectCodexHook(
     codexHooks["Stop"],
     "autosave.sh",
     legacyAutosaveCommand,
-    binAutosaveCommand,
+    binAutosaveCommand
   )
   const hasLegacySessionStartWakeup =
     detectCodexHook(
       codexHooks["SessionStart"],
       "wakeup.sh",
       legacyWakeupCommand,
-      binWakeupCommand,
+      binWakeupCommand
     ) !== "missing"
 
   console.log("Codex:")
@@ -3320,10 +3408,10 @@ export async function runCodexInstall(
         : hooksFeatureStatus === "stale"
           ? "update available"
           : "not installed"
-    }`,
+    }`
   )
   console.log(
-    `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+    `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`
   )
   console.log(`  Autosave hook:     ${statusLabel(autosaveStatus, context.legacyPaths)}`)
   if (hasLegacySessionStartWakeup) {
@@ -3339,7 +3427,7 @@ export async function runCodexInstall(
   // matches what hook-fire time will produce, even when the operator's
   // install-time shell doesn't have `LORE_AGENT_NAME` exported.
   printBackgroundAgentSummary(
-    await resolveBackgroundAgentForInstall(context, process.env, "Codex"),
+    await resolveBackgroundAgentForInstall(context, process.env, "Codex")
   )
   // Parity with the Claude install path — surface the
   // hook-side-effects disclosure on Codex too. The same Stop /
@@ -3383,7 +3471,7 @@ export async function runCodexInstall(
     desiredWakeupCommand,
     {
       statusMessage: "Loading Lore context",
-    },
+    }
   )
   nextHookEvents["Stop"] = mergeCodexHookEntries(
     nextHookEvents["Stop"],
@@ -3392,7 +3480,7 @@ export async function runCodexInstall(
       // Codex hook timeouts are expressed in seconds.
       timeout: 30,
       statusMessage: "Saving Lore context",
-    },
+    }
   )
 
   const nextHooksJson: Record<string, unknown> = {
@@ -3426,18 +3514,18 @@ export async function runCodexInstall(
   console.log()
   if (!isEffectivelyCurrent(mcpStatus, context.legacyPaths)) {
     console.log(
-      `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (.codex/config.toml)`,
+      `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (.codex/config.toml)`
     )
   }
   if (hooksFeatureStatus !== "current") console.log("  Hooks feature:     enabled")
   if (!isEffectivelyCurrent(wakeupStatus, context.legacyPaths)) {
     console.log(
-      `  Wakeup hook:       ${postWriteLabel(wakeupStatus, context.legacyPaths)}`,
+      `  Wakeup hook:       ${postWriteLabel(wakeupStatus, context.legacyPaths)}`
     )
   }
   if (!isEffectivelyCurrent(autosaveStatus, context.legacyPaths)) {
     console.log(
-      `  Autosave hook:     ${postWriteLabel(autosaveStatus, context.legacyPaths)}`,
+      `  Autosave hook:     ${postWriteLabel(autosaveStatus, context.legacyPaths)}`
     )
   }
   console.log("  Start a new Codex session after trusting this project.")
@@ -3459,7 +3547,7 @@ export async function runCursorInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
   cursorMcpPath: string,
-  useGlobalScope: boolean,
+  useGlobalScope: boolean
 ): Promise<void> {
   const cursorMcpJson = await readJsonSafe(cursorMcpPath)
   const mcpServers = (cursorMcpJson.mcpServers ?? {}) as Record<string, unknown>
@@ -3494,7 +3582,7 @@ export async function runCursorInstall(
     context.configRoot,
     process.env,
     context.authSource,
-    context.notionBaseUrlLiteral,
+    context.notionBaseUrlLiteral
   )
   const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
@@ -3549,13 +3637,13 @@ export async function runCursorInstall(
 
   console.log()
   console.log(
-    `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (${cursorMcpDisplay})`,
+    `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (${cursorMcpDisplay})`
   )
   console.log(
     "  Cursor does not currently support Stop hooks. The Stop-triggered\n" +
       "  autosave and the detached auto-digest spawn will not run when lore is\n" +
       "  invoked from Cursor. Lore tools work the same; only the background\n" +
-      "  session-close persistence differs.",
+      "  session-close persistence differs."
   )
   console.log("  Restart Cursor for changes to take effect.")
 }
@@ -3567,13 +3655,19 @@ export async function runCursorInstall(
  * uses `defaultInstallRunners`.
  */
 export interface InstallRunners {
-  claude: (context: InstallContext, rl: ReturnType<typeof createInterface> | null) => Promise<void>
-  codex: (context: InstallContext, rl: ReturnType<typeof createInterface> | null) => Promise<void>
+  claude: (
+    context: InstallContext,
+    rl: ReturnType<typeof createInterface> | null
+  ) => Promise<void>
+  codex: (
+    context: InstallContext,
+    rl: ReturnType<typeof createInterface> | null
+  ) => Promise<void>
   cursor: (
     context: InstallContext,
     rl: ReturnType<typeof createInterface> | null,
     cursorMcpPath: string,
-    useGlobalScope: boolean,
+    useGlobalScope: boolean
   ) => Promise<void>
 }
 
@@ -3609,13 +3703,13 @@ export async function dispatchInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
   opts: DispatchOpts,
-  runners: InstallRunners,
+  runners: InstallRunners
 ): Promise<Array<{ client: string; error: unknown }>> {
   const errors: Array<{ client: string; error: unknown }> = []
   const cursorMcpPath = resolveCursorMcpPath(context.projectDir, !!opts.cursorGlobal)
   const runWithCapture = async (
     client: string,
-    fn: () => Promise<void>,
+    fn: () => Promise<void>
   ): Promise<void> => {
     try {
       await fn()
@@ -3639,7 +3733,7 @@ export async function dispatchInstall(
   if (opts.client === "all") console.log()
   if (opts.client === "cursor" || opts.client === "all") {
     await runWithCapture("cursor", () =>
-      runners.cursor(context, rl, cursorMcpPath, !!opts.cursorGlobal),
+      runners.cursor(context, rl, cursorMcpPath, !!opts.cursorGlobal)
     )
   }
 
@@ -3657,7 +3751,7 @@ export async function runInstall(
     ntn?: boolean
     dev?: boolean
   },
-  runners: InstallRunners = defaultInstallRunners,
+  runners: InstallRunners = defaultInstallRunners
 ): Promise<void> {
   const context = await prepareInstallContext(opts)
 
@@ -3746,7 +3840,7 @@ export async function runInstall(
             .split("\n")
             .slice(1)
             .map((l) => `    ${l}`)
-            .join("\n"),
+            .join("\n")
         )
       }
     }
@@ -3807,7 +3901,7 @@ export function buildPrintConfigOutput(
   binShape: BinDispatchShape = "bare",
   envSource: NodeJS.ProcessEnv = process.env,
   authSource?: AuthSource,
-  notionBaseUrlLiteral?: string,
+  notionBaseUrlLiteral?: string
 ): string {
   void mcpJsPath
   void pkgRoot
@@ -3819,7 +3913,7 @@ export function buildPrintConfigOutput(
       configRoot,
       envSource,
       authSource,
-      notionBaseUrlLiteral,
+      notionBaseUrlLiteral
     )
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
@@ -3829,7 +3923,7 @@ export function buildPrintConfigOutput(
     configRoot,
     envSource,
     authSource,
-    notionBaseUrlLiteral,
+    notionBaseUrlLiteral
   )
   return section + "\n"
 }
@@ -3848,15 +3942,13 @@ async function runPrintConfig(
   format: PrintConfigFormat,
   binShape: BinDispatchShape,
   projectDir?: string,
-  dev?: boolean,
+  dev?: boolean
 ): Promise<void> {
   const pkgRoot = resolvePkgRoot()
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
   if (!(await fileExists(mcpJsPath))) {
-    throw new Error(
-      `dist/mcp.js not found at ${mcpJsPath}. Run 'npm run build' first.`,
-    )
+    throw new Error(`dist/mcp.js not found at ${mcpJsPath}. Run 'npm run build' first.`)
   }
 
   // `--dev` ↔ shell-signal conflict guard. Symmetric to the
@@ -3873,22 +3965,17 @@ async function runPrintConfig(
   // the operator's shell would still win at MCP-spawn time).
   if (dev) {
     const operatorBaseUrl = resolveOperatorBaseUrl(process.env)
-    if (
-      operatorBaseUrl !== undefined &&
-      ntnEnvFromBaseUrl(operatorBaseUrl) !== "dev"
-    ) {
+    if (operatorBaseUrl !== undefined && ntnEnvFromBaseUrl(operatorBaseUrl) !== "dev") {
       const conflicting = describeConflictingDevSignal(process.env)
       console.error(
-        `--dev was passed but ${conflicting} routes auth to ${operatorBaseUrl}`,
+        `--dev was passed but ${conflicting} routes auth to ${operatorBaseUrl}`
       )
       console.error(
-        "(not the dev base URL). Lore cannot print a coherent --dev snippet while",
+        "(not the dev base URL). Lore cannot print a coherent --dev snippet while"
       )
+      console.error("the shell carries a conflicting signal — the printed env would be")
       console.error(
-        "the shell carries a conflicting signal — the printed env would be",
-      )
-      console.error(
-        "overridden by the operator's existing shell variable at MCP-spawn time.",
+        "overridden by the operator's existing shell variable at MCP-spawn time."
       )
       console.error("")
       console.error("Recovery (pick one):")
@@ -3950,42 +4037,41 @@ async function runPrintConfig(
       binShape,
       process.env,
       printConfigAuthSource,
-      notionBaseUrlLiteral,
-    ),
+      notionBaseUrlLiteral
+    )
   )
-
 }
 
 export const installCommand = new Command("install")
   .description("Install Lore assistant integrations for the current project")
   .option(
     "--client <assistant>",
-    "assistant to configure: claude, codex, cursor, or all (default: all)",
+    "assistant to configure: claude, codex, cursor, or all (default: all)"
   )
   .option("--project <path>", "project directory (default: cwd)")
   .option(
     "--cursor-global",
-    "Cursor only: write to ~/.cursor/mcp.json instead of <projectDir>/.cursor/mcp.json (overrides --project for the Cursor branch)",
+    "Cursor only: write to ~/.cursor/mcp.json instead of <projectDir>/.cursor/mcp.json (overrides --project for the Cursor branch)"
   )
   .option(
     "--print-config <format>",
-    "print a paste-ready MCP config snippet to stdout (no files written); format: json or toml",
+    "print a paste-ready MCP config snippet to stdout (no files written); format: json or toml"
   )
   .option(
     "--yarn-pnp",
-    "force the yarn-wrapped bin-dispatch shape ('yarn run -T lore mcp', 'yarn run -T lore hooks <event>'). Auto-detected from a .pnp.cjs marker; this flag pins it explicitly",
+    "force the yarn-wrapped bin-dispatch shape ('yarn run -T lore mcp', 'yarn run -T lore hooks <event>'). Auto-detected from a .pnp.cjs marker; this flag pins it explicitly"
   )
   .option(
     "--no-yarn-pnp",
-    "force the bare bin-dispatch shape ('lore mcp', 'lore hooks <event>'), overriding .pnp.cjs auto-detection. Use when your PnP project shims node_modules/.bin out-of-band",
+    "force the bare bin-dispatch shape ('lore mcp', 'lore hooks <event>'), overriding .pnp.cjs auto-detection. Use when your PnP project shims node_modules/.bin out-of-band"
   )
   .option(
     "--ntn",
-    "internal-engineer path: auto-install `ntn` (if missing) and run `ntn login`. Without this flag, Lore takes the external-operator path and expects NOTION_API_TOKEN (a PAT from notion.so/developers/tokens) to be set.",
+    "internal-engineer path: auto-install `ntn` (if missing) and run `ntn login`. Without this flag, Lore takes the external-operator path and expects NOTION_API_TOKEN (a PAT from notion.so/developers/tokens) to be set."
   )
   .option(
     "--dev",
-    "target the Notion dev environment. With --ntn, forwards NOTION_ENV=dev to ntn login. With the PAT path, expects a `development_ntn_…` token in NOTION_API_TOKEN and configures the dev base URL itself (plants NOTION_BASE_URL=https://api-dev.notion.com into both install-time preflight and the spawned MCP env as a literal). Fails fast when a conflicting shell selector (LORE_NOTION_BASE_URL / NOTION_BASE_URL / NOTION_API_BASE_URL / NOTION_ENV) routes auth to a non-dev URL.",
+    "target the Notion dev environment. With --ntn, forwards NOTION_ENV=dev to ntn login. With the PAT path, expects a `development_ntn_…` token in NOTION_API_TOKEN and configures the dev base URL itself (plants NOTION_BASE_URL=https://api-dev.notion.com into both install-time preflight and the spawned MCP env as a literal). Fails fast when a conflicting shell selector (LORE_NOTION_BASE_URL / NOTION_BASE_URL / NOTION_API_BASE_URL / NOTION_ENV) routes auth to a non-dev URL."
   )
   .option("-y, --yes", "skip confirmation prompts")
   .action(
@@ -4008,7 +4094,7 @@ export const installCommand = new Command("install")
             // a top-level rethrow would be redundant. Same posture as the
             // `--client` rejection a few lines below.
             console.error(
-              `Install failed: --print-config must be 'json' or 'toml', got '${opts.printConfig}'.`,
+              `Install failed: --print-config must be 'json' or 'toml', got '${opts.printConfig}'.`
             )
             process.exit(1)
           }
@@ -4023,8 +4109,7 @@ export const installCommand = new Command("install")
           // (bin-dispatch shape default; yarn-wrapped under --yarn-pnp;
           // dev-base-URL literal under --dev). Auto-detection from `.pnp.cjs`
           // is skipped on this path because no project dir is resolved.
-          const printBinShape: BinDispatchShape =
-            opts.yarnPnp === true ? "yarn" : "bare"
+          const printBinShape: BinDispatchShape = opts.yarnPnp === true ? "yarn" : "bare"
           // --project resolves the configRoot embedded in the
           // printed snippet's LORE_CONFIG_ROOT so the MCP server
           // spawned from a paste finds the right .lore.yaml. This
@@ -4032,26 +4117,21 @@ export const installCommand = new Command("install")
           // ignored" comment on --project: the file-write path was
           // never meaningful, but the configRoot WAS — so honor it
           // for that one purpose only.
-          await runPrintConfig(
-            format,
-            printBinShape,
-            opts.project,
-            !!opts.dev,
-          )
+          await runPrintConfig(format, printBinShape, opts.project, !!opts.dev)
           return
         }
 
         const client = parseInstallClient(opts.client)
         if (!client) {
           console.error(
-            "Install failed: --client must be one of claude, codex, cursor, or all.",
+            "Install failed: --client must be one of claude, codex, cursor, or all."
           )
           process.exit(1)
         }
 
         const cursorGlobalNotice = buildCursorGlobalIgnoredNotice(
           opts.cursorGlobal,
-          client,
+          client
         )
         if (cursorGlobalNotice) {
           console.warn(cursorGlobalNotice)
@@ -4070,5 +4150,5 @@ export const installCommand = new Command("install")
         console.error("Install failed:", err instanceof Error ? err.message : err)
         process.exit(1)
       }
-    },
+    }
   )

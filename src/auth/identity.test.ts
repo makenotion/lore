@@ -426,7 +426,7 @@ describe("resolveAuthorIdentity", () => {
         users: {
           me: vi.fn(async () => {
             throw new Error(
-              "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found",
+              "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found"
             )
           }),
         },

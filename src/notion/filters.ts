@@ -27,7 +27,7 @@ import { FACT_PROPS, MEMORY_PROPS } from "./schema.js"
  */
 export function projectOrUnscopedFilter(
   projectId: string,
-  projectProperty: string = MEMORY_PROPS.PROJECT,
+  projectProperty: string = MEMORY_PROPS.PROJECT
 ): Record<string, unknown> {
   return {
     or: [
@@ -233,10 +233,7 @@ export function withDefaultScopeFilter(
   if (Array.isArray((filter as { and?: unknown[] }).and)) {
     return {
       ...filter,
-      and: [
-        ...((filter as { and: unknown[] }).and as unknown[]),
-        ...scopeClauses,
-      ],
+      and: [...((filter as { and: unknown[] }).and as unknown[]), ...scopeClauses],
     }
   }
   return { and: [filter, ...scopeClauses] }

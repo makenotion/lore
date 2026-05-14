@@ -9,7 +9,7 @@ vi.mock("../../services.js", () => ({
 
 vi.mock("../../core/promote.js", async () => {
   const actual = await vi.importActual<typeof import("../../core/promote.js")>(
-    "../../core/promote.js",
+    "../../core/promote.js"
   )
   return {
     ...actual,
@@ -69,7 +69,7 @@ function makeServicesStub(
       requireReview?: boolean
     }>
     resolveAuthor?: () => Promise<string | null>
-  } = {},
+  } = {}
 ): unknown {
   return {
     client: {} as unknown,
@@ -103,7 +103,7 @@ describe("promoteCommand", () => {
           { name: "Team", pageId: "team-vault" },
           { name: "Org", pageId: "org-vault" },
         ],
-      }) as never,
+      }) as never
     )
 
     await promoteCommand.parseAsync(["mem-1", "--to", "Mistype"], { from: "user" })
@@ -139,7 +139,7 @@ describe("promoteCommand", () => {
       makeServicesStub({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
         resolveAuthor: async () => null,
-      }) as never,
+      }) as never
     )
 
     await promoteCommand.parseAsync(["mem-1", "--to", "Team"], { from: "user" })
@@ -173,7 +173,7 @@ describe("promoteCommand", () => {
       makeServicesStub({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
         resolveAuthor: async () => "Auto Engineer",
-      }) as never,
+      }) as never
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Promoted memory title" } as never,
@@ -183,7 +183,7 @@ describe("promoteCommand", () => {
 
     await promoteCommand.parseAsync(
       ["mem-1", "--to", "Team", "--promoter", "Override Engineer"],
-      { from: "user" },
+      { from: "user" }
     )
 
     expect(promoteMemory).toHaveBeenCalledTimes(1)
@@ -197,10 +197,8 @@ describe("promoteCommand", () => {
     const { logSpy } = makeHarness()
     vi.mocked(initServices).mockResolvedValue(
       makeServicesStub({
-        promotionTargets: [
-          { name: "Team", pageId: "team-vault", requireReview: true },
-        ],
-      }) as never,
+        promotionTargets: [{ name: "Team", pageId: "team-vault", requireReview: true }],
+      }) as never
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
@@ -221,7 +219,7 @@ describe("promoteCommand", () => {
     vi.mocked(initServices).mockResolvedValue(
       makeServicesStub({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
-      }) as never,
+      }) as never
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
@@ -231,7 +229,7 @@ describe("promoteCommand", () => {
 
     await promoteCommand.parseAsync(
       ["mem-1", "--to", "Team", "--reason", "Generalizes pattern"],
-      { from: "user" },
+      { from: "user" }
     )
 
     const callArgs = vi.mocked(promoteMemory).mock.calls[0]?.[1]
@@ -244,10 +242,8 @@ describe("promoteCommand", () => {
     const { logSpy } = makeHarness()
     vi.mocked(initServices).mockResolvedValue(
       makeServicesStub({
-        promotionTargets: [
-          { name: "Team", pageId: "team-vault", requireReview: true },
-        ],
-      }) as never,
+        promotionTargets: [{ name: "Team", pageId: "team-vault", requireReview: true }],
+      }) as never
     )
     vi.mocked(preparePromotion).mockResolvedValue({
       source: { id: "source-mem-1", title: "Source title" } as never,
@@ -269,7 +265,7 @@ describe("promoteCommand", () => {
     expect(text).toContain("[dry-run] Resolved status: proposed")
     expect(text).toContain("## Promoted from Primary")
     expect(text).toContain(
-      "[dry-run] No target-vault write was issued. Re-run without --dry-run to apply.",
+      "[dry-run] No target-vault write was issued. Re-run without --dry-run to apply."
     )
   })
 })

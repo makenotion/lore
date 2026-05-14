@@ -338,7 +338,8 @@ describe("runBuildConfidenceScoresMigration — project scoping", () => {
     const memories = [makeMemory({ id: "m1", confidenceScore: null })]
     const { services, listSpy, findByNameSpy, applySpy } = makeServices({
       memories,
-      findByName: async (name) => (name === "Widget" ? { id: "project-widget", name } : null),
+      findByName: async (name) =>
+        name === "Widget" ? { id: "project-widget", name } : null,
     })
 
     await runBuildConfidenceScoresMigration({

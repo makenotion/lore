@@ -130,7 +130,7 @@ function buildDecision(
   overrides: Partial<DecisionSummary> & {
     id: string
     status: DecisionSummary["status"]
-  },
+  }
 ): DecisionSummary {
   const base = buildMemory({
     id: overrides.id,
@@ -141,19 +141,12 @@ function buildDecision(
   return { ...base, ...overrides, kind: "decision", status: overrides.status }
 }
 
-function filterAndSortTasks(
-  tasks: TaskSummary[],
-  opts: ListTasksOpts,
-): TaskSummary[] {
+function filterAndSortTasks(tasks: TaskSummary[], opts: ListTasksOpts): TaskSummary[] {
   const filtered = tasks.filter((task) => {
     if (opts.dueBefore && (!task.reviewBy || task.reviewBy > opts.dueBefore)) {
       return false
     }
-    if (
-      opts.dueAfterOrEmpty &&
-      task.reviewBy &&
-      task.reviewBy <= opts.dueAfterOrEmpty
-    ) {
+    if (opts.dueAfterOrEmpty && task.reviewBy && task.reviewBy <= opts.dueAfterOrEmpty) {
       return false
     }
     return true
@@ -235,65 +228,64 @@ interface StubServices extends WakeUpServices {
  * helper applies cleanly to any `Memory[]` regardless of which
  * other props the fixture builder filled in.
  */
-function applyExcludeKinds(
-  items: Memory[],
-  excludeKinds?: MemoryKind[],
-): Memory[] {
+function applyExcludeKinds(items: Memory[], excludeKinds?: MemoryKind[]): Memory[] {
   if (!excludeKinds || excludeKinds.length === 0) return items
   const exclude = new Set(excludeKinds)
   return items.filter((m) => !exclude.has(m.kind))
 }
 
-function stubServices(opts: {
-  rawMemories?: Memory[]
-  digestMemories?: Memory[]
-  relatedMemories?: Memory[]
-  /**
-   * Memories returned when the search query equals `taskQuery`. Lets
-   * P3-05 tests distinguish the user-query-seeded task search from the
-   * task-entity-seeded related search — both go through the same
-   * `MemoryService.search` method but feed different output sections.
-   */
-  taskQuery?: string
-  taskMemories?: Memory[]
-  facts?: Fact[]
-  proposedDecisions?: DecisionSummary[]
-  overdueDecisions?: DecisionSummary[]
-  tasks?: TaskSummary[]
-  staleConfidence?: Memory[]
-  /**
-   * Memories returned for the proposed-memory inbox query (issue #281,
-   * AC #2). The wake-up data layer dispatches via
-   * `services.memories.list({ status: "proposed", ... })`; this stub
-   * routes that call to its own bucket so the test can distinguish
-   * inbox responses from the recents query.
-   */
-  proposedMemories?: Memory[]
-  /**
-   * True inbox depth returned by `services.memories.countProposed`
-   * for the wake-up section heading. Defaults to
-   * `proposedMemories.length` (the no-saturation case); set
-   * explicitly to simulate a deep inbox where the rendered slice is
-   * smaller than the true total.
-   */
-  proposedMemoriesTotal?: number
-  /**
-   * Pinned context blocks (issue #282) returned by
-   * `services.memories.listPinnedBlocks`. The stub slices to the
-   * caller's `limit`. Default `[]` — pinned-block behavior is
-   * additive, every pre-#282 fixture sees the section empty.
-   */
-  pinnedBlocks?: Memory[]
-  /**
-   * Total active-pinned-block count returned by
-   * `services.memories.countPinnedBlocks` (issue #282 abuse warning).
-   * Defaults to `pinnedBlocks.length` so the no-saturation case
-   * reads as "rendered slice IS the total." Set explicitly to
-   * simulate a vault flooded with pinned rows that exceeds the
-   * abuse threshold.
-   */
-  pinnedBlocksTotal?: number
-} = {}): StubServices {
+function stubServices(
+  opts: {
+    rawMemories?: Memory[]
+    digestMemories?: Memory[]
+    relatedMemories?: Memory[]
+    /**
+     * Memories returned when the search query equals `taskQuery`. Lets
+     * P3-05 tests distinguish the user-query-seeded task search from the
+     * task-entity-seeded related search — both go through the same
+     * `MemoryService.search` method but feed different output sections.
+     */
+    taskQuery?: string
+    taskMemories?: Memory[]
+    facts?: Fact[]
+    proposedDecisions?: DecisionSummary[]
+    overdueDecisions?: DecisionSummary[]
+    tasks?: TaskSummary[]
+    staleConfidence?: Memory[]
+    /**
+     * Memories returned for the proposed-memory inbox query (issue #281,
+     * AC #2). The wake-up data layer dispatches via
+     * `services.memories.list({ status: "proposed", ... })`; this stub
+     * routes that call to its own bucket so the test can distinguish
+     * inbox responses from the recents query.
+     */
+    proposedMemories?: Memory[]
+    /**
+     * True inbox depth returned by `services.memories.countProposed`
+     * for the wake-up section heading. Defaults to
+     * `proposedMemories.length` (the no-saturation case); set
+     * explicitly to simulate a deep inbox where the rendered slice is
+     * smaller than the true total.
+     */
+    proposedMemoriesTotal?: number
+    /**
+     * Pinned context blocks (issue #282) returned by
+     * `services.memories.listPinnedBlocks`. The stub slices to the
+     * caller's `limit`. Default `[]` — pinned-block behavior is
+     * additive, every pre-#282 fixture sees the section empty.
+     */
+    pinnedBlocks?: Memory[]
+    /**
+     * Total active-pinned-block count returned by
+     * `services.memories.countPinnedBlocks` (issue #282 abuse warning).
+     * Defaults to `pinnedBlocks.length` so the no-saturation case
+     * reads as "rendered slice IS the total." Set explicitly to
+     * simulate a vault flooded with pinned rows that exceeds the
+     * abuse threshold.
+     */
+    pinnedBlocksTotal?: number
+  } = {}
+): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
   const factsListRecentCalls: ListRecentCall[] = []
@@ -315,10 +307,14 @@ function stubServices(opts: {
         // filter; raw / digest paths would pass kinds the caller
         // explicitly excluded.
         if (args.source === "digest") {
-          return { items: applyExcludeKinds(opts.digestMemories ?? [], args.excludeKinds) }
+          return {
+            items: applyExcludeKinds(opts.digestMemories ?? [], args.excludeKinds),
+          }
         }
         if (args.status === "proposed") {
-          return { items: applyExcludeKinds(opts.proposedMemories ?? [], args.excludeKinds) }
+          return {
+            items: applyExcludeKinds(opts.proposedMemories ?? [], args.excludeKinds),
+          }
         }
         return { items: applyExcludeKinds(opts.rawMemories ?? [], args.excludeKinds) }
       }),
@@ -345,16 +341,15 @@ function stubServices(opts: {
         // the inbox total see "rendered slice IS the inbox depth"
         // (matches the pre-#281-Phase-2-fix posture). Tests that
         // simulate saturation set `proposedMemoriesTotal` directly.
-        total:
-          opts.proposedMemoriesTotal ?? (opts.proposedMemories?.length ?? 0),
+        total: opts.proposedMemoriesTotal ?? opts.proposedMemories?.length ?? 0,
         bySource: {} as Record<string, number>,
         byAgent: {} as Record<string, number>,
       })),
       listPinnedBlocks: vi.fn(async (args: { limit?: number }) => {
         return (opts.pinnedBlocks ?? []).slice(0, args.limit ?? 10)
       }),
-      countPinnedBlocks: vi.fn(async () =>
-        opts.pinnedBlocksTotal ?? (opts.pinnedBlocks?.length ?? 0),
+      countPinnedBlocks: vi.fn(
+        async () => opts.pinnedBlocksTotal ?? opts.pinnedBlocks?.length ?? 0
       ),
     },
     facts: {
@@ -383,8 +378,7 @@ function stubServices(opts: {
         tasksListCalls.push(listOpts ?? {})
         const all = filterAndSortTasks(opts.tasks ?? [], listOpts ?? {})
         const limit = listOpts?.limit
-        const items =
-          typeof limit === "number" && limit >= 0 ? all.slice(0, limit) : all
+        const items = typeof limit === "number" && limit >= 0 ? all.slice(0, limit) : all
         return {
           items,
           nextCursor: items.length < all.length ? "next-cursor" : undefined,
@@ -551,7 +545,7 @@ describe("wake-up coverage counters", () => {
     })
     expect(coverage.sectionCounts.tasks).toBe(2)
     expect(
-      Object.entries(coverage.sectionCounts).filter(([, count]) => count !== 0),
+      Object.entries(coverage.sectionCounts).filter(([, count]) => count !== 0)
     ).toEqual([["tasks", 2]])
   })
 
@@ -578,7 +572,7 @@ describe("wake-up coverage counters", () => {
         relatedMemoryLimit: 2,
         knowledgeFactLimit: 10,
         taskMemoryLimit: 3,
-      },
+      }
     )
 
     expect(line).toContain("mode=ranked")
@@ -593,10 +587,10 @@ describe("wake-up coverage counters", () => {
 
   it("formats cache-hit and load-failed variants through the same vocabulary", () => {
     const cacheHit = formatWakeUpCoverage(
-      emptyWakeUpCoverageMetrics("default", "already-ranked-for-session"),
+      emptyWakeUpCoverageMetrics("default", "already-ranked-for-session")
     )
     const loadFailed = formatWakeUpCoverage(
-      emptyWakeUpCoverageMetrics("error", "load-failed"),
+      emptyWakeUpCoverageMetrics("error", "load-failed")
     )
 
     expect(cacheHit).toContain("mode=default")
@@ -708,7 +702,7 @@ describe("loadWakeUpData", () => {
         id: `active-${i}`,
         reviewBy: null,
         updatedAt: `2026-04-${String(19 - i).padStart(2, "0")}T00:00:00Z`,
-      }),
+      })
     )
     const services = stubServices({ tasks: activeTasks })
 
@@ -736,7 +730,7 @@ describe("loadWakeUpData", () => {
         id: `m${i}`,
         title: `memory ${i}`,
         createdAt: `2026-04-19T${String(i + 1).padStart(2, "0")}:00:00Z`,
-      }),
+      })
     )
 
     const services = stubServices({ rawMemories: manyMemories, digestMemories: [fresh] })
@@ -760,7 +754,7 @@ describe("loadWakeUpData", () => {
         id: `m${i}`,
         title: `memory ${i}`,
         createdAt: `2026-04-${String(10 + (i % 10)).padStart(2, "0")}T00:00:00Z`,
-      }),
+      })
     )
 
     const services = stubServices({ rawMemories: manyMemories, digestMemories: [stale] })
@@ -782,9 +776,17 @@ describe("loadWakeUpData", () => {
     // (it's just another memory). The helper must drop it to avoid duplication,
     // and it must not surface memories already covered by the digest.
     const mixed = [
-      buildMemory({ id: "m0", title: "work after digest", createdAt: "2026-04-20T00:00:00Z" }),
+      buildMemory({
+        id: "m0",
+        title: "work after digest",
+        createdAt: "2026-04-20T00:00:00Z",
+      }),
       fresh,
-      buildMemory({ id: "m1", title: "work before digest", createdAt: "2026-04-18T00:00:00Z" }),
+      buildMemory({
+        id: "m1",
+        title: "work before digest",
+        createdAt: "2026-04-18T00:00:00Z",
+      }),
       buildMemory({ id: "m2", title: "older work", createdAt: "2026-04-17T00:00:00Z" }),
     ]
 
@@ -801,7 +803,9 @@ describe("loadWakeUpData", () => {
 
     await loadWakeUpData(services, { projectId: "p1", memoryLimit: 10, now: NOW })
 
-    const rawListCall = services.memoriesCalls.find((c) => c.source === undefined && c.status !== "proposed")
+    const rawListCall = services.memoriesCalls.find(
+      (c) => c.source === undefined && c.status !== "proposed"
+    )
     expect(rawListCall?.limit).toBe(11)
   })
 
@@ -815,11 +819,15 @@ describe("loadWakeUpData", () => {
         id: `m${i}`,
         title: `memory ${i}`,
         createdAt: `2026-04-19T${String(i + 1).padStart(2, "0")}:00:00Z`,
-      }),
+      })
     )
     const services = stubServices({ rawMemories: eleven, digestMemories: [] })
 
-    const data = await loadWakeUpData(services, { projectId: "p1", memoryLimit: 10, now: NOW })
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      memoryLimit: 10,
+      now: NOW,
+    })
 
     expect(data.digest).toBeNull()
     expect(data.memories).toHaveLength(10)
@@ -838,9 +846,15 @@ describe("loadWakeUpData", () => {
   it("propagates includeMemoryContent to the raw memories query", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
-    await loadWakeUpData(services, { projectId: "p1", includeMemoryContent: false, now: NOW })
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      includeMemoryContent: false,
+      now: NOW,
+    })
 
-    const rawListCall = services.memoriesCalls.find((c) => c.source === undefined && c.status !== "proposed")
+    const rawListCall = services.memoriesCalls.find(
+      (c) => c.source === undefined && c.status !== "proposed"
+    )
     expect(rawListCall?.includeContent).toBe(false)
     // Digest call opts in to content explicitly — that's what the
     // renderer prints. `MemoryService.list` defaults
@@ -866,8 +880,9 @@ describe("loadWakeUpData", () => {
   })
 
   it("caps knowledge facts at knowledgeFactLimit (default)", async () => {
-    const facts = Array.from({ length: DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT + 10 }, (_, i) =>
-      buildFact({ id: `k${i}`, predicate: "uses" }),
+    const facts = Array.from(
+      { length: DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT + 10 },
+      (_, i) => buildFact({ id: `k${i}`, predicate: "uses" })
     )
     const services = stubServices({ rawMemories: [], digestMemories: [], facts })
 
@@ -909,9 +924,7 @@ describe("loadWakeUpData", () => {
     // Skipping requires BOTH to be zero — otherwise the digest path
     // silently under-renders. Gate matches sibling arms in the fan-out.
     const services = stubServices({
-      rawMemories: [
-        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
-      ],
+      rawMemories: [buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" })],
       digestMemories: [],
     })
 
@@ -923,7 +936,7 @@ describe("loadWakeUpData", () => {
     })
 
     const recentCalls = services.memoriesCalls.filter(
-      (c) => c.source === undefined && c.status !== "proposed",
+      (c) => c.source === undefined && c.status !== "proposed"
     )
     expect(recentCalls).toHaveLength(0)
     expect(data.memories).toEqual([])
@@ -934,9 +947,7 @@ describe("loadWakeUpData", () => {
     // memories without a digest but N memories alongside one must NOT
     // see the query skipped.
     const services = stubServices({
-      rawMemories: [
-        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
-      ],
+      rawMemories: [buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" })],
       digestMemories: [],
     })
 
@@ -948,7 +959,7 @@ describe("loadWakeUpData", () => {
     })
 
     const recentCalls = services.memoriesCalls.filter(
-      (c) => c.source === undefined && c.status !== "proposed",
+      (c) => c.source === undefined && c.status !== "proposed"
     )
     expect(recentCalls).toHaveLength(1)
   })
@@ -1318,9 +1329,23 @@ describe("loadWakeUpData", () => {
     // Related set includes the digest id, the recent id, and a fresh third one.
     // Only the third one should survive.
     const related = [
-      buildMemory({ ...recent, id: "m0", title: "dupe-recent", createdAt: "2026-04-20T00:00:00Z" }),
-      buildMemory({ ...fresh, id: "d1", title: "dupe-digest", createdAt: "2026-04-19T00:00:00Z" }),
-      buildMemory({ id: "rel-new", title: "autolabel deep dive", createdAt: "2026-02-01T00:00:00Z" }),
+      buildMemory({
+        ...recent,
+        id: "m0",
+        title: "dupe-recent",
+        createdAt: "2026-04-20T00:00:00Z",
+      }),
+      buildMemory({
+        ...fresh,
+        id: "d1",
+        title: "dupe-digest",
+        createdAt: "2026-04-19T00:00:00Z",
+      }),
+      buildMemory({
+        id: "rel-new",
+        title: "autolabel deep dive",
+        createdAt: "2026-02-01T00:00:00Z",
+      }),
     ]
 
     const services = stubServices({
@@ -1378,7 +1403,7 @@ describe("loadWakeUpData", () => {
       createdAt: "2026-04-19T00:00:00Z",
     })
     const recents = Array.from({ length: 3 }, (_, i) =>
-      buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" }),
+      buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" })
     )
     const task = buildTask({
       id: "t-1",
@@ -1416,12 +1441,14 @@ describe("loadWakeUpData", () => {
       title: "Router",
       entity: "Router migration",
     })
-    const related = Array.from({ length: DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT + 3 }, (_, i) =>
-      buildMemory({
-        id: `rel-${i}`,
-        title: `Router note ${i}`,
-        createdAt: "2026-02-10T00:00:00Z",
-      }),
+    const related = Array.from(
+      { length: DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT + 3 },
+      (_, i) =>
+        buildMemory({
+          id: `rel-${i}`,
+          title: `Router note ${i}`,
+          createdAt: "2026-02-10T00:00:00Z",
+        })
     )
 
     const services = stubServices({
@@ -1442,7 +1469,11 @@ describe("loadWakeUpData", () => {
       digestMemories: [],
       tasks: [],
       relatedMemories: [
-        buildMemory({ id: "should-not-surface", title: "noise", createdAt: "2026-02-10T00:00:00Z" }),
+        buildMemory({
+          id: "should-not-surface",
+          title: "noise",
+          createdAt: "2026-02-10T00:00:00Z",
+        }),
       ],
     })
 
@@ -1540,11 +1571,7 @@ describe("loadWakeUpData", () => {
 
       await loadWakeUpData(services, { projectId: "p1", taskLimit: 10, now: NOW })
 
-      expect(services.tasksListCalls.map((call) => call.limit)).toEqual([
-        40,
-        40,
-        40,
-      ])
+      expect(services.tasksListCalls.map((call) => call.limit)).toEqual([40, 40, 40])
       expect(services.tasksListCalls.map((call) => call.sortBy)).toEqual([
         "reviewByAsc",
         "updatedAtAsc",
@@ -1561,11 +1588,7 @@ describe("loadWakeUpData", () => {
 
       await loadWakeUpData(services, { projectId: "p1", taskLimit: 50, now: NOW })
 
-      expect(services.tasksListCalls.map((call) => call.limit)).toEqual([
-        100,
-        100,
-        100,
-      ])
+      expect(services.tasksListCalls.map((call) => call.limit)).toEqual([100, 100, 100])
     })
 
     it("skips the tasks query when taskLimit is 0", async () => {
@@ -1607,11 +1630,7 @@ describe("loadWakeUpData", () => {
         now: NOW,
       })
 
-      expect(data.tasks.map((t) => t.id)).toEqual([
-        "overdue-1",
-        "stale-1",
-        "active-1",
-      ])
+      expect(data.tasks.map((t) => t.id)).toEqual(["overdue-1", "stale-1", "active-1"])
     })
 
     it("does not let due-dated tasks starve null-date stale and active tasks", async () => {
@@ -1622,7 +1641,7 @@ describe("loadWakeUpData", () => {
             id: `overdue-${i}`,
             reviewBy: `2026-03-${String(20 - (i % 20)).padStart(2, "0")}`,
             updatedAt: "2026-04-19T00:00:00Z",
-          }),
+          })
         )
       }
       for (let i = 0; i < 5; i++) {
@@ -1631,7 +1650,7 @@ describe("loadWakeUpData", () => {
             id: `stale-${i}`,
             reviewBy: null,
             updatedAt: "2026-02-01T00:00:00Z",
-          }),
+          })
         )
       }
       for (let i = 0; i < 5; i++) {
@@ -1640,7 +1659,7 @@ describe("loadWakeUpData", () => {
             id: `active-${i}`,
             reviewBy: null,
             updatedAt: "2026-04-19T00:00:00Z",
-          }),
+          })
         )
       }
       const services = stubServices({ tasks })
@@ -1686,7 +1705,7 @@ describe("loadWakeUpData", () => {
 
       expect(data.taskMemories.map((m) => m.id)).toEqual(["task-hit"])
       const taskCall = services.memoriesSearchCalls.find(
-        (c) => c.query === "How do I fix the auth bug?",
+        (c) => c.query === "How do I fix the auth bug?"
       )
       expect(taskCall).toBeDefined()
       expect(taskCall?.projectId).toBe("p1")
@@ -1809,9 +1828,21 @@ describe("loadWakeUpData", () => {
       // Task-search candidate set: digest dupe, recent dupe, related
       // dupe, and one fresh hit. Only the fresh one should survive.
       const taskCandidates = [
-        buildMemory({ id: "d1", title: "dupe-digest", createdAt: "2026-04-19T00:00:00Z" }),
-        buildMemory({ id: "m0", title: "dupe-recent", createdAt: "2026-04-20T00:00:00Z" }),
-        buildMemory({ id: "rel-hit", title: "dupe-related", createdAt: "2026-03-10T00:00:00Z" }),
+        buildMemory({
+          id: "d1",
+          title: "dupe-digest",
+          createdAt: "2026-04-19T00:00:00Z",
+        }),
+        buildMemory({
+          id: "m0",
+          title: "dupe-recent",
+          createdAt: "2026-04-20T00:00:00Z",
+        }),
+        buildMemory({
+          id: "rel-hit",
+          title: "dupe-related",
+          createdAt: "2026-03-10T00:00:00Z",
+        }),
         buildMemory({
           id: "task-fresh",
           title: "Auth bug deep dive",
@@ -1841,12 +1872,14 @@ describe("loadWakeUpData", () => {
     })
 
     it("caps taskMemories at taskMemoryLimit (default 3)", async () => {
-      const candidates = Array.from({ length: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT + 5 }, (_, i) =>
-        buildMemory({
-          id: `task-${i}`,
-          title: `Task hit ${i}`,
-          createdAt: "2026-03-10T00:00:00Z",
-        }),
+      const candidates = Array.from(
+        { length: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT + 5 },
+        (_, i) =>
+          buildMemory({
+            id: `task-${i}`,
+            title: `Task hit ${i}`,
+            createdAt: "2026-03-10T00:00:00Z",
+          })
       )
       const services = stubServices({
         rawMemories: [],
@@ -1891,7 +1924,7 @@ describe("loadWakeUpData", () => {
           id: `task-${i}`,
           title: `Task hit ${i}`,
           createdAt: "2026-03-10T00:00:00Z",
-        }),
+        })
       )
       const services = stubServices({
         rawMemories: [],
@@ -1917,11 +1950,15 @@ describe("loadWakeUpData", () => {
         createdAt: "2026-04-19T00:00:00Z",
       })
       const recents = Array.from({ length: 3 }, (_, i) =>
-        buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" }),
+        buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" })
       )
       // 3 dupes + 3 fresh hits = 6 candidates. fetchLimit must be >= 6.
       const candidates = [
-        buildMemory({ id: "d1", title: "dupe-digest", createdAt: "2026-04-01T00:00:00Z" }),
+        buildMemory({
+          id: "d1",
+          title: "dupe-digest",
+          createdAt: "2026-04-01T00:00:00Z",
+        }),
         buildMemory({ id: "m0", title: "dupe-m0", createdAt: "2026-04-01T00:00:00Z" }),
         buildMemory({ id: "m1", title: "dupe-m1", createdAt: "2026-04-01T00:00:00Z" }),
         buildMemory({ id: "t1", title: "task-1", createdAt: "2026-04-01T00:00:00Z" }),
@@ -2084,7 +2121,7 @@ describe("loadWakeUpData", () => {
         expect(taskCall).toBeDefined()
         const last = taskCall!.query.charCodeAt(taskCall!.query.length - 1)
         expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
-      },
+      }
     )
   })
 })
@@ -2112,7 +2149,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
     const listMock = vi.fn(
       async (_args: { limit?: number; includeContent?: boolean }) => ({
         items: memories,
-      }),
+      })
     )
     const loadReadersMock = vi.fn(async () => {
       if (options.error !== undefined && options.error !== null) return null
@@ -2145,7 +2182,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
     const services = stubServices()
     const data = await loadWakeUpData(
       { ...services, upstreams: [] },
-      { projectId: "p1", now: NOW },
+      { projectId: "p1", now: NOW }
     )
     expect(data.inheritedMemories).toEqual([])
   })
@@ -2170,7 +2207,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
 
     const data = await loadWakeUpData(
       { ...services, upstreams: [teamBundle as never] },
-      { projectId: "p1", now: NOW, inheritedMemoryLimit: 5 },
+      { projectId: "p1", now: NOW, inheritedMemoryLimit: 5 }
     )
 
     expect(data.inheritedMemories).toHaveLength(1)
@@ -2220,7 +2257,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
 
     const data = await loadWakeUpData(
       { ...services, upstreams: [brokenBundle as never, okBundle as never] },
-      { projectId: "p1", now: NOW },
+      { projectId: "p1", now: NOW }
     )
 
     // Primary fan-out preserved despite broken upstream.
@@ -2262,7 +2299,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
 
     const data = await loadWakeUpData(
       { ...services, upstreams: [throwingBundle] },
-      { projectId: "p1", now: NOW },
+      { projectId: "p1", now: NOW }
     )
 
     expect(data.inheritedMemories).toEqual([
@@ -2311,7 +2348,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
 
     const data = await loadWakeUpData(
       { ...services, upstreams: [evilBundle] },
-      { projectId: "p1", now: NOW },
+      { projectId: "p1", now: NOW }
     )
 
     // Outer call resolved; section is present and carries the
@@ -2340,7 +2377,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
 
     const data = await loadWakeUpData(
       { ...services, upstreams: [upstream as never] },
-      { projectId: "p1", now: NOW, includeInheritedMemories: false },
+      { projectId: "p1", now: NOW, includeInheritedMemories: false }
     )
 
     expect(data.inheritedMemories).toEqual([])
@@ -2365,7 +2402,7 @@ describe("loadWakeUpData inherited upstream sections (issue #286)", () => {
 
     const data = await loadWakeUpData(
       { ...services, upstreams: [upstream as never] },
-      { projectId: "p1", now: NOW, inheritedMemoryLimit: 0 },
+      { projectId: "p1", now: NOW, inheritedMemoryLimit: 0 }
     )
 
     expect(data.inheritedMemories).toEqual([])
@@ -2397,9 +2434,7 @@ describe("loadWakeUpData with WakeUpCache", () => {
 
   it("serves two back-to-back wake-ups within TTL with zero new Notion calls", async () => {
     const services = stubServices({
-      rawMemories: [
-        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
-      ],
+      rawMemories: [buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" })],
       digestMemories: [],
       facts: [buildFact({ id: "f1" })],
     })
@@ -2424,9 +2459,7 @@ describe("loadWakeUpData with WakeUpCache", () => {
 
   it("re-fetches when an intervening write bumps the cache epoch", async () => {
     const services = stubServices({
-      rawMemories: [
-        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
-      ],
+      rawMemories: [buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" })],
     })
     const cache = new WakeUpCache()
 
@@ -2525,9 +2558,7 @@ describe("loadWakeUpData with WakeUpCache", () => {
 
   it("re-fetches across a UTC-midnight crossover even when callers omit todayDate", async () => {
     const services = stubServices({
-      rawMemories: [
-        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
-      ],
+      rawMemories: [buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" })],
     })
     const cache = new WakeUpCache()
 
@@ -2578,11 +2609,9 @@ describe("loadWakeUpData with WakeUpCache", () => {
     expect(a).toBe(b)
     expect(services.memoriesCalls.length).toBe(baseline.memoriesCalls.length)
     expect(services.factsListRecentCalls.length).toBe(
-      baseline.factsListRecentCalls.length,
+      baseline.factsListRecentCalls.length
     )
-    expect(services.decisionsListCalls.length).toBe(
-      baseline.decisionsListCalls.length,
-    )
+    expect(services.decisionsListCalls.length).toBe(baseline.decisionsListCalls.length)
     expect(services.tasksListCalls.length).toBe(baseline.tasksListCalls.length)
   })
 

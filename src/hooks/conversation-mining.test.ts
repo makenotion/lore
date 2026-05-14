@@ -121,9 +121,7 @@ describe("runConversationMining", () => {
     execFileSyncMock.mockImplementation(() => {
       throw new Error("which: command not found")
     })
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     await expect(
       runConversationMining("transcript", {
@@ -134,7 +132,7 @@ describe("runConversationMining", () => {
           command: "/nonexistent/path/to/binary",
           args: ["-p", "--allowedTools", "{{allowedTools}}"],
         },
-      }),
+      })
     ).rejects.toThrow(/binary "\/nonexistent\/path\/to\/binary" not found/)
 
     // Operator-debug hint matches the hook path's shape so engineers
@@ -145,7 +143,7 @@ describe("runConversationMining", () => {
       .find((s) => s.includes("[lore] conversation-mining:"))
     expect(hintCall).toBeDefined()
     expect(hintCall).toContain(
-      'background command "/nonexistent/path/to/binary" not found on PATH',
+      'background command "/nonexistent/path/to/binary" not found on PATH'
     )
 
     stderrSpy.mockRestore()
@@ -178,7 +176,7 @@ describe("runConversationMining", () => {
     const stateFile = join(tmpDir, "budget.json")
     writeFileSync(
       stateFile,
-      JSON.stringify({ writeBudgetExceeded: true, count: 502, budget: 500 }),
+      JSON.stringify({ writeBudgetExceeded: true, count: 502, budget: 500 })
     )
     const { child, handle } = fakeChild()
     spawnMock.mockReturnValue(child)
@@ -348,7 +346,7 @@ describe("runConversationMining", () => {
     expect(openSyncMock).toHaveBeenCalledWith(
       join(tmpDir, "child-stderr.log"),
       "w",
-      0o600,
+      0o600
     )
     expect(closeSyncMock).toHaveBeenCalledWith(FAKE_FD)
   })
@@ -370,7 +368,7 @@ describe("runConversationMining", () => {
         subProjects: [],
         catchAllName: null,
         stderrSinkPath: join(tmpDir, "child-stderr.log"),
-      }),
+      })
     ).rejects.toThrow(/EAGAIN/)
 
     expect(openSyncMock).toHaveBeenCalledTimes(1)
@@ -398,43 +396,40 @@ describe("runConversationMining", () => {
     expect(closeSyncMock).not.toHaveBeenCalled()
   })
 
-  it(
-    "escalates SIGTERM → SIGKILL and resolves even when the child ignores both",
-    async () => {
-      vi.useFakeTimers()
-      const { child, handle } = fakeChild()
-      spawnMock.mockReturnValue(child)
+  it("escalates SIGTERM → SIGKILL and resolves even when the child ignores both", async () => {
+    vi.useFakeTimers()
+    const { child, handle } = fakeChild()
+    spawnMock.mockReturnValue(child)
 
-      const promise = runConversationMining("transcript", {
-        cwd: tmpDir,
-        subProjects: [],
-        catchAllName: null,
-        timeoutMs: 1_000,
-      })
+    const promise = runConversationMining("transcript", {
+      cwd: tmpDir,
+      subProjects: [],
+      catchAllName: null,
+      timeoutMs: 1_000,
+    })
 
-      // Let the microtask queue drain so listeners attach.
-      await Promise.resolve()
-      await Promise.resolve()
+    // Let the microtask queue drain so listeners attach.
+    await Promise.resolve()
+    await Promise.resolve()
 
-      // 1. Fire the wall-clock timeout. Helper sends SIGTERM.
-      await vi.advanceTimersByTimeAsync(1_000)
-      expect(handle.killSignals).toContain("SIGTERM")
-      // Child traps SIGTERM and refuses to exit — we deliberately do
-      // NOT emit an 'exit' event here. The helper must still resolve.
+    // 1. Fire the wall-clock timeout. Helper sends SIGTERM.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(handle.killSignals).toContain("SIGTERM")
+    // Child traps SIGTERM and refuses to exit — we deliberately do
+    // NOT emit an 'exit' event here. The helper must still resolve.
 
-      // 2. Advance through the grace period. Helper escalates to SIGKILL.
-      await vi.advanceTimersByTimeAsync(TIMEOUT_KILL_GRACE_MS)
-      expect(handle.killSignals).toContain("SIGKILL")
+    // 2. Advance through the grace period. Helper escalates to SIGKILL.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_KILL_GRACE_MS)
+    expect(handle.killSignals).toContain("SIGKILL")
 
-      // 3. The helper resolves with the synthetic killed signal regardless of
-      //    whether the child ever emits its own 'exit' event. The terminal
-      //    contract is: SIGTERM + grace period + SIGKILL + resolve.
-      vi.useRealTimers()
-      const result = await promise
-      expect(result.exitCode).toBeNull()
-      expect(result.exitSignal).toBe(TIMEOUT_KILLED_SIGNAL)
-    },
-  )
+    // 3. The helper resolves with the synthetic killed signal regardless of
+    //    whether the child ever emits its own 'exit' event. The terminal
+    //    contract is: SIGTERM + grace period + SIGKILL + resolve.
+    vi.useRealTimers()
+    const result = await promise
+    expect(result.exitCode).toBeNull()
+    expect(result.exitSignal).toBe(TIMEOUT_KILLED_SIGNAL)
+  })
 
   it("resolves cleanly on exit even after the wall-clock timer fires", async () => {
     vi.useFakeTimers()

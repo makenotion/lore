@@ -142,11 +142,7 @@ describe("withDefaultScopeFilter", () => {
     const baseAnd: Record<string, unknown> = {
       and: [{ property: "Foo", select: { equals: "bar" } }],
     }
-    const result = withDefaultScopeFilter(
-      baseAnd,
-      { session: "s" },
-      "2026-05-04"
-    )
+    const result = withDefaultScopeFilter(baseAnd, { session: "s" }, "2026-05-04")
     const top = (result as { and: Array<Record<string, unknown>> }).and
     // 1 caller clause + 2 scope clauses (or + expiry) = 3 top-level clauses
     expect(top).toHaveLength(3)

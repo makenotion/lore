@@ -189,14 +189,20 @@ function tryCreateLockFile(path: string, ownerPid: number): MigrationLock | null
   }
 }
 
-function tryAcquireStaleReclaimGuard(path: string, ownerPid: number): MigrationLock | null {
+function tryAcquireStaleReclaimGuard(
+  path: string,
+  ownerPid: number
+): MigrationLock | null {
   const reclaimPath = migrationLockReclaimPath(path)
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const existing = inspectExistingLock(reclaimPath)
     if (existing.kind === "held") return null
 
-    if (existing.kind === "stale" && !removeIfSameSnapshot(reclaimPath, existing.snapshot)) {
+    if (
+      existing.kind === "stale" &&
+      !removeIfSameSnapshot(reclaimPath, existing.snapshot)
+    ) {
       continue
     }
 

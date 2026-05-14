@@ -42,18 +42,14 @@ const AUTH_ENV_KEYS = [
 // because `resolveAuth`'s no-source-resolved throw path calls
 // `buildNtnAmbiguityHint`, which in turn calls into the same module.
 const { loadNtnTokenMock, listNtnWorkspacesMock } = vi.hoisted(() => ({
-  loadNtnTokenMock: vi.fn<
-    typeof import("../auth/ntn.js").loadNtnToken
-  >(async () => null),
-  listNtnWorkspacesMock: vi.fn<
-    typeof import("../auth/ntn.js").listNtnWorkspaces
-  >(async () => []),
+  loadNtnTokenMock: vi.fn<typeof import("../auth/ntn.js").loadNtnToken>(async () => null),
+  listNtnWorkspacesMock: vi.fn<typeof import("../auth/ntn.js").listNtnWorkspaces>(
+    async () => []
+  ),
 }))
 
 vi.mock("../auth/ntn.js", async () => {
-  const actual = await vi.importActual<typeof import("../auth/ntn.js")>(
-    "../auth/ntn.js"
-  )
+  const actual = await vi.importActual<typeof import("../auth/ntn.js")>("../auth/ntn.js")
   return {
     ...actual,
     loadNtnToken: loadNtnTokenMock,
@@ -182,5 +178,4 @@ describe("deriveStopAuthSource — success branches return the resolved source",
       expect.objectContaining({ quiet: true })
     )
   })
-
 })

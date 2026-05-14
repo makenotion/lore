@@ -47,9 +47,7 @@ describe("collectLivePages", () => {
       expect(result.capped).toBe(true)
       expect(query).toHaveBeenCalledTimes(2)
       const lines = stderrSpy.mock.calls.map((call) => String(call[0]))
-      expect(lines.some((line) => line.includes("live-page-refill-cap-fired"))).toBe(
-        true,
-      )
+      expect(lines.some((line) => line.includes("live-page-refill-cap-fired"))).toBe(true)
       expect(lines.some((line) => line.includes("source=test-source"))).toBe(true)
     } finally {
       stderrSpy.mockRestore()
@@ -71,7 +69,7 @@ describe("collectLivePages", () => {
         startCursor: badCursor,
         source: "test-source",
         query: vi.fn(),
-      }),
+      })
     ).rejects.toThrow("Invalid Lore live-page cursor.")
   })
 
@@ -84,7 +82,7 @@ describe("collectLivePages", () => {
           startCursor: null,
           skipIds: Array.from({ length: 101 }, (_, i) => `page-${i}`),
         }),
-        "utf8",
+        "utf8"
       ).toString("base64url")
 
     await expect(
@@ -93,7 +91,7 @@ describe("collectLivePages", () => {
         startCursor: oversized,
         source: "test-source",
         query: vi.fn(),
-      }),
+      })
     ).rejects.toThrow("Invalid Lore live-page cursor.")
   })
 
@@ -106,7 +104,7 @@ describe("collectLivePages", () => {
           startCursor: null,
           skipIds: Array.from({ length: 100 }, (_, i) => `stale-${i}`),
         }),
-        "utf8",
+        "utf8"
       ).toString("base64url")
     const query = vi.fn(async () => ({
       results: [page("live-1"), page("live-2"), page("live-3"), page("live-4")],

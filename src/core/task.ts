@@ -593,9 +593,7 @@ export class TaskService {
       }
       if (scope.expiresAt !== undefined) {
         props[MEMORY_PROPS.EXPIRES_AT] =
-          scope.expiresAt === null
-            ? { date: null }
-            : { date: { start: scope.expiresAt } }
+          scope.expiresAt === null ? { date: null } : { date: { start: scope.expiresAt } }
       }
     }
 

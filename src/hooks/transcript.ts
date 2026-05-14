@@ -116,12 +116,14 @@ export function listTranscriptMessages(transcriptRaw: string): TranscriptMessage
 }
 
 export function countTranscriptUserMessages(transcriptRaw: string): number {
-  return listTranscriptMessages(transcriptRaw).filter((message) => message.role === "user").length
+  return listTranscriptMessages(transcriptRaw).filter(
+    (message) => message.role === "user"
+  ).length
 }
 
 export function formatTranscriptSessionContent(
   messages: TranscriptMessage[],
-  maxLength = 100_000,
+  maxLength = 100_000
 ): string {
   const parts = messages.map((message) => {
     const role = message.role === "user" ? "User" : "Assistant"
@@ -137,7 +139,7 @@ export function formatTranscriptSessionContent(
 
 export function extractTranscriptSessionContent(
   transcriptRaw: string,
-  maxLength = 100_000,
+  maxLength = 100_000
 ): string {
   return formatTranscriptSessionContent(listTranscriptMessages(transcriptRaw), maxLength)
 }

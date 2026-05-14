@@ -97,10 +97,7 @@ function scopeHash(kind: BackgroundFailureKind, scope: BackgroundFailureScope): 
   // by session. A later successful autosave/helper run for the same project
   // clears or supersedes the prior failure, while the latest session id stays
   // in the JSON body for context.
-  return createHash("sha256")
-    .update(`${kind}\0${projectName}`)
-    .digest("hex")
-    .slice(0, 12)
+  return createHash("sha256").update(`${kind}\0${projectName}`).digest("hex").slice(0, 12)
 }
 
 function parseOccurredAt(value: unknown): { iso: string; ms: number } | null {
@@ -220,7 +217,7 @@ function pruneStaleBackgroundFailureMarkers(configRoot: string, now: Date): void
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown
       if (typeof parsed !== "object" || parsed === null) continue
       const occurredAt = parseOccurredAt(
-        (parsed as Partial<BackgroundFailureMarker>).occurredAt,
+        (parsed as Partial<BackgroundFailureMarker>).occurredAt
       )
       if (!occurredAt) continue
       const ageDays = (now.getTime() - occurredAt.ms) / MILLISECONDS_PER_DAY

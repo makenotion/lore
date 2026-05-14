@@ -210,7 +210,10 @@ export async function promoteMemory(
 
   const targetVault = new VaultManager(services.client, input.target.pageId)
   await targetVault.load({ driftCheck: false })
-  const targetMemories = new MemoryService(services.client, targetVault.databases.memories)
+  const targetMemories = new MemoryService(
+    services.client,
+    targetVault.databases.memories
+  )
 
   const promoted = await targetMemories.create({
     title: preview.source.title,
@@ -364,7 +367,8 @@ export async function preparePromotion(
   })
 
   const status: MemoryStatus = input.target.requireReview ? "proposed" : source.status
-  const body = source.content.length > 0 ? `${auditBlock}\n\n${source.content}` : auditBlock
+  const body =
+    source.content.length > 0 ? `${auditBlock}\n\n${source.content}` : auditBlock
 
   return { source, auditBlock, body, promoter: promoterName, status }
 }
@@ -441,7 +445,9 @@ export function buildPromotionAuditBlock(input: PromotionAuditBlockInput): strin
   if (input.sourceSynopsis.trim().length > 0) {
     lines.push(`- **Source synopsis:** ${input.sourceSynopsis.trim()}`)
   }
-  lines.push(`- **Promoted to:** ${input.targetVaultLabel}${input.requireReview ? " (review required)" : ""}`)
+  lines.push(
+    `- **Promoted to:** ${input.targetVaultLabel}${input.requireReview ? " (review required)" : ""}`
+  )
   lines.push(`- **Promoter:** ${input.promoter}`)
   lines.push(`- **Promoted at:** ${timestamp}`)
   if (input.reason !== undefined) {

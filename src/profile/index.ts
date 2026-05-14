@@ -20,11 +20,7 @@ const PROFILE_MANIFEST_FIELDS = new Set([
   "evals",
   "extends",
 ])
-const PROFILE_TAXONOMY_FIELDS = new Set([
-  "tags",
-  "entityKinds",
-  "writableFactPredicates",
-])
+const PROFILE_TAXONOMY_FIELDS = new Set(["tags", "entityKinds", "writableFactPredicates"])
 const PROFILE_SCHEMA_FIELDS = new Set(["databases"])
 const PROFILE_SCHEMA_DATABASE_FIELDS = new Set(["properties"])
 
@@ -403,12 +399,7 @@ export function resolveProfileSelector(
   parsed: ParsedProfileSelector,
   configRoot: string
 ): ProfileLocationCandidate | null {
-  const localDir = join(
-    configRoot,
-    LOCAL_PROFILES_REL,
-    parsed.name,
-    parsed.version
-  )
+  const localDir = join(configRoot, LOCAL_PROFILES_REL, parsed.name, parsed.version)
   if (isProfileBundleRoot(localDir)) {
     return { source: "local", rootDir: resolve(localDir) }
   }
@@ -646,12 +637,7 @@ function readManifest(rootDir: string, files?: Map<string, string>): ProfileMani
   if ("extends" in record) {
     throw new ProfileLoadError(`${path}: ${PROFILE_EXTENDS_RESERVED_MESSAGE}`)
   }
-  rejectUnsupportedFields(
-    record,
-    PROFILE_MANIFEST_FIELDS,
-    path,
-    "profile.yaml"
-  )
+  rejectUnsupportedFields(record, PROFILE_MANIFEST_FIELDS, path, "profile.yaml")
   const name = expectString(record["name"], `${path}: name`)
   const version = expectString(record["version"], `${path}: version`)
   if (!PROFILE_NAME_PATTERN.test(name)) {
@@ -715,12 +701,7 @@ function loadTaxonomy(
     throw new ProfileLoadError(`${path}: taxonomy must be a mapping.`)
   }
   const record = parsed as Record<string, unknown>
-  rejectUnsupportedFields(
-    record,
-    PROFILE_TAXONOMY_FIELDS,
-    path,
-    "taxonomy"
-  )
+  rejectUnsupportedFields(record, PROFILE_TAXONOMY_FIELDS, path, "taxonomy")
   const taxonomy = {
     tags: readStringList(record["tags"], `${path}: tags`, DEFAULT_TAGS),
     entityKinds: readStringList(
@@ -780,12 +761,7 @@ function loadSchema(
     throw new ProfileLoadError(`${path}: schema must be a mapping.`)
   }
   const schemaRecord = parsed as Record<string, unknown>
-  rejectUnsupportedFields(
-    schemaRecord,
-    PROFILE_SCHEMA_FIELDS,
-    path,
-    "schema"
-  )
+  rejectUnsupportedFields(schemaRecord, PROFILE_SCHEMA_FIELDS, path, "schema")
   const databases = schemaRecord["databases"]
   if (!databases || typeof databases !== "object" || Array.isArray(databases)) {
     throw new ProfileLoadError(`${path}: databases must be a mapping.`)
@@ -883,10 +859,7 @@ function loadEvalSuites(
   return out
 }
 
-function loadMigrationFilesForDigest(
-  rootDir: string,
-  files: Map<string, string>
-): void {
+function loadMigrationFilesForDigest(rootDir: string, files: Map<string, string>): void {
   const dir = join(rootDir, "migrations")
   if (!existsSync(dir)) return
   let entries: string[]
@@ -1056,9 +1029,7 @@ function normalizeRelPath(rel: string): string {
 function readText(path: string): string {
   try {
     if (lstatSync(path).isSymbolicLink()) {
-      throw new ProfileLoadError(
-        `${path}: profile bundle files cannot be symlinks.`
-      )
+      throw new ProfileLoadError(`${path}: profile bundle files cannot be symlinks.`)
     }
     return readFileSync(path, "utf-8")
   } catch (err) {

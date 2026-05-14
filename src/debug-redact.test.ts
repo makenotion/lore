@@ -35,7 +35,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // them. Redact both shapes so the fix isn't one-sided.
     const dashed = "e8794b62-fb86-4148-a52f-66c8b40b00bc"
     expect(redactDebugMessage(`page=${dashed} not found`)).toBe(
-      "page=<page-id> not found",
+      "page=<page-id> not found"
     )
   })
 
@@ -43,7 +43,7 @@ describe("redactDebugMessage (issue #488)", () => {
     const a = "abcdef0123456789abcdef0123456789"
     const b = "fedcba9876543210fedcba9876543210"
     expect(redactDebugMessage(`Edge from ${a} to ${b} broken`)).toBe(
-      "Edge from <page-id> to <page-id> broken",
+      "Edge from <page-id> to <page-id> broken"
     )
   })
 
@@ -52,7 +52,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // drop diagnostic value (commit hashes, request ids) without
     // closing a leak vector.
     expect(redactDebugMessage("error code abc12345 at offset 0xdeadbeef")).toBe(
-      "error code abc12345 at offset 0xdeadbeef",
+      "error code abc12345 at offset 0xdeadbeef"
     )
   })
 
@@ -62,16 +62,16 @@ describe("redactDebugMessage (issue #488)", () => {
     // SDK regression dumps the response body into the message, the
     // redactor neutralizes it before stderr.
     expect(redactDebugMessage('APIError: body={"page":"secret"} status=500')).toBe(
-      "APIError: body=<redacted> status=500",
+      "APIError: body=<redacted> status=500"
     )
   })
 
   it("strips headers= and payload= attachments under the same defense", () => {
-    expect(redactDebugMessage("RequestFailed headers={Authorization:Bearer} retries=3")).toBe(
-      "RequestFailed headers=<redacted> retries=3",
-    )
+    expect(
+      redactDebugMessage("RequestFailed headers={Authorization:Bearer} retries=3")
+    ).toBe("RequestFailed headers=<redacted> retries=3")
     expect(redactDebugMessage("payload=binary-blob status=413")).toBe(
-      "payload=<redacted> status=413",
+      "payload=<redacted> status=413"
     )
   })
 
@@ -81,7 +81,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // sensitive remainder visible. Pin the conservative regex against
     // the canonical example from the review.
     const out = redactDebugMessage(
-      'APIError: body={"object":"error", "message":"private workspace body"} status=500',
+      'APIError: body={"object":"error", "message":"private workspace body"} status=500'
     )
     expect(out).toBe("APIError: body=<redacted> status=500")
   })
@@ -92,7 +92,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // Notion-Version: ...}` under the token-only stripper. The brace
     // branch swallows the whole structured value.
     const out = redactDebugMessage(
-      "RequestFailed headers={Authorization: Bearer secret_aaaaaaaaaaaaaaaaaaaaaaaa, Notion-Version: 2022-06-28} retries=3",
+      "RequestFailed headers={Authorization: Bearer secret_aaaaaaaaaaaaaaaaaaaaaaaa, Notion-Version: 2022-06-28} retries=3"
     )
     expect(out).toBe("RequestFailed headers=<redacted> retries=3")
   })
@@ -101,7 +101,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // The quoted branch handles C-style escapes so a `\\"` sequence
     // does not prematurely terminate the match.
     const out = redactDebugMessage(
-      'APIError: body="{\\"object\\":\\"error\\"}" status=500',
+      'APIError: body="{\\"object\\":\\"error\\"}" status=500'
     )
     expect(out).toBe("APIError: body=<redacted> status=500")
   })
@@ -115,7 +115,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // The brace branch handles one level of nested objects so
     // `body={"nested":{"a":"b"}, "ok":true}` redacts cleanly.
     const out = redactDebugMessage(
-      'APIError: body={"nested":{"a":"b"}, "ok":true} status=500',
+      'APIError: body={"nested":{"a":"b"}, "ok":true} status=500'
     )
     expect(out).toBe("APIError: body=<redacted> status=500")
   })
@@ -128,7 +128,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // leaking the descriptive tail. The scanner's depth counter
     // resolves arbitrary nesting.
     const out = redactDebugMessage(
-      'APIError: body={"outer":{"inner":{"a":"secret"}}, "message":"private workspace body"} status=500',
+      'APIError: body={"outer":{"inner":{"a":"secret"}}, "message":"private workspace body"} status=500'
     )
     expect(out).toBe("APIError: body=<redacted> status=500")
     expect(out).not.toContain("private workspace body")
@@ -138,7 +138,7 @@ describe("redactDebugMessage (issue #488)", () => {
 
   it("redacts a deeply-nested array+object mix without leaking the tail", () => {
     const out = redactDebugMessage(
-      'APIError: body=[{"a":[{"b":{"c":"x"}}]}, {"d":[1,2]}] status=500',
+      'APIError: body=[{"a":[{"b":{"c":"x"}}]}, {"d":[1,2]}] status=500'
     )
     expect(out).toBe("APIError: body=<redacted> status=500")
   })
@@ -149,9 +149,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // partial payload; consuming to end-of-string is the safe
     // choice and matches the helper docstring's "deliberate
     // over-redaction" contract.
-    const out = redactDebugMessage(
-      'APIError: body={"outer":{"inner": status=500',
-    )
+    const out = redactDebugMessage('APIError: body={"outer":{"inner": status=500')
     // Whole tail consumed; the `status=500` is collateral damage of
     // the malformed input. Pin so a future "fix" that papers over
     // the boundary by emitting partial output is loudly visible.
@@ -169,9 +167,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // first space, leaking the descriptive phrase. The bare-token
     // consumer's whitespace-with-field-lookahead heuristic redacts
     // the whole `cause=` value and stops at the next field marker.
-    const out = redactDebugMessage(
-      "APIError: cause=Error: page lookup failed status=500",
-    )
+    const out = redactDebugMessage("APIError: cause=Error: page lookup failed status=500")
     expect(out).toBe("APIError: cause=<redacted> status=500")
     expect(out).not.toContain("page lookup failed")
   })
@@ -195,9 +191,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // a future "tighten the lookahead to only SDK names" refactor
     // can't silently re-introduce the NS1 leak class on shapes the
     // test corpus didn't cover.
-    const out = redactDebugMessage(
-      "APIError: cause=Error: parsed key1=val1 status=500",
-    )
+    const out = redactDebugMessage("APIError: cause=Error: parsed key1=val1 status=500")
     expect(out).toBe("APIError: cause=<redacted> key1=val1 status=500")
   })
 
@@ -214,7 +208,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // outer scanner's cursor invariants. Pin so the boundary is
     // intentional rather than incidental.
     const out = redactDebugMessage(
-      "APIError: cause=Error: failed see https://example.com?k=v and retry",
+      "APIError: cause=Error: failed see https://example.com?k=v and retry"
     )
     expect(out).toBe("APIError: cause=<redacted>")
   })
@@ -225,7 +219,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // like `cause=URL describing X status=500` redacts up to the
     // next whitespace whose successor is field-shaped.
     const out = redactDebugMessage(
-      "APIError: cause=Error: see https://example.com?k=v then status=500",
+      "APIError: cause=Error: see https://example.com?k=v then status=500"
     )
     expect(out).toBe("APIError: cause=<redacted> status=500")
   })
@@ -246,11 +240,11 @@ describe("redactDebugMessage (issue #488)", () => {
     // and `query` (Notion `dataSources.query` failures). Both shapes
     // are covered by the same conservative branch logic.
     expect(redactDebugMessage("APIError: cause={inner: 'detail'} status=500")).toBe(
-      "APIError: cause=<redacted> status=500",
+      "APIError: cause=<redacted> status=500"
     )
-    expect(
-      redactDebugMessage('SearchFailed: query="user secret data" code=500'),
-    ).toBe("SearchFailed: query=<redacted> code=500")
+    expect(redactDebugMessage('SearchFailed: query="user secret data" code=500')).toBe(
+      "SearchFailed: query=<redacted> code=500"
+    )
   })
 
   it("redacts ntn_-prefixed bearer tokens (must-redact threat class)", () => {
@@ -259,7 +253,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // (axios pre-1.x echoing Authorization headers) make the guard
     // load-bearing. ntn-prefix is the ntn-issued token shape.
     const out = redactDebugMessage(
-      "auth retry failed: Authorization=Bearer ntn_aaaaaaaaaaaaaaaaaaaaaaaa",
+      "auth retry failed: Authorization=Bearer ntn_aaaaaaaaaaaaaaaaaaaaaaaa"
     )
     expect(out).toContain("<redacted-token>")
     expect(out).not.toContain("ntn_aaaaaaaaaaaaaaaaaaaaaaaa")
@@ -268,9 +262,7 @@ describe("redactDebugMessage (issue #488)", () => {
   it("redacts secret_-prefixed bearer tokens (integration shape)", () => {
     // Integration secrets carry the `secret_` prefix. Both shapes
     // redact to the same sentinel.
-    const out = redactDebugMessage(
-      "leaked: secret_abcdefghijklmnopqrstuvwx in trace",
-    )
+    const out = redactDebugMessage("leaked: secret_abcdefghijklmnopqrstuvwx in trace")
     expect(out).toBe("leaked: <redacted-token> in trace")
   })
 
@@ -281,7 +273,7 @@ describe("redactDebugMessage (issue #488)", () => {
     // appear as its own alternation in BEARER_TOKEN. Without that, dev
     // PATs leak unredacted to `LORE_DEBUG=1` stderr.
     const out = redactDebugMessage(
-      "leaked: development_ntn_abcdefghijklmnopqrstuvwx in trace",
+      "leaked: development_ntn_abcdefghijklmnopqrstuvwx in trace"
     )
     expect(out).toBe("leaked: <redacted-token> in trace")
   })
@@ -345,9 +337,7 @@ describe("redactDebugError (unknown-thrown coercion)", () => {
 
   it("redacts page-id substrings inside the coerced message", () => {
     const id = "abcdef0123456789abcdef0123456789"
-    expect(redactDebugError(new Error(`failed on ${id}`))).toBe(
-      "failed on <page-id>",
-    )
+    expect(redactDebugError(new Error(`failed on ${id}`))).toBe("failed on <page-id>")
   })
 
   it("coerces an object that throws on String() via Error inheritance", () => {
@@ -415,7 +405,9 @@ describe("redactDebugExtraInfo (structured SDK-logger payloads)", () => {
     // closes the structured-content leak class.
     const input = {
       body: {
-        properties: { Name: { title: [{ text: { content: "private workspace body" } }] } },
+        properties: {
+          Name: { title: [{ text: { content: "private workspace body" } }] },
+        },
         parent: { page_id: "abcdef0123456789abcdef0123456789" },
       },
     }
@@ -505,10 +497,7 @@ describe("redactDebugExtraInfo (structured SDK-logger payloads)", () => {
       ],
     }
     expect(redactDebugExtraInfo(input)).toEqual({
-      retries: [
-        { path: "/v1/pages/<page-id>" },
-        { path: "/v1/pages/<page-id>" },
-      ],
+      retries: [{ path: "/v1/pages/<page-id>" }, { path: "/v1/pages/<page-id>" }],
     })
   })
 

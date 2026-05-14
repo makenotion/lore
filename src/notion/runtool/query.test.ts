@@ -12,7 +12,11 @@ import { isRunToolAggregateEnabled, isRunToolEnabled } from "./flag.js"
 import { SqlPartialResultError } from "./error-helpers.js"
 
 function makeStubClient(
-  responder: (args: { method: string; path: string; body: Record<string, unknown> }) => unknown,
+  responder: (args: {
+    method: string
+    path: string
+    body: Record<string, unknown>
+  }) => unknown
 ): Client {
   return {
     request: vi.fn(async (args) => responder(args)),
@@ -37,7 +41,7 @@ describe("fetchNearDuplicateCandidatePageIds — F6 has_more handling", () => {
       has_more: true,
     }))
     await expect(
-      fetchNearDuplicateCandidatePageIds(client, { ...NEAR_DUP_OPTS, limit: 50 }),
+      fetchNearDuplicateCandidatePageIds(client, { ...NEAR_DUP_OPTS, limit: 50 })
     ).rejects.toBeInstanceOf(SqlPartialResultError)
   })
 
@@ -60,7 +64,8 @@ describe("fetchNearDuplicateCandidatePageIds — F6 has_more handling", () => {
       return { results: [], has_more: false }
     })
     await fetchNearDuplicateCandidatePageIds(client, { ...NEAR_DUP_OPTS, limit: 25 })
-    const data = (observedBody?.["query_data_sources"] as { data: { query: string } }).data
+    const data = (observedBody?.["query_data_sources"] as { data: { query: string } })
+      .data
     expect(data.query).toContain("LIMIT 25")
   })
 
@@ -83,9 +88,7 @@ describe("fetchNearDuplicateCandidatePageIds — F6 has_more handling", () => {
     ).data
     expect(data.query).toMatch(/"Tags" LIKE \? OR "Tags" LIKE \?/)
     expect(data.query.indexOf("Tags")).toBeLessThan(data.query.indexOf("LIMIT"))
-    expect(data.params).toEqual(
-      expect.arrayContaining([`%"refactor"%`, `%"infra"%`]),
-    )
+    expect(data.params).toEqual(expect.arrayContaining([`%"refactor"%`, `%"infra"%`]))
   })
 
   it("rejects tag values with LIKE special characters (kebab-case validation)", async () => {
@@ -97,7 +100,7 @@ describe("fetchNearDuplicateCandidatePageIds — F6 has_more handling", () => {
           tagsProperty: "Tags",
           tags: [badTag],
           limit: 50,
-        }),
+        })
       ).rejects.toThrow(/kebab-case/)
     }
   })
@@ -133,7 +136,7 @@ describe("fetchEntityByNormalizedName", () => {
         dataSourceId: "ds-ent",
         nameProperty: "Name",
         normalizedName: "memoryservice",
-      }),
+      })
     ).rejects.toBeInstanceOf(SqlPartialResultError)
   })
 
@@ -145,7 +148,7 @@ describe("fetchEntityByNormalizedName", () => {
         dataSourceId: "ds-ent",
         nameProperty: "Name",
         normalizedName: "",
-      }),
+      })
     ).toEqual([])
     expect(request).not.toHaveBeenCalled()
   })
@@ -181,7 +184,7 @@ describe("fetchEntitiesByAliasSubstring", () => {
         dataSourceId: "ds-ent",
         aliasesProperty: "Aliases",
         normalizedAlias: "authsvc",
-      }),
+      })
     ).rejects.toBeInstanceOf(SqlPartialResultError)
   })
 })
@@ -197,13 +200,13 @@ describe("isRunToolAggregateEnabled", () => {
       isRunToolAggregateEnabled({
         LORE_USE_RUNTOOL: "1",
         LORE_USE_RUNTOOL_AGGREGATE: "0",
-      }),
+      })
     ).toBe(false)
     expect(
       isRunToolAggregateEnabled({
         LORE_USE_RUNTOOL: "0",
         LORE_USE_RUNTOOL_AGGREGATE: "1",
-      }),
+      })
     ).toBe(true)
   })
 
@@ -251,7 +254,9 @@ describe("querySubjectGroupCountsViaRunTool — issue #542 aggregate", () => {
       { subjectEntityRaw: null, subject: "DataSourceQuery", count: 1 },
     ])
     const data = (
-      observedBody?.["query_data_sources"] as { data: { query: string; params?: string[] } }
+      observedBody?.["query_data_sources"] as {
+        data: { query: string; params?: string[] }
+      }
     ).data
     // GROUP BY composition pinned — the canonical key fold relies
     // on both columns being grouped. Dropping `Subject` would
@@ -279,7 +284,9 @@ describe("querySubjectGroupCountsViaRunTool — issue #542 aggregate", () => {
       projectId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     })
     const data = (
-      observedBody?.["query_data_sources"] as { data: { query: string; params?: string[] } }
+      observedBody?.["query_data_sources"] as {
+        data: { query: string; params?: string[] }
+      }
     ).data
     expect(data.query).toMatch(/"Project" LIKE \?/)
     // Production-vault verification (2026-05-05) found relation
@@ -297,7 +304,9 @@ describe("querySubjectGroupCountsViaRunTool — issue #542 aggregate", () => {
     })
     await querySubjectGroupCountsViaRunTool(client, AGG_OPTS)
     const data = (
-      observedBody?.["query_data_sources"] as { data: { query: string; params?: string[] } }
+      observedBody?.["query_data_sources"] as {
+        data: { query: string; params?: string[] }
+      }
     ).data
     // No predicates → no WHERE. The previous implementation always
     // emitted a WHERE on `Valid Until`; without the date column
@@ -314,7 +323,7 @@ describe("querySubjectGroupCountsViaRunTool — issue #542 aggregate", () => {
       has_more: true,
     }))
     await expect(
-      querySubjectGroupCountsViaRunTool(client, AGG_OPTS),
+      querySubjectGroupCountsViaRunTool(client, AGG_OPTS)
     ).rejects.toBeInstanceOf(SqlPartialResultError)
   })
 
@@ -358,27 +367,19 @@ describe("extractFirstRelationId", () => {
     // trailing" would silently key on `entity:11111111-...` instead
     // of falling through to `key:<computeSubjectKey(subject)>`.
     expect(
-      extractFirstRelationId("garbage 11111111111111111111111111111111 trailing"),
+      extractFirstRelationId("garbage 11111111111111111111111111111111 trailing")
     ).toBe(null)
-    expect(
-      extractFirstRelationId("11111111-1111-1111-1111-111111111111"),
-    ).toBe(null)
-    expect(
-      extractFirstRelationId("11111111111111111111111111111111"),
-    ).toBe(null)
+    expect(extractFirstRelationId("11111111-1111-1111-1111-111111111111")).toBe(null)
+    expect(extractFirstRelationId("11111111111111111111111111111111")).toBe(null)
   })
 
   it("accepts both undashed and dashed ids in URL form", () => {
     // Production today: undashed form. Dashed-alternation is defense
     // in depth against a future schema-pin refresh.
     const undashed = `["https://www.notion.so/22222222222222222222222222222222"]`
-    expect(extractFirstRelationId(undashed)).toBe(
-      "22222222-2222-2222-2222-222222222222",
-    )
+    expect(extractFirstRelationId(undashed)).toBe("22222222-2222-2222-2222-222222222222")
     const dashed = `["https://www.notion.so/22222222-2222-2222-2222-222222222222"]`
-    expect(extractFirstRelationId(dashed)).toBe(
-      "22222222-2222-2222-2222-222222222222",
-    )
+    expect(extractFirstRelationId(dashed)).toBe("22222222-2222-2222-2222-222222222222")
   })
 })
 

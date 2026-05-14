@@ -202,7 +202,7 @@ describe("stderrSdkLogger", () => {
     stderrSdkLogger(
       LogLevel.WARN,
       "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found",
-      {},
+      {}
     )
 
     stderrSpy.mockRestore()
@@ -271,7 +271,9 @@ describe("stderrSdkLogger", () => {
 
     stderrSdkLogger(LogLevel.WARN, "request failed", {
       body: {
-        properties: { Name: { title: [{ text: { content: "private workspace body" } }] } },
+        properties: {
+          Name: { title: [{ text: { content: "private workspace body" } }] },
+        },
         parent: { page_id: "abcdef0123456789abcdef0123456789" },
       },
     })
@@ -634,10 +636,10 @@ describe("createAuthRefreshingClient", () => {
                 },
               },
             }) as unknown as Client,
-        },
+        }
       )
       await expect(client.pages.retrieve({ page_id: "page" })).rejects.toThrow(
-        "unauthorized",
+        "unauthorized"
       )
     } finally {
       if (priorDebug === undefined) {
@@ -687,7 +689,7 @@ describe("createAuthRefreshingClient", () => {
     })
 
     await expect(
-      client.request({ path: "tools/run", method: "post", body: {} }),
+      client.request({ path: "tools/run", method: "post", body: {} })
     ).resolves.toEqual({ ok: true, page_id: "post-refresh" })
     expect(refreshAuth).toHaveBeenCalledTimes(1)
     expect(createClient).toHaveBeenCalledTimes(2)
@@ -705,9 +707,10 @@ describe("createAuthRefreshingClient", () => {
 // re-shapes the envelope as `APIResponseError` so the proxies catch
 // it exactly as they would a native SDK error.
 describe("wrapWithRunToolEnvelopeNormalizer", () => {
-  function stubRequestClient(
-    impl: () => Promise<unknown> | unknown,
-  ): { client: Client; calls: { count: number } } {
+  function stubRequestClient(impl: () => Promise<unknown> | unknown): {
+    client: Client
+    calls: { count: number }
+  } {
     const calls = { count: 0 }
     const client = {
       request: vi.fn(async () => {
@@ -722,7 +725,7 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     const { client } = stubRequestClient(() => ({ ok: true, page_id: "p" }))
     const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
     await expect(
-      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+      wrapped.request({ path: "tools/run", method: "post", body: {} })
     ).resolves.toEqual({ ok: true, page_id: "p" })
   })
 
@@ -736,10 +739,10 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     }))
     const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
     await expect(
-      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+      wrapped.request({ path: "tools/run", method: "post", body: {} })
     ).rejects.toBeInstanceOf(APIResponseError)
     await expect(
-      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+      wrapped.request({ path: "tools/run", method: "post", body: {} })
     ).rejects.toMatchObject({
       status: 429,
       code: "rate_limited",
@@ -787,11 +790,11 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     const limited = createLimitedClient(
       normalized,
       { concurrency: 1, requestsPerSecond: 100, burstSize: 5 },
-      { onBackoff },
+      { onBackoff }
     )
 
     await expect(
-      limited.request({ path: "tools/run", method: "post", body: {} }),
+      limited.request({ path: "tools/run", method: "post", body: {} })
     ).rejects.toBeInstanceOf(APIResponseError)
     // Bucket pause emitted via the rate-limit `catch` — proves the
     // normalizer's throw reaches the proxy layer where the
@@ -831,7 +834,7 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     })
 
     await expect(
-      client.request({ path: "tools/run", method: "post", body: {} }),
+      client.request({ path: "tools/run", method: "post", body: {} })
     ).resolves.toEqual({ ok: true, page_id: "post-refresh" })
     expect(refreshAuth).toHaveBeenCalledTimes(1)
     expect(oldRequest).toHaveBeenCalledTimes(1)
@@ -845,7 +848,7 @@ describe("wrapWithRunToolEnvelopeNormalizer", () => {
     }))
     const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
     await expect(
-      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+      wrapped.request({ path: "tools/run", method: "post", body: {} })
     ).rejects.toMatchObject({
       status: 500,
       code: "internal_server_error",

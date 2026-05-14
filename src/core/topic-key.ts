@@ -194,8 +194,7 @@ export function suggestTopicKey(input: {
     if (input.kind === "task") {
       return {
         key: null,
-        reason:
-          "Kind 'task' transitions through lifecycle states, not upsert revisions.",
+        reason: "Kind 'task' transitions through lifecycle states, not upsert revisions.",
       }
     }
     return {

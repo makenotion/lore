@@ -87,7 +87,9 @@ export class ProjectService {
 
   async list(status: ProjectListStatus = "active"): Promise<Project[]> {
     const filter =
-      status === "any" ? undefined : { property: PROJECT_PROPS.STATUS, select: { equals: status } }
+      status === "any"
+        ? undefined
+        : { property: PROJECT_PROPS.STATUS, select: { equals: status } }
 
     const results: PageObjectResponse[] = []
     let cursor: string | undefined

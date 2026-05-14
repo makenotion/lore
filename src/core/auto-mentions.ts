@@ -6,8 +6,7 @@ import { extractEntityCandidates } from "./near-duplicate.js"
 
 export const MAX_AUTO_MENTION_ENTITIES = 25
 
-export const SIMULATED_AUTOSAVE_MAX_MUTATIONS_PER_MEMORY =
-  2 + MAX_AUTO_MENTION_ENTITIES
+export const SIMULATED_AUTOSAVE_MAX_MUTATIONS_PER_MEMORY = 2 + MAX_AUTO_MENTION_ENTITIES
 
 export interface FactServiceLike {
   createBatchWithDedup(

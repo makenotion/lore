@@ -234,9 +234,7 @@ function expectedBaseUrlForEnv(env: NtnEnv): string | undefined {
 
 function resolveInitProfile(profileSelector: string | undefined) {
   try {
-    return resolveProfileFromConfig(
-      profileSelector ? { profile: profileSelector } : {}
-    )
+    return resolveProfileFromConfig(profileSelector ? { profile: profileSelector } : {})
   } catch (err) {
     const label = profileSelector ? ` ${JSON.stringify(profileSelector)}` : ""
     console.error(

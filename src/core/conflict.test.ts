@@ -182,7 +182,7 @@ describe("findConflictCandidates", () => {
     expect(result).toHaveLength(1)
     expect(result[0].signals.some((s) => s.startsWith("shared tags:"))).toBe(true)
     expect(result[0].signals.find((s) => s.startsWith("shared tags:"))).toContain(
-      "architecture",
+      "architecture"
     )
   })
 
@@ -284,7 +284,7 @@ describe("findConflictCandidates", () => {
     // Build a corpus producing well over 50 qualifying pairs.
     // 15 memories with identical titles → C(15, 2) = 105 pairs.
     const memories = Array.from({ length: 15 }, (_, i) =>
-      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+      makeMemory({ id: `m${i}`, title: "Identical subject string" })
     )
     const result = findConflictCandidates(memories, {})
     expect(result).toHaveLength(CONFLICT_PAIR_LIMIT)
@@ -296,7 +296,7 @@ describe("findConflictCandidates", () => {
     // special-cases Infinity to "default to 50" would silently
     // defeat that flag.
     const memories = Array.from({ length: 15 }, (_, i) =>
-      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+      makeMemory({ id: `m${i}`, title: "Identical subject string" })
     )
     const result = findConflictCandidates(memories, {
       pairLimit: Number.POSITIVE_INFINITY,
@@ -306,7 +306,7 @@ describe("findConflictCandidates", () => {
 
   it("treats Infinity (alias) and Number.POSITIVE_INFINITY identically", () => {
     const memories = Array.from({ length: 15 }, (_, i) =>
-      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+      makeMemory({ id: `m${i}`, title: "Identical subject string" })
     )
     const viaPositiveInfinity = findConflictCandidates(memories, {
       pairLimit: Number.POSITIVE_INFINITY,
@@ -367,9 +367,7 @@ describe("findConflictCandidates", () => {
     // Sub-cap: bounded top-K must match the oracle's top-K prefix.
     for (const cap of [1, 3, 7, 15]) {
       const bounded = findConflictCandidates(memories, { pairLimit: cap })
-      expect(bounded.map(fingerprint)).toEqual(
-        oracle.slice(0, cap).map(fingerprint),
-      )
+      expect(bounded.map(fingerprint)).toEqual(oracle.slice(0, cap).map(fingerprint))
     }
     // Unbounded: the dedicated push-then-sort path must match the
     // oracle in full. This is the cross-check the prior version of
@@ -396,7 +394,7 @@ describe("findConflictCandidates", () => {
     // running array length never exceeds `cap + 1` (the transient
     // state between splice and pop).
     const memories = Array.from({ length: 50 }, (_, i) =>
-      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+      makeMemory({ id: `m${i}`, title: "Identical subject string" })
     )
     let observedMaxLength = 0
     const realSplice = Array.prototype.splice
@@ -435,7 +433,7 @@ describe("findConflictCandidates", () => {
     // The unbounded path uses `push` instead, so we expect zero
     // splice calls during candidate accumulation.
     const memories = Array.from({ length: 50 }, (_, i) =>
-      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+      makeMemory({ id: `m${i}`, title: "Identical subject string" })
     )
     let spliceCallCount = 0
     const realSplice = Array.prototype.splice

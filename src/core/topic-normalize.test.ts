@@ -9,9 +9,7 @@ describe("normalizeTopicNameForLookup", () => {
   })
 
   it("lowercases", () => {
-    expect(normalizeTopicNameForLookup("GraphQL Federation")).toBe(
-      "graphql federation"
-    )
+    expect(normalizeTopicNameForLookup("GraphQL Federation")).toBe("graphql federation")
   })
 
   it("collapses `&` and `and` to the same key", () => {

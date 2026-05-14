@@ -150,9 +150,9 @@ const SDK_SENSITIVE_FIELD_NAMES = [
  */
 const SDK_FIELD_NAMES = new RegExp(
   `\\b(${SDK_SENSITIVE_FIELD_NAMES.map((name) =>
-    name === "headers" ? "headers?" : name,
+    name === "headers" ? "headers?" : name
   ).join("|")})=`,
-  "gi",
+  "gi"
 )
 
 /**
@@ -296,7 +296,7 @@ function consumeBalanced(
   message: string,
   start: number,
   open: string,
-  close: string,
+  close: string
 ): number {
   let depth = 0
   let i = start
@@ -505,11 +505,7 @@ export function redactDebugExtraInfo(value: unknown): unknown {
   return redactInner(value, new WeakSet(), 0)
 }
 
-function redactInner(
-  value: unknown,
-  seen: WeakSet<object>,
-  depth: number,
-): unknown {
+function redactInner(value: unknown, seen: WeakSet<object>, depth: number): unknown {
   if (typeof value === "string") return redactDebugMessage(value)
   if (value === null || typeof value !== "object") return value
   if (seen.has(value as object)) return "<circular>"
@@ -542,10 +538,7 @@ function redactInner(
   // wholesale-redact rule fires before the walker sees the bytes.
   const out: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (
-      SENSITIVE_EXTRA_INFO_KEYS.has(key.toLowerCase()) &&
-      !(item instanceof Error)
-    ) {
+    if (SENSITIVE_EXTRA_INFO_KEYS.has(key.toLowerCase()) && !(item instanceof Error)) {
       // Key is sensitive AND the value isn't an Error — wholesale
       // redact so nested structured payloads can't leak content
       // under recognized SDK field names. The Error escape-hatch is

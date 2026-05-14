@@ -316,10 +316,7 @@ function computeFactGroupKey(row: FactRow): string {
   ].join(FACT_GROUP_KEY_SEP)
 }
 
-async function listAllFacts(
-  client: Client,
-  factsDb: DatabaseRef
-): Promise<FactRow[]> {
+async function listAllFacts(client: Client, factsDb: DatabaseRef): Promise<FactRow[]> {
   const rows: FactRow[] = []
   let cursor: string | undefined
   do {
@@ -369,7 +366,7 @@ async function listAllFacts(
         expiresAt: extractDate(page.properties[FACT_PROPS.EXPIRES_AT]),
       })
     }
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
   return rows
 }

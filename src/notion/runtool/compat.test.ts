@@ -39,30 +39,93 @@ const PROJECT_B = "proj-b"
 
 const FIXTURE: ReadonlyArray<FixtureRow> = [
   // Strong matches under the trigram threshold
-  { id: "mem-1", title: "MemoryService refactor part 1", kind: "note", status: "accepted", projectId: PROJECT_A, tags: ["refactor"] },
-  { id: "mem-2", title: "MemoryService refactor part 2", kind: "note", status: "accepted", projectId: PROJECT_A, tags: ["refactor"] },
+  {
+    id: "mem-1",
+    title: "MemoryService refactor part 1",
+    kind: "note",
+    status: "accepted",
+    projectId: PROJECT_A,
+    tags: ["refactor"],
+  },
+  {
+    id: "mem-2",
+    title: "MemoryService refactor part 2",
+    kind: "note",
+    status: "accepted",
+    projectId: PROJECT_A,
+    tags: ["refactor"],
+  },
   // Decision row that the memory probe excludes (excludeKinds: ["decision"])
-  { id: "mem-3", title: "MemoryService refactor decision", kind: "decision", status: "accepted", projectId: PROJECT_A, tags: ["decision"] },
+  {
+    id: "mem-3",
+    title: "MemoryService refactor decision",
+    kind: "decision",
+    status: "accepted",
+    projectId: PROJECT_A,
+    tags: ["decision"],
+  },
   // Status outside whitelist (e.g. when statuses=["accepted","proposed"])
-  { id: "mem-4", title: "MemoryService refactor done", kind: "note", status: "superseded", projectId: PROJECT_A, tags: ["done"] },
+  {
+    id: "mem-4",
+    title: "MemoryService refactor done",
+    kind: "note",
+    status: "superseded",
+    projectId: PROJECT_A,
+    tags: ["done"],
+  },
   // Project mismatch — would not even enter the SQL pool
-  { id: "mem-5", title: "MemoryService refactor B", kind: "note", status: "accepted", projectId: PROJECT_B, tags: [] },
+  {
+    id: "mem-5",
+    title: "MemoryService refactor B",
+    kind: "note",
+    status: "accepted",
+    projectId: PROJECT_B,
+    tags: [],
+  },
   // Below threshold — title too dissimilar
-  { id: "mem-6", title: "Unrelated meeting notes", kind: "note", status: "accepted", projectId: PROJECT_A, tags: [] },
+  {
+    id: "mem-6",
+    title: "Unrelated meeting notes",
+    kind: "note",
+    status: "accepted",
+    projectId: PROJECT_A,
+    tags: [],
+  },
   // Proposed status — opt-in path
-  { id: "mem-7", title: "MemoryService refactor proposed", kind: "note", status: "proposed", projectId: PROJECT_A, tags: [] },
+  {
+    id: "mem-7",
+    title: "MemoryService refactor proposed",
+    kind: "note",
+    status: "proposed",
+    projectId: PROJECT_A,
+    tags: [],
+  },
   // Unscoped (vault-wide) row — REST surfaces this in any
   // project-scoped probe via `projectOrUnscopedFilter`. Issue #539
   // review blocker #3 specifically called out that the SQL path
   // must mirror this; the `compat.test.ts` fixture didn't have an
   // unscoped row before, so the harness couldn't catch the
   // divergence.
-  { id: "mem-8", title: "MemoryService refactor vault-wide", kind: "note", status: "accepted", projectId: "", tags: ["refactor"] },
+  {
+    id: "mem-8",
+    title: "MemoryService refactor vault-wide",
+    kind: "note",
+    status: "accepted",
+    projectId: "",
+    tags: ["refactor"],
+  },
   // Tagged-out row in PROJECT_A — should be filtered out when
   // the probe scopes by tags. The SQL exact-token predicate
   // (`Tags LIKE %"refactor"%`) and the REST `multi_select.contains`
   // both reject this row before the LIMIT.
-  { id: "mem-9", title: "MemoryService refactor untagged", kind: "note", status: "accepted", projectId: PROJECT_A, tags: ["unrelated"] },
+  {
+    id: "mem-9",
+    title: "MemoryService refactor untagged",
+    kind: "note",
+    status: "accepted",
+    projectId: PROJECT_A,
+    tags: ["unrelated"],
+  },
 ]
 
 function makeMemory(row: FixtureRow): Memory {
@@ -174,9 +237,7 @@ function sqlListerLike(items: ReadonlyArray<FixtureRow>) {
     // Mirror `MemoryService.listForNearDuplicates`'s shim:
     // default-exclude proposed rows when no whitelist narrows.
     const excludeStatuses: MemoryStatus[] | undefined =
-      opts.statuses === undefined && !opts.includeProposed
-        ? ["proposed"]
-        : undefined
+      opts.statuses === undefined && !opts.includeProposed ? ["proposed"] : undefined
 
     const matches = items.filter((row) => {
       // SQL path also includes unscoped rows by default
@@ -248,7 +309,7 @@ describe("RunTool SQL vs REST/SDK A/B harness", () => {
     const sqlResult = await findNearDuplicates(sqlLister, opts)
 
     expect(new Set(sqlResult.map((m) => m.id))).toEqual(
-      new Set(restResult.map((m) => m.id)),
+      new Set(restResult.map((m) => m.id))
     )
     // mem-3 is the only decision row in PROJECT_A; mem-7 is proposed
     // but kind=note, not decision.
@@ -353,7 +414,7 @@ describe("RunTool SQL vs REST/SDK A/B harness", () => {
     const restResult = await findNearDuplicates(restLister, opts)
     const sqlResult = await findNearDuplicates(sqlLister, opts)
     expect(new Set(sqlResult.map((m) => m.id))).toEqual(
-      new Set(restResult.map((m) => m.id)),
+      new Set(restResult.map((m) => m.id))
     )
     expect(restResult.map((m) => m.id)).toContain("mem-8")
   })
@@ -385,7 +446,7 @@ describe("RunTool SQL vs REST/SDK A/B harness", () => {
     // Both paths must surface mem-1, mem-2 (tagged "refactor")
     // and exclude mem-9 (tagged "unrelated").
     expect(new Set(sqlResult.map((m) => m.id))).toEqual(
-      new Set(restResult.map((m) => m.id)),
+      new Set(restResult.map((m) => m.id))
     )
     expect(sqlResult.map((m) => m.id)).not.toContain("mem-9")
   })
@@ -492,7 +553,11 @@ function buildSemanticPage(row: (typeof SEMANTIC_FIXTURE)[number]): PageObjectRe
       Title: { id: "t", type: "title", title: [{ plain_text: row.title } as never] },
       Project: { id: "p", type: "relation", relation: [], has_more: false },
       Topic: { id: "tp", type: "relation", relation: [], has_more: false },
-      Source: { id: "s", type: "select", select: { id: "1", name: "manual", color: "default" } },
+      Source: {
+        id: "s",
+        type: "select",
+        select: { id: "1", name: "manual", color: "default" },
+      },
       Tags: { id: "tg", type: "multi_select", multi_select: [] },
     } as never,
     url: `https://www.notion.so/${row.id.replace(/-/g, "")}`,
@@ -684,7 +749,11 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
           Title: { id: "t", type: "title", title: [{ plain_text: row.title }] },
           Project: { id: "p", type: "relation", relation: [], has_more: false },
           Topic: { id: "tp", type: "relation", relation: [], has_more: false },
-          Source: { id: "s", type: "select", select: { id: "1", name: "manual", color: "default" } },
+          Source: {
+            id: "s",
+            type: "select",
+            select: { id: "1", name: "manual", color: "default" },
+          },
           Tags: { id: "tg", type: "multi_select", multi_select: [] },
         } as never,
         url: `https://www.notion.so/${row.id.replace(/-/g, "")}`,
@@ -700,9 +769,7 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
       return {
         client: {
           search: async () => ({
-            results: richFixture
-              .filter((r) => !r.external)
-              .map((r) => buildRichPage(r)),
+            results: richFixture.filter((r) => !r.external).map((r) => buildRichPage(r)),
             has_more: false,
             next_cursor: null,
           }),
@@ -725,9 +792,8 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
             retrieve: async ({ page_id }: { page_id: string }) => {
               const page = pagesById.get(page_id)
               if (!page) {
-                const { APIResponseError, APIErrorCode } = await import(
-                  "@notionhq/client"
-                )
+                const { APIResponseError, APIErrorCode } =
+                  await import("@notionhq/client")
                 throw new APIResponseError({
                   code: APIErrorCode.ObjectNotFound,
                   status: 404,
@@ -888,8 +954,9 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
 
     const controller = new AbortController()
-    const liveIds = Array.from({ length: 5 }, (_, i) =>
-      `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
+    const liveIds = Array.from(
+      { length: 5 },
+      (_, i) => `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
     )
     let retrieveCalls = 0
     const stub = {
@@ -962,12 +1029,7 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     ).fetchSemanticPagesViaRunTool.bind(service)
 
     await expect(
-      helperFn(
-        { query: "Memory", limit: 5 },
-        "Memory",
-        5,
-        controller.signal
-      )
+      helperFn({ query: "Memory", limit: 5 }, "Memory", 5, controller.signal)
     ).rejects.toMatchObject({ name: "AbortError" })
 
     // Only one retrieve completed (the one that triggered the abort);
@@ -1080,8 +1142,9 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     // routes through REST.
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const counters = { searchCalls: 0, requestCalls: 0 }
-    const liveIds = Array.from({ length: 25 }, (_, i) =>
-      `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
+    const liveIds = Array.from(
+      { length: 25 },
+      (_, i) => `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
     )
     const stub = {
       search: async () => {
@@ -1152,8 +1215,9 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     // doesn't regress this case.
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const counters = { searchCalls: 0, requestCalls: 0 }
-    const liveIds = Array.from({ length: 25 }, (_, i) =>
-      `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
+    const liveIds = Array.from(
+      { length: 25 },
+      (_, i) => `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
     )
     const stub = {
       search: async () => {
@@ -1328,7 +1392,12 @@ const AGGREGATE_FIXTURE: ReadonlyArray<AggregateFixtureRow> = [
   // Invalidated fact — must contribute to BOTH paths' counts (the
   // gateway has no `Valid Until` column, and the JS call site
   // passes `includeInvalidated: true` for parity).
-  { factId: "fa-8", subject: "MemoryService.create", subjectEntityId: ENT_LIVE_A, validUntil: "2026-04-30" },
+  {
+    factId: "fa-8",
+    subject: "MemoryService.create",
+    subjectEntityId: ENT_LIVE_A,
+    validUntil: "2026-04-30",
+  },
 ]
 
 function fixtureToFacts(fixture: ReadonlyArray<AggregateFixtureRow>): Fact[] {
@@ -1359,9 +1428,12 @@ function fixtureToFacts(fixture: ReadonlyArray<AggregateFixtureRow>): Fact[] {
  * `extractFirstRelationId` returns `null` for them.
  */
 function fixtureToAggregateRows(
-  fixture: ReadonlyArray<AggregateFixtureRow>,
+  fixture: ReadonlyArray<AggregateFixtureRow>
 ): Array<{ subjectEntity: string | null; subject: string; cnt: number }> {
-  const groups = new Map<string, { subjectEntity: string | null; subject: string; cnt: number }>()
+  const groups = new Map<
+    string,
+    { subjectEntity: string | null; subject: string; cnt: number }
+  >()
   for (const row of fixture) {
     // Group key is exactly what the SQL gateway groups by:
     // raw SubjectEntity cell || raw Subject cell. Case-variant
@@ -1408,7 +1480,7 @@ interface OrphanRateStubOptions {
 
 function buildOrphanRateServicesStub(
   fixture: ReadonlyArray<AggregateFixtureRow>,
-  opts: OrphanRateStubOptions = {},
+  opts: OrphanRateStubOptions = {}
 ): {
   services: Parameters<RunOrphanRateReportFn>[0]
   counters: OrphanRateStubCounters
@@ -1440,7 +1512,11 @@ function buildOrphanRateServicesStub(
     facts: {
       queryBySubject: async (
         _subject: string,
-        _opts?: { allowUnfiltered?: boolean; includeInvalidated?: boolean; projectId?: string },
+        _opts?: {
+          allowUnfiltered?: boolean
+          includeInvalidated?: boolean
+          projectId?: string
+        }
       ): Promise<Fact[]> => {
         counters.queryBySubjectCalls += 1
         return facts
@@ -1455,19 +1531,20 @@ function buildOrphanRateServicesStub(
   return { services: stub, counters }
 }
 
-function captureOrphanRateLogs<T>(fn: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+function captureOrphanRateLogs<T>(
+  fn: () => Promise<T>
+): Promise<{ result: T; lines: string[] }> {
   const lines: string[] = []
-  const spy = vi
-    .spyOn(console, "log")
-    .mockImplementation((...args: unknown[]) => {
-      lines.push(args.map((a) => String(a)).join(" "))
-    })
+  const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    lines.push(args.map((a) => String(a)).join(" "))
+  })
   return fn()
     .then((result) => ({ result, lines }))
     .finally(() => spy.mockRestore())
 }
 
-const ORPHAN_RATE_LINE = /^Orphan rate \(([^,]+), ([^,]+), via ([a-z-]+)\): (\d+\.\d)% — (\d+)\/(\d+) entit[a-z]+ appear in exactly 1 fact \((\d+) fact[s]? inspected, including invalidated\)\.$/
+const ORPHAN_RATE_LINE =
+  /^Orphan rate \(([^,]+), ([^,]+), via ([a-z-]+)\): (\d+\.\d)% — (\d+)\/(\d+) entit[a-z]+ appear in exactly 1 fact \((\d+) fact[s]? inspected, including invalidated\)\.$/
 
 function parseOrphanRateLine(lines: string[]): {
   pass: string
@@ -1593,11 +1670,15 @@ describe("RunTool aggregate vs JS enumeration A/B harness (issue #542)", () => {
     // #549 review iteration 1 should-fix #5: explicit assertion
     // that the JS fallback walked the same fact corpus as the
     // failed SQL probe was meant to aggregate over.
-    const onSaturated = buildOrphanRateServicesStub(AGGREGATE_FIXTURE, { saturated: true })
+    const onSaturated = buildOrphanRateServicesStub(AGGREGATE_FIXTURE, {
+      saturated: true,
+    })
     const factsAccessor = onSaturated.services.facts as unknown as {
       queryBySubject: (...args: unknown[]) => Promise<unknown>
     }
-    const originalQueryBySubject = factsAccessor.queryBySubject.bind(onSaturated.services.facts)
+    const originalQueryBySubject = factsAccessor.queryBySubject.bind(
+      onSaturated.services.facts
+    )
     const queryBySubjectSpy = vi.fn(originalQueryBySubject)
     factsAccessor.queryBySubject = queryBySubjectSpy
     const onSaturatedResult = await captureOrphanRateLogs(() =>

@@ -68,9 +68,7 @@ export type InstallSource = InstallSourceLocal | InstallSourceGit
 export interface ProfilesLockEntry {
   name: string
   version: string
-  source:
-    | { kind: "git"; url: string; commit: string }
-    | { kind: "path"; path: string }
+  source: { kind: "git"; url: string; commit: string } | { kind: "path"; path: string }
   manifestDigest: string
   installedAt: string
 }
@@ -181,9 +179,7 @@ function parseGitInstallSource(raw: string): InstallSourceGit {
     )
   }
   if (!/\.git$/i.test(url)) {
-    throw new ProfileInstallError(
-      `Git install source URL must end in .git, got: ${url}.`
-    )
+    throw new ProfileInstallError(`Git install source URL must end in .git, got: ${url}.`)
   }
   return { kind: "git", url, commit }
 }
@@ -409,11 +405,10 @@ function stageGitSource(source: InstallSourceGit): StageResult {
       cwd: tempDir,
       stdio: "ignore",
     })
-    execFileSync(
-      "git",
-      ["fetch", "--depth=1", "--quiet", "origin", source.commit],
-      { cwd: tempDir, stdio: "ignore" }
-    )
+    execFileSync("git", ["fetch", "--depth=1", "--quiet", "origin", source.commit], {
+      cwd: tempDir,
+      stdio: "ignore",
+    })
     execFileSync("git", ["checkout", "--quiet", "FETCH_HEAD"], {
       cwd: tempDir,
       stdio: "ignore",
@@ -515,7 +510,10 @@ export function readProfilesLock(configRoot: string): ProfilesLock {
       throw new Error("expected an object")
     }
     const profiles = (parsed as Record<string, unknown>)["profiles"]
-    if (profiles !== undefined && (typeof profiles !== "object" || Array.isArray(profiles))) {
+    if (
+      profiles !== undefined &&
+      (typeof profiles !== "object" || Array.isArray(profiles))
+    ) {
       throw new Error("expected profiles to be an object")
     }
     const out: ProfilesLock = { profiles: {} }
@@ -537,10 +535,7 @@ export function profilesLockPath(configRoot: string): string {
   return join(configRoot, INSTALLED_PROFILES_REL, INSTALLED_PROFILES_LOCK_FILENAME)
 }
 
-function recordLockEntry(
-  configRoot: string,
-  preview: InstallPreview
-): ProfilesLockEntry {
+function recordLockEntry(configRoot: string, preview: InstallPreview): ProfilesLockEntry {
   const lock = readProfilesLock(configRoot)
   const entry: ProfilesLockEntry = {
     name: preview.profile.name,

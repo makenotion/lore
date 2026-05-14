@@ -133,9 +133,7 @@ const DB: DatabaseRef = {
 let testHomeDir: string
 
 beforeEach(() => {
-  testHomeDir = mkdtempSync(
-    join(process.env["TMPDIR"] ?? "/tmp", "lore-decision-test-")
-  )
+  testHomeDir = mkdtempSync(join(process.env["TMPDIR"] ?? "/tmp", "lore-decision-test-"))
   vi.stubEnv("HOME", testHomeDir)
 })
 

@@ -583,7 +583,14 @@ export async function scanDebt(
       if (scope.expiredMemories + scope.expiredFacts > 0) {
         const count = scope.expiredMemories + scope.expiredFacts
         total += count
-        items.push(buildScopeAnomalyItem("expired", count, scope.expiredMemories, scope.expiredFacts))
+        items.push(
+          buildScopeAnomalyItem(
+            "expired",
+            count,
+            scope.expiredMemories,
+            scope.expiredFacts
+          )
+        )
       }
       if (scope.expiringSoonMemories + scope.expiringSoonFacts > 0) {
         const count = scope.expiringSoonMemories + scope.expiringSoonFacts
@@ -754,17 +761,16 @@ function compareDebtItems(a: DebtItem, b: DebtItem): number {
 function buildLowTrustItem(memory: Memory, today: string): DebtItem {
   const reasons: string[] = []
   const confidenceScore = memory.confidenceScore ?? null
-  if (
-    confidenceScore !== null &&
-    confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD
-  ) {
+  if (confidenceScore !== null && confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD) {
     reasons.push(
       `Confidence Score ${confidenceScore.toFixed(2)} below display threshold ${CONFIDENCE_DISPLAY_THRESHOLD}`
     )
   }
   const daysNeglected = daysSinceLastReferenced(memory, today)
   if (daysNeglected !== null && daysNeglected >= STALE_CONFIDENCE_DAYS) {
-    reasons.push(`Last referenced ${daysNeglected}d ago (≥ ${STALE_CONFIDENCE_DAYS}d neglect cutoff)`)
+    reasons.push(
+      `Last referenced ${daysNeglected}d ago (≥ ${STALE_CONFIDENCE_DAYS}d neglect cutoff)`
+    )
   }
   if (memory.confidence === "speculative") {
     reasons.push('Categorical confidence is "speculative"')
@@ -781,19 +787,32 @@ function buildLowTrustItem(memory: Memory, today: string): DebtItem {
     id: `low_trust::${memory.id}`,
     priority: priorityForScore(blended),
     category: "low_trust",
-    entityType: memory.kind === "decision" ? "decision" : memory.kind === "task" ? "task" : "memory",
+    entityType:
+      memory.kind === "decision"
+        ? "decision"
+        : memory.kind === "task"
+          ? "task"
+          : "memory",
     entityId: memory.id,
     title: memory.title,
     score: Math.round(blended),
     reasons: reasons.length > 0 ? reasons : ["Surfaced by stale-confidence probe"],
-    suggestedActions: ["review_and_refresh", "archive", "supersede_with_decision", "compare_with_conflicting"],
+    suggestedActions: [
+      "review_and_refresh",
+      "archive",
+      "supersede_with_decision",
+      "compare_with_conflicting",
+    ],
     safeToAutoFix: false,
     projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
   }
 }
 
 function buildOrphanFactItem(fact: Fact): DebtItem {
-  const reasons: string[] = ["Source relation is empty", "Fact is still active (no Valid Until)"]
+  const reasons: string[] = [
+    "Source relation is empty",
+    "Fact is still active (no Valid Until)",
+  ]
   const blended =
     SEVERITY_WEIGHT.orphan_fact +
     retrievalRiskFromFact(fact) +
@@ -817,7 +836,9 @@ function buildOrphanFactItem(fact: Fact): DebtItem {
 function buildOverdueFactItem(fact: Fact, today: string): DebtItem {
   const days = daysOverdue(fact.reviewBy, today)
   const reasons = [
-    days !== null ? `Review By overdue by ${days}d` : `Review By overdue (Review By: ${fact.reviewBy ?? "n/a"})`,
+    days !== null
+      ? `Review By overdue by ${days}d`
+      : `Review By overdue (Review By: ${fact.reviewBy ?? "n/a"})`,
     "Fact is still active (no Valid Until)",
   ]
   const blended =
@@ -963,8 +984,7 @@ function buildTopicSprawlItem(group: SimilarTopicGroup): DebtItem {
     `Canonical: "${group.canonicalName}"`,
     `Siblings: ${siblingNames.map((n) => `"${n}"`).join(", ")}`,
   ]
-  const blended =
-    SEVERITY_WEIGHT.topic_sprawl + Math.min(15, group.siblings.length * 4)
+  const blended = SEVERITY_WEIGHT.topic_sprawl + Math.min(15, group.siblings.length * 4)
   return {
     id: `topic_sprawl::${group.canonicalId}`,
     priority: priorityForScore(blended),
@@ -991,10 +1011,7 @@ function buildScopeAnomalyItem(
       : kind === "expiring_soon"
         ? "Scoped rows expiring soon"
         : "Narrow-scope rows out of context"
-  const reasons = [
-    `Memories: ${memoryCount}`,
-    `Facts: ${factCount}`,
-  ]
+  const reasons = [`Memories: ${memoryCount}`, `Facts: ${factCount}`]
   const score =
     SEVERITY_WEIGHT.scope_anomaly +
     (kind === "expired" ? 15 : 0) +
@@ -1038,7 +1055,12 @@ function buildOwnerlessItem(memory: Memory, today: string): DebtItem {
     title: memory.title,
     score: Math.round(blended),
     reasons,
-    suggestedActions: ["assign_project", "assign_topic", "convert_to_decision", "archive"],
+    suggestedActions: [
+      "assign_project",
+      "assign_topic",
+      "convert_to_decision",
+      "archive",
+    ],
     safeToAutoFix: false,
     projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
   }
@@ -1061,16 +1083,10 @@ type RetrievalRiskInput = Pick<
   "confidence" | "confidenceScore" | "kind" | "projectIds" | "updatedAt"
 >
 
-function retrievalRiskFromMemory(
-  memory: RetrievalRiskInput,
-  today: string
-): number {
+function retrievalRiskFromMemory(memory: RetrievalRiskInput, today: string): number {
   let risk = 0
   if (memory.confidence === "certain") risk += 5
-  if (
-    memory.confidenceScore !== null &&
-    memory.confidenceScore >= 0.7
-  ) {
+  if (memory.confidenceScore !== null && memory.confidenceScore >= 0.7) {
     risk += 5
   }
   if (HIGH_RETRIEVAL_KINDS.has(memory.kind)) risk += 5
@@ -1102,9 +1118,7 @@ function confidenceRiskFromScore(score: number | null | undefined): number {
   return Math.round((CONFIDENCE_DISPLAY_THRESHOLD - score) * 30)
 }
 
-function confidenceRiskFromFactConfidence(
-  confidence: Fact["confidence"]
-): number {
+function confidenceRiskFromFactConfidence(confidence: Fact["confidence"]): number {
   if (confidence === "speculative") return 8
   if (confidence === "likely") return 4
   return 0
@@ -1193,10 +1207,7 @@ async function safeLoadExpiringScopedStatus(
   )
   if (!columnsPresent) return null
   try {
-    return await loadExpiringScopedStatus(
-      services,
-      projectId ? { projectId } : {}
-    )
+    return await loadExpiringScopedStatus(services, projectId ? { projectId } : {})
   } catch (err) {
     // Defensive fallback: a service that DOES throw a missing-
     // property error on a legacy vault still degrades cleanly.

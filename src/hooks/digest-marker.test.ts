@@ -32,8 +32,8 @@ function uniqueProject(label: string): { configRoot: string; name: string } {
 afterAll(async () => {
   await Promise.all(
     TEST_MARKERS.map(({ configRoot, name }) =>
-      rm(digestMarkerPath(configRoot, name), { force: true }),
-    ),
+      rm(digestMarkerPath(configRoot, name), { force: true })
+    )
   )
 })
 

@@ -39,7 +39,7 @@ describe("titleTrigrams", () => {
     // silently miss real duplicates.
     expect(titleTrigrams("Café &amp;amp; Bar")).toEqual(titleTrigrams("Café & Bar"))
     expect(titleTrigrams("PR #25650&amp;#8217;s diff")).toEqual(
-      titleTrigrams("PR #25650’s diff"),
+      titleTrigrams("PR #25650’s diff")
     )
     expect(titleTrigrams("5 &lt; 7")).toEqual(titleTrigrams("5 < 7"))
   })
@@ -74,7 +74,7 @@ describe("trigramJaccard", () => {
     // Paraphrased variants of the same memory title.
     const sim = trigramJaccard(
       "Wakeup hook swallows errors silently",
-      "Wakeup hook silent-failure root cause",
+      "Wakeup hook silent-failure root cause"
     )
     expect(sim).toBeGreaterThan(0.3)
     expect(sim).toBeLessThan(1)
@@ -85,12 +85,12 @@ describe("trigramJaccard", () => {
     // trailing suffix only).
     const paraphrase = trigramJaccard(
       "Wakeup hook crash diagnosis",
-      "Wakeup hook crash diagnosis + migration plan",
+      "Wakeup hook crash diagnosis + migration plan"
     )
     // Topically related but distinct (should score below).
     const topical = trigramJaccard(
       "Wakeup hook crash diagnosis",
-      "Fact dedup backfill migration",
+      "Fact dedup backfill migration"
     )
     expect(paraphrase).toBeGreaterThan(topical)
   })
@@ -106,7 +106,7 @@ describe("trigramJaccard", () => {
     // threshold (0.7). Normalization decodes both sides, so trigram
     // Jaccard is exactly 1.0 despite the byte-level difference.
     expect(
-      trigramJaccard("Café &amp;amp; Bar closed early", "Café & Bar closed early"),
+      trigramJaccard("Café &amp;amp; Bar closed early", "Café & Bar closed early")
     ).toBe(1)
     expect(trigramJaccard("5 &lt; 7 always", "5 < 7 always")).toBe(1)
   })
@@ -148,7 +148,7 @@ describe("tagOverlap", () => {
     // figure the spec's example response cites.
     const sim = tagOverlap(
       ["architecture", "core", "performance"],
-      ["architecture", "core"],
+      ["architecture", "core"]
     )
     expect(sim).toBeCloseTo(2 / 3)
   })

@@ -149,7 +149,10 @@ interface ProposeArgs {
   projectName?: string
 }
 
-async function handlePropose(services: LoreServices, args: ProposeArgs): Promise<ToolResult> {
+async function handlePropose(
+  services: LoreServices,
+  args: ProposeArgs
+): Promise<ToolResult> {
   // Procedures land in a single project scope (matches the CLI's
   // `-p, --project` and the typical operating contract: procedures
   // belong to one team's project). Multi-project scope on the propose
@@ -160,9 +163,7 @@ async function handlePropose(services: LoreServices, args: ProposeArgs): Promise
   const resolved = await resolveProjectIds(services, args.projectName, undefined)
   if (resolved.ids.length === 0) {
     return toolError(
-      new Error(
-        "Procedure propose requires a resolved project. Pass `projectName`."
-      )
+      new Error("Procedure propose requires a resolved project. Pass `projectName`.")
     )
   }
 
@@ -263,7 +264,9 @@ async function handlePropose(services: LoreServices, args: ProposeArgs): Promise
     projectIds: resolved.ids,
     topicKey: args.topicKey,
     supersedesIds:
-      args.supersedesIds && args.supersedesIds.length > 0 ? args.supersedesIds : undefined,
+      args.supersedesIds && args.supersedesIds.length > 0
+        ? args.supersedesIds
+        : undefined,
   }
   const createInput = buildProposeProcedureInput(input)
   const memory = await services.memories.create(createInput)
@@ -290,7 +293,9 @@ async function handlePropose(services: LoreServices, args: ProposeArgs): Promise
       "After approval, run `lore-procedure action='deprecate'` on each predecessor so the old row drops out of accepted recall:"
     )
     for (const id of input.supersedesIds) {
-      lines.push(`  lore-procedure action='deprecate' memoryId='${id}' reason='Superseded by ${memory.id}'`)
+      lines.push(
+        `  lore-procedure action='deprecate' memoryId='${id}' reason='Superseded by ${memory.id}'`
+      )
     }
   }
   if (resolved.warnings.length > 0) {
@@ -329,7 +334,10 @@ async function handleDeprecate(
   if (existing.status === "deprecated") {
     return {
       content: [
-        { type: "text", text: `Procedure already deprecated: "${existing.title}" (${args.memoryId})` },
+        {
+          type: "text",
+          text: `Procedure already deprecated: "${existing.title}" (${args.memoryId})`,
+        },
       ],
     }
   }
@@ -392,12 +400,7 @@ const procedureDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("scan-candidates"),
     projectName: z.string().optional(),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(MAX_PROCEDURE_CANDIDATE_LIMIT)
-      .optional(),
+    limit: z.number().int().min(1).max(MAX_PROCEDURE_CANDIDATE_LIMIT).optional(),
     minScore: z.number().min(0).optional(),
   }),
   z.object({

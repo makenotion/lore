@@ -82,15 +82,12 @@ describe("isObviousFreeformTag", () => {
   // label that happens to capitalize one segment must NOT match. (`iOS`
   // is structurally camelCase but is still protected by the case-
   // insensitive vocab pre-check — see classifyTags tests below.)
-  it.each([
-    "UX-Design",
-    "API-Design",
-    "Growth",
-    "Search-v2",
-    "code-Review",
-  ])("does NOT match %s (curated capitalized label, not an identifier)", (tag) => {
-    expect(isObviousFreeformTag(tag)).toBe(false)
-  })
+  it.each(["UX-Design", "API-Design", "Growth", "Search-v2", "code-Review"])(
+    "does NOT match %s (curated capitalized label, not an identifier)",
+    (tag) => {
+      expect(isObviousFreeformTag(tag)).toBe(false)
+    }
+  )
 })
 
 describe("canonicalVocabTag", () => {

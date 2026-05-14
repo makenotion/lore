@@ -52,7 +52,10 @@ import {
   fetchEntityByNormalizedName,
   isRunToolFilterSqlEnabled,
 } from "../notion/runtool/index.js"
-import { isSqlValidationError, logRunToolFallback } from "../notion/runtool/error-helpers.js"
+import {
+  isSqlValidationError,
+  logRunToolFallback,
+} from "../notion/runtool/error-helpers.js"
 
 /**
  * Cache TTL is short on purpose. Aliases are mutable (a `merge` or
@@ -350,7 +353,7 @@ export class EntityService {
       results.push(
         ...(response.results.filter(isActiveEntityPage) as PageObjectResponse[])
       )
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return Promise.all(results.map((p) => this.pageToEntity(p)))
@@ -616,7 +619,9 @@ export class EntityService {
       pagesFetched += 1
       const pages = response.results.filter(isActiveEntityPage) as PageObjectResponse[]
       for (const page of pages) {
-        const rawAliases = parseAliases(extractRichText(page.properties[ENTITY_PROPS.ALIASES]))
+        const rawAliases = parseAliases(
+          extractRichText(page.properties[ENTITY_PROPS.ALIASES])
+        )
         if (!rawAliases.some((a) => normalizeEntityKey(a) === key)) continue
         matches.push(await this.pageToEntity(page))
       }
@@ -858,12 +863,10 @@ export class EntityService {
       const existing = await this.client.pages.retrieveMarkdown({
         page_id: entity.id,
       })
-      const mergeLine =
-        `Merged into ${options.mergedInto.name} (${options.mergedInto.id})`
+      const mergeLine = `Merged into ${options.mergedInto.name} (${options.mergedInto.id})`
       if (!existing.markdown.includes(mergeLine)) {
         const mergeBlock =
-          `## Merged into ${options.mergedInto.name}\n\n` +
-          `${mergeLine} on ${mergedAt}.`
+          `## Merged into ${options.mergedInto.name}\n\n` + `${mergeLine} on ${mergedAt}.`
         const separator = existing.markdown.trim() ? "\n\n---\n\n" : ""
         const content = `${existing.markdown}${separator}${mergeBlock}`
         await this.client.pages.updateMarkdown({

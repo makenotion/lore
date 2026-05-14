@@ -97,7 +97,7 @@ export async function fetchEntityByNormalizedName(
     dataSourceId: string
     nameProperty: string
     normalizedName: string
-  },
+  }
 ): Promise<SqlEntityNameMatch[]> {
   if (!opts.normalizedName) return []
   const url = dataSourceUrl(opts.dataSourceId)
@@ -184,7 +184,7 @@ export async function fetchEntitiesByAliasSubstring(
     dataSourceId: string
     aliasesProperty: string
     normalizedAlias: string
-  },
+  }
 ): Promise<SqlEntityAliasMatch[]> {
   if (!opts.normalizedAlias) return []
   const url = dataSourceUrl(opts.dataSourceId)
@@ -272,7 +272,7 @@ export async function fetchAlreadyComparedPairKeys(
     projectProperty: string
     comparedWithProperty: string
     projectId: string
-  },
+  }
 ): Promise<Set<string>> {
   const url = dataSourceUrl(opts.dataSourceId)
   const projectColumn = quoteIdent(opts.projectProperty)
@@ -467,7 +467,7 @@ export interface NearDuplicateSqlOpts {
 
 export async function fetchNearDuplicateCandidatePageIds(
   client: Client,
-  opts: NearDuplicateSqlOpts,
+  opts: NearDuplicateSqlOpts
 ): Promise<string[]> {
   const url = dataSourceUrl(opts.dataSourceId)
   const params: Array<string | number | null> = []
@@ -492,7 +492,7 @@ export async function fetchNearDuplicateCandidatePageIds(
       `(${quoteIdent(opts.projectProperty)} LIKE ? ` +
         `OR ${quoteIdent(opts.projectProperty)} IS NULL ` +
         `OR ${quoteIdent(opts.projectProperty)} = '' ` +
-        `OR ${quoteIdent(opts.projectProperty)} = '[]')`,
+        `OR ${quoteIdent(opts.projectProperty)} = '[]')`
     )
   } else {
     predicates.push(`${quoteIdent(opts.projectProperty)} LIKE ?`)
@@ -523,7 +523,7 @@ export async function fetchNearDuplicateCandidatePageIds(
     if (!opts.tagsProperty) {
       throw new Error(
         "fetchNearDuplicateCandidatePageIds: `tags` requires `tagsProperty` " +
-          "to be set so the predicate can target the right Notion column.",
+          "to be set so the predicate can target the right Notion column."
       )
     }
     for (const tag of opts.tags) {
@@ -531,7 +531,7 @@ export async function fetchNearDuplicateCandidatePageIds(
         throw new Error(
           `fetchNearDuplicateCandidatePageIds: tag value ${JSON.stringify(tag)} ` +
             `contains characters outside the kebab-case identifier vocabulary; ` +
-            `SQL parameters with raw "/%/_/\\\\ would corrupt the LIKE pattern.`,
+            `SQL parameters with raw "/%/_/\\\\ would corrupt the LIKE pattern.`
         )
       }
     }
@@ -557,7 +557,7 @@ export async function fetchNearDuplicateCandidatePageIds(
     const placeholders = opts.excludeKinds.map(() => "?").join(", ")
     predicates.push(
       `(${quoteIdent(opts.kindProperty)} NOT IN (${placeholders}) ` +
-        `OR ${quoteIdent(opts.kindProperty)} IS NULL)`,
+        `OR ${quoteIdent(opts.kindProperty)} IS NULL)`
     )
     for (const k of opts.excludeKinds) params.push(k)
   }
@@ -579,14 +579,14 @@ export async function fetchNearDuplicateCandidatePageIds(
     const placeholders = opts.excludeStatuses.map(() => "?").join(", ")
     predicates.push(
       `(${quoteIdent(opts.statusProperty)} NOT IN (${placeholders}) ` +
-        `OR ${quoteIdent(opts.statusProperty)} IS NULL)`,
+        `OR ${quoteIdent(opts.statusProperty)} IS NULL)`
     )
     for (const s of opts.excludeStatuses) params.push(s)
   }
 
   predicates.push(
     `(${quoteIdent(opts.keywordsProperty)} NOT LIKE ? ` +
-      `OR ${quoteIdent(opts.keywordsProperty)} IS NULL)`,
+      `OR ${quoteIdent(opts.keywordsProperty)} IS NULL)`
   )
   params.push(`%${opts.cleanupOrphanSentinel}%`)
 
@@ -746,7 +746,7 @@ export async function querySubjectGroupCountsViaRunTool(
     subjectEntityProperty: string
     projectProperty: string
     projectId?: string
-  },
+  }
 ): Promise<SqlSubjectGroupCount[]> {
   const url = dataSourceUrl(opts.factsDataSourceId)
   const subjectColumn = quoteIdent(opts.subjectProperty)
@@ -915,7 +915,7 @@ function sqlNumber(value: SqlCellValue | undefined): number | null {
  */
 export async function hydrateMemoryPageIds<T extends NonNullable<unknown> = Memory>(
   pageIds: readonly string[],
-  fetchOne: (pageId: string) => Promise<T | null>,
+  fetchOne: (pageId: string) => Promise<T | null>
 ): Promise<T[]> {
   if (pageIds.length === 0) return []
   const settled = await Promise.all(pageIds.map((id) => fetchOne(id)))

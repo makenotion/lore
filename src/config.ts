@@ -447,8 +447,7 @@ async function buildNtnAmbiguityHint(
   return undefined
 }
 
-export function _resetConfigAuthTokenWarningStateForTests(): void {
-}
+export function _resetConfigAuthTokenWarningStateForTests(): void {}
 
 /**
  * Convenience wrapper that returns just the token string.

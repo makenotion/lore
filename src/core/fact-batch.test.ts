@@ -125,9 +125,7 @@ describe("classifyTailFallback (PR #538 round 2 transport-drop guard)", () => {
   it("transport-class (no status) → reprobe", () => {
     expect(classifyTailFallback(new Error("connection reset"))).toBe("reprobe")
     expect(
-      classifyTailFallback(
-        Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" })
-      )
+      classifyTailFallback(Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }))
     ).toBe("reprobe")
   })
 
@@ -236,9 +234,7 @@ describe("FactService.createBatchWithDedup — flag off (default)", () => {
   it("preserves per-input failure isolation (one create rejects, others land)", async () => {
     mock.create
       .mockResolvedValueOnce(factPage({ id: "created-0" }))
-      .mockRejectedValueOnce(
-        Object.assign(new Error("boom"), { status: 400 })
-      )
+      .mockRejectedValueOnce(Object.assign(new Error("boom"), { status: 400 }))
       .mockResolvedValueOnce(factPage({ id: "created-2" }))
 
     const results = await service.createBatchWithDedup([
@@ -314,9 +310,7 @@ describe("FactService.createBatchWithDedup — flag on (RunTool batch)", () => {
 
     // Each created Fact carries the synthesized id from the response,
     // matched in input order.
-    const ids = results.map((r) =>
-      r.status === "fulfilled" ? r.value.fact.id : null
-    )
+    const ids = results.map((r) => (r.status === "fulfilled" ? r.value.fact.id : null))
     expect(ids).toEqual(["rt-0", "rt-1", "rt-2"])
   })
 
@@ -382,8 +376,9 @@ describe("FactService.createBatchWithDedup — flag on (RunTool batch)", () => {
 
     // The batch call only contained the two miss inputs (idx 0 and 2).
     expect(mock.request).toHaveBeenCalledTimes(1)
-    const batchPages = mock.request.mock.calls[0]![0].body.create_pages
-      .pages as Array<{ properties: Record<string, unknown> }>
+    const batchPages = mock.request.mock.calls[0]![0].body.create_pages.pages as Array<{
+      properties: Record<string, unknown>
+    }>
     expect(batchPages).toHaveLength(2)
   })
 
@@ -395,10 +390,7 @@ describe("FactService.createBatchWithDedup — flag on (RunTool batch)", () => {
       .mockResolvedValueOnce(factPage({ id: "fb-0" }))
       .mockResolvedValueOnce(factPage({ id: "fb-1" }))
 
-    const results = await service.createBatchWithDedup([
-      mention(0),
-      mention(1),
-    ])
+    const results = await service.createBatchWithDedup([mention(0), mention(1)])
 
     expect(results).toHaveLength(2)
     expect(results.every((r) => r.status === "fulfilled")).toBe(true)
@@ -584,10 +576,7 @@ describe("FactService.createBatchWithDedup — flag on (RunTool batch)", () => {
     })
     mock.create.mockResolvedValueOnce(factPage({ id: "fresh-1" }))
 
-    const results = await service.createBatchWithDedup([
-      mention(0),
-      mention(1),
-    ])
+    const results = await service.createBatchWithDedup([mention(0), mention(1)])
 
     expect(results).toHaveLength(2)
     expect(results[0]!.status).toBe("fulfilled")
@@ -617,9 +606,7 @@ describe("FactService.createBatchWithDedup — flag on (RunTool batch)", () => {
       .mockResolvedValueOnce({
         pages: Array.from({ length: 100 }, (_, i) => ({ id: `rt-${i}` })),
       })
-      .mockRejectedValueOnce(
-        Object.assign(new Error("server"), { status: 500 })
-      )
+      .mockRejectedValueOnce(Object.assign(new Error("server"), { status: 500 }))
     // Fallback per-input creates for the tail
     mock.create.mockImplementation(async () =>
       factPage({ id: `fb-${mock.create.mock.calls.length - 1}` })
@@ -684,9 +671,7 @@ describe("FactService.createBatchWithDedup — loud-enough auth fallback warning
     await service.createBatchWithDedup([mention(0), mention(1)])
 
     const calls = stderr.mock.calls.map((c) => String(c[0]))
-    const warning = calls.find((line) =>
-      line.includes("[lore] runtool batch_create:")
-    )
+    const warning = calls.find((line) => line.includes("[lore] runtool batch_create:"))
     expect(warning).toBeDefined()
     expect(warning!).toContain("403")
     expect(warning!).toContain("restricted_resource")
@@ -735,9 +720,7 @@ describe("FactService.createBatchWithDedup — loud-enough auth fallback warning
       has_more: false,
       next_cursor: null,
     })
-    mock.request.mockRejectedValue(
-      Object.assign(new Error("server"), { status: 500 })
-    )
+    mock.request.mockRejectedValue(Object.assign(new Error("server"), { status: 500 }))
     mock.create.mockResolvedValue(factPage({ id: "fb" }))
     const service = new FactService(mock.client, DB, undefined, {
       useRunToolBatchCreates: true,

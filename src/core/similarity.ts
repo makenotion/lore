@@ -60,11 +60,7 @@ const PADDING = "  "
  * exactly two boundary trigrams — a small, honest penalty.
  */
 function normalizeTitle(s: string): string {
-  return decodeTextEntities(s)
-    .normalize("NFC")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim()
+  return decodeTextEntities(s).normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim()
 }
 
 /**

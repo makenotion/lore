@@ -124,9 +124,7 @@ function makeServices(opts: { searchResults?: Memory[] }): LoreServices {
         if (input.status === undefined) {
           // Default: exclude proposed + rejected, include everything
           // else INCLUDING empty / unset Status rows.
-          return all.filter(
-            (m) => m.status !== "proposed" && m.status !== "rejected"
-          )
+          return all.filter((m) => m.status !== "proposed" && m.status !== "rejected")
         }
         // Explicit equals: only exact-match rows.
         return all.filter((m) => m.status === input.status)
@@ -476,10 +474,12 @@ describe("debtCommand exit paths", () => {
     exitTrap = trapProcessExit()
     errorSpy = vi.fn()
     vi.spyOn(console, "error").mockImplementation(errorSpy)
-    vi.spyOn(process.stdout, "write").mockImplementation(((..._a: unknown[]) =>
-      true) as never)
-    vi.spyOn(process.stderr, "write").mockImplementation(((..._a: unknown[]) =>
-      true) as never)
+    vi.spyOn(process.stdout, "write").mockImplementation(
+      ((..._a: unknown[]) => true) as never
+    )
+    vi.spyOn(process.stderr, "write").mockImplementation(
+      ((..._a: unknown[]) => true) as never
+    )
   })
 
   afterEach(() => {
@@ -492,9 +492,7 @@ describe("debtCommand exit paths", () => {
     })
     const errorText = errorSpy.mock.calls.flat().join("\n")
     expect(errorText).toContain("Debt scan failed:")
-    expect(errorText).toContain(
-      "--project and --all-projects are mutually exclusive"
-    )
+    expect(errorText).toContain("--project and --all-projects are mutually exclusive")
     expect(exitTrap.exitCodes).toEqual([1])
     expect(errorSpy).toHaveBeenCalledTimes(1)
     expect(vi.mocked(initServices)).not.toHaveBeenCalled()
@@ -545,10 +543,9 @@ describe("debtCommand exit paths", () => {
   })
 
   it("create-tasks: exits 1 on invalid --priority-floor", async () => {
-    await debtCommand.parseAsync(
-      ["create-tasks", "--priority-floor", "P3"],
-      { from: "user" }
-    )
+    await debtCommand.parseAsync(["create-tasks", "--priority-floor", "P3"], {
+      from: "user",
+    })
     const errorText = errorSpy.mock.calls.flat().join("\n")
     expect(errorText).toContain("Debt create-tasks failed:")
     expect(errorText).toContain("--priority-floor")
@@ -557,10 +554,7 @@ describe("debtCommand exit paths", () => {
   })
 
   it("create-tasks: exits 1 on malformed --limit", async () => {
-    await debtCommand.parseAsync(
-      ["create-tasks", "--limit", "3.7"],
-      { from: "user" }
-    )
+    await debtCommand.parseAsync(["create-tasks", "--limit", "3.7"], { from: "user" })
     expect(exitTrap.exitCodes).toEqual([1])
     expect(errorSpy).toHaveBeenCalledTimes(1)
   })

@@ -814,18 +814,14 @@ describe("runMemoryEncodingFix", () => {
     // Per-row preview labels the body shape correctly. NOT "skipped".
     expect(
       logs.some(
-        (l) =>
-          l.includes("body via anchored RunTool patterns") && l.includes("244.1 KB")
+        (l) => l.includes("body via anchored RunTool patterns") && l.includes("244.1 KB")
       )
     ).toBe(true)
-    expect(
-      logs.every((l) => !l.includes("Skipped body rewrite"))
-    ).toBe(true)
+    expect(logs.every((l) => !l.includes("Skipped body rewrite"))).toBe(true)
     // Dedicated section surfaces the count.
     expect(
-      logs.some(
-        (l) =>
-          l.includes("Will fix oversized body via anchored RunTool patterns on 1 memory")
+      logs.some((l) =>
+        l.includes("Will fix oversized body via anchored RunTool patterns on 1 memory")
       )
     ).toBe(true)
     // Re-run footer still fires (planOnly + fixableRows > 0).
@@ -877,12 +873,12 @@ describe("runMemoryEncodingFix", () => {
       logs.some((l) => l.includes("Title fixes: 0") && l.includes("body fixes: 0"))
     ).toBe(true)
     // Per-row preview correctly labels as 'skipped'.
-    expect(
-      logs.some((l) => l.includes("body skipped") && l.includes("244.1 KB"))
-    ).toBe(true)
-    expect(
-      logs.every((l) => !l.includes("body via anchored RunTool patterns"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("body skipped") && l.includes("244.1 KB"))).toBe(
+      true
+    )
+    expect(logs.every((l) => !l.includes("body via anchored RunTool patterns"))).toBe(
+      true
+    )
     // Dedicated 'Skipped' section fires.
     expect(logs.some((l) => l.includes("Skipped body rewrite on 1 memory"))).toBe(true)
   })
@@ -1531,7 +1527,9 @@ describe("runOrphanRateReport — issue #542 pre/post-pass label contract", () =
       projectId: "project-widget",
       projectName: "Widget",
     })
-    expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project "Widget", via js-enumeration\)/)
+    expect(logs.join("\n")).toMatch(
+      /Orphan rate \(pre-pass, project "Widget", via js-enumeration\)/
+    )
   })
 
   it("falls back to 'project-scoped' when projectId is set but projectName is not", async () => {
@@ -1540,7 +1538,9 @@ describe("runOrphanRateReport — issue #542 pre/post-pass label contract", () =
       apply: false,
       projectId: "project-widget",
     })
-    expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project-scoped, via js-enumeration\)/)
+    expect(logs.join("\n")).toMatch(
+      /Orphan rate \(pre-pass, project-scoped, via js-enumeration\)/
+    )
   })
 
   it("threads includeInvalidated:true into the JS enumeration walk", async () => {
@@ -1550,15 +1550,17 @@ describe("runOrphanRateReport — issue #542 pre/post-pass label contract", () =
     // the two paths would diverge on real vaults.
     const services = buildServices([])
     await runOrphanRateReport(services, { apply: false })
-    const queryBySubject = (services as unknown as {
-      facts: { queryBySubject: ReturnType<typeof vi.fn> }
-    }).facts.queryBySubject
+    const queryBySubject = (
+      services as unknown as {
+        facts: { queryBySubject: ReturnType<typeof vi.fn> }
+      }
+    ).facts.queryBySubject
     expect(queryBySubject).toHaveBeenCalledWith(
       "",
       expect.objectContaining({
         allowUnfiltered: true,
         includeInvalidated: true,
-      }),
+      })
     )
   })
 })
@@ -2096,7 +2098,8 @@ describe("runBuildConfidenceScores", () => {
   it("threads projectName through and resolves it via findByName", async () => {
     const services = makeServices({
       memories: [],
-      findByName: async (name) => (name === "Widget" ? { id: "project-widget", name } : null),
+      findByName: async (name) =>
+        name === "Widget" ? { id: "project-widget", name } : null,
     })
     await runBuildConfidenceScores(services as never, {
       apply: false,

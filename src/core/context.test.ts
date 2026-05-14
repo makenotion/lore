@@ -14,7 +14,7 @@ import type { ProjectService } from "./project.js"
  * findByName, so everything else can stay unimplemented.
  */
 function makeProjectService(
-  overrides: Partial<Pick<ProjectService, "findByPath" | "findByName">>,
+  overrides: Partial<Pick<ProjectService, "findByPath" | "findByName">>
 ): ProjectService {
   return {
     findByPath: overrides.findByPath ?? vi.fn().mockResolvedValue(null),
@@ -57,13 +57,19 @@ describe("isCatchAllProject", () => {
   })
 
   it("does not treat sub-project paths as catch-all", () => {
-    expect(isCatchAllProject({ name: "Widget Backend", path: "services/widget" })).toBe(false)
+    expect(isCatchAllProject({ name: "Widget Backend", path: "services/widget" })).toBe(
+      false
+    )
   })
 })
 
 describe("subProjectNames", () => {
   it("excludes the catch-all and preserves declaration order", () => {
-    expect(subProjectNames(MONOREPO_CONFIG)).toEqual(["Widget Backend", "Widget Web", "Router"])
+    expect(subProjectNames(MONOREPO_CONFIG)).toEqual([
+      "Widget Backend",
+      "Widget Web",
+      "Router",
+    ])
   })
 
   it("returns empty array when config has no projects", () => {
@@ -98,7 +104,7 @@ describe("resolveProject", () => {
       `${configRoot}/services/widget/graphql`,
       configRoot,
       MONOREPO_CONFIG,
-      projects,
+      projects
     )
 
     expect(result.project).toEqual(backend)
@@ -115,7 +121,7 @@ describe("resolveProject", () => {
       `${configRoot}/services/router/cmd`,
       configRoot,
       MONOREPO_CONFIG,
-      projects,
+      projects
     )
 
     expect(result.project).toEqual(router)
@@ -143,7 +149,7 @@ describe("resolveProject", () => {
       `${configRoot}/scripts/release`,
       configRoot,
       MONOREPO_CONFIG,
-      projects,
+      projects
     )
 
     expect(result.isCatchAllFallback).toBe(true)
@@ -151,7 +157,12 @@ describe("resolveProject", () => {
 
   it("returns null when cwd escapes the config root", async () => {
     const projects = makeProjectService({})
-    const result = await resolveProject("/tmp/other", configRoot, MONOREPO_CONFIG, projects)
+    const result = await resolveProject(
+      "/tmp/other",
+      configRoot,
+      MONOREPO_CONFIG,
+      projects
+    )
     expect(result.project).toBeNull()
     expect(result.isCatchAllFallback).toBe(false)
   })
@@ -162,7 +173,7 @@ describe("resolveProject", () => {
       configRoot,
       configRoot,
       { vault: { pageId: "v" } },
-      projects,
+      projects
     )
     expect(result.project).toBeNull()
     expect(result.isCatchAllFallback).toBe(false)
@@ -189,7 +200,7 @@ describe("resolveProject", () => {
       `${configRoot}/services/widget/graphql`,
       configRoot,
       MONOREPO_CONFIG,
-      projects,
+      projects
     )
 
     expect(result.project).toBeNull()
@@ -206,7 +217,7 @@ describe("resolveProjectPathFromCwd", () => {
     const result = resolveProjectPathFromCwd(
       `${configRoot}/services/widget/graphql`,
       configRoot,
-      MONOREPO_CONFIG,
+      MONOREPO_CONFIG
     )
     expect(result).toEqual({ name: "Widget Backend", path: "services/widget" })
   })
@@ -215,7 +226,7 @@ describe("resolveProjectPathFromCwd", () => {
     const result = resolveProjectPathFromCwd(
       `${configRoot}/services/router/cmd`,
       configRoot,
-      MONOREPO_CONFIG,
+      MONOREPO_CONFIG
     )
     expect(result?.name).toBe("Router")
   })
@@ -230,22 +241,24 @@ describe("resolveProjectPathFromCwd", () => {
     const result = resolveProjectPathFromCwd(
       `${configRoot}/scripts/release`,
       configRoot,
-      MONOREPO_CONFIG,
+      MONOREPO_CONFIG
     )
     expect(result).toBeNull()
   })
 
   it("returns null when cwd escapes the config root", () => {
-    const result = resolveProjectPathFromCwd("/tmp/elsewhere", configRoot, MONOREPO_CONFIG)
+    const result = resolveProjectPathFromCwd(
+      "/tmp/elsewhere",
+      configRoot,
+      MONOREPO_CONFIG
+    )
     expect(result).toBeNull()
   })
 
   it("returns null when the config has no projects", () => {
-    const result = resolveProjectPathFromCwd(
-      configRoot,
-      configRoot,
-      { vault: { pageId: "v" } },
-    )
+    const result = resolveProjectPathFromCwd(configRoot, configRoot, {
+      vault: { pageId: "v" },
+    })
     expect(result).toBeNull()
   })
 })

@@ -102,7 +102,7 @@ describe("LruCache — getOrLoad stampede dedup", () => {
     })
 
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => cache.getOrLoad("key", loader)),
+      Array.from({ length: 8 }, () => cache.getOrLoad("key", loader))
     )
 
     expect(calls).toBe(1)
@@ -157,7 +157,7 @@ describe("LruCache — getOrLoad stampede dedup", () => {
         cache.getOrLoad("key", loader),
         cache.getOrLoad("key", loader),
         cache.getOrLoad("key", loader),
-      ]),
+      ])
     ).rejects.toBe(boom)
 
     expect(loader).toHaveBeenCalledTimes(1)
@@ -197,17 +197,11 @@ describe("LruCache — getOrLoad stampede dedup", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(7)
 
-    const first = await cache.getOrLoad(
-      "key",
-      loader as () => Promise<number | null>,
-    )
+    const first = await cache.getOrLoad("key", loader as () => Promise<number | null>)
     expect(first).toBeUndefined()
     expect(cache.get("key")).toBeUndefined()
 
-    const second = await cache.getOrLoad(
-      "key",
-      loader as () => Promise<number | null>,
-    )
+    const second = await cache.getOrLoad("key", loader as () => Promise<number | null>)
     expect(second).toBe(7)
     expect(loader).toHaveBeenCalledTimes(2)
   })

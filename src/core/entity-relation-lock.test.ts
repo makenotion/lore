@@ -59,7 +59,7 @@ describe("withEntityRelationLocks", () => {
     const compact = "0123456789abcdef0123456789abcdef"
     const hyphenated = "01234567-89ab-cdef-0123-456789abcdef"
     expect(__entityRelationLockPathForTests(hyphenated)).toBe(
-      __entityRelationLockPathForTests(compact),
+      __entityRelationLockPathForTests(compact)
     )
 
     const order: string[] = []
@@ -101,11 +101,14 @@ describe("withEntityRelationLocks", () => {
     vi.useFakeTimers()
     const path = __entityRelationLockPathForTests("ent-live")
     mkdirSync(join(stateDir, ".lore", "entity-relation-locks"), { recursive: true })
-    writeFileSync(path, JSON.stringify({
-      token: "token",
-      pid: process.pid,
-      createdAt: Date.now() - 20 * 60 * 1000,
-    }))
+    writeFileSync(
+      path,
+      JSON.stringify({
+        token: "token",
+        pid: process.pid,
+        createdAt: Date.now() - 20 * 60 * 1000,
+      })
+    )
 
     __removeStaleEntityRelationLockForTests(path)
 
@@ -115,11 +118,14 @@ describe("withEntityRelationLocks", () => {
   it("removes a stale live-pid lock whose heartbeat stopped", () => {
     const path = __entityRelationLockPathForTests("ent-reused-pid")
     mkdirSync(join(stateDir, ".lore", "entity-relation-locks"), { recursive: true })
-    writeFileSync(path, JSON.stringify({
-      token: "token",
-      pid: process.pid,
-      createdAt: Date.now() - 20 * 60 * 1000,
-    }))
+    writeFileSync(
+      path,
+      JSON.stringify({
+        token: "token",
+        pid: process.pid,
+        createdAt: Date.now() - 20 * 60 * 1000,
+      })
+    )
     const old = new Date(Date.now() - 20 * 60 * 1000)
     utimesSync(path, old, old)
 
@@ -131,11 +137,14 @@ describe("withEntityRelationLocks", () => {
   it("removes an old lock whose owner pid is dead", () => {
     const path = __entityRelationLockPathForTests("ent-dead")
     mkdirSync(join(stateDir, ".lore", "entity-relation-locks"), { recursive: true })
-    writeFileSync(path, JSON.stringify({
-      token: "token",
-      pid: 9_999_999,
-      createdAt: Date.now() - 20 * 60 * 1000,
-    }))
+    writeFileSync(
+      path,
+      JSON.stringify({
+        token: "token",
+        pid: 9_999_999,
+        createdAt: Date.now() - 20 * 60 * 1000,
+      })
+    )
 
     __removeStaleEntityRelationLockForTests(path)
 

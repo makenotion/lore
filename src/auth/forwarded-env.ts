@@ -212,11 +212,11 @@ import type { AuthSource } from "../config.js"
  */
 export function buildSafeEnv(
   authSource: AuthSource | undefined,
-  parentEnv: NodeJS.ProcessEnv = process.env,
+  parentEnv: NodeJS.ProcessEnv = process.env
 ): Record<string, string> {
   const skipAuthTokens = authSource === "ntn-auth-json"
   const authTokenKeys: ReadonlySet<RuntimeForwardedKey> = new Set(
-    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
+    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS
   )
   const env: Record<string, string> = {
     PATH: parentEnv["PATH"] ?? "",

@@ -28,12 +28,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "")
     try {
-      debugLogAutoFactFailure(
-        "save",
-        "mem-1",
-        "PR #1234",
-        new Error("notion 429"),
-      )
+      debugLogAutoFactFailure("save", "mem-1", "PR #1234", new Error("notion 429"))
       expect(write).not.toHaveBeenCalled()
     } finally {
       vi.unstubAllEnvs()
@@ -45,12 +40,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "1")
     try {
-      debugLogAutoFactFailure(
-        "save",
-        "mem-1",
-        "PR #1234",
-        new Error("notion 429"),
-      )
+      debugLogAutoFactFailure("save", "mem-1", "PR #1234", new Error("notion 429"))
       expect(write).toHaveBeenCalledTimes(1)
       const line = write.mock.calls[0][0] as string
       // `kind` defaults to `create` for the save-time call site; the
@@ -58,7 +48,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       // key set across both save creates and update creates /
       // invalidates (issue #491).
       expect(line).toBe(
-        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #1234 error=notion 429\n",
+        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #1234 error=notion 429\n"
       )
     } finally {
       vi.unstubAllEnvs()
@@ -80,7 +70,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
         "mem-1",
         "PR #1234",
         new Error("notion 503"),
-        "invalidate",
+        "invalidate"
       )
       const line = write.mock.calls[0][0] as string
       expect(line).toContain("source=update")
@@ -103,12 +93,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "1")
     try {
-      debugLogAutoFactFailure(
-        "update",
-        "mem-2",
-        "AuthService",
-        new Error("dedup race"),
-      )
+      debugLogAutoFactFailure("update", "mem-2", "AuthService", new Error("dedup race"))
       const line = write.mock.calls[0][0] as string
       expect(line).toContain("source=update")
       expect(line).toContain("memoryId=mem-2")
@@ -144,7 +129,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
         "save",
         "mem\n4",
         "Foo\tBar",
-        new Error("multi\nline\rerror"),
+        new Error("multi\nline\rerror")
       )
       const line = write.mock.calls[0][0] as string
       // Exactly one terminating newline; control chars in the body
@@ -166,9 +151,7 @@ describe("debugLogContradictionFailure", () => {
   // match on the prefix and the canonical key names.
 
   it("is a no-op when LORE_DEBUG is unset (default operator posture)", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     try {
       delete process.env.LORE_DEBUG
       debugLogContradictionFailure("invalidate", "mem-1", new Error("boom"))
@@ -179,16 +162,14 @@ describe("debugLogContradictionFailure", () => {
   })
 
   it("writes one stderr line under LORE_DEBUG=1 with the full key set", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       debugLogContradictionFailure("invalidate", "mem-1", new Error("boom"))
       expect(stderr).toHaveBeenCalledTimes(1)
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] contradiction-failure: source=invalidate memoryId=mem-1 error=boom\n",
+        "[lore] contradiction-failure: source=invalidate memoryId=mem-1 error=boom\n"
       )
     } finally {
       delete process.env.LORE_DEBUG
@@ -197,9 +178,7 @@ describe("debugLogContradictionFailure", () => {
   })
 
   it("renders each source discriminator literally", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       debugLogContradictionFailure("supersede", "dec-1", new Error("e1"))
@@ -214,9 +193,7 @@ describe("debugLogContradictionFailure", () => {
   })
 
   it("collapses embedded control characters into spaces (one failure = one log line)", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       // A multi-line error message would otherwise break the
@@ -224,7 +201,7 @@ describe("debugLogContradictionFailure", () => {
       debugLogContradictionFailure(
         "invalidate",
         "mem-1",
-        new Error("line one\nline two\ttab"),
+        new Error("line one\nline two\ttab")
       )
       expect(stderr).toHaveBeenCalledTimes(1)
       const line = String(stderr.mock.calls[0]![0])
@@ -239,9 +216,7 @@ describe("debugLogContradictionFailure", () => {
   })
 
   it("stringifies non-Error values via String()", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       debugLogContradictionFailure("invalidate", "mem-1", "raw string")
@@ -265,9 +240,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
   // routing is the contract, not the per-helper plumbing.
 
   it("debugLogPartialFailures redacts page-id substrings in error messages but keeps explicit root id intact", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       const id = "abcdef0123456789abcdef0123456789"
@@ -287,9 +260,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
   })
 
   it("debugLogPartialFailures strips forward-compatible SDK body= leaks", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       debugLogPartialFailures("lore-memory", [
@@ -300,7 +271,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       ])
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toContain("body=<redacted>")
-      expect(line).not.toContain("\"secret\"")
+      expect(line).not.toContain('"secret"')
     } finally {
       delete process.env.LORE_DEBUG
       stderr.mockRestore()
@@ -308,9 +279,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
   })
 
   it("debugLogAutoFactFailure routes through the redactor too (single-pass coverage)", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       const id = "abcdef0123456789abcdef0123456789"
@@ -318,7 +287,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
         "save",
         "mem-1",
         "PR #1234",
-        new Error(`unable to read ${id}`),
+        new Error(`unable to read ${id}`)
       )
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toContain("error=unable to read <page-id>")
@@ -331,16 +300,14 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
   })
 
   it("debugLogContradictionFailure routes through the redactor too", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       const id = "abcdef0123456789abcdef0123456789"
       debugLogContradictionFailure(
         "invalidate",
         "mem-1",
-        new Error(`page ${id} access denied`),
+        new Error(`page ${id} access denied`)
       )
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toContain("error=page <page-id> access denied")
@@ -355,9 +322,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
     // module — the touch path fires on every read citation, so an
     // SDK error carrying a page id under load would otherwise rain
     // recon-grade detail into stderr.
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       const id = "abcdef0123456789abcdef0123456789"
@@ -373,9 +338,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
   })
 
   it("debugLogFactTouchFailure routes through the redactor too", () => {
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       const id = "abcdef0123456789abcdef0123456789"
@@ -430,7 +393,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       ])
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] partial-failure: root=root-id-1 error=notion 429 tool=lore-memory\n",
+        "[lore] partial-failure: root=root-id-1 error=notion 429 tool=lore-memory\n"
       )
     })
 
@@ -438,7 +401,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       debugLogAutoFactFailure("save", "mem-1", "PR #1234", new Error("notion 429"))
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #1234 error=notion 429\n",
+        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #1234 error=notion 429\n"
       )
     })
 
@@ -446,7 +409,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       debugLogContradictionFailure("invalidate", "mem-1", new Error("notion 429"))
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] contradiction-failure: source=invalidate memoryId=mem-1 error=notion 429\n",
+        "[lore] contradiction-failure: source=invalidate memoryId=mem-1 error=notion 429\n"
       )
     })
 
@@ -454,7 +417,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       debugLogTouchFailure("lore-query", "mem-1", new Error("notion 429"))
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] touch-failure: memory=mem-1 error=notion 429 tool=lore-query\n",
+        "[lore] touch-failure: memory=mem-1 error=notion 429 tool=lore-query\n"
       )
     })
 
@@ -462,7 +425,7 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       debugLogFactTouchFailure("lore-query", "fact-1", new Error("notion 429"))
       const line = String(stderr.mock.calls[0]![0])
       expect(line).toBe(
-        "[lore] fact-touch-failure: fact=fact-1 error=notion 429 tool=lore-query\n",
+        "[lore] fact-touch-failure: fact=fact-1 error=notion 429 tool=lore-query\n"
       )
     })
   })

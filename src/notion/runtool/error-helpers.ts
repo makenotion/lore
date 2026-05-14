@@ -102,7 +102,7 @@ export function logRunToolFallback(source: string, err: unknown): void {
   process.stderr.write(
     `[lore] partial-failure: source=${source} ` +
       `status=${status ?? "unknown"} code=${code ?? "unknown"} ` +
-      `error=${redactDebugError(err)} runtool-fallback=1\n`,
+      `error=${redactDebugError(err)} runtool-fallback=1\n`
   )
 }
 
@@ -128,7 +128,7 @@ export class SqlPartialResultError extends Error {
     super(
       `RunTool query_data_sources returned has_more: true at ${source} — ` +
         `the gateway clamped LIMIT and the wrapper has only a partial result. ` +
-        `Falling back to REST.`,
+        `Falling back to REST.`
     )
     this.name = "SqlPartialResultError"
   }
@@ -216,7 +216,7 @@ export function warnRunToolIntegrationSecretOnce(authSource: string): void {
       `source (${authSource}) is an integration-secret path that RunTool ` +
       `rejects with 403. Every flagged-on call will silently fall back to REST. ` +
       `Migrate to ntn-issued auth via 'lore auth --login' to dogfood RunTool, ` +
-      `or unset the LORE_USE_RUNTOOL* flags to silence this warning.\n`,
+      `or unset the LORE_USE_RUNTOOL* flags to silence this warning.\n`
   )
 }
 

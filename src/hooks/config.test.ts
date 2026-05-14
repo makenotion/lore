@@ -66,7 +66,10 @@ describe("mergeHookDefaults", () => {
   })
 
   it("carries the catch-all name and sub-project list through unchanged", () => {
-    const config = mergeHookDefaults({ wakeUp: false }, "Widget", ["Widget Backend", "Widget Web"])
+    const config = mergeHookDefaults({ wakeUp: false }, "Widget", [
+      "Widget Backend",
+      "Widget Web",
+    ])
     expect(config.catchAllName).toBe("Widget")
     expect(config.subProjects).toEqual(["Widget Backend", "Widget Web"])
     expect(config.wakeUp).toBe(false)
@@ -124,7 +127,7 @@ describe("mergeHookDefaults", () => {
         { backgroundAgent: { command: "from-config" } },
         null,
         [],
-        { LORE_BACKGROUND_COMMAND: "from-env" },
+        { LORE_BACKGROUND_COMMAND: "from-env" }
       )
       expect(config.backgroundAgent.command).toBe("from-env")
     })
@@ -134,7 +137,7 @@ describe("mergeHookDefaults", () => {
         { backgroundAgent: { command: "from-config" } },
         null,
         [],
-        { LORE_BACKGROUND_COMMAND: "   " },
+        { LORE_BACKGROUND_COMMAND: "   " }
       )
       expect(config.backgroundAgent.command).toBe("from-config")
     })
@@ -144,7 +147,7 @@ describe("mergeHookDefaults", () => {
         { backgroundAgent: { command: "/opt/codex/bin/codex" } },
         null,
         [],
-        {},
+        {}
       )
       expect(config.backgroundAgent.command).toBe("/opt/codex/bin/codex")
     })
@@ -155,7 +158,7 @@ describe("mergeHookDefaults", () => {
         { backgroundAgent: { args: customArgs } },
         null,
         [],
-        {},
+        {}
       )
       expect(config.backgroundAgent.args).toEqual(customArgs)
     })
@@ -178,16 +181,14 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "codex" } },
           null,
           [],
-          {},
+          {}
         )
         expect(config.backgroundAgent.args).toEqual([...CODEX_BACKGROUND_ARGS])
         // Sanity: the codex preset deliberately omits the
         // `{{allowedTools}}` placeholder because Codex's `exec` mode
         // doesn't accept an allowlist flag — operators configure that
         // out-of-band via `.codex/config.toml`.
-        expect(config.backgroundAgent.args).not.toContain(
-          ALLOWED_TOOLS_PLACEHOLDER,
-        )
+        expect(config.backgroundAgent.args).not.toContain(ALLOWED_TOOLS_PLACEHOLDER)
       })
 
       it("picks up the codex preset via env override too", () => {
@@ -205,7 +206,7 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "claude" } },
           null,
           [],
-          {},
+          {}
         )
         expect(config.backgroundAgent.args).toEqual([...DEFAULT_BACKGROUND_ARGS])
       })
@@ -220,7 +221,7 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "claude-next" } },
           null,
           [],
-          {},
+          {}
         )
         expect(config.backgroundAgent.args).toEqual([...DEFAULT_BACKGROUND_ARGS])
       })
@@ -236,7 +237,7 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "codex", args: customArgs } },
           null,
           [],
-          {},
+          {}
         )
         expect(config.backgroundAgent.args).toEqual(customArgs)
       })
@@ -253,7 +254,7 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "/opt/homebrew/bin/codex" } },
           null,
           [],
-          {},
+          {}
         )
         expect(config.backgroundAgent.args).toEqual([...CODEX_BACKGROUND_ARGS])
         // Confirm it works for the env-override path too.
@@ -271,7 +272,7 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "/opt/local/bin/aider" } },
           null,
           [],
-          {},
+          {}
         )
         expect(config.backgroundAgent.args).toEqual([...DEFAULT_BACKGROUND_ARGS])
       })
@@ -279,10 +280,7 @@ describe("mergeHookDefaults", () => {
       it("preset table includes claude and codex (acceptance criterion)", () => {
         // Pin the preset surface so adding/removing a preset is an
         // explicit test change, not an unobserved behavior shift.
-        expect(Object.keys(KNOWN_COMMAND_PRESETS).sort()).toEqual([
-          "claude",
-          "codex",
-        ])
+        expect(Object.keys(KNOWN_COMMAND_PRESETS).sort()).toEqual(["claude", "codex"])
       })
     })
 
@@ -322,7 +320,7 @@ describe("mergeHookDefaults", () => {
           { backgroundAgent: { command: "claude" } },
           null,
           [],
-          { LORE_AGENT_NAME: "Codex" },
+          { LORE_AGENT_NAME: "Codex" }
         )
         expect(config.backgroundAgent.command).toBe("claude")
       })

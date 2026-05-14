@@ -50,9 +50,7 @@ function buildRow(overrides: {
       } as unknown,
       DedupKey: {
         type: "rich_text",
-        rich_text: overrides.dedupKey
-          ? [{ plain_text: overrides.dedupKey }]
-          : [],
+        rich_text: overrides.dedupKey ? [{ plain_text: overrides.dedupKey }] : [],
       } as unknown,
       SubjectKey: {
         type: "rich_text",
@@ -281,9 +279,10 @@ describe("runFactDedupBackfill — merge phase", () => {
       (u: { properties?: { "Valid Until"?: unknown } }) =>
         u.properties && u.properties["Valid Until"]
     )
-    expect(invalidated.map((u: { page_id: string }) => u.page_id).sort()).toEqual(
-      ["loser1", "loser2"]
-    )
+    expect(invalidated.map((u: { page_id: string }) => u.page_id).sort()).toEqual([
+      "loser1",
+      "loser2",
+    ])
     // Winner is not invalidated.
     const winnerInvalidation = invalidated.find(
       (u: { page_id: string }) => u.page_id === "winner"
@@ -384,9 +383,7 @@ describe("runFactDedupBackfill — merge phase", () => {
         (u: { properties?: { "Valid Until"?: unknown } }) =>
           u.properties && u.properties["Valid Until"]
       )
-    expect(invalidations.map((u: { page_id: string }) => u.page_id)).toEqual([
-      "newer",
-    ])
+    expect(invalidations.map((u: { page_id: string }) => u.page_id)).toEqual(["newer"])
   })
 
   it("keeps the timed row as survivor over a null-reviewBy sibling", async () => {
@@ -433,9 +430,7 @@ describe("runFactDedupBackfill — merge phase", () => {
         (u: { properties?: { "Valid Until"?: unknown } }) =>
           u.properties && u.properties["Valid Until"]
       )
-    expect(invalidations.map((u: { page_id: string }) => u.page_id)).toEqual([
-      "stable",
-    ])
+    expect(invalidations.map((u: { page_id: string }) => u.page_id)).toEqual(["stable"])
   })
 
   it("does not issue invalidation writes when merge runs with dryRun", async () => {
@@ -484,16 +479,12 @@ describe("runFactDedupBackfill — merge phase", () => {
     const client = createMockClient()
     client.dataSources.query
       .mockResolvedValueOnce({
-        results: [
-          buildRow({ id: "f1", subject: "A", predicate: "uses", object: "B" }),
-        ],
+        results: [buildRow({ id: "f1", subject: "A", predicate: "uses", object: "B" })],
         has_more: true,
         next_cursor: "page-2",
       })
       .mockResolvedValueOnce({
-        results: [
-          buildRow({ id: "f2", subject: "C", predicate: "uses", object: "D" }),
-        ],
+        results: [buildRow({ id: "f2", subject: "C", predicate: "uses", object: "D" })],
         has_more: false,
         next_cursor: null,
       })
@@ -537,12 +528,8 @@ describe("runFactDedupBackfill — merge phase", () => {
     expect(result.skipped).toBe(0)
     expect(client.pages.update).toHaveBeenCalledTimes(1)
     const updateCall = client.pages.update.mock.calls[0][0]
-    expect(
-      updateCall.properties.DedupKey.rich_text[0].text.content
-    ).toBe(currentKey)
-    expect(
-      updateCall.properties.DedupKey.rich_text[0].text.content
-    ).not.toBe(staleKey)
+    expect(updateCall.properties.DedupKey.rich_text[0].text.content).toBe(currentKey)
+    expect(updateCall.properties.DedupKey.rich_text[0].text.content).not.toBe(staleKey)
   })
 
   it("ignores already-invalidated rows when computing groups", async () => {

@@ -15,15 +15,9 @@ describe("renderAgentArgs", () => {
   it("substitutes the placeholder with the allowlist string", () => {
     const args = renderAgentArgs(
       ["-p", "--allowedTools", ALLOWED_TOOLS_PLACEHOLDER, "--model", "sonnet"],
-      "tool-a,tool-b",
+      "tool-a,tool-b"
     )
-    expect(args).toEqual([
-      "-p",
-      "--allowedTools",
-      "tool-a,tool-b",
-      "--model",
-      "sonnet",
-    ])
+    expect(args).toEqual(["-p", "--allowedTools", "tool-a,tool-b", "--model", "sonnet"])
   })
 
   it("preserves the args array when no placeholder is present", () => {
@@ -34,7 +28,7 @@ describe("renderAgentArgs", () => {
   it("substitutes every occurrence when the placeholder appears multiple times", () => {
     const args = renderAgentArgs(
       [ALLOWED_TOOLS_PLACEHOLDER, "--once", ALLOWED_TOOLS_PLACEHOLDER],
-      "x,y",
+      "x,y"
     )
     expect(args).toEqual(["x,y", "--once", "x,y"])
   })
@@ -42,16 +36,13 @@ describe("renderAgentArgs", () => {
   it("substitutes when the placeholder is embedded in a larger string", () => {
     const args = renderAgentArgs(
       [`--tools=${ALLOWED_TOOLS_PLACEHOLDER}`, "--model", "sonnet"],
-      "tool-a,tool-b",
+      "tool-a,tool-b"
     )
     expect(args).toEqual(["--tools=tool-a,tool-b", "--model", "sonnet"])
   })
 
   it("threads the empty string through untouched", () => {
-    const args = renderAgentArgs(
-      ["-p", "--allowedTools", ALLOWED_TOOLS_PLACEHOLDER],
-      "",
-    )
+    const args = renderAgentArgs(["-p", "--allowedTools", ALLOWED_TOOLS_PLACEHOLDER], "")
     expect(args).toEqual(["-p", "--allowedTools", ""])
   })
 

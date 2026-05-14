@@ -22,6 +22,8 @@ Useful commands:
 | `npm run build`        | Build the ESM entry points          |
 | `npm run typecheck`    | Run TypeScript without emitting     |
 | `npm run lint`         | Run ESLint over `src/`              |
+| `npm run format`       | Format `src/` with Prettier         |
+| `npm run format:check` | Check Prettier formatting in `src/` |
 | `npm test`             | Run the Vitest suite                |
 | `npm run dev`          | Rebuild in watch mode               |
 

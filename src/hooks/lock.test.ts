@@ -157,7 +157,7 @@ describe("path injection resistance", () => {
       const segment = path.slice(stateDir.length + 1)
       expect(segment).not.toContain("/")
       expect(segment).not.toContain("\\")
-    },
+    }
   )
 
   it.each(HOSTILE_SESSION_IDS as unknown as Array<[string, string]>)(
@@ -170,7 +170,7 @@ describe("path injection resistance", () => {
       const segment = path.slice(stateDir.length + 1)
       expect(segment).not.toContain("/")
       expect(segment).not.toContain("\\")
-    },
+    }
   )
 
   it("treats sanitized variants of the same hostile id as the same lock", () => {

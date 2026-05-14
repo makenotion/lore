@@ -54,8 +54,7 @@ describe("marker-key", () => {
     })
 
     it("leaves the entire allowed charset untouched", () => {
-      const allowed =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+      const allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
       expect(safeFilenameSegment(allowed)).toBe(allowed)
     })
 

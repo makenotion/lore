@@ -84,11 +84,13 @@ function factPage(opts: {
 
 type UpdateArgs = { page_id: string; properties: Record<string, unknown> }
 
-function mkClient(opts: {
-  retrieve?: PageObjectResponse | Error
-  create?: PageObjectResponse
-  queries?: Array<{ results: PageObjectResponse[]; has_more?: boolean }>
-} = {}) {
+function mkClient(
+  opts: {
+    retrieve?: PageObjectResponse | Error
+    create?: PageObjectResponse
+    queries?: Array<{ results: PageObjectResponse[]; has_more?: boolean }>
+  } = {}
+) {
   const updateSpy = vi.fn(async (_args: UpdateArgs) => ({}))
   const retrieveSpy = vi.fn(async () => {
     if (opts.retrieve instanceof Error) throw opts.retrieve
@@ -357,7 +359,10 @@ describe("FactService.invalidate — issue #284 transaction-time provenance", ()
         createdAt: "2026-01-01T00:00:00.000Z",
       })
       ;(
-        page.properties as Record<string, { type: string; relation: Array<{ id: string }> }>
+        page.properties as Record<
+          string,
+          { type: string; relation: Array<{ id: string }> }
+        >
       ).Source = { type: "relation", relation: [{ id: "mem-src" }] }
       const missingSequence = [
         "Invalidated At",
@@ -1047,9 +1052,7 @@ describe("runBackfillFactObservedAtMigration — issue #284", () => {
         },
         applyObservedAtBackfill: applySpy,
       },
-    } as unknown as Parameters<
-      typeof runBackfillFactObservedAtMigration
-    >[0]["services"]
+    } as unknown as Parameters<typeof runBackfillFactObservedAtMigration>[0]["services"]
 
     const result = await runBackfillFactObservedAtMigration({
       services,

@@ -48,7 +48,10 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
 
 function makeFact(
   id: string,
-  overrides: Partial<Fact> & { predicate?: FactPredicate; confidence?: FactConfidence } = {}
+  overrides: Partial<Fact> & {
+    predicate?: FactPredicate
+    confidence?: FactConfidence
+  } = {}
 ): Fact {
   return {
     id,
@@ -162,7 +165,7 @@ describe("resolveCurrentDecisions", () => {
       (object: string) =>
         new Promise<Fact[]>((resolve) => {
           pending.set(object, resolve)
-        }),
+        })
     )
 
     const walkPromise = resolveCurrentDecisions(services, ["old-id"])
@@ -504,7 +507,7 @@ describe("resolveCanonicalDecisionLinks", () => {
     // walker awaits the same pending promise.
     await vi.waitFor(() => {
       const leafDispatches = services.decisions.getById.mock.calls.filter(
-        (call) => call[0] === "leaf",
+        (call) => call[0] === "leaf"
       ).length
       // Exactly one call to getById("leaf") across both walks is the
       // invariant the shared pending-promise is meant to enforce.
@@ -566,7 +569,7 @@ describe("resolveCanonicalDecisionLinks", () => {
     // rejection poisoned the cache, walk B would also reject.
     const caches = createSupersessionCaches()
     await expect(
-      resolveCurrentDecisions(services, ["root-a"], { caches }),
+      resolveCurrentDecisions(services, ["root-a"], { caches })
     ).rejects.toThrow("transient notion")
 
     // Walk B reaches "leaf" after A's rejection evicted the slot; its own
@@ -649,29 +652,26 @@ describe("resolveCanonicalDecisionLinks", () => {
     // BFS walkers will reach `getSuccessorIds("leaf")` through it, with
     // walk A installing the pending promise and walk B finding it and
     // awaiting. Both are subscribed before rejection.
-    const links = resolveCanonicalDecisionLinks(
-      services,
-      [
-        makeFact("fact-a", {
-          subject: "E",
-          predicate: "decided_by",
-          object: "root-a",
-          sourceMemoryId: "root-a",
-        }),
-        makeFact("fact-b", {
-          subject: "E",
-          predicate: "decided_by",
-          object: "root-b",
-          sourceMemoryId: "root-b",
-        }),
-      ],
-    )
+    const links = resolveCanonicalDecisionLinks(services, [
+      makeFact("fact-a", {
+        subject: "E",
+        predicate: "decided_by",
+        object: "root-a",
+        sourceMemoryId: "root-a",
+      }),
+      makeFact("fact-b", {
+        subject: "E",
+        predicate: "decided_by",
+        object: "root-b",
+        sourceMemoryId: "root-b",
+      }),
+    ])
 
     // Wait for both walks to reach the gated `queryByObject("leaf")` call
     // — they must both be subscribed before the rejection.
     await vi.waitFor(() => {
       const leafCalls = services.facts.queryByObject.mock.calls.filter(
-        (c) => c[0] === "leaf",
+        (c) => c[0] === "leaf"
       ).length
       // One dispatch; both walks await the same pending promise.
       expect(leafCalls).toBe(1)
@@ -828,7 +828,7 @@ describe("syncDecisionReachability", () => {
       expect.objectContaining({
         subject: "MemoryService",
         subjectEntityId: "ent-memory-service",
-      }),
+      })
     )
   })
 

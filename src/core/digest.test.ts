@@ -123,7 +123,7 @@ function stubServices(opts: {
     },
     tasks: {
       async list(
-        args: ListTasksCall = {},
+        args: ListTasksCall = {}
       ): Promise<{ items: TaskSummary[]; nextCursor?: string }> {
         taskCalls.push(args)
         return {
@@ -281,16 +281,14 @@ describe("gatherDigestData", () => {
         title: `task ${i}`,
         entity: `entity-${i}`,
         taskState: "open",
-      }),
+      })
     )
     const services = stubServices({
       tasks: overflowTasks,
       tasksNextCursor: "more-rows-exist",
     })
     const result = await gatherDigestData(services, { projectLabel: "Widget" })
-    expect(result.raw).toContain(
-      "## Open Work (25 shown; many more open beyond the cap)",
-    )
+    expect(result.raw).toContain("## Open Work (25 shown; many more open beyond the cap)")
     expect(result.raw).toContain("many more open tasks not shown")
     // The bullet body never tries to enumerate the unknown tail count.
     expect(result.raw).not.toContain("and 1 more.")
@@ -304,7 +302,7 @@ describe("gatherDigestData", () => {
         title: `task ${i}`,
         entity: `entity-${i}`,
         taskState: "open",
-      }),
+      })
     )
     const services = stubServices({ tasks, tasksNextCursor: undefined })
     const result = await gatherDigestData(services, { projectLabel: "Widget" })

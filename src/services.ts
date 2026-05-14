@@ -54,10 +54,7 @@ import {
   touchDriftMarker,
 } from "./hooks/drift-marker.js"
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
-import {
-  resolveProfileFromConfigAtRoot,
-  type ResolvedProfile,
-} from "./profile/index.js"
+import { resolveProfileFromConfigAtRoot, type ResolvedProfile } from "./profile/index.js"
 import type {
   LoreConfig,
   MemoryScopeContext,

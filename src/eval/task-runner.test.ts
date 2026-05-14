@@ -1,13 +1,5 @@
 import { existsSync } from "node:fs"
-import {
-  mkdtemp,
-  mkdir,
-  writeFile,
-  readFile,
-  stat,
-  rm,
-  readdir,
-} from "node:fs/promises"
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm, readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -370,9 +362,7 @@ tasks:
     })
 
     expect(artifact.results[0]!.verifiers[0]!.passed).toBe(false)
-    expect(artifact.results[0]!.verifiers[0]!.message).toContain(
-      "escapes the workspace"
-    )
+    expect(artifact.results[0]!.verifiers[0]!.message).toContain("escapes the workspace")
   })
 
   it("throws when no adapter is registered for the task's agent", async () => {
@@ -393,10 +383,7 @@ tasks:
 
     await expect(
       runTaskEvalSuite(suitePath, {
-        outPath: join(
-          await mkdtemp(join(tmpdir(), "lore-eval-task-")),
-          "out.json"
-        ),
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
         adapters: new Map<string, AgentAdapter>(),
       })
     ).rejects.toThrow("No adapter registered")
@@ -473,11 +460,7 @@ tasks:
     await mkdir(suitesDir, { recursive: true })
     await mkdir(memoryDir, { recursive: true })
     await mkdir(workspaceDir, { recursive: true })
-    await writeFile(
-      join(workspaceDir, "package.json"),
-      '{"name": "x"}\n',
-      "utf-8"
-    )
+    await writeFile(join(workspaceDir, "package.json"), '{"name": "x"}\n', "utf-8")
     await writeFile(
       join(memoryDir, "helpful.json"),
       '{"hint": "use Result types"}',
@@ -504,10 +487,7 @@ tasks:
 
     let observedSeed: string | null = null
     const adapter = mockAdapter("codex", async ({ workspace }) => {
-      observedSeed = await readFile(
-        join(workspace, ".lore-memories.json"),
-        "utf-8"
-      )
+      observedSeed = await readFile(join(workspace, ".lore-memories.json"), "utf-8")
       return successResult()
     })
 
@@ -549,9 +529,7 @@ tasks:
     })
 
     expect(artifact.summary.failedTrials).toBe(0)
-    expect(artifact.results[0]!.verifiers[0]!.message).toContain(
-      "Command passed"
-    )
+    expect(artifact.results[0]!.verifiers[0]!.message).toContain("Command passed")
   })
 
   it("runs longitudinal suites across no-memory and lore-full-loop conditions", async () => {
@@ -632,7 +610,11 @@ scenarios:
       async createRun({ workspace }) {
         await mkdir(join(workspace, ".codex"), { recursive: true })
         await writeFile(join(workspace, ".mcp.json"), "{}\n", "utf-8")
-        await writeFile(join(workspace, ".lore.yaml"), "vault:\n  pageId: test\n", "utf-8")
+        await writeFile(
+          join(workspace, ".lore.yaml"),
+          "vault:\n  pageId: test\n",
+          "utf-8"
+        )
         await writeFile(
           join(workspace, ".codex", "config.toml"),
           "[mcp_servers.lore]\n",
@@ -700,8 +682,7 @@ scenarios:
     })
     const fullLoop = artifact.results.find(
       (result) =>
-        result.scenarioId === "result-boundary" &&
-        result.condition === "lore-full-loop"
+        result.scenarioId === "result-boundary" && result.condition === "lore-full-loop"
     )
     expect(fullLoop?.phases[0]?.lore.decisionsCreated).toBe(1)
     expect(fullLoop?.phases[1]?.lore.surfacedContextIds).toEqual(["ctx-result"])
@@ -782,9 +763,7 @@ scenarios:
                   "utf-8"
                 )
                 expect(codexConfig).toContain("mcp_servers.lore")
-                expect(codexConfig).toContain(
-                  'default_tools_approval_mode = "approve"'
-                )
+                expect(codexConfig).toContain('default_tools_approval_mode = "approve"')
                 expect(codexConfig).toContain('"lore-memory"')
                 expect(codexConfig).toContain('"lore-decision"')
               }
@@ -1006,9 +985,7 @@ scenarios:
       verifierResults: [],
       failureReason: "adapter-refused",
     })
-    expect(artifact.results[0]!.phases[1]?.failureMessage).toContain(
-      "Skipped Phase B"
-    )
+    expect(artifact.results[0]!.phases[1]?.failureMessage).toContain("Skipped Phase B")
   })
 
   it("does not run Phase B after Lore formation refusal", async () => {
@@ -1086,9 +1063,7 @@ scenarios:
       verifierResults: [],
       failureReason: "adapter-refused",
     })
-    expect(artifact.results[0]!.phases[1]?.failureMessage).toContain(
-      "formation refused"
-    )
+    expect(artifact.results[0]!.phases[1]?.failureMessage).toContain("formation refused")
   })
 
   it("rejects task.workspace paths that escape the eval-suite parent", async () => {
@@ -1196,9 +1171,7 @@ tasks:
           id: "bad-pattern",
           prompt: "p",
           workspace: "../w/x",
-          verifiers: [
-            { type: "file-contents-match", path: "x", pattern: "[" },
-          ],
+          verifiers: [{ type: "file-contents-match", path: "x", pattern: "[" }],
         },
       ],
     })
@@ -1221,18 +1194,15 @@ tasks:
     // the workspace fixtures' comments, a no-op agent could once again
     // satisfy every verifier — this test trips before that lands.
     const noopAdapter = mockAdapter("codex", async () => successResult())
-    const { artifact } = await runTaskEvalSuite(
-      "evals/task-suites/starter.yaml",
-      { adapters: new Map<string, AgentAdapter>([["codex", noopAdapter]]) }
-    )
+    const { artifact } = await runTaskEvalSuite("evals/task-suites/starter.yaml", {
+      adapters: new Map<string, AgentAdapter>([["codex", noopAdapter]]),
+    })
 
     const targetTaskIds = new Set([
       "fix-broken-import-path",
       "returns-result-from-service-boundary",
     ])
-    const targetTrials = artifact.results.filter((r) =>
-      targetTaskIds.has(r.taskId)
-    )
+    const targetTrials = artifact.results.filter((r) => targetTaskIds.has(r.taskId))
     expect(targetTrials.length).toBeGreaterThan(0)
     for (const trial of targetTrials) {
       expect({
@@ -1246,9 +1216,7 @@ tasks:
       // load-bearing claim is that the positive content patterns do
       // NOT match.
       const matchVerifiers = trial.verifiers.filter(
-        (v) =>
-          v.verifier.type === "file-contents-match" &&
-          v.verifier.mode !== "forbid"
+        (v) => v.verifier.type === "file-contents-match" && v.verifier.mode !== "forbid"
       )
       expect(matchVerifiers.length).toBeGreaterThan(0)
       expect(matchVerifiers.every((v) => !v.passed)).toBe(true)
@@ -1283,10 +1251,9 @@ tasks:
       }
       return successResult()
     })
-    const { artifact } = await runTaskEvalSuite(
-      "evals/task-suites/starter.yaml",
-      { adapters: new Map<string, AgentAdapter>([["codex", fixingAdapter]]) }
-    )
+    const { artifact } = await runTaskEvalSuite("evals/task-suites/starter.yaml", {
+      adapters: new Map<string, AgentAdapter>([["codex", fixingAdapter]]),
+    })
 
     const fixTrials = artifact.results.filter(
       (r) => r.taskId === "fix-broken-import-path"
@@ -1297,9 +1264,7 @@ tasks:
         taskId: trial.taskId,
         condition: trial.memoryCondition,
         success: trial.success,
-        failed: trial.verifiers
-          .filter((v) => !v.passed)
-          .map((v) => v.message),
+        failed: trial.verifiers.filter((v) => !v.passed).map((v) => v.message),
       }).toMatchObject({ success: true, failed: [] })
     }
   })
@@ -1323,10 +1288,9 @@ tasks:
       }
       return successResult()
     })
-    const { artifact } = await runTaskEvalSuite(
-      "evals/task-suites/starter.yaml",
-      { adapters: new Map<string, AgentAdapter>([["codex", deletingAdapter]]) }
-    )
+    const { artifact } = await runTaskEvalSuite("evals/task-suites/starter.yaml", {
+      adapters: new Map<string, AgentAdapter>([["codex", deletingAdapter]]),
+    })
 
     const fixTrials = artifact.results.filter(
       (r) => r.taskId === "fix-broken-import-path"
@@ -1403,7 +1367,7 @@ describe("buildCodexChildEnv", () => {
         HOME: "/Users/example",
         CODEX_HOME: "/Users/example/.codex",
       },
-      { codexHome: "/tmp/lore-eval-codex-home-test" },
+      { codexHome: "/tmp/lore-eval-codex-home-test" }
     )
     expect(env["PATH"]).toBe("/usr/bin")
     expect(env["HOME"]).toBe("/tmp/lore-eval-codex-home-test")
@@ -1420,7 +1384,7 @@ describe("createIsolatedCodexHome", () => {
       await writeFile(
         join(sourceHome, "auth.json"),
         '{"OPENAI_API_KEY":"sk-test-sentinel"}\n',
-        "utf-8",
+        "utf-8"
       )
       await writeFile(
         join(sourceHome, "config.toml"),
@@ -1433,14 +1397,14 @@ describe("createIsolatedCodexHome", () => {
           'command = "node"',
           "",
         ].join("\n"),
-        "utf-8",
+        "utf-8"
       )
 
       const codexHome = await createIsolatedCodexHome({ CODEX_HOME: sourceHome })
       isolatedHomes.push(codexHome)
 
       expect(await readFile(join(codexHome, "auth.json"), "utf-8")).toBe(
-        '{"OPENAI_API_KEY":"sk-test-sentinel"}\n',
+        '{"OPENAI_API_KEY":"sk-test-sentinel"}\n'
       )
       const config = await readFile(join(codexHome, "config.toml"), "utf-8")
       expect(config).toContain('model = "gpt-5.5"')
@@ -1465,7 +1429,7 @@ describe("createIsolatedCodexHome", () => {
       await writeFile(
         join(sourceHome, "auth.json"),
         '{"OPENAI_API_KEY":"sk-test-sentinel"}\n',
-        "utf-8",
+        "utf-8"
       )
       await mkdir(join(sourceHome, "config.toml"))
 
@@ -1506,7 +1470,7 @@ describe("selectExpectedContextIds", () => {
           kind: "fact",
           text: "createUserProfile uses err helper",
         },
-      ],
+      ]
     )
 
     expect(ids).toEqual(["decision-result", "fact-ok", "fact-err"])
@@ -1521,7 +1485,7 @@ describe("selectExpectedContextIds", () => {
           kind: "task",
           text: "Add --json output for status automation consumers.",
         },
-      ],
+      ]
     )
 
     expect(ids).toEqual([])
@@ -1572,8 +1536,7 @@ describe("bench spawn argv carries NO secrets", () => {
     // so the assertion is structural, not env-dependent.
     process.env["LORE_BENCH_NOTION_TOKEN"] =
       "ntn_SENTINEL_BENCH_TOKEN_MUST_NEVER_REACH_ARGV"
-    process.env["NOTION_API_TOKEN"] =
-      "ntn_OPERATOR_DAY_TO_DAY_MUST_NEVER_REACH_ARGV"
+    process.env["NOTION_API_TOKEN"] = "ntn_OPERATOR_DAY_TO_DAY_MUST_NEVER_REACH_ARGV"
     try {
       const args = buildBenchSpawnArgs("/tmp/lore-bench-test-workspace", "Q?")
       const joined = args.join(" ")

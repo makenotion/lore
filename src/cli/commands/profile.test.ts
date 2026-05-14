@@ -46,14 +46,7 @@ describe("profileCommand", () => {
   })
 
   it("resolves a bare profile name through normal priority order", async () => {
-    const localDir = join(
-      workDir,
-      ".lore",
-      "profiles",
-      "local",
-      "default",
-      "1.0.0"
-    )
+    const localDir = join(workDir, ".lore", "profiles", "local", "default", "1.0.0")
     writeFiles(localDir, minimalProfileFiles("default"))
     vi.mocked(initServices).mockResolvedValue({
       configRoot: workDir,
@@ -70,14 +63,7 @@ describe("profileCommand", () => {
   it("rejects profile set when the resolved bundle is not loadable", async () => {
     const configPath = join(workDir, ".lore.yaml")
     writeFileSync(configPath, "vault:\n  pageId: vault-page-id\n")
-    const installedDir = join(
-      workDir,
-      ".lore",
-      "profiles",
-      "installed",
-      "sales",
-      "1.0.0"
-    )
+    const installedDir = join(workDir, ".lore", "profiles", "installed", "sales", "1.0.0")
     writeFiles(installedDir, minimalProfileFiles("support", "1.0.0"))
     vi.spyOn(process, "cwd").mockReturnValue(workDir)
     const exitTrap = trapProcessExit()
@@ -88,8 +74,6 @@ describe("profileCommand", () => {
     expect(errorSpy.mock.calls.flat().join("\n")).toContain(
       "Profile selector sales@1.0.0 does not match"
     )
-    expect(readFileSync(configPath, "utf-8")).not.toContain(
-      "profile: sales@1.0.0"
-    )
+    expect(readFileSync(configPath, "utf-8")).not.toContain("profile: sales@1.0.0")
   })
 })

@@ -44,8 +44,7 @@ export const notionPageIdSchema = z
   .string()
   .trim()
   .refine(
-    (value) =>
-      DASHED_NOTION_PAGE_ID.test(value) || UNDASHED_NOTION_PAGE_ID.test(value),
+    (value) => DASHED_NOTION_PAGE_ID.test(value) || UNDASHED_NOTION_PAGE_ID.test(value),
     "must be a Notion page id (32-char hex or dashed UUID)"
   )
   .transform((value) => {

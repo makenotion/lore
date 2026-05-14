@@ -77,10 +77,12 @@ export const BENCH_BASELINE_ACCURACY_TOLERANCE = 0.02
 export const BENCH_BASELINE_SCORED_DROP_TOLERANCE = 5
 
 export class BenchBaselineConfigMismatchError extends Error {
-  constructor(public readonly diff: { field: string; baseline: string; fresh: string }[]) {
+  constructor(
+    public readonly diff: { field: string; baseline: string; fresh: string }[]
+  ) {
     super(
       `Bench baseline config mismatch — re-baseline required. ` +
-        `Diverged fields: ${diff.map((d) => d.field).join(", ")}`,
+        `Diverged fields: ${diff.map((d) => d.field).join(", ")}`
     )
     this.name = "BenchBaselineConfigMismatchError"
   }
@@ -90,7 +92,7 @@ export class BenchBaselineRunnerMismatchError extends Error {
   constructor(expected: string, actual: string) {
     super(
       `Bench baseline runner mismatch: expected "${expected}", got "${actual}". ` +
-        `A retrieval baseline cannot be compared against a bench artifact.`,
+        `A retrieval baseline cannot be compared against a bench artifact.`
     )
     this.name = "BenchBaselineRunnerMismatchError"
   }
@@ -103,7 +105,7 @@ export interface BenchBaselineDrift {
 }
 
 export async function readBenchBaselineSnapshot(
-  path: string,
+  path: string
 ): Promise<BenchBaselineSnapshot> {
   const raw = await readFile(path, "utf-8")
   const parsed = JSON.parse(raw)
@@ -115,7 +117,7 @@ export async function readBenchBaselineSnapshot(
 
 export async function writeBenchBaselineSnapshot(
   path: string,
-  snapshot: BenchBaselineSnapshot,
+  snapshot: BenchBaselineSnapshot
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   await writeFile(path, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8")
@@ -128,13 +130,10 @@ export async function writeBenchBaselineSnapshot(
  */
 export function buildBenchBaselineSnapshot(
   artifact: BenchRunArtifact,
-  options: { notes?: string; capturedAt?: string } = {},
+  options: { notes?: string; capturedAt?: string } = {}
 ): BenchBaselineSnapshot {
   const capturedAt = options.capturedAt ?? new Date().toISOString()
-  const byCategory: Record<
-    string,
-    { n: number; correct: number; accuracy: number }
-  > = {}
+  const byCategory: Record<string, { n: number; correct: number; accuracy: number }> = {}
   for (const category of LONGMEMEVAL_CATEGORIES) {
     const stat = artifact.summary.byCategory[category]
     if (stat) {
@@ -198,9 +197,7 @@ export function compareBenchBaseline(input: {
     ]
     throw new BenchBaselineConfigMismatchError(diff)
   }
-  const baselineSuccess = new Map(
-    baseline.results.map((r) => [r.exampleId, r.success]),
-  )
+  const baselineSuccess = new Map(baseline.results.map((r) => [r.exampleId, r.success]))
   for (const result of artifact.results) {
     const wasCorrect = baselineSuccess.get(result.exampleId)
     if (wasCorrect === true && !result.success) {
@@ -208,9 +205,7 @@ export function compareBenchBaseline(input: {
     }
   }
   if (regressedExamples.length > 0) {
-    reasons.push(
-      `${regressedExamples.length} previously-correct example(s) now fail`,
-    )
+    reasons.push(`${regressedExamples.length} previously-correct example(s) now fail`)
   }
   for (const category of LONGMEMEVAL_CATEGORIES) {
     const freshStat = artifact.summary.byCategory[category]
@@ -219,21 +214,20 @@ export function compareBenchBaseline(input: {
     const drop = baselineStat.accuracy - freshStat.accuracy
     if (drop > BENCH_BASELINE_ACCURACY_TOLERANCE) {
       reasons.push(
-        `Category ${category} accuracy drop ${drop.toFixed(4)} > tolerance ${BENCH_BASELINE_ACCURACY_TOLERANCE}`,
+        `Category ${category} accuracy drop ${drop.toFixed(4)} > tolerance ${BENCH_BASELINE_ACCURACY_TOLERANCE}`
       )
     }
   }
   const overallDrop = baseline.summary.accuracy - artifact.summary.overall.accuracy
   if (overallDrop > BENCH_BASELINE_ACCURACY_TOLERANCE) {
     reasons.push(
-      `Overall accuracy drop ${overallDrop.toFixed(4)} > tolerance ${BENCH_BASELINE_ACCURACY_TOLERANCE}`,
+      `Overall accuracy drop ${overallDrop.toFixed(4)} > tolerance ${BENCH_BASELINE_ACCURACY_TOLERANCE}`
     )
   }
-  const scoredDrop =
-    baseline.summary.scoredExamples - artifact.summary.scoredExamples
+  const scoredDrop = baseline.summary.scoredExamples - artifact.summary.scoredExamples
   if (scoredDrop > BENCH_BASELINE_SCORED_DROP_TOLERANCE) {
     reasons.push(
-      `scoredExamples drop ${scoredDrop} > tolerance ${BENCH_BASELINE_SCORED_DROP_TOLERANCE}`,
+      `scoredExamples drop ${scoredDrop} > tolerance ${BENCH_BASELINE_SCORED_DROP_TOLERANCE}`
     )
   }
   if (artifact.summary.aborted) {

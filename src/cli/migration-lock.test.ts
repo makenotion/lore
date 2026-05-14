@@ -194,9 +194,7 @@ function watchRaceWorker(child: ReturnType<typeof spawn>): {
   return { child, ready: readyPromise, result: resultPromise }
 }
 
-async function runWorkerRace(
-  lockScope: MigrationLockScope
-): Promise<WorkerRaceResult[]> {
+async function runWorkerRace(lockScope: MigrationLockScope): Promise<WorkerRaceResult[]> {
   const workerPath = writeRaceWorker()
   const releasePath = join(
     TEST_STATE_DIR,

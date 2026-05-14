@@ -32,10 +32,12 @@ import { FACT_PROPS, MEMORY_PROPS } from "../notion/schema.js"
 const memoriesDb = { databaseId: "mem-db", dataSourceId: "mem-ds" }
 const factsDb = { databaseId: "facts-db", dataSourceId: "facts-ds" }
 
-function createClient(opts: {
-  results?: unknown[]
-  has_more?: boolean
-} = {}): { client: Client; querySpy: ReturnType<typeof vi.fn> } {
+function createClient(
+  opts: {
+    results?: unknown[]
+    has_more?: boolean
+  } = {}
+): { client: Client; querySpy: ReturnType<typeof vi.fn> } {
   const querySpy = vi.fn(async () => ({
     results: opts.results ?? [],
     has_more: opts.has_more ?? false,
@@ -50,7 +52,6 @@ function createClient(opts: {
   } as unknown as Client
   return { client, querySpy }
 }
-
 
 // ---------------------------------------------------------------------------
 // TaskService.list — applies default scope filter
@@ -211,7 +212,9 @@ function makeFactPage(opts: {
     properties: {
       [FACT_PROPS.SUBJECT]: {
         type: "title",
-        title: [{ plain_text: opts.subject, type: "text", text: { content: opts.subject } }],
+        title: [
+          { plain_text: opts.subject, type: "text", text: { content: opts.subject } },
+        ],
       },
       [FACT_PROPS.PREDICATE]: {
         type: "select",
@@ -219,7 +222,9 @@ function makeFactPage(opts: {
       },
       [FACT_PROPS.OBJECT]: {
         type: "rich_text",
-        rich_text: [{ plain_text: opts.object, type: "text", text: { content: opts.object } }],
+        rich_text: [
+          { plain_text: opts.object, type: "text", text: { content: opts.object } },
+        ],
       },
       [FACT_PROPS.PROJECT]: { type: "relation", relation: [], has_more: false },
       [FACT_PROPS.SOURCE]: { type: "relation", relation: [], has_more: false },
@@ -568,7 +573,6 @@ describe("FactService.createWithDedup — scope-aware merge (issue #283 review)"
     // Single round-trip — no walker pagination.
     expect(querySpy).toHaveBeenCalledTimes(1)
   })
-
 })
 
 // ---------------------------------------------------------------------------
@@ -1121,9 +1125,7 @@ describe("runFactDedupBackfill — scope-aware grouping (round-3)", () => {
       FACT_PROPS.DEDUP_KEY
     ] = {
       type: "rich_text",
-      rich_text: [
-        { plain_text: dedupKey, type: "text", text: { content: dedupKey } },
-      ],
+      rich_text: [{ plain_text: dedupKey, type: "text", text: { content: dedupKey } }],
     }
     const sessionPage = makeFactPage({
       id: "fact-session",
@@ -1137,9 +1139,7 @@ describe("runFactDedupBackfill — scope-aware grouping (round-3)", () => {
       FACT_PROPS.DEDUP_KEY
     ] = {
       type: "rich_text",
-      rich_text: [
-        { plain_text: dedupKey, type: "text", text: { content: dedupKey } },
-      ],
+      rich_text: [{ plain_text: dedupKey, type: "text", text: { content: dedupKey } }],
     }
     const querySpy = vi.fn(async () => ({
       results: [teamPage, sessionPage],

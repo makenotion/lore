@@ -62,7 +62,7 @@
 >    - relation → JSON-stringified array of user-facing URLs ✅
 >    - **Host coupling** (load-bearing): `https://www.notion.so/<id>`
 >      is REJECTED on a dev workspace with `400 validation_error:
->      Invalid page URL ... for property X`. Bare ids and
+Invalid page URL ... for property X`. Bare ids and
 >      `notion.com` URLs are likewise rejected. The relation URL
 >      base must be derived from the API host —
 >      `services.ts:deriveRelationUrlBase` is the single source
@@ -73,6 +73,7 @@
 >
 > Verification rows (now invalidated, will not surface in default
 > queries):
+>
 > - `<verification-fact-id-1>` — primitive-only fact
 > - `<verification-fact-id-2>` — fact with `Project` relation
 
@@ -102,28 +103,28 @@ feature flags.
 
 ## Pinned Schema Source
 
-| Item | Value |
-| ---- | ----- |
-| Source | internal upstream Notion server snapshot |
-| Branch (snapshot reviewed) | `main` |
-| Commit | `69cd144ac1e429229680b6fb24ec29bcea3e37ac` |
-| Snapshot date | 2026-05-05 |
+| Item                       | Value                                      |
+| -------------------------- | ------------------------------------------ |
+| Source                     | internal upstream Notion server snapshot   |
+| Branch (snapshot reviewed) | `main`                                     |
+| Commit                     | `69cd144ac1e429229680b6fb24ec29bcea3e37ac` |
+| Snapshot date              | 2026-05-05                                 |
 
 Per-file blob SHAs at the pinned commit:
 
-| Path (under `src/server-publicApi/apis/ai_tools/`) | Blob SHA |
-| -------------------------------------------------- | -------- |
-| `params/RunToolParams.ts` | `b9370e41a29f2b784f8f7564c3ba08766d83f938` |
-| `params/search/SearchToolParams.ts` | `d1f0b451a28fe2eaf3b86beed6b5c987438761f5` |
-| `params/query_data_sources/QueryDataSourcesToolParams.ts` | `2bcab21355c6604e1d150543191f2584290cfcad` |
-| `params/query_data_sources/QueryDataSourcesDataParams.ts` | `8faf522d1b7af92420a021818051c68395470da4` |
-| `resources/RunToolResource.ts` | `b743e99863c2ecd254ab3a81b59e90621ba36095` |
-| `resources/search/SearchResource.ts` | `d5a1db1a98082a17fd0f6d923fef1057579156d3` |
-| `resources/search/InternalSearchResource.ts` | `0e85b9c8ad728c476b98adfc887f8aa9c2a6b733` |
-| `resources/search/InternalSearchResultResource.ts` | `e82780637d6b54dd3477c3b7d4d39f508f90e753` |
-| `resources/search/UserSearchResource.ts` | `9a1328974d25c08535b40a3ac1560653e96c8787` |
+| Path (under `src/server-publicApi/apis/ai_tools/`)         | Blob SHA                                   |
+| ---------------------------------------------------------- | ------------------------------------------ |
+| `params/RunToolParams.ts`                                  | `b9370e41a29f2b784f8f7564c3ba08766d83f938` |
+| `params/search/SearchToolParams.ts`                        | `d1f0b451a28fe2eaf3b86beed6b5c987438761f5` |
+| `params/query_data_sources/QueryDataSourcesToolParams.ts`  | `2bcab21355c6604e1d150543191f2584290cfcad` |
+| `params/query_data_sources/QueryDataSourcesDataParams.ts`  | `8faf522d1b7af92420a021818051c68395470da4` |
+| `resources/RunToolResource.ts`                             | `b743e99863c2ecd254ab3a81b59e90621ba36095` |
+| `resources/search/SearchResource.ts`                       | `d5a1db1a98082a17fd0f6d923fef1057579156d3` |
+| `resources/search/InternalSearchResource.ts`               | `0e85b9c8ad728c476b98adfc887f8aa9c2a6b733` |
+| `resources/search/InternalSearchResultResource.ts`         | `e82780637d6b54dd3477c3b7d4d39f508f90e753` |
+| `resources/search/UserSearchResource.ts`                   | `9a1328974d25c08535b40a3ac1560653e96c8787` |
 | `resources/query_data_sources/QueryDataSourcesResource.ts` | `5c7410744748326c660019e568ca89a73e973954` |
-| `endpoints/RunTool.ts` | `9a48d3aa9c5b093cb6dad050f83297b16c9312c1` |
+| `endpoints/RunTool.ts`                                     | `9a48d3aa9c5b093cb6dad050f83297b16c9312c1` |
 
 Every file the README cites for the documented contract is pinned. A
 future schema-pin refresh updates this whole table at once so a
@@ -165,7 +166,9 @@ The body is a discriminated union keyed by `type`:
 ```jsonc
 {
   "type": "<tool_name>",
-  "<tool_name>": { /* tool-specific params */ }
+  "<tool_name>": {
+    /* tool-specific params */
+  },
 }
 ```
 
@@ -369,7 +372,7 @@ These cannot be answered from source alone:
    (see "Auth And Capability Requirements" above). ntn tokens come
    from the workspace's Connections setting after the engineer
    authorizes ntn against their personal account, so the bot parent
-   is almost certainly `UserTable` — but the *type* determines
+   is almost certainly `UserTable` — but the _type_ determines
    whether Lore's calls take the workflow-bot fast path (gated on
    `getAllowedDirectMcpToolNames`, capability-checked) or fall
    through to `resolveRunToolUserActor` (gated on user-guest-bot
@@ -399,12 +402,12 @@ These cannot be answered from source alone:
 RunTool calls go through **two rate-limit checks**:
 
 1. **Per-tool, per-actor RunTool quota.** `publicApiRunToolRateLimit({
-   environment, actorId, toolName })` runs at the top of
+environment, actorId, toolName })` runs at the top of
    `executeWithoutRequestMetadata`
    (`endpoints/RunTool.ts:201-209`).
    Failures surface as the standard public-API rate-limit response
    (HTTP 429 with `Retry-After`). The bucket is keyed on `(actorId,
-   toolName)` — `search` and `query_data_sources` quotas are
+toolName)` — `search` and `query_data_sources` quotas are
    independent of each other and of the standard REST per-token bucket.
 
 2. **Block-write quota** (write tools only). `publicApiRunToolBlockRateLimitPreCheck`
@@ -482,7 +485,7 @@ Confirmed shapes (from `@notionhq/server/helpers/publicApiError`):
   `{ object: "error", code: "validation_error", message: "..." }`. The
   `update_page` wrapper landed in #534 classifies the
   `update_content`-specific shapes (`old_str did not match`, `old_str
-  was not found`, `old_str matches more than once`) as fall-back-able
+was not found`, `old_str matches more than once`) as fall-back-able
   `RunToolBlockEditError` of kind `no_match` / `multiple_matches`;
   unrecognized 400s propagate verbatim so the caller sees the actual
   server complaint.
@@ -528,17 +531,17 @@ Confirmed shapes (from `@notionhq/server/helpers/publicApiError`):
 
 ### Input (`SearchToolParams.Value`)
 
-| Field | Type | Required | Notes |
-| ----- | ---- | -------- | ----- |
-| `query` | `string` (min length 1) | yes | Semantic query string. |
-| `query_type` | `"internal" \| "user"` | no | "internal" = workspace+connectors; "user" = user-by-name/email lookup. **Workflow-bot variant omits this field — workflow bots can only do `internal`.** |
-| `content_search_mode` | `"workspace_search" \| "ai_search"` | no | Force backend. Default = AI if available, else workspace. **Workflow-bot variant omits this — workflow bots are pinned to `workspace_search`.** |
-| `data_source_url` | `string` | no | `collection://<data_source_id>` URL to scope search to one Lore database. THIS IS THE ONLY KNOB Lore needs for `searchHybrid` scoping. |
-| `page_url` | `string` | no | Restrict to a page subtree. Not used by Lore. |
-| `teamspace_id` | `string` | no | Restrict to a teamspace. Not used by Lore. |
-| `filters` | `SearchFilterParam.Value` | no | Date range / creator-id filters. **This is the hook for `applySemanticPostFilters` — Lore's project / kind / status post-filters do NOT map cleanly here, but creator-id filters do.** |
-| `page_size` | int 1-25, default 10 | no | Hard server cap of 25 — much smaller than `client.search`'s 100. Drives Phase 2 pagination math. |
-| `max_highlight_length` | int 0-500, default 200 | no | 0 = omit highlights. Lore can use 0 to minimize response size. |
+| Field                  | Type                                | Required | Notes                                                                                                                                                                                  |
+| ---------------------- | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`                | `string` (min length 1)             | yes      | Semantic query string.                                                                                                                                                                 |
+| `query_type`           | `"internal" \| "user"`              | no       | "internal" = workspace+connectors; "user" = user-by-name/email lookup. **Workflow-bot variant omits this field — workflow bots can only do `internal`.**                               |
+| `content_search_mode`  | `"workspace_search" \| "ai_search"` | no       | Force backend. Default = AI if available, else workspace. **Workflow-bot variant omits this — workflow bots are pinned to `workspace_search`.**                                        |
+| `data_source_url`      | `string`                            | no       | `collection://<data_source_id>` URL to scope search to one Lore database. THIS IS THE ONLY KNOB Lore needs for `searchHybrid` scoping.                                                 |
+| `page_url`             | `string`                            | no       | Restrict to a page subtree. Not used by Lore.                                                                                                                                          |
+| `teamspace_id`         | `string`                            | no       | Restrict to a teamspace. Not used by Lore.                                                                                                                                             |
+| `filters`              | `SearchFilterParam.Value`           | no       | Date range / creator-id filters. **This is the hook for `applySemanticPostFilters` — Lore's project / kind / status post-filters do NOT map cleanly here, but creator-id filters do.** |
+| `page_size`            | int 1-25, default 10                | no       | Hard server cap of 25 — much smaller than `client.search`'s 100. Drives Phase 2 pagination math.                                                                                       |
+| `max_highlight_length` | int 0-500, default 200              | no       | 0 = omit highlights. Lore can use 0 to minimize response size.                                                                                                                         |
 
 ### Lore-relevant pagination behavior
 
@@ -582,9 +585,9 @@ type InternalSearchResource = {
   results: Array<{
     id: string
     title: string
-    url: string         // page ID for Notion results, full URL for connector results
-    type: string        // discriminator (page, database, etc.)
-    highlight: string   // empty when max_highlight_length=0
+    url: string // page ID for Notion results, full URL for connector results
+    type: string // discriminator (page, database, etc.)
+    highlight: string // empty when max_highlight_length=0
     timestamp: string
     is_archived?: boolean
   }>
@@ -615,25 +618,27 @@ The body wraps `data` in an outer envelope:
 {
   "type": "query_data_sources",
   "query_data_sources": {
-    "data": { /* SQL mode OR view mode — discriminated by `mode` */ }
-  }
+    "data": {
+      /* SQL mode OR view mode — discriminated by `mode` */
+    },
+  },
 }
 ```
 
 #### SQL mode (default)
 
-| Field | Type | Required |
-| ----- | ---- | -------- |
-| `data_source_urls` | `string[]` | yes — `collection://<data_source_id>` for each table referenced in `query` |
-| `query` | `string` | yes — SQLite. Use the data-source URL **as the table name**, fully quoted: `SELECT * FROM "collection://abc..." WHERE ...` |
-| `mode` | `"sql"` | no — defaults to `"sql"` |
-| `params` | `string[]` | no — parameterized values for `?` placeholders. Use `"__YES__"` / `"__NO__"` for checkbox boolean. |
+| Field              | Type       | Required                                                                                                                   |
+| ------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `data_source_urls` | `string[]` | yes — `collection://<data_source_id>` for each table referenced in `query`                                                 |
+| `query`            | `string`   | yes — SQLite. Use the data-source URL **as the table name**, fully quoted: `SELECT * FROM "collection://abc..." WHERE ...` |
+| `mode`             | `"sql"`    | no — defaults to `"sql"`                                                                                                   |
+| `params`           | `string[]` | no — parameterized values for `?` placeholders. Use `"__YES__"` / `"__NO__"` for checkbox boolean.                         |
 
 #### View mode
 
-| Field | Type | Required |
-| ----- | ---- | -------- |
-| `mode` | `"view"` | yes |
+| Field      | Type     | Required                           |
+| ---------- | -------- | ---------------------------------- |
+| `mode`     | `"view"` | yes                                |
 | `view_url` | `string` | yes — full URL with `?v=<view_id>` |
 
 Lore's aggregate use case (orphan-rate computation in
@@ -651,7 +656,7 @@ type QueryDataSourcesResource = {
   results: Array<Record<string, string | number | boolean | string[] | null>>
   has_more: boolean
   // Optional:
-  data_source_ids?: string[]    // "only present for SQL queries" (per resource description)
+  data_source_ids?: string[] // "only present for SQL queries" (per resource description)
 }
 ```
 
@@ -663,9 +668,9 @@ values come from `SQLiteDatabasePropertyValue` and are typed as
 Two Lore-specific contract observations:
 
 1. **Aggregates collapse to scalar columns.** A `SELECT
-   SubjectEntity, COUNT(*) AS cnt FROM "collection://..." GROUP BY
-   SubjectEntity` returns rows of `{SubjectEntity: string|null, cnt:
-   number}` — the shape `entity-migration.ts`'s orphan-rate metric
+SubjectEntity, COUNT(*) AS cnt FROM "collection://..." GROUP BY
+SubjectEntity` returns rows of `{SubjectEntity: string|null, cnt:
+number}` — the shape `entity-migration.ts`'s orphan-rate metric
    needs. Phase 3 evaluates whether moving the JS `GROUP BY` into
    SQL is worth the runtime cost.
 2. **No body content.** The result is property data only — no rich
@@ -718,15 +723,15 @@ Phase 0 contract.
 
 ## Phase 0 Acceptance Re-Check
 
-| Phase 0 deliverable (umbrella issue #532) | Status |
-| -------------------------------- | ------ |
-| Endpoint and method | Confirmed: `POST /v1/tools/run` |
-| Request envelope shape and exact tool names | Confirmed; tool names use API form (`search`, `query_data_sources`) |
-| Auth header / capability requirements for ntn-resolved tokens | Confirmed actor-type rejection for public integrations; three-outcome enumeration (workflow-bot fast path / personal-bot via `effectiveActor` / user-guest-bot via `loadRecord`) flagged for Phase 1 runtime probe |
-| Rate-limit accounting | Confirmed two-bucket model; composition contract for Lore's wrapper documented; per-tool quota magnitude flagged for Phase 1 runtime measurement |
-| `search` input/output shape, pagination, result IDs, score/highlight | Confirmed; cursor-pagination divergence from REST documented |
-| `query_data_sources` SQL input/output, aggregate result representation, capability gating | Confirmed; `hasAdvancedTools` gate documented |
-| Source commit/blob SHA for the pinned schema | Confirmed table above |
+| Phase 0 deliverable (umbrella issue #532)                                                 | Status                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Endpoint and method                                                                       | Confirmed: `POST /v1/tools/run`                                                                                                                                                                                    |
+| Request envelope shape and exact tool names                                               | Confirmed; tool names use API form (`search`, `query_data_sources`)                                                                                                                                                |
+| Auth header / capability requirements for ntn-resolved tokens                             | Confirmed actor-type rejection for public integrations; three-outcome enumeration (workflow-bot fast path / personal-bot via `effectiveActor` / user-guest-bot via `loadRecord`) flagged for Phase 1 runtime probe |
+| Rate-limit accounting                                                                     | Confirmed two-bucket model; composition contract for Lore's wrapper documented; per-tool quota magnitude flagged for Phase 1 runtime measurement                                                                   |
+| `search` input/output shape, pagination, result IDs, score/highlight                      | Confirmed; cursor-pagination divergence from REST documented                                                                                                                                                       |
+| `query_data_sources` SQL input/output, aggregate result representation, capability gating | Confirmed; `hasAdvancedTools` gate documented                                                                                                                                                                      |
+| Source commit/blob SHA for the pinned schema                                              | Confirmed table above                                                                                                                                                                                              |
 
 A reviewer without upstream-source access can read this file alone and
 understand the RunTool contract well enough to design the Phase 1 client
@@ -742,22 +747,22 @@ with the existing rate-limit + auth-refresh Proxies via the shared
 
 ### Landed runtime surface
 
-| File | Issue | Purpose |
-| ---- | ----- | ------- |
-| `client.ts` | #533 + #534 | Shared `runTool<T>(client, tool, params)` dispatcher (PR #538). PR #537 extended it with the `update_page` consumer surface (`runUpdatePageContent`, `RunToolBlockEditError`, validation-error classifier). |
-| `types.ts` | #533 + #534 + #535 + #541 | Pinned subset of `RunToolParams`. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535), and `search` (#541) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. |
-| `flag.ts` | #534 + #535 + #541 + #542 + #543 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535, `LORE_USE_RUNTOOL_SEARCH` for #541, `LORE_USE_RUNTOOL_AGGREGATE` for #542) with parent-inherit. **Default ON** as of #543 Phase 4 (2026-05-06); explicit `=0` disables. |
-| `update-page.ts` | #534 | High-level `updatePageContentViaRunTool` consumer wrapper with pre-call validation (page-id shape, empty / duplicate `oldStr`). |
-| `query.ts` | #535 + #542 | SQL filter helpers (#535) — `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, plus `comparedPairKey` — consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`. SQL aggregate helper `querySubjectGroupCountsViaRunTool` (#542) plus `extractFirstRelationId` for relation-column id rehydration, consumed by `lore migrate --build-entities --report-orphan-rate`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback. |
-| `search.ts` | #541 | High-level `searchViaRunTool(client, { query, dataSourceId, pageSize? })` consumer wrapper used by `MemoryService.fetchSemanticPages`'s flag-on branch. Builds the canonical `collection://<id>` URL, clamps `page_size <= RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25), narrows hits to Notion-internal page ids (drops external connector results), reports `saturated`, sets `max_highlight_length: 0`. Throws `RunToolSearchRestrictedError` on 403 — same `restricted_resource` vocabulary the `update_page` wrapper pins. |
-| `error-helpers.ts` | #535 + #541 | `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (F5 once-per-process integration-secret warning), `warnRunToolRestrictedResourceOnce` (lifted from per-consumer modules so all RunTool consumers share one warning per process), `NOTION_PAGE_ID_RE` + `isLikelyNotionPageId` (single source of truth for page-id validation, consumed by `update-page.ts` and `search.ts`). |
-| `index.ts` | #534 + #535 + #541 + #542 | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, the #541 `searchViaRunTool` consumer, the #542 SQL aggregate helper, and every per-consumer flag accessor. |
-| `update-page.test.ts` | #534 | Mocked HTTP coverage for the `update_page` wrapper: success / no-match / multiple-matches / deletion-warning / restricted-resource (× 2: happy + once-per-process) / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation, plus a real-`Client` integration test asserting the SDK builds the canonical URL `https://api.notion.com/v1/tools/run`. |
-| `search.test.ts` | #541 | Mocked HTTP coverage for the `search` wrapper: wire envelope, `page_size` clamping (upper / lower bounds), absence of `query_type` / `content_search_mode` (workflow-bot compat), pre-call validation, error classification (403 → `RunToolSearchRestrictedError` once-per-process; 401 / 429 / 5xx / 400 / malformed / `user_search` discriminator → propagate), result narrowing (external connector hits dropped, `is_archived` preserved, `saturated` flag), discriminated-union `searchType` round-trip. |
-| `create-pages.ts` | #533 | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1` (default off, **does NOT inherit from the parent `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the write-path opt-in must be loud because of the partial-commit failure mode). Server cap pinned at 100 pages per call (Notion MCP `notion-create-pages` tool's `pages.maxItems`); chunk size clamps to that ceiling. Partial-commit handling is first-class via `BatchCreateError.committedIds`. Tail fallback re-probes via `createWithDedup` on transport-class / 5xx failures per `classifyTailFallback`. |
-| `runtool.test.ts` | #533 | Mocked HTTP success / 401 / 403 / 429 / 5xx / malformed / unsupported-tool-name cases for the shared dispatcher with `create_pages`-shaped fixtures. |
-| `sqlite-properties.ts` / `sqlite-properties.test.ts` | #533 | Notion-REST → SQLite-flat property converter for `create_pages` payloads. |
-| `compat.test.ts` | #535 + #541 | A/B harness comparing RunTool vs REST/SDK paths. #535 covers `findNearDuplicates`'s SQL vs lister branch with status / kind / tag / unscoped fixtures; #541 covers `MemoryService.search`'s flag-on vs flag-off semantic lane with page-id-set equivalence at limit, empty-query / oversize-window / saturation-under-recall fallbacks, hit.url-not-hit.id hydration regression, abort-mid-hydration, and per-id 404 tolerance. |
+| File                                                 | Issue                            | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.ts`                                          | #533 + #534                      | Shared `runTool<T>(client, tool, params)` dispatcher (PR #538). PR #537 extended it with the `update_page` consumer surface (`runUpdatePageContent`, `RunToolBlockEditError`, validation-error classifier).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `types.ts`                                           | #533 + #534 + #535 + #541        | Pinned subset of `RunToolParams`. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535), and `search` (#541) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `flag.ts`                                            | #534 + #535 + #541 + #542 + #543 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535, `LORE_USE_RUNTOOL_SEARCH` for #541, `LORE_USE_RUNTOOL_AGGREGATE` for #542) with parent-inherit. **Default ON** as of #543 Phase 4 (2026-05-06); explicit `=0` disables.                                                                                                                                                                                                                                                                                                                                                                     |
+| `update-page.ts`                                     | #534                             | High-level `updatePageContentViaRunTool` consumer wrapper with pre-call validation (page-id shape, empty / duplicate `oldStr`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `query.ts`                                           | #535 + #542                      | SQL filter helpers (#535) — `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, plus `comparedPairKey` — consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`. SQL aggregate helper `querySubjectGroupCountsViaRunTool` (#542) plus `extractFirstRelationId` for relation-column id rehydration, consumed by `lore migrate --build-entities --report-orphan-rate`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback.                                               |
+| `search.ts`                                          | #541                             | High-level `searchViaRunTool(client, { query, dataSourceId, pageSize? })` consumer wrapper used by `MemoryService.fetchSemanticPages`'s flag-on branch. Builds the canonical `collection://<id>` URL, clamps `page_size <= RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25), narrows hits to Notion-internal page ids (drops external connector results), reports `saturated`, sets `max_highlight_length: 0`. Throws `RunToolSearchRestrictedError` on 403 — same `restricted_resource` vocabulary the `update_page` wrapper pins.                                                                                                                                                                       |
+| `error-helpers.ts`                                   | #535 + #541                      | `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (F5 once-per-process integration-secret warning), `warnRunToolRestrictedResourceOnce` (lifted from per-consumer modules so all RunTool consumers share one warning per process), `NOTION_PAGE_ID_RE` + `isLikelyNotionPageId` (single source of truth for page-id validation, consumed by `update-page.ts` and `search.ts`).                                                                                                                                                                                     |
+| `index.ts`                                           | #534 + #535 + #541 + #542        | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, the #541 `searchViaRunTool` consumer, the #542 SQL aggregate helper, and every per-consumer flag accessor.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `update-page.test.ts`                                | #534                             | Mocked HTTP coverage for the `update_page` wrapper: success / no-match / multiple-matches / deletion-warning / restricted-resource (× 2: happy + once-per-process) / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation, plus a real-`Client` integration test asserting the SDK builds the canonical URL `https://api.notion.com/v1/tools/run`.                                                                                                                                                                                                                                                                                                                 |
+| `search.test.ts`                                     | #541                             | Mocked HTTP coverage for the `search` wrapper: wire envelope, `page_size` clamping (upper / lower bounds), absence of `query_type` / `content_search_mode` (workflow-bot compat), pre-call validation, error classification (403 → `RunToolSearchRestrictedError` once-per-process; 401 / 429 / 5xx / 400 / malformed / `user_search` discriminator → propagate), result narrowing (external connector hits dropped, `is_archived` preserved, `saturated` flag), discriminated-union `searchType` round-trip.                                                                                                                                                                               |
+| `create-pages.ts`                                    | #533                             | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1` (default off, **does NOT inherit from the parent `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the write-path opt-in must be loud because of the partial-commit failure mode). Server cap pinned at 100 pages per call (Notion MCP `notion-create-pages` tool's `pages.maxItems`); chunk size clamps to that ceiling. Partial-commit handling is first-class via `BatchCreateError.committedIds`. Tail fallback re-probes via `createWithDedup` on transport-class / 5xx failures per `classifyTailFallback`. |
+| `runtool.test.ts`                                    | #533                             | Mocked HTTP success / 401 / 403 / 429 / 5xx / malformed / unsupported-tool-name cases for the shared dispatcher with `create_pages`-shaped fixtures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `sqlite-properties.ts` / `sqlite-properties.test.ts` | #533                             | Notion-REST → SQLite-flat property converter for `create_pages` payloads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `compat.test.ts`                                     | #535 + #541                      | A/B harness comparing RunTool vs REST/SDK paths. #535 covers `findNearDuplicates`'s SQL vs lister branch with status / kind / tag / unscoped fixtures; #541 covers `MemoryService.search`'s flag-on vs flag-off semantic lane with page-id-set equivalence at limit, empty-query / oversize-window / saturation-under-recall fallbacks, hit.url-not-hit.id hydration regression, abort-mid-hydration, and per-id 404 tolerance.                                                                                                                                                                                                                                                             |
 
 The `restricted_resource` 403 fall-back posture introduced by #534
 (auth-refresh cannot repair it; integration-secret operators
@@ -799,11 +804,11 @@ keys error-classification on these exact strings; a sibling PR using
 a different spelling has a normalization debt that must be resolved
 IN that PR before it merges.
 
-| Kind | Trigger | Recovery |
-| ---- | ------- | -------- |
-| `no_match` | `update_content`'s `old_str` was absent from the page body | Caller falls back to existing REST/SDK path |
-| `multiple_matches` | `old_str` matched more than once and `replace_all_matches` was unset | Caller falls back; picking one implicitly is forbidden |
-| `deletion_warning` | The edit would remove child pages or databases and `allow_deleting_content` was not opted in | Caller falls back to preserve children |
+| Kind                  | Trigger                                                                                                         | Recovery                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `no_match`            | `update_content`'s `old_str` was absent from the page body                                                      | Caller falls back to existing REST/SDK path                                                                                |
+| `multiple_matches`    | `old_str` matched more than once and `replace_all_matches` was unset                                            | Caller falls back; picking one implicitly is forbidden                                                                     |
+| `deletion_warning`    | The edit would remove child pages or databases and `allow_deleting_content` was not opted in                    | Caller falls back to preserve children                                                                                     |
 | `restricted_resource` | 403 RestrictedResource — the actor-type / MCP-client allowlist / workflow-bot capability gate rejected the call | Caller falls back; auth-refresh CANNOT repair (refresh only fires on 401). Wrapper emits a once-per-process stderr warning |
 
 **Naming**: `restricted_resource` mirrors `APIErrorCode.RestrictedResource`
@@ -835,7 +840,7 @@ Two structural shapes coexist in shipped consumers:
   that wrapper produces (every other failure class — 400, 401, 429,
   5xx, malformed — propagates verbatim). Introducing a `kind`
   discriminator on a single-arm class is over-engineering; `err
-  instanceof RunToolSearchRestrictedError` reads cleanly at the
+instanceof RunToolSearchRestrictedError` reads cleanly at the
   call site.
 
 **The string `restricted_resource` remains the canonical vocabulary
@@ -860,22 +865,22 @@ parallel rate-limit gate, no `RunToolError` class.
 
 ### Surface
 
-| File | Purpose |
-| ---- | ------- |
+| File       | Purpose                                                                                                                                                                                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `query.ts` | Domain adapters: `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, `comparedPairKey`. Arbitrary SQL stays out of `src/core/`. Each helper takes a `Client` and dispatches via `runTool(client, "query_data_sources", params)`. |
-| `types.ts` | Pinned subset of `QueryDataSourcesToolParams` + `QueryDataSourcesResource` — `QueryDataSourcesSqlData`, `RunToolQueryDataSourcesParams`, `RunToolQueryDataSourcesResponse`, `SqlCellValue`, `SqlResultRow`. Plus `dataSourceUrl(id)` helper and `isQueryDataSourcesResponse` structural guard. |
-| `flag.ts` | `isRunToolFilterSqlEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). |
+| `types.ts` | Pinned subset of `QueryDataSourcesToolParams` + `QueryDataSourcesResource` — `QueryDataSourcesSqlData`, `RunToolQueryDataSourcesParams`, `RunToolQueryDataSourcesResponse`, `SqlCellValue`, `SqlResultRow`. Plus `dataSourceUrl(id)` helper and `isQueryDataSourcesResponse` structural guard.                     |
+| `flag.ts`  | `isRunToolFilterSqlEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06).                                                                                                                                                                             |
 
 ### Scope of the SQL slice
 
-| Target | Status |
-| ------ | ------ |
-| `EntityService.findByName` | Wired on the SQL path. SQL issues one parameterized `LOWER(Name) LIKE '%key%'` substring query and the JS post-filter narrows back to exact `normalizeEntityKey(rawName) === key` matches with archived-row gating. Saturated cap (100) falls through to REST. |
-| `EntityService.findByAlias` | Wired on the SQL path. SQL issues one parameterized `LOWER(Aliases) LIKE '%key%'` substring query; JS post-filter narrows via `parseAliases` + `normalizeEntityKey` for exact alias-token equality and rejects substring-only false positives (e.g. `"User"` against stored `"UserService"`). Saturated cap (100) ALWAYS falls through to REST regardless of SQL match count, since aliases are deliberately non-unique and the REST paginated walk is authoritative. |
-| `findNearDuplicates` `Status IN (...)` | Wired on the SQL path via `MemoryService.listForNearDuplicates`. The decision-path's `accepted | proposed` whitelist is pushed before `LIMIT N`. |
-| `findNearDuplicates` `Kind NOT IN (...)` | Wired on the SQL path. The memory probe's `excludeKinds: ["decision"]` narrows server-side; the JS post-filter is a defense-in-depth backstop. |
-| `findNearDuplicates` tag scoping | Wired on the SQL path via the verified exact-token JSON-quoted form `Tags LIKE '%"<tag>"%'`. SQL applies tag membership BEFORE `LIMIT`, identical to REST `multi_select.contains` semantics. Verified 2026-05-05 against the production vault: substring `%refactor%` matches `"refactor-old"` / `"refactor-trade-off"` (false positives), but the JSON-quote-anchored `%"refactor"%` requires the closing `"` and only matches discrete tokens. Tag values validated against `^[a-zA-Z0-9][a-zA-Z0-9-]*$` as defense in depth against LIKE special characters. |
-| `Compared With` negative relation checks | Wired on the SQL path in `lore conflicts scan`. One server-side targeted query per project pre-builds an unordered pair-key set (`<lo>::<hi>`) over rows whose `Compared With` relation is non-empty. JS post-filter then runs O(1) Set lookups instead of array `.includes` against eagerly-loaded relation arrays. |
+| Target                                   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `EntityService.findByName`               | Wired on the SQL path. SQL issues one parameterized `LOWER(Name) LIKE '%key%'` substring query and the JS post-filter narrows back to exact `normalizeEntityKey(rawName) === key` matches with archived-row gating. Saturated cap (100) falls through to REST.                                                                                                                                                                                                                                                                                                  |
+| `EntityService.findByAlias`              | Wired on the SQL path. SQL issues one parameterized `LOWER(Aliases) LIKE '%key%'` substring query; JS post-filter narrows via `parseAliases` + `normalizeEntityKey` for exact alias-token equality and rejects substring-only false positives (e.g. `"User"` against stored `"UserService"`). Saturated cap (100) ALWAYS falls through to REST regardless of SQL match count, since aliases are deliberately non-unique and the REST paginated walk is authoritative.                                                                                           |
+| `findNearDuplicates` `Status IN (...)`   | Wired on the SQL path via `MemoryService.listForNearDuplicates`. The decision-path's `accepted                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | proposed`whitelist is pushed before`LIMIT N`. |
+| `findNearDuplicates` `Kind NOT IN (...)` | Wired on the SQL path. The memory probe's `excludeKinds: ["decision"]` narrows server-side; the JS post-filter is a defense-in-depth backstop.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `findNearDuplicates` tag scoping         | Wired on the SQL path via the verified exact-token JSON-quoted form `Tags LIKE '%"<tag>"%'`. SQL applies tag membership BEFORE `LIMIT`, identical to REST `multi_select.contains` semantics. Verified 2026-05-05 against the production vault: substring `%refactor%` matches `"refactor-old"` / `"refactor-trade-off"` (false positives), but the JSON-quote-anchored `%"refactor"%` requires the closing `"` and only matches discrete tokens. Tag values validated against `^[a-zA-Z0-9][a-zA-Z0-9-]*$` as defense in depth against LIKE special characters. |
+| `Compared With` negative relation checks | Wired on the SQL path in `lore conflicts scan`. One server-side targeted query per project pre-builds an unordered pair-key set (`<lo>::<hi>`) over rows whose `Compared With` relation is non-empty. JS post-filter then runs O(1) Set lookups instead of array `.includes` against eagerly-loaded relation arrays.                                                                                                                                                                                                                                            |
 
 ### Production-vault SQL gateway findings (2026-05-05)
 
@@ -976,11 +981,11 @@ no `RunToolError` class.
 
 ### Surface
 
-| File              | Purpose |
-| ----------------- | ------- |
-| `query.ts`        | Aggregate adapter: `querySubjectGroupCountsViaRunTool` issues a single SQL query that groups facts by `(SubjectEntity, Subject)` and counts per group. Throws `SqlPartialResultError` on `has_more: true`. Plus `extractFirstRelationId` — relation column rehydration helper that converts the JSON-array-of-URLs SQL gateway value into the canonical dashed Notion id form so the aggregate fold's metric key matches the JS enumeration path's. |
-| `flag.ts`         | `isRunToolAggregateEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). Distinct from the filter-SQL flag because aggregate queries traverse the `hasAdvancedTools` capability gate (Enterprise + AI workspaces only); operators rolling out RunTool need to flip filter-SQL and aggregate independently per workspace tier. |
-| `index.ts`        | Re-exports `querySubjectGroupCountsViaRunTool`, `extractFirstRelationId`, `SqlSubjectGroupCount`, and `isRunToolAggregateEnabled`. |
+| File       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query.ts` | Aggregate adapter: `querySubjectGroupCountsViaRunTool` issues a single SQL query that groups facts by `(SubjectEntity, Subject)` and counts per group. Throws `SqlPartialResultError` on `has_more: true`. Plus `extractFirstRelationId` — relation column rehydration helper that converts the JSON-array-of-URLs SQL gateway value into the canonical dashed Notion id form so the aggregate fold's metric key matches the JS enumeration path's. |
+| `flag.ts`  | `isRunToolAggregateEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). Distinct from the filter-SQL flag because aggregate queries traverse the `hasAdvancedTools` capability gate (Enterprise + AI workspaces only); operators rolling out RunTool need to flip filter-SQL and aggregate independently per workspace tier.                                                         |
+| `index.ts` | Re-exports `querySubjectGroupCountsViaRunTool`, `extractFirstRelationId`, `SqlSubjectGroupCount`, and `isRunToolAggregateEnabled`.                                                                                                                                                                                                                                                                                                                  |
 
 ### Wired call site
 
@@ -1085,8 +1090,8 @@ fields, same vocabulary as the filter-SQL helpers:
 - All other errors (network, 5xx, 401, 403, 429,
   `SqlPartialResultError`) → fall through to the JS enumeration
   path via `services.facts.queryBySubject("", { allowUnfiltered:
-  true })`. Logs one `[lore] partial-failure: source=
-  orphan-rate-aggregate runtool-fallback=1` line under
+true })`. Logs one `[lore] partial-failure: source=
+orphan-rate-aggregate runtool-fallback=1` line under
   `LORE_DEBUG=1`.
 
 The JS enumeration path is the canonical fallback. Post-#543
@@ -1108,7 +1113,7 @@ the test-environment hermetic guard (`tests/setup-runtool-flag.ts`).
 ### Runtime verification (2026-05-06, dogfood vault)
 
 - **End-to-end aggregate**: `lore migrate --build-entities
-  --report-orphan-rate --dry-run --allow-unscoped` with
+--report-orphan-rate --dry-run --allow-unscoped` with
   `LORE_USE_RUNTOOL_AGGREGATE=1` issues exactly one `tools/run`
   call on the wire (observed via `LORE_DEBUG=1`). The default JS
   enumeration path on the same vault inspects 924 facts across
@@ -1153,12 +1158,12 @@ class.
 
 ### Surface
 
-| File | Purpose |
-| ---- | ------- |
-| `search.ts` | `searchViaRunTool(client, { query, dataSourceId, pageSize })` — high-level wrapper. Builds the canonical `collection://<id>` URL, sets `max_highlight_length: 0` (Lore never surfaces highlights), clamps `page_size` to `[1, RUNTOOL_SEARCH_MAX_PAGE_SIZE]`, narrows hits to Notion-internal page ids (drops external connector results), reports `saturated` so the caller can decide whether to fall back. Throws `RunToolSearchRestrictedError` on 403 with a once-per-process stderr warning; propagates 401 / 429 / 5xx / 400 / malformed verbatim. |
-| `types.ts` | `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (= 25); `RunToolSearchParams`, `RunToolInternalSearchResponse`, `RunToolInternalSearchResult` shapes; `isInternalSearchResponse` structural guard. Pinned subset of `SearchToolParams` + `InternalSearchResource`. |
-| `flag.ts` | `isRunToolSearchEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). |
-| `core/memory.ts` | `MemoryService.fetchSemanticPagesViaRunTool` — flag-gated branch that hydrates RunTool hits via `pages.retrieve` and feeds the existing `applySemanticPostFilters` pipeline. Returns `null` to signal "fall back to REST" on 403 or saturation (raw response hit the 25-row cap). Cooperative abort throws `AbortError` rather than returning `null` so `searchByHybridPages`'s `Promise.allSettled` discard path works unchanged. |
+| File             | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search.ts`      | `searchViaRunTool(client, { query, dataSourceId, pageSize })` — high-level wrapper. Builds the canonical `collection://<id>` URL, sets `max_highlight_length: 0` (Lore never surfaces highlights), clamps `page_size` to `[1, RUNTOOL_SEARCH_MAX_PAGE_SIZE]`, narrows hits to Notion-internal page ids (drops external connector results), reports `saturated` so the caller can decide whether to fall back. Throws `RunToolSearchRestrictedError` on 403 with a once-per-process stderr warning; propagates 401 / 429 / 5xx / 400 / malformed verbatim. |
+| `types.ts`       | `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (= 25); `RunToolSearchParams`, `RunToolInternalSearchResponse`, `RunToolInternalSearchResult` shapes; `isInternalSearchResponse` structural guard. Pinned subset of `SearchToolParams` + `InternalSearchResource`.                                                                                                                                                                                                                                                                                                         |
+| `flag.ts`        | `isRunToolSearchEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06).                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `core/memory.ts` | `MemoryService.fetchSemanticPagesViaRunTool` — flag-gated branch that hydrates RunTool hits via `pages.retrieve` and feeds the existing `applySemanticPostFilters` pipeline. Returns `null` to signal "fall back to REST" on 403 or saturation (raw response hit the 25-row cap). Cooperative abort throws `AbortError` rather than returning `null` so `searchByHybridPages`'s `Promise.allSettled` discard path works unchanged.                                                                                                                        |
 
 ### Pagination decision (acceptance criterion #2)
 
@@ -1393,20 +1398,20 @@ running the harness against an updated fixture model.
 
 ### Harness coverage status (2026-05-06)
 
-| Consumer | A/B harness file | Status |
-| -------- | ---------------- | ------ |
-| `query_data_sources` SQL filter (#535) | `compat.test.ts` "RunTool SQL vs REST/SDK A/B harness" | Pinned via PR #539; covers near-dup probe (excludeKinds), decision probe (statuses whitelist), `limit`-bounds-post-filter, flag-off invariant, project-or-unscoped parity, exact-token tag predicate, deterministic ordering after JS scoring (7 tests). |
-| `search` (#541) | `compat.test.ts` "RunTool search vs REST/SDK semantic A/B harness" | Pinned via PR #546; covers page-id-set equivalence at limit ≤ 25, empty-query fall-through, mixed-hit fixture, RUNTOOL_SEARCH_MAX_PAGE_SIZE boundary, hydrate-via-`hit.url` regression, abort-mid-hydration, per-id 404 / RestrictedResource tolerance, saturated-raw / under-recalling / all-external-connector ranking-parity rule (10 tests). |
-| `query_data_sources` SQL aggregate (#542) | `compat.test.ts` "RunTool aggregate vs JS enumeration A/B harness (issue #542)" | Pinned via this PR (#543 Phase 4); covers metric equivalence on populated/empty SubjectEntity / case-variant Subject / invalidated facts, `has_more: true` saturation fallback, 403 RestrictedResource fallback, 400 validation_error re-throw (no silent fallback), default-on inherit-from-parent (5 tests). |
-| `update_page` (#534) | `update-page.test.ts` (mocked HTTP) | Block-edit consumer's coverage is pinned at the consumer level (success / no-match / multiple-matches / deletion-warning / restricted-resource × 2 / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation / SDK-canonical-URL integration test). The block-edit path doesn't have a separate REST/SDK equivalent to A/B — fall-back is to skip the body rewrite. |
+| Consumer                                  | A/B harness file                                                                | Status                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query_data_sources` SQL filter (#535)    | `compat.test.ts` "RunTool SQL vs REST/SDK A/B harness"                          | Pinned via PR #539; covers near-dup probe (excludeKinds), decision probe (statuses whitelist), `limit`-bounds-post-filter, flag-off invariant, project-or-unscoped parity, exact-token tag predicate, deterministic ordering after JS scoring (7 tests).                                                                                                                                  |
+| `search` (#541)                           | `compat.test.ts` "RunTool search vs REST/SDK semantic A/B harness"              | Pinned via PR #546; covers page-id-set equivalence at limit ≤ 25, empty-query fall-through, mixed-hit fixture, RUNTOOL_SEARCH_MAX_PAGE_SIZE boundary, hydrate-via-`hit.url` regression, abort-mid-hydration, per-id 404 / RestrictedResource tolerance, saturated-raw / under-recalling / all-external-connector ranking-parity rule (10 tests).                                          |
+| `query_data_sources` SQL aggregate (#542) | `compat.test.ts` "RunTool aggregate vs JS enumeration A/B harness (issue #542)" | Pinned via this PR (#543 Phase 4); covers metric equivalence on populated/empty SubjectEntity / case-variant Subject / invalidated facts, `has_more: true` saturation fallback, 403 RestrictedResource fallback, 400 validation_error re-throw (no silent fallback), default-on inherit-from-parent (5 tests).                                                                            |
+| `update_page` (#534)                      | `update-page.test.ts` (mocked HTTP)                                             | Block-edit consumer's coverage is pinned at the consumer level (success / no-match / multiple-matches / deletion-warning / restricted-resource × 2 / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation / SDK-canonical-URL integration test). The block-edit path doesn't have a separate REST/SDK equivalent to A/B — fall-back is to skip the body rewrite. |
 
 ### Manual runs
 
-| Date | Operator | Vault | Path exercised | Outcome |
-| ---- | -------- | ----- | -------------- | ------- |
-| 2026-05-05 | maintainer | internal vault | `create_pages` (#533) | 2 test rows created + invalidated; auth chain, wire format, round-trip verified (see "PR #538 live-verification" banner above). |
-| 2026-05-05 | maintainer | internal vault | `query_data_sources` filter (#535) | SQL gateway findings recorded — relation columns store JSON-array-of-undashed-URLs; `Tags` exact-token predicate verified; archived/`last_edited_time` columns absent (see "Production-vault SQL gateway findings"). |
-| 2026-05-06 | maintainer | dogfood vault | `query_data_sources` aggregate (#542) | 269 distinct `(SubjectEntity, Subject)` groups across 924 facts saturated the gateway → `SqlPartialResultError` → JS fallback (see "Runtime verification (2026-05-06, dogfood vault)"). |
+| Date       | Operator   | Vault          | Path exercised                        | Outcome                                                                                                                                                                                                              |
+| ---------- | ---------- | -------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-05-05 | maintainer | internal vault | `create_pages` (#533)                 | 2 test rows created + invalidated; auth chain, wire format, round-trip verified (see "PR #538 live-verification" banner above).                                                                                      |
+| 2026-05-05 | maintainer | internal vault | `query_data_sources` filter (#535)    | SQL gateway findings recorded — relation columns store JSON-array-of-undashed-URLs; `Tags` exact-token predicate verified; archived/`last_edited_time` columns absent (see "Production-vault SQL gateway findings"). |
+| 2026-05-06 | maintainer | dogfood vault  | `query_data_sources` aggregate (#542) | 269 distinct `(SubjectEntity, Subject)` groups across 924 facts saturated the gateway → `SqlPartialResultError` → JS fallback (see "Runtime verification (2026-05-06, dogfood vault)").                              |
 
 Operators running the orphan-rate report or RunTool-flagged
 search against live vaults append rows here when the run
@@ -1417,12 +1422,12 @@ default-on decision and any future schema-pin refresh.
 
 ### Divergence fix log
 
-| Date | Issue | Fix | PR |
-| ---- | ----- | --- | -- |
-| 2026-05-05 | `compat.test.ts` couldn't catch SQL/REST divergence on unscoped (vault-wide) rows under `projectOrUnscopedFilter` | Added `mem-8` (unscoped) to fixture; SQL path mirrors REST's project-or-unscoped semantics | #539 review iteration (issue #539 blocker #3) |
-| 2026-05-05 | SQL substring `Tags LIKE %tag%` over-matched across token boundaries (`refactor` matched `refactor-old`) | Push `Tags LIKE '%"<tag>"%'` exact-token predicate ahead of LIMIT; `mem-9` fixture asserts | #539 review iteration 4 |
-| 2026-05-06 | Aggregate path's `extractFirstRelationId` accepted any 32-hex run anywhere in a Subject cell, including non-relation false-matches | URL-anchored regex (`://<host>/<id>`) requires the documented JSON-array-of-URLs shape | PR #547 principal-engineer review |
-| 2026-05-06 | SQL aggregate path counted live facts; JS enumeration path counted live facts only — silent metric mismatch on real vaults | JS call site passes `includeInvalidated: true` to `queryBySubject`; both paths now count every fact | PR #547 |
+| Date       | Issue                                                                                                                              | Fix                                                                                                 | PR                                            |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| 2026-05-05 | `compat.test.ts` couldn't catch SQL/REST divergence on unscoped (vault-wide) rows under `projectOrUnscopedFilter`                  | Added `mem-8` (unscoped) to fixture; SQL path mirrors REST's project-or-unscoped semantics          | #539 review iteration (issue #539 blocker #3) |
+| 2026-05-05 | SQL substring `Tags LIKE %tag%` over-matched across token boundaries (`refactor` matched `refactor-old`)                           | Push `Tags LIKE '%"<tag>"%'` exact-token predicate ahead of LIMIT; `mem-9` fixture asserts          | #539 review iteration 4                       |
+| 2026-05-06 | Aggregate path's `extractFirstRelationId` accepted any 32-hex run anywhere in a Subject cell, including non-relation false-matches | URL-anchored regex (`://<host>/<id>`) requires the documented JSON-array-of-URLs shape              | PR #547 principal-engineer review             |
+| 2026-05-06 | SQL aggregate path counted live facts; JS enumeration path counted live facts only — silent metric mismatch on real vaults         | JS call site passes `includeInvalidated: true` to `queryBySubject`; both paths now count every fact | PR #547                                       |
 
 When a future schema-pin refresh or a new RunTool consumer surfaces
 a divergence, append a row here with the date, summary, and PR

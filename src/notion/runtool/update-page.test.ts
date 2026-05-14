@@ -119,7 +119,9 @@ describe("isRunToolBlockEditEnabled", () => {
 
 describe("updatePageContentViaRunTool", () => {
   it("posts to /v1/tools/run with the update_page envelope on success", async () => {
-    const requestSpy = vi.fn(async () => ({ page_id: "11111111111111111111111111111111" }))
+    const requestSpy = vi.fn(async () => ({
+      page_id: "11111111111111111111111111111111",
+    }))
     const client = buildClient(requestSpy)
 
     const result = await updatePageContentViaRunTool(client, {
@@ -504,7 +506,9 @@ describe("updatePageContentViaRunTool", () => {
   })
 
   it("allows duplicate anchors when replace_all_matches is set", async () => {
-    const requestSpy = vi.fn(async () => ({ page_id: "11111111111111111111111111111111" }))
+    const requestSpy = vi.fn(async () => ({
+      page_id: "11111111111111111111111111111111",
+    }))
     await expect(
       updatePageContentViaRunTool(buildClient(requestSpy), {
         pageId: "11111111111111111111111111111111",
@@ -534,7 +538,10 @@ describe("runUpdatePageContent", () => {
       command: "update_content",
       content_updates: [{ old_str: "anchor", new_str: "anchor + suffix" }],
     })
-    expect(response).toMatchObject({ page_id: "11111111111111111111111111111111", results: ["something"] })
+    expect(response).toMatchObject({
+      page_id: "11111111111111111111111111111111",
+      results: ["something"],
+    })
   })
 
   it("classifies 'not found in' wording as no_match", async () => {

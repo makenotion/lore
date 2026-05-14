@@ -22,11 +22,7 @@ import type {
   Memory,
   MemorySource,
 } from "../types.js"
-import {
-  CONFIDENCE_DISPLAY_THRESHOLD,
-  SYNOPSIS_MAX,
-  formatTrustLabel,
-} from "../types.js"
+import { CONFIDENCE_DISPLAY_THRESHOLD, SYNOPSIS_MAX, formatTrustLabel } from "../types.js"
 
 function buildMemory(overrides: Partial<Memory> & { id: string; title: string }): Memory {
   return {
@@ -72,7 +68,10 @@ const MISSING_ID = "649b35e6-e67f-8185-bec0-d3902135c5bd"
 
 function makeFact(
   id: string,
-  overrides: Partial<Fact> & { predicate?: FactPredicate; confidence?: FactConfidence } = {},
+  overrides: Partial<Fact> & {
+    predicate?: FactPredicate
+    confidence?: FactConfidence
+  } = {}
 ): Fact {
   return {
     id,
@@ -124,13 +123,7 @@ describe("resolveTitles", () => {
       [DECISION_B]: "Adopt Zod for input validation",
     })
 
-    const ids = [
-      DECISION_A,
-      DECISION_A.toUpperCase(),
-      DECISION_A,
-      DECISION_B,
-      "",
-    ]
+    const ids = [DECISION_A, DECISION_A.toUpperCase(), DECISION_A, DECISION_B, ""]
 
     const map = await resolveTitles(ids, (id) => resolvers.memories.getTitleById(id))
 
@@ -142,7 +135,7 @@ describe("resolveTitles", () => {
   it("drops IDs whose loader returned null so callers fall back via displayId", async () => {
     const { resolvers } = createResolvers({})
     const map = await resolveTitles([MISSING_ID], (id) =>
-      resolvers.memories.getTitleById(id),
+      resolvers.memories.getTitleById(id)
     )
     expect(map.has(MISSING_ID)).toBe(false)
   })
@@ -202,7 +195,11 @@ describe("resolveReferencedTitles — API call budget", () => {
     const { resolvers } = createResolvers({ [MEMORY_A]: "Plain memory title" })
 
     const facts = [
-      makeFact("f1", { subject: "AuthService", object: MEMORY_A, predicate: "related_to" }),
+      makeFact("f1", {
+        subject: "AuthService",
+        object: MEMORY_A,
+        predicate: "related_to",
+      }),
     ]
 
     const map = await resolveReferencedTitles(facts, resolvers)
@@ -234,7 +231,7 @@ describe("renderFact", () => {
         predicate: "supersedes_decision",
         object: DECISION_B,
       }),
-      { titleMap },
+      { titleMap }
     )
 
     expect(line).toBe("- **New decision** supersedes decision **Old decision**")
@@ -249,7 +246,7 @@ describe("renderFact", () => {
         predicate: "decided_by",
         object: DECISION_A.toUpperCase(),
       }),
-      { titleMap },
+      { titleMap }
     )
 
     expect(line).toBe("- **lore-update** decided by **Resolved title**")
@@ -264,7 +261,7 @@ describe("renderFact", () => {
         predicate: "decided_by",
         object: DECISION_A,
       }),
-      { titleMap },
+      { titleMap }
     )
 
     // Only the last 8 hex chars survive — full UUIDs are visual noise.
@@ -276,7 +273,7 @@ describe("renderFact", () => {
 
     const line = renderFact(
       makeFact("f1", { subject: "AuthService", predicate: "uses", object: "JWT" }),
-      { titleMap, trailing: "(certain)" },
+      { titleMap, trailing: "(certain)" }
     )
 
     expect(line).toBe("- **AuthService** uses **JWT** (certain)")
@@ -291,7 +288,7 @@ describe("renderFact prefix option", () => {
     const titleMap = new Map<string, string>()
     const line = renderFact(
       makeFact("f1", { subject: "AuthService", predicate: "uses", object: "JWT" }),
-      { titleMap, prefix: "⚠ ", trailing: "[certain]" },
+      { titleMap, prefix: "⚠ ", trailing: "[certain]" }
     )
     expect(line).toBe("- ⚠ **AuthService** uses **JWT** [certain]")
   })
@@ -300,11 +297,11 @@ describe("renderFact prefix option", () => {
     const titleMap = new Map<string, string>()
     const withEmpty = renderFact(
       makeFact("f1", { subject: "A", predicate: "uses", object: "B" }),
-      { titleMap, prefix: "" },
+      { titleMap, prefix: "" }
     )
     const withoutPrefix = renderFact(
       makeFact("f1", { subject: "A", predicate: "uses", object: "B" }),
-      { titleMap },
+      { titleMap }
     )
     expect(withEmpty).toBe(withoutPrefix)
   })
@@ -530,7 +527,7 @@ describe("formatMemoryListItem — four-cell matrix", () => {
     expect(out).toBe(
       "### OAuth handshake notes\n" +
         "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
-        "*manual | auth | 2026-04-20*",
+        "*manual | auth | 2026-04-20*"
     )
   })
 
@@ -539,7 +536,9 @@ describe("formatMemoryListItem — four-cell matrix", () => {
       meta: defaultMemoryMetaBuilder,
       body: "Body paragraph.",
     })
-    expect(out).toBe("### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.")
+    expect(out).toBe(
+      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph."
+    )
   })
 
   it("includeContent=true, synopsis → `### {title}\\n{synopsis}\\n*{meta}*\\n\\n{body}`", () => {
@@ -551,7 +550,7 @@ describe("formatMemoryListItem — four-cell matrix", () => {
       "### OAuth handshake notes\n" +
         "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
         "*manual | auth | 2026-04-20*\n\n" +
-        "Body paragraph.",
+        "Body paragraph."
     )
   })
 })
@@ -581,7 +580,9 @@ describe("formatMemoryListItem — includeSynopsis opt-out", () => {
       includeSynopsis: false,
       body: "Body paragraph.",
     })
-    expect(out).toBe("### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.")
+    expect(out).toBe(
+      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph."
+    )
   })
 })
 
@@ -626,9 +627,11 @@ describe("formatMemoryListItem — heading level + meta variants", () => {
   })
 
   it("accepts a literal meta string and wraps it in asterisks verbatim", () => {
-    const out = formatMemoryListItem(synopsisMemory, { meta: "manual | no tags | 2026-04-20" })
+    const out = formatMemoryListItem(synopsisMemory, {
+      meta: "manual | no tags | 2026-04-20",
+    })
     expect(out).toBe(
-      "### OAuth handshake notes\nOne-liner.\n*manual | no tags | 2026-04-20*",
+      "### OAuth handshake notes\nOne-liner.\n*manual | no tags | 2026-04-20*"
     )
   })
 
@@ -817,12 +820,12 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
       confidenceScore: 0.95,
     })
     expect(formatMemoryListItem(high, { meta: defaultMemoryMetaBuilder })).toBe(
-      "### Healthy row\n*manual | auth | 2026-04-20*",
+      "### Healthy row\n*manual | auth | 2026-04-20*"
     )
 
     const exactlyAtThreshold = buildMemory({ ...high, confidenceScore: 0.5 })
     expect(
-      formatMemoryListItem(exactlyAtThreshold, { meta: defaultMemoryMetaBuilder }),
+      formatMemoryListItem(exactlyAtThreshold, { meta: defaultMemoryMetaBuilder })
     ).toBe("### Healthy row\n*manual | auth | 2026-04-20*")
   })
 
@@ -845,7 +848,7 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
     // as `_very low confidence_` instead.
     const at02 = buildMemory({ ...base, confidenceScore: 0.2 })
     expect(formatMemoryListItem(at02, { meta: () => null })).toBe(
-      "### Boundary row\n_low confidence_",
+      "### Boundary row\n_low confidence_"
     )
 
     // 0.4 sits in the `moderate confidence` bucket (NOT `low`) because
@@ -853,7 +856,7 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
     // `_low confidence_` instead.
     const at04 = buildMemory({ ...base, confidenceScore: 0.4 })
     expect(formatMemoryListItem(at04, { meta: () => null })).toBe(
-      "### Boundary row\n_moderate confidence_",
+      "### Boundary row\n_moderate confidence_"
     )
   })
 
@@ -869,7 +872,7 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
     })
     const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
     expect(out).toBe(
-      "### Borderline row\n_moderate confidence_\nOne-line gist.\n*manual | auth | 2026-04-20*",
+      "### Borderline row\n_moderate confidence_\nOne-line gist.\n*manual | auth | 2026-04-20*"
     )
   })
 
@@ -897,7 +900,7 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
     })
     const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
     expect(out).toBe(
-      "### Heavily-decayed row\n_very low confidence_\n*manual | auth | 2026-04-20*",
+      "### Heavily-decayed row\n_very low confidence_\n*manual | auth | 2026-04-20*"
     )
   })
 
@@ -938,9 +941,7 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
       meta: defaultMemoryMetaBuilder,
       includeSynopsis: false,
     })
-    expect(out).toBe(
-      "### No-synopsis low-trust\n_low confidence_\n*manual | 2026-04-20*",
-    )
+    expect(out).toBe("### No-synopsis low-trust\n_low confidence_\n*manual | 2026-04-20*")
   })
 
   it("composes trust line with body-on path so includeContent=true callers also see it", () => {
@@ -966,7 +967,7 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
         "_low confidence_\n" +
         "One-line gist.\n" +
         "*manual | auth | 2026-04-20*\n\n" +
-        "Body paragraph.",
+        "Body paragraph."
     )
   })
 })
@@ -1004,7 +1005,7 @@ describe("renderRevisionMarker (issue 0.9.0/10)", () => {
     // boundary value to protect the contract.
     expect(renderRevisionMarker(REVISION_DISPLAY_THRESHOLD - 1)).toBeNull()
     expect(renderRevisionMarker(REVISION_DISPLAY_THRESHOLD)).toBe(
-      `rev ${REVISION_DISPLAY_THRESHOLD}`,
+      `rev ${REVISION_DISPLAY_THRESHOLD}`
     )
   })
 
@@ -1038,9 +1039,7 @@ describe("defaultMemoryMetaBuilder — revision count marker (issue 0.9.0/10)", 
   it("renders no marker for revisionCount: 1 (legacy / fresh row)", () => {
     const memory = buildMemory({ ...baseMemory, revisionCount: 1 })
     const meta = defaultMemoryMetaBuilder(memory)
-    expect(meta).toBe(
-      "conversation | decision | accepted | auth, security | 2026-04-29",
-    )
+    expect(meta).toBe("conversation | decision | accepted | auth, security | 2026-04-29")
     expect(meta).not.toContain("rev")
   })
 
@@ -1048,14 +1047,14 @@ describe("defaultMemoryMetaBuilder — revision count marker (issue 0.9.0/10)", 
     const memory = buildMemory({ ...baseMemory, revisionCount: 2 })
     const meta = defaultMemoryMetaBuilder(memory)
     expect(meta).toBe(
-      "conversation | decision | accepted | auth, security | rev 2 | 2026-04-29",
+      "conversation | decision | accepted | auth, security | rev 2 | 2026-04-29"
     )
   })
 
   it("renders `rev 5` for higher counts in the same position", () => {
     const memory = buildMemory({ ...baseMemory, revisionCount: 5 })
     expect(defaultMemoryMetaBuilder(memory)).toBe(
-      "conversation | decision | accepted | auth, security | rev 5 | 2026-04-29",
+      "conversation | decision | accepted | auth, security | rev 5 | 2026-04-29"
     )
   })
 
@@ -1125,7 +1124,7 @@ describe("defaultMemoryMetaBuilder — revision count marker (issue 0.9.0/10)", 
     expect(out).toBe(
       "### JWT auth model\n" +
         "JWT-based authentication with refresh-token rotation.\n" +
-        "*conversation | decision | accepted | auth, security | rev 4 | 2026-04-29*",
+        "*conversation | decision | accepted | auth, security | rev 4 | 2026-04-29*"
     )
   })
 
@@ -1148,7 +1147,7 @@ describe("defaultMemoryMetaBuilder — revision count marker (issue 0.9.0/10)", 
     expect(out).toBe(
       "### Decayed but oft-revised\n" +
         "_very low confidence_\n" +
-        "*conversation | decision | accepted | auth | rev 4 | 2026-04-29*",
+        "*conversation | decision | accepted | auth | rev 4 | 2026-04-29*"
     )
     const lines = out.split("\n")
     expect(lines[1]).toBe("_very low confidence_")
@@ -1192,7 +1191,7 @@ describe("defaultMemoryMetaBuilder — author segment (DEFERRED-ATTRIBUTION)", (
       updatedAt: "2026-04-20T00:00:00.000Z",
     })
     expect(defaultMemoryMetaBuilder(memory)).toBe(
-      "manual | auth | by Test User | 2026-04-20",
+      "manual | auth | by Test User | 2026-04-20"
     )
   })
 
@@ -1238,9 +1237,7 @@ describe("defaultMemoryMetaBuilder — author segment (DEFERRED-ATTRIBUTION)", (
       author: "Test User",
       updatedAt: "2026-04-20T00:00:00.000Z",
     })
-    expect(defaultMemoryMetaBuilder(memory)).toBe(
-      "manual | by Test User | 2026-04-20",
-    )
+    expect(defaultMemoryMetaBuilder(memory)).toBe("manual | by Test User | 2026-04-20")
   })
 
   it("preserves the author name verbatim — names with `|` characters render as-is and inherit the existing pipe-collision concern", () => {

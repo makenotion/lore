@@ -45,7 +45,7 @@ function exhaustiveAllKeys(key: RuntimeForwardedKey): RuntimeForwardedKey {
   }
 }
 function exhaustiveAuthTokenKeys(
-  key: RuntimeForwardedAuthTokenKey,
+  key: RuntimeForwardedAuthTokenKey
 ): RuntimeForwardedAuthTokenKey {
   switch (key) {
     case "NOTION_API_TOKEN":
@@ -134,9 +134,7 @@ describe("RUNTIME_FORWARDED_AUTH_TOKEN_KEYS — subset partition", () => {
     // to land as a deliberate edit here — not as a quiet append
     // that silently changes which placeholders `buildMcpEnv` skips
     // under `authSource: "ntn-auth-json"`.
-    expect(RUNTIME_FORWARDED_AUTH_TOKEN_KEYS).toEqual([
-      "NOTION_API_TOKEN",
-    ])
+    expect(RUNTIME_FORWARDED_AUTH_TOKEN_KEYS).toEqual(["NOTION_API_TOKEN"])
   })
 
   it("pins length so a single-line append breaks the test", () => {
@@ -152,7 +150,10 @@ describe("RUNTIME_FORWARDED_AUTH_TOKEN_KEYS — subset partition", () => {
     // Pinning the prefix also subsumes the subset claim, so a
     // separate "every auth-token key appears in the parent" test
     // would be redundant once this passes.
-    const prefix = RUNTIME_FORWARDED_KEYS.slice(0, RUNTIME_FORWARDED_AUTH_TOKEN_KEYS.length)
+    const prefix = RUNTIME_FORWARDED_KEYS.slice(
+      0,
+      RUNTIME_FORWARDED_AUTH_TOKEN_KEYS.length
+    )
     expect(prefix).toEqual([...RUNTIME_FORWARDED_AUTH_TOKEN_KEYS])
   })
 })

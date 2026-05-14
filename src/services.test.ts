@@ -98,9 +98,7 @@ describe("deriveRelationUrlBase (PR #538 live-verification host-coupling)", () =
   })
 
   it("api.notion.com → www.notion.so", () => {
-    expect(deriveRelationUrlBase("https://api.notion.com")).toBe(
-      "https://www.notion.so/"
-    )
+    expect(deriveRelationUrlBase("https://api.notion.com")).toBe("https://www.notion.so/")
   })
 
   it("unknown / custom hosts fall back to www.notion.so", () => {
@@ -131,18 +129,16 @@ describe("resolveRunToolBatchCreatesFlag", () => {
   })
 
   it("returns true ONLY when LORE_USE_RUNTOOL_BATCH_CREATES=1", () => {
-    expect(
-      resolveRunToolBatchCreatesFlag({ LORE_USE_RUNTOOL_BATCH_CREATES: "1" })
-    ).toBe(true)
+    expect(resolveRunToolBatchCreatesFlag({ LORE_USE_RUNTOOL_BATCH_CREATES: "1" })).toBe(
+      true
+    )
   })
 
   it("does NOT inherit from LORE_USE_RUNTOOL even when the parent flag is on (S2)", () => {
     // The parent flag is a read-path quarantine knob; an operator
     // dogfooding Phase-2 search must not silently enable write-path
     // batch creates as a side-effect.
-    expect(
-      resolveRunToolBatchCreatesFlag({ LORE_USE_RUNTOOL: "1" })
-    ).toBe(false)
+    expect(resolveRunToolBatchCreatesFlag({ LORE_USE_RUNTOOL: "1" })).toBe(false)
   })
 
   it("returns false when LORE_USE_RUNTOOL_BATCH_CREATES=0 (explicit disable)", () => {

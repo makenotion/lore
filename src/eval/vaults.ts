@@ -100,9 +100,7 @@ export const evalVaultRegistrySchema = z
 export type EvalVault = z.infer<typeof evalVaultSchema>
 export type EvalVaultRegistry = z.infer<typeof evalVaultRegistrySchema>
 
-export async function loadEvalVaultRegistry(
-  path?: string
-): Promise<EvalVaultRegistry> {
+export async function loadEvalVaultRegistry(path?: string): Promise<EvalVaultRegistry> {
   const absolute =
     path === undefined ? await resolveDefaultEvalVaultRegistryPath() : resolve(path)
   const raw = await readFile(absolute, "utf-8")

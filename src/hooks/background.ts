@@ -23,13 +23,7 @@
  */
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process"
-import {
-  existsSync,
-  writeSync,
-  openSync,
-  closeSync,
-  unlinkSync,
-} from "node:fs"
+import { existsSync, writeSync, openSync, closeSync, unlinkSync } from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join, isAbsolute } from "node:path"
 import { buildSafeEnv } from "../auth/forwarded-env.js"
@@ -101,14 +95,11 @@ export function findBackgroundBinary(name: string): string | null {
   return null
 }
 
-export function renderAgentArgs(
-  args: readonly string[],
-  allowedTools: string,
-): string[] {
+export function renderAgentArgs(args: readonly string[], allowedTools: string): string[] {
   return args.map((arg) =>
     arg.includes(ALLOWED_TOOLS_PLACEHOLDER)
       ? arg.split(ALLOWED_TOOLS_PLACEHOLDER).join(allowedTools)
-      : arg,
+      : arg
   )
 }
 
@@ -262,7 +253,7 @@ export function spawnBackgroundSave(
     process.stderr.write(
       `[lore] ${logLabel}: background command "${agentConfig.command}" not found on PATH, skipping. ` +
         `Install the binary or override hooks.backgroundAgent.command in .lore.yaml ` +
-        `(or set LORE_BACKGROUND_COMMAND).\n`,
+        `(or set LORE_BACKGROUND_COMMAND).\n`
     )
     return { kind: "binary-missing" }
   }
@@ -440,9 +431,7 @@ export function spawnBackgroundSave(
     child.unref()
     return { kind: "spawned" }
   } catch (err) {
-    process.stderr.write(
-      `[lore] ${logLabel}: spawn failed: ${redactDebugError(err)}\n`
-    )
+    process.stderr.write(`[lore] ${logLabel}: spawn failed: ${redactDebugError(err)}\n`)
     // If we got past `spawn` but never claimed the lock, the child is
     // running but no debounce / accounting points at it. SIGTERM the
     // orphan so it can't silently spend tokens or duplicate work on the

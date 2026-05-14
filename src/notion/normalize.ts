@@ -72,11 +72,9 @@ export const DEDUP_KEY_SEP = "\x1F"
  * the truncation edge case and keeps the column index-friendly.
  */
 export function computeFactDedupKey(input: FactTripleInput): string {
-  const raw = [
-    normalize(input.subject),
-    input.predicate,
-    normalize(input.object),
-  ].join(DEDUP_KEY_SEP)
+  const raw = [normalize(input.subject), input.predicate, normalize(input.object)].join(
+    DEDUP_KEY_SEP
+  )
   return createHash("sha256").update(raw).digest("hex")
 }
 

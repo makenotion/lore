@@ -26,10 +26,7 @@ function writeFiles(dir: string, files: Record<string, string>): void {
   }
 }
 
-function minimalProfileFiles(
-  name: string,
-  version = "1.0.0"
-): Record<string, string> {
+function minimalProfileFiles(name: string, version = "1.0.0"): Record<string, string> {
   return {
     "profile.yaml": `name: ${name}\nversion: ${version}\ntaxonomy: taxonomy.yaml\nschema: schema.yaml\n`,
     "taxonomy.yaml": `tags:\n  - alpha\nentityKinds:\n  - component\nwritableFactPredicates:\n  - owns\n`,
@@ -298,14 +295,7 @@ describe("findMigrationFile", () => {
 
 describe("buildMigrationPlan", () => {
   function writeSourceProfileWithPinMigration(configRoot: string): void {
-    const sourceDir = join(
-      configRoot,
-      ".lore",
-      "profiles",
-      "local",
-      "sales",
-      "1.0.0"
-    )
+    const sourceDir = join(configRoot, ".lore", "profiles", "local", "sales", "1.0.0")
     writeFiles(sourceDir, {
       ...minimalProfileFiles("sales", "1.0.0"),
       "migrations/1.0.0__1.1.0.yaml":
@@ -335,14 +325,7 @@ describe("buildMigrationPlan", () => {
     const dir = mkdtempSync(join(tmpdir(), "lore-mig-"))
     try {
       writeSourceProfileWithPinMigration(dir)
-      const targetDir = join(
-        dir,
-        ".lore",
-        "profiles",
-        "installed",
-        "sales",
-        "1.1.0"
-      )
+      const targetDir = join(dir, ".lore", "profiles", "installed", "sales", "1.1.0")
       writeFiles(targetDir, minimalProfileFiles("support", "1.1.0"))
 
       await expect(
@@ -364,7 +347,7 @@ describe("rewriteConfigProfilePin", () => {
     const dir = mkdtempSync(join(tmpdir(), "lore-mig-"))
     try {
       const path = join(dir, ".lore.yaml")
-      writeFileSync(path, "vault:\n  pageId: \"abc\"\nprofile: default@1.0.0\n")
+      writeFileSync(path, 'vault:\n  pageId: "abc"\nprofile: default@1.0.0\n')
       rewriteConfigProfilePin(path, "sales@1.1.0")
       expect(readFileSync(path, "utf-8")).toContain("profile: sales@1.1.0")
     } finally {
@@ -376,7 +359,7 @@ describe("rewriteConfigProfilePin", () => {
     const dir = mkdtempSync(join(tmpdir(), "lore-mig-"))
     try {
       const path = join(dir, ".lore.yaml")
-      writeFileSync(path, "vault:\n  pageId: \"abc\"\n")
+      writeFileSync(path, 'vault:\n  pageId: "abc"\n')
       rewriteConfigProfilePin(path, "sales@1.1.0")
       expect(readFileSync(path, "utf-8")).toContain("profile: sales@1.1.0")
     } finally {
@@ -469,13 +452,9 @@ describe("applyMigrationPlan", () => {
       )
 
       expect(query).toHaveBeenCalledTimes(1)
-      expect(query).toHaveBeenCalledWith(
-        expect.objectContaining({ page_size: 2 })
-      )
+      expect(query).toHaveBeenCalledWith(expect.objectContaining({ page_size: 2 }))
       expect(update).not.toHaveBeenCalled()
-      expect(readFileSync(plan.ledgerPath, "utf-8")).toContain(
-        "Backfilled 0 row(s)"
-      )
+      expect(readFileSync(plan.ledgerPath, "utf-8")).toContain("Backfilled 0 row(s)")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -491,10 +470,7 @@ describe("validateProfileBundle", () => {
       expect(profile.name).toBe("custom")
 
       // Now break it.
-      writeFileSync(
-        join(dir, "profile.yaml"),
-        "name: custom\nversion: not-semver\n"
-      )
+      writeFileSync(join(dir, "profile.yaml"), "name: custom\nversion: not-semver\n")
       expect(() => validateProfileBundle(dir)).toThrow(/semver/)
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -190,10 +190,7 @@ export async function searchViaRunTool(
   const requestedPageSize = params.pageSize
   const clampedPageSize =
     requestedPageSize !== undefined && Number.isFinite(requestedPageSize)
-      ? Math.min(
-          Math.max(Math.floor(requestedPageSize), 1),
-          RUNTOOL_SEARCH_MAX_PAGE_SIZE
-        )
+      ? Math.min(Math.max(Math.floor(requestedPageSize), 1), RUNTOOL_SEARCH_MAX_PAGE_SIZE)
       : RUNTOOL_SEARCH_MAX_PAGE_SIZE
 
   const requestParams: RunToolSearchParams = {

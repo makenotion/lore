@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import {
-  isInsideSandboxScope,
-  runBenchCleanupOrphans,
-} from "./bench-cleanup.js"
+import { isInsideSandboxScope, runBenchCleanupOrphans } from "./bench-cleanup.js"
 import { generateUlid } from "./bench-runner.js"
 
 describe("isInsideSandboxScope", () => {
@@ -37,7 +34,7 @@ describe("runBenchCleanupOrphans", () => {
   it("refuses to archive without LORE_EVAL_BENCH_REAL", async () => {
     delete process.env["LORE_EVAL_BENCH_REAL"]
     await expect(
-      runBenchCleanupOrphans({ olderThanHours: 24, dryRun: false }),
+      runBenchCleanupOrphans({ olderThanHours: 24, dryRun: false })
     ).rejects.toThrow(/LORE_EVAL_BENCH_REAL/)
   })
 
@@ -53,7 +50,7 @@ describe("runBenchCleanupOrphans", () => {
           },
           async archive() {},
         },
-      }),
+      })
     ).rejects.toThrow(/positive integer/)
   })
 

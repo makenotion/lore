@@ -116,7 +116,7 @@ describe("createLimitedClient — concurrency gate", () => {
     // bounded by it. `toBeLessThanOrEqual(3)` would pass trivially if the
     // stub never actually ran.
     await Promise.all(
-      Array.from({ length: 10 }, () => limited.dataSources.query({} as never)),
+      Array.from({ length: 10 }, () => limited.dataSources.query({} as never))
     )
 
     expect(callCount()).toBe(10)
@@ -127,9 +127,7 @@ describe("createLimitedClient — concurrency gate", () => {
     const { client, maxInFlight, callCount } = makeObservableClient()
     const limited = createLimitedClient(client, { concurrency: 2, ...RATE_GATE_DISABLED })
 
-    await Promise.all(
-      Array.from({ length: 6 }, () => limited.search({} as never)),
-    )
+    await Promise.all(Array.from({ length: 6 }, () => limited.search({} as never)))
 
     expect(callCount()).toBe(6)
     expect(maxInFlight()).toBe(2)
@@ -175,9 +173,7 @@ describe("createLimitedClient — concurrency gate", () => {
 
     await Promise.all([
       ...Array.from({ length: 3 }, () => limited.blocks.children.list({} as never)),
-      ...Array.from({ length: 3 }, () =>
-        limited.pages.properties.retrieve({} as never),
-      ),
+      ...Array.from({ length: 3 }, () => limited.pages.properties.retrieve({} as never)),
     ])
 
     expect(callCount()).toBe(6)
@@ -222,9 +218,7 @@ describe("createLimitedClient — concurrency gate", () => {
     const { client, maxInFlight, callCount } = makeObservableClient()
     const limited = createLimitedClient(client, { concurrency: 2, ...RATE_GATE_DISABLED })
 
-    await Promise.all(
-      Array.from({ length: 6 }, () => limited.request({} as never)),
-    )
+    await Promise.all(Array.from({ length: 6 }, () => limited.request({} as never)))
 
     expect(callCount()).toBe(6)
     expect(maxInFlight()).toBe(2)
@@ -265,19 +259,17 @@ describe("createLimitedClient — concurrency gate", () => {
 
   it("rejects non-positive requestsPerSecond / burstSize at construction time", () => {
     const { client } = makeObservableClient()
-    expect(() =>
-      createLimitedClient(client, { requestsPerSecond: 0 }),
-    ).toThrow(/requestsPerSecond/)
-    expect(() =>
-      createLimitedClient(client, { requestsPerSecond: -1 }),
-    ).toThrow(/requestsPerSecond/)
-    expect(() => createLimitedClient(client, { burstSize: 0 })).toThrow(
-      /burstSize/,
+    expect(() => createLimitedClient(client, { requestsPerSecond: 0 })).toThrow(
+      /requestsPerSecond/
     )
+    expect(() => createLimitedClient(client, { requestsPerSecond: -1 })).toThrow(
+      /requestsPerSecond/
+    )
+    expect(() => createLimitedClient(client, { burstSize: 0 })).toThrow(/burstSize/)
     // burstSize must be an integer; rps may be a float (e.g. 0.5/s = 1
     // every two seconds is a sensible operator override).
     expect(() => createLimitedClient(client, { burstSize: 2.5 })).toThrow(
-      /positive integer/,
+      /positive integer/
     )
   })
 
@@ -311,9 +303,7 @@ describe("createLimitedClient — concurrency gate", () => {
     // bulk DS queries) can pace at the rate the probed server-side
     // ceiling tolerates without dragging every other endpoint over
     // the published ~3 rps Notion guidance.
-    expect(
-      DEFAULT_NOTION_ENDPOINT_OVERRIDES["pages.retrieveMarkdown"],
-    ).toEqual({
+    expect(DEFAULT_NOTION_ENDPOINT_OVERRIDES["pages.retrieveMarkdown"]).toEqual({
       concurrency: 10,
       requestsPerSecond: 15,
       burstSize: 5,
@@ -354,7 +344,7 @@ describe("createLimitedClient — token bucket pacing", () => {
     })
 
     const promises = Array.from({ length: 10 }, () =>
-      limited.dataSources.query({} as never),
+      limited.dataSources.query({} as never)
     )
 
     // Burst window: only 3 should have started.
@@ -430,9 +420,7 @@ describe("createLimitedClient — token bucket pacing", () => {
       ...NO_ENDPOINT_OVERRIDES,
     })
 
-    const promises = Array.from({ length: 10 }, () =>
-      limited.pages.retrieve({} as never),
-    )
+    const promises = Array.from({ length: 10 }, () => limited.pages.retrieve({} as never))
 
     await vi.advanceTimersByTimeAsync(0)
     expect(callCount()).toBe(3)
@@ -461,7 +449,7 @@ describe("createLimitedClient — token bucket pacing", () => {
     })
 
     const promises = Array.from({ length: 3 }, () =>
-      limited.dataSources.query({} as never),
+      limited.dataSources.query({} as never)
     )
 
     await vi.advanceTimersByTimeAsync(0)
@@ -512,12 +500,10 @@ describe("createLimitedClient — 429 shared backoff", () => {
         requestsPerSecond: 1000, // not the bottleneck under no-pause
         burstSize: 5,
       },
-      SILENT_BACKOFF,
+      SILENT_BACKOFF
     )
 
-    await expect(limited.pages.retrieve({} as never)).rejects.toThrow(
-      "rate_limited",
-    )
+    await expect(limited.pages.retrieve({} as never)).rejects.toThrow("rate_limited")
 
     // Now the bucket is paused. Fire the next call — it should NOT
     // complete until retry-after elapses.
@@ -562,12 +548,10 @@ describe("createLimitedClient — 429 shared backoff", () => {
         requestsPerSecond: 1000,
         burstSize: 5,
       },
-      SILENT_BACKOFF,
+      SILENT_BACKOFF
     )
 
-    await expect(limited.pages.retrieve({} as never)).rejects.toThrow(
-      "rate_limited",
-    )
+    await expect(limited.pages.retrieve({} as never)).rejects.toThrow("rate_limited")
 
     let siblingSettled = false
     const sibling = limited.pages.update({} as never).then((value) => {
@@ -627,7 +611,7 @@ describe("createLimitedClient — 429 shared backoff", () => {
         burstSize: 5, // > concurrency: would mask the bug under old order
         ...NO_ENDPOINT_OVERRIDES,
       },
-      SILENT_BACKOFF,
+      SILENT_BACKOFF
     )
 
     // Fire 3 concurrent calls; with concurrency=1 they serialize.
@@ -676,12 +660,10 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 5, requestsPerSecond: 1000, burstSize: 5 },
-      { onBackoff: (ms, source) => recorded.push({ ms, source }) },
+      { onBackoff: (ms, source) => recorded.push({ ms, source }) }
     )
 
-    await expect(limited.pages.retrieve({} as never)).rejects.toThrow(
-      "rate_limited",
-    )
+    await expect(limited.pages.retrieve({} as never)).rejects.toThrow("rate_limited")
 
     // The clamp lands at MAX_RATE_LIMIT_BACKOFF_MS exactly.
     expect(recorded).toEqual([
@@ -721,7 +703,7 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 1, ...RATE_GATE_DISABLED },
-      { onBackoff: (ms, source) => recorded.push({ ms, source }) },
+      { onBackoff: (ms, source) => recorded.push({ ms, source }) }
     )
     await vi.useRealTimers()
     await expect(limited.pages.retrieve({} as never)).rejects.toThrow()
@@ -744,13 +726,11 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 1, ...RATE_GATE_DISABLED },
-      { onBackoff: (ms, source) => recorded.push({ ms, source }) },
+      { onBackoff: (ms, source) => recorded.push({ ms, source }) }
     )
     await vi.useRealTimers()
     await expect(limited.pages.retrieve({} as never)).rejects.toThrow()
-    expect(recorded).toEqual([
-      { ms: DEFAULT_RATE_LIMIT_BACKOFF_MS, source: "default" },
-    ])
+    expect(recorded).toEqual([{ ms: DEFAULT_RATE_LIMIT_BACKOFF_MS, source: "default" }])
   })
 
   it("a throwing onBackoff does NOT poison error propagation", async () => {
@@ -777,14 +757,12 @@ describe("createLimitedClient — 429 shared backoff", () => {
         onBackoff: () => {
           throw new Error("telemetry exploded")
         },
-      },
+      }
     )
     await vi.useRealTimers()
     // The caller still sees the original rate_limited error — NOT
     // "telemetry exploded".
-    await expect(limited.pages.retrieve({} as never)).rejects.toThrow(
-      "rate_limited",
-    )
+    await expect(limited.pages.retrieve({} as never)).rejects.toThrow("rate_limited")
   })
 
   it("parses an HTTP-date retry-after header (Q2 fixed-time format)", async () => {
@@ -812,7 +790,7 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 1, ...RATE_GATE_DISABLED },
-      { onBackoff: (ms, source) => recorded.push({ ms, source }) },
+      { onBackoff: (ms, source) => recorded.push({ ms, source }) }
     )
     await expect(limited.pages.retrieve({} as never)).rejects.toThrow()
     expect(recorded.length).toBe(1)
@@ -838,14 +816,12 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 1, ...RATE_GATE_DISABLED },
-      { onBackoff: (ms, source) => recorded.push({ ms, source }) },
+      { onBackoff: (ms, source) => recorded.push({ ms, source }) }
     )
     await vi.useRealTimers()
     await expect(limited.pages.retrieve({} as never)).rejects.toThrow()
     // Unparseable → falls through to default backoff with source=default.
-    expect(recorded).toEqual([
-      { ms: DEFAULT_RATE_LIMIT_BACKOFF_MS, source: "default" },
-    ])
+    expect(recorded).toEqual([{ ms: DEFAULT_RATE_LIMIT_BACKOFF_MS, source: "default" }])
   })
 
   it("retry-after: 0 falls back to default backoff (Q2)", async () => {
@@ -880,7 +856,7 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 5, requestsPerSecond: 1000, burstSize: 5 },
-      { onBackoff: (ms, source) => recorded.push({ ms, source }) },
+      { onBackoff: (ms, source) => recorded.push({ ms, source }) }
     )
     await expect(limited.pages.retrieve({} as never)).rejects.toThrow()
     expect(recorded).toEqual([{ ms: 0, source: "header" }])
@@ -913,13 +889,11 @@ describe("createLimitedClient — 429 shared backoff", () => {
     const limited = createLimitedClient(
       stub,
       { concurrency: 1, ...RATE_GATE_DISABLED },
-      SILENT_BACKOFF,
+      SILENT_BACKOFF
     )
 
     await vi.useRealTimers()
-    await expect(limited.pages.retrieve({} as never)).rejects.toThrow(
-      "rate_limited",
-    )
+    await expect(limited.pages.retrieve({} as never)).rejects.toThrow("rate_limited")
   })
 })
 
@@ -930,7 +904,7 @@ describe("TokenBucket", () => {
       const bucket = new TokenBucket(3, 10) // burst=3, 10 tokens/sec
       const acquired: number[] = []
       const promises = Array.from({ length: 10 }, (_, i) =>
-        bucket.acquire().then(() => acquired.push(i)),
+        bucket.acquire().then(() => acquired.push(i))
       )
 
       // Burst window: 3 acquired.
@@ -955,9 +929,7 @@ describe("TokenBucket", () => {
     try {
       const bucket = new TokenBucket(1, 5) // burst=1, 5 tokens/sec
       const order: number[] = []
-      const promises = [0, 1, 2, 3].map((i) =>
-        bucket.acquire().then(() => order.push(i)),
-      )
+      const promises = [0, 1, 2, 3].map((i) => bucket.acquire().then(() => order.push(i)))
 
       await vi.advanceTimersByTimeAsync(0)
       expect(order).toEqual([0])
@@ -1175,7 +1147,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     })
 
     const promises = Array.from({ length: 5 }, () =>
-      limited.pages.retrieveMarkdown({} as never),
+      limited.pages.retrieveMarkdown({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(5)
@@ -1200,9 +1172,7 @@ describe("createLimitedClient — endpoint overrides", () => {
       },
     })
 
-    const promises = Array.from({ length: 3 }, () =>
-      limited.pages.retrieve({} as never),
-    )
+    const promises = Array.from({ length: 3 }, () => limited.pages.retrieve({} as never))
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(1)
     await vi.advanceTimersByTimeAsync(100)
@@ -1236,7 +1206,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     // the same tick. All four should fire instantly.
     const globalCall = limited.pages.retrieve({} as never)
     const overrideCalls = Array.from({ length: 3 }, () =>
-      limited.pages.retrieveMarkdown({} as never),
+      limited.pages.retrieveMarkdown({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(4)
@@ -1281,11 +1251,11 @@ describe("createLimitedClient — endpoint overrides", () => {
           },
         },
       },
-      SILENT_BACKOFF,
+      SILENT_BACKOFF
     )
 
     await expect(limited.pages.retrieveMarkdown({} as never)).rejects.toThrow(
-      "rate_limited",
+      "rate_limited"
     )
 
     // A subsequent global-gate call must observe the pause set by the
@@ -1330,7 +1300,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     // (no built-in override is silently merged), so a burst of three
     // serializes at 1/s — NOT a 5-token burst.
     const promises = Array.from({ length: 3 }, () =>
-      limited.pages.retrieveMarkdown({} as never),
+      limited.pages.retrieveMarkdown({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(1)
@@ -1348,7 +1318,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     const limited = createLimitedClient(client)
 
     const promises = Array.from({ length: 5 }, () =>
-      limited.pages.retrieveMarkdown({} as never),
+      limited.pages.retrieveMarkdown({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(5)
@@ -1368,21 +1338,17 @@ describe("createLimitedClient — endpoint overrides", () => {
     })
 
     const promises = [
-      ...Array.from({ length: 2 }, () =>
-        limited.pages.retrieveMarkdown({} as never),
-      ),
+      ...Array.from({ length: 2 }, () => limited.pages.retrieveMarkdown({} as never)),
       ...Array.from({ length: 2 }, () => limited.pages.retrieve({} as never)),
-      ...Array.from({ length: 2 }, () =>
-        limited.dataSources.query({} as never),
-      ),
+      ...Array.from({ length: 2 }, () => limited.dataSources.query({} as never)),
     ]
 
     await vi.advanceTimersByTimeAsync(0)
-    expect(callsAt().map((call) => call.path).sort()).toEqual([
-      "dataSources.query",
-      "pages.retrieve",
-      "pages.retrieveMarkdown",
-    ])
+    expect(
+      callsAt()
+        .map((call) => call.path)
+        .sort()
+    ).toEqual(["dataSources.query", "pages.retrieve", "pages.retrieveMarkdown"])
 
     await vi.advanceTimersByTimeAsync(1000)
     expect(callsAt().length).toBe(6)
@@ -1403,7 +1369,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     })
 
     const promises = Array.from({ length: 5 }, () =>
-      limited.pages.retrieveMarkdown({} as never),
+      limited.pages.retrieveMarkdown({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(1)
@@ -1418,21 +1384,21 @@ describe("createLimitedClient — endpoint overrides", () => {
         endpointOverrides: {
           "pages.retrieveMarkdown": { concurrency: 0 },
         },
-      }),
+      })
     ).toThrow(/pages.retrieveMarkdown.*concurrency/)
     expect(() =>
       createLimitedClient(client, {
         endpointOverrides: {
           "dataSources.query": { requestsPerSecond: -1 },
         },
-      }),
+      })
     ).toThrow(/dataSources.query.*requestsPerSecond/)
     expect(() =>
       createLimitedClient(client, {
         endpointOverrides: {
           "pages.retrieve": { burstSize: 2.5 },
         },
-      }),
+      })
     ).toThrow(/pages.retrieve.*burstSize/)
   })
 
@@ -1441,7 +1407,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     expect(() =>
       createLimitedClient(client, {
         endpointOverrides: { "": { requestsPerSecond: 5 } },
-      }),
+      })
     ).toThrow(/non-empty string/)
   })
 
@@ -1463,7 +1429,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     })
 
     const promises = Array.from({ length: 5 }, () =>
-      limited.blocks.children.list({} as never),
+      limited.blocks.children.list({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(5)
@@ -1483,9 +1449,7 @@ describe("createLimitedClient — endpoint overrides", () => {
       },
     })
 
-    const promises = Array.from({ length: 5 }, () =>
-      limited.search({} as never),
-    )
+    const promises = Array.from({ length: 5 }, () => limited.search({} as never))
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(5)
     await Promise.all(promises)
@@ -1509,7 +1473,7 @@ describe("createLimitedClient — endpoint overrides", () => {
     })
 
     const promises = Array.from({ length: 3 }, () =>
-      limited.pages.retrieveMarkdown({} as never),
+      limited.pages.retrieveMarkdown({} as never)
     )
     await vi.advanceTimersByTimeAsync(0)
     expect(callsAt().length).toBe(1)

@@ -35,7 +35,7 @@
  * it tests.
  */
 export function withClearedRuntimeEnv<K extends string>(
-  keys: readonly K[],
+  keys: readonly K[]
 ): {
   install: () => void
   restore: () => void

@@ -10,13 +10,7 @@ import {
 
 export const EVAL_SUITE_VERSION = 1
 
-export const EVAL_RUNNERS = [
-  "retrieval",
-  "notion",
-  "task",
-  "bench",
-  "profile",
-] as const
+export const EVAL_RUNNERS = ["retrieval", "notion", "task", "bench", "profile"] as const
 
 /**
  * Agents the committed task-eval YAML may reference. `mock` is
@@ -94,7 +88,7 @@ const evalTaskSchema = z
           "wake-up.taskMemories surface. Decorative on memories, " +
           "relatedMemories, and staleConfidence surfaces, which route " +
           "through queries that ignore the prompt. See docs/evals.md " +
-          "(\"Wake-up surfaces\") for the per-surface contract."
+          '("Wake-up surfaces") for the per-surface contract.'
       ),
     surface: z.enum(EVAL_SURFACES).default("wake-up.taskMemories"),
     memoryScenarios: z.record(scenarioIdSchema, z.string().min(1)),
@@ -317,9 +311,7 @@ export const benchSuiteSchema = z
         model: z.literal("gpt-4o-mini-2024-07-18"),
         adapter: z.literal("codex"),
         systemPrompt: z.string().min(1),
-        retrieval: z
-          .enum(BENCH_AGENT_RETRIEVAL_STRATEGIES)
-          .default("tool-driven"),
+        retrieval: z.enum(BENCH_AGENT_RETRIEVAL_STRATEGIES).default("tool-driven"),
       })
       .strict(),
     judge: z
@@ -333,9 +325,7 @@ export const benchSuiteSchema = z
       .object({
         strategy: z.enum(BENCH_INGESTION_STRATEGIES).default("lore-mine"),
         extractionPrompt: z.string().min(1).optional(),
-        extractionModel: z
-          .literal(SIMULATED_AUTOSAVE_EXTRACTION_MODEL)
-          .optional(),
+        extractionModel: z.literal(SIMULATED_AUTOSAVE_EXTRACTION_MODEL).optional(),
         extractionMaxTokens: z
           .literal(SIMULATED_AUTOSAVE_EXTRACTION_MAX_TOKENS)
           .optional(),

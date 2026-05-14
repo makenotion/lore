@@ -267,9 +267,7 @@ export async function findNearDuplicates(
         ...(opts.excludeKinds && opts.excludeKinds.length > 0
           ? { excludeKinds: opts.excludeKinds }
           : {}),
-        ...(opts.statuses && opts.statuses.length > 0
-          ? { statuses: opts.statuses }
-          : {}),
+        ...(opts.statuses && opts.statuses.length > 0 ? { statuses: opts.statuses } : {}),
         ...(topTags.length > 0 ? { tags: topTags } : {}),
         limit: opts.limit ?? 50,
         // Same `|| undefined` shape as the REST lister payload — see the
@@ -873,11 +871,7 @@ export function findExactReuseTarget(
  * equality, not fuzzy similarity.
  */
 function normalizeReuseKey(s: string): string {
-  return decodeTextEntities(s)
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim()
+  return decodeTextEntities(s).normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim()
 }
 
 /**

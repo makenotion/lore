@@ -1787,14 +1787,7 @@ describe("tasksCommand create/update/close/list actions", () => {
 
   it("create validates --tags against an installed external profile", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lore-tasks-external-profile-"))
-    const profileDir = join(
-      cwd,
-      ".lore",
-      "profiles",
-      "installed",
-      "phase-three",
-      "1.0.0"
-    )
+    const profileDir = join(cwd, ".lore", "profiles", "installed", "phase-three", "1.0.0")
     mkdirSync(profileDir, { recursive: true })
     writeFileSync(
       join(cwd, ".lore.yaml"),

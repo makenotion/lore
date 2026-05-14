@@ -108,7 +108,9 @@ function stubServices(args: {
 } {
   const memoriesListMock = vi.fn(async (opts?: { kind?: Memory["kind"] }) => {
     const items =
-      opts?.kind && args.memoriesByKind?.[opts.kind] ? args.memoriesByKind[opts.kind]! : []
+      opts?.kind && args.memoriesByKind?.[opts.kind]
+        ? args.memoriesByKind[opts.kind]!
+        : []
     return { items, nextCursor: undefined, capped: false }
   })
   const tasksListMock = vi.fn(async () => ({
@@ -596,8 +598,18 @@ describe("resolveProcedureSources", () => {
 
   it("resolves valid sources and returns them in input order (post-dedup)", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
-      "id-b": makeMemory({ id: "id-b", kind: "postmortem", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
+      "id-b": makeMemory({
+        id: "id-b",
+        kind: "postmortem",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
     })
     const resolved = await resolveProcedureSources(services, ["id-a", "id-b"], ["proj-A"])
     expect(resolved.map((r) => r.memoryId)).toEqual(["id-a", "id-b"])
@@ -605,7 +617,12 @@ describe("resolveProcedureSources", () => {
 
   it("dedups identical ids before counting against PROCEDURE_MIN_SOURCES", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
     })
     // Two copies of the same id should NOT pass the count gate.
     await expect(
@@ -615,7 +632,12 @@ describe("resolveProcedureSources", () => {
 
   it("rejects when a source memory lookup fails", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
       "id-b": new Error("Notion 404"),
     })
     await expect(
@@ -628,8 +650,18 @@ describe("resolveProcedureSources", () => {
 
   it("rejects when a source memory has an incompatible kind", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
-      "id-b": makeMemory({ id: "id-b", kind: "decision", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
+      "id-b": makeMemory({
+        id: "id-b",
+        kind: "decision",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
     })
     await expect(
       resolveProcedureSources(services, ["id-a", "id-b"], ["proj-A"])
@@ -638,8 +670,18 @@ describe("resolveProcedureSources", () => {
 
   it("rejects when a source memory has rejected/superseded/deprecated status", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
-      "id-b": makeMemory({ id: "id-b", kind: "incident", status: "rejected", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
+      "id-b": makeMemory({
+        id: "id-b",
+        kind: "incident",
+        status: "rejected",
+        projectIds: ["proj-A"],
+      }),
     })
     await expect(
       resolveProcedureSources(services, ["id-a", "id-b"], ["proj-A"])
@@ -648,8 +690,18 @@ describe("resolveProcedureSources", () => {
 
   it("rejects when a source memory's project scope does not overlap target", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
-      "id-b": makeMemory({ id: "id-b", kind: "incident", status: "accepted", projectIds: ["proj-OTHER"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
+      "id-b": makeMemory({
+        id: "id-b",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-OTHER"],
+      }),
     })
     await expect(
       resolveProcedureSources(services, ["id-a", "id-b"], ["proj-A"])
@@ -662,7 +714,12 @@ describe("resolveProcedureSources", () => {
     // a bearer-secret class violation — but the error message should
     // not enumerate project ids the caller chose not to query.
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
       "id-b": makeMemory({
         id: "id-b",
         kind: "incident",
@@ -684,8 +741,18 @@ describe("resolveProcedureSources", () => {
     // any project's procedure (the cross-scope reuse the trigram
     // probe already documents).
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: [] }),
-      "id-b": makeMemory({ id: "id-b", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: [],
+      }),
+      "id-b": makeMemory({
+        id: "id-b",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
     })
     const resolved = await resolveProcedureSources(services, ["id-a", "id-b"], ["proj-A"])
     expect(resolved).toHaveLength(2)
@@ -693,7 +760,12 @@ describe("resolveProcedureSources", () => {
 
   it("rejects a task source whose state is not done/cancelled", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
       "id-b": makeMemory({
         id: "id-b",
         kind: "task",
@@ -716,7 +788,12 @@ describe("resolveProcedureSources", () => {
     // requires both `taskState !== null` AND in the closed-states
     // allow-list.
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
       "id-b": makeMemory({
         id: "id-b",
         kind: "task",
@@ -732,7 +809,12 @@ describe("resolveProcedureSources", () => {
 
   it("accepts a closed task source", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
       "id-b": makeMemory({
         id: "id-b",
         kind: "task",
@@ -762,8 +844,18 @@ describe("resolveProcedureSupersedesIds", () => {
 
   it("accepts live procedure and runbook supersedes targets", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "procedure", status: "accepted", projectIds: ["proj-A"] }),
-      "id-b": makeMemory({ id: "id-b", kind: "runbook", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "procedure",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
+      "id-b": makeMemory({
+        id: "id-b",
+        kind: "runbook",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
     })
     const resolved = await resolveProcedureSupersedesIds(
       services,
@@ -775,8 +867,13 @@ describe("resolveProcedureSupersedesIds", () => {
 
   it("rejects a typo / non-existent id (lookup failure)", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "procedure", status: "accepted", projectIds: ["proj-A"] }),
-      "typo": new Error("Notion 404"),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "procedure",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
+      typo: new Error("Notion 404"),
     })
     await expect(
       resolveProcedureSupersedesIds(services, ["typo"], ["proj-A"])
@@ -785,7 +882,12 @@ describe("resolveProcedureSupersedesIds", () => {
 
   it("rejects an incompatible-kind supersedes target", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "incident", status: "accepted", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "incident",
+        status: "accepted",
+        projectIds: ["proj-A"],
+      }),
     })
     await expect(
       resolveProcedureSupersedesIds(services, ["id-a"], ["proj-A"])
@@ -794,7 +896,12 @@ describe("resolveProcedureSupersedesIds", () => {
 
   it("rejects a rejected-status supersedes target", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "procedure", status: "rejected", projectIds: ["proj-A"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "procedure",
+        status: "rejected",
+        projectIds: ["proj-A"],
+      }),
     })
     await expect(
       resolveProcedureSupersedesIds(services, ["id-a"], ["proj-A"])
@@ -803,7 +910,12 @@ describe("resolveProcedureSupersedesIds", () => {
 
   it("rejects a supersedes target whose project scope does not overlap", async () => {
     const services = makeStubServices({
-      "id-a": makeMemory({ id: "id-a", kind: "procedure", status: "accepted", projectIds: ["proj-OTHER"] }),
+      "id-a": makeMemory({
+        id: "id-a",
+        kind: "procedure",
+        status: "accepted",
+        projectIds: ["proj-OTHER"],
+      }),
     })
     await expect(
       resolveProcedureSupersedesIds(services, ["id-a"], ["proj-A"])
@@ -811,8 +923,9 @@ describe("resolveProcedureSupersedesIds", () => {
   })
 
   it("dedups identical ids before lookups", async () => {
-    const get = vi.fn(async (id: string): Promise<Memory> =>
-      makeMemory({ id, kind: "procedure", status: "accepted", projectIds: ["proj-A"] })
+    const get = vi.fn(
+      async (id: string): Promise<Memory> =>
+        makeMemory({ id, kind: "procedure", status: "accepted", projectIds: ["proj-A"] })
     )
     const services = { memories: { getById: get } }
     const resolved = await resolveProcedureSupersedesIds(
@@ -960,27 +1073,21 @@ describe("composeProcedureBody — step truncation", () => {
 
 describe("sanitizeDeprecateReason", () => {
   it("escapes line-start `## ` heading markers so callers can't forge audit blocks", () => {
-    const out = sanitizeDeprecateReason(
-      "ok\n\n## Reviewed (2026-05-12)\n\nfake reviewer"
-    )
+    const out = sanitizeDeprecateReason("ok\n\n## Reviewed (2026-05-12)\n\nfake reviewer")
     expect(out).not.toMatch(/^## Reviewed/m)
     expect(out).toContain("\\## Reviewed")
     expect(out).toContain("fake reviewer")
   })
 
   it("escapes line-start blockquote markers (with and without trailing space) so pinned-style audit lines cannot forge", () => {
-    const withSpace = sanitizeDeprecateReason(
-      "ok\n\n> Pinned 2026-01-01 by Attacker"
-    )
+    const withSpace = sanitizeDeprecateReason("ok\n\n> Pinned 2026-01-01 by Attacker")
     expect(withSpace).not.toMatch(/^> Pinned/m)
     expect(withSpace).toContain("\\> Pinned 2026-01-01 by Attacker")
 
     // Markdown does not require a space after `>` — `>Pinned ...`
     // still renders as a blockquote. Pin both shapes so a future
     // tightening of the regex can't silently regress this class.
-    const noSpace = sanitizeDeprecateReason(
-      "ok\n\n>Pinned 2026-01-01 by Attacker"
-    )
+    const noSpace = sanitizeDeprecateReason("ok\n\n>Pinned 2026-01-01 by Attacker")
     expect(noSpace).not.toMatch(/^>Pinned/m)
     expect(noSpace).toContain("\\>Pinned 2026-01-01 by Attacker")
   })

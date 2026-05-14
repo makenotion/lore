@@ -78,9 +78,14 @@ async function resolveProjectIdForScan(
     listHint: PROJECT_LIST_HINT,
   })
   if (explicit !== undefined) {
-    const found = await resolveProjectScopeName(services.projects, explicit, "--project", {
-      listHint: PROJECT_LIST_HINT,
-    })
+    const found = await resolveProjectScopeName(
+      services.projects,
+      explicit,
+      "--project",
+      {
+        listHint: PROJECT_LIST_HINT,
+      }
+    )
     return found.id
   }
   return services.context.project?.id
@@ -115,10 +120,10 @@ function formatScanMarkdown(candidates: ProcedureCandidate[]): string {
     "",
     "```",
     "lore procedures propose \\",
-    "  --title \"<short procedure name>\" \\",
-    "  --entity \"<activation entity>\" \\",
-    "  --activation \"<condition 1>\" --activation \"<condition 2>\" \\",
-    "  --step \"<step 1>\" --step \"<step 2>\" \\",
+    '  --title "<short procedure name>" \\',
+    '  --entity "<activation entity>" \\',
+    '  --activation "<condition 1>" --activation "<condition 2>" \\',
+    '  --step "<step 1>" --step "<step 2>" \\',
     "  --source <memory-id> --source <memory-id>",
     "```",
     "",
@@ -137,7 +142,9 @@ function formatScanMarkdown(candidates: ProcedureCandidate[]): string {
     lines.push("", "Supporting memories:")
     for (const src of c.sources) {
       const stateLabel = src.taskState ? ` [${src.taskState}]` : ""
-      lines.push(`- ${src.kind}${stateLabel} \`${src.memoryId}\` — ${src.title} (${src.createdAt})`)
+      lines.push(
+        `- ${src.kind}${stateLabel} \`${src.memoryId}\` — ${src.title} (${src.createdAt})`
+      )
     }
     lines.push("")
   })
@@ -159,7 +166,12 @@ const scanCommand = new Command("scan")
   .option("--min-score <n>", "Minimum candidate score to surface", "0")
   .option("--json", "Emit JSON instead of Markdown")
   .action(
-    async (opts: { project?: string; limit: string; minScore: string; json?: boolean }) => {
+    async (opts: {
+      project?: string
+      limit: string
+      minScore: string
+      json?: boolean
+    }) => {
       try {
         const parsed = parseScanCliOptions(opts)
         if (!parsed.ok) {
@@ -187,10 +199,7 @@ const scanCommand = new Command("scan")
           console.log(formatScanMarkdown(candidates))
         }
       } catch (err) {
-        console.error(
-          "Procedure scan failed:",
-          err instanceof Error ? err.message : err
-        )
+        console.error("Procedure scan failed:", err instanceof Error ? err.message : err)
         process.exit(1)
       }
     }
@@ -393,7 +402,12 @@ const proposeCommand = new Command("propose")
     collectMulti,
     [] as string[]
   )
-  .option("--step <text>", "Resolution step (repeatable, ordered)", collectMulti, [] as string[])
+  .option(
+    "--step <text>",
+    "Resolution step (repeatable, ordered)",
+    collectMulti,
+    [] as string[]
+  )
   .option(
     "--failure-mode <text>",
     "Known failure mode bullet (repeatable)",
@@ -514,8 +528,12 @@ const proposeCommand = new Command("propose")
             console.log(`  Status: ${probe.reuseTarget.status}`)
             console.log(`  Topic key: ${probe.reuseTarget.topicKey}`)
             console.log("")
-            console.log("Topic key matched an existing in-flight proposed row; nothing was created.")
-            console.log("Review and ship via `lore inbox approve <id>`, or update its body via `lore-memory action='update'`.")
+            console.log(
+              "Topic key matched an existing in-flight proposed row; nothing was created."
+            )
+            console.log(
+              "Review and ship via `lore inbox approve <id>`, or update its body via `lore-memory action='update'`."
+            )
             return
           }
         } catch (err) {
@@ -549,7 +567,9 @@ const proposeCommand = new Command("propose")
         // resolution preflight with the narrower kind set.
         if (canonicalSupersedes.length > 0) {
           try {
-            await resolveProcedureSupersedesIds(services, canonicalSupersedes, [projectId])
+            await resolveProcedureSupersedesIds(services, canonicalSupersedes, [
+              projectId,
+            ])
           } catch (err) {
             if (err instanceof ProcedureSourceResolutionError) {
               console.error(`Procedure propose failed: ${err.message}`)
@@ -596,7 +616,9 @@ const proposeCommand = new Command("propose")
             `Supersession recorded on the new row's \`Supersedes\` relation (${canonicalSupersedes.length} entr${canonicalSupersedes.length === 1 ? "y" : "ies"}). After approval, run:`
           )
           for (const id of canonicalSupersedes) {
-            console.log(`  lore procedures deprecate ${id} --reason "Superseded by ${memory.id}"`)
+            console.log(
+              `  lore procedures deprecate ${id} --reason "Superseded by ${memory.id}"`
+            )
           }
         }
       } catch (err) {
@@ -610,7 +632,9 @@ const proposeCommand = new Command("propose")
   )
 
 const deprecateCommand = new Command("deprecate")
-  .description("Mark an accepted procedure as deprecated (status flip; preserves history)")
+  .description(
+    "Mark an accepted procedure as deprecated (status flip; preserves history)"
+  )
   .argument("<memoryId>", "Notion page id of the procedure to deprecate")
   .option("--reason <text>", "Optional rationale recorded on the memory body")
   .action(async (memoryId: string, opts: { reason?: string }) => {
@@ -655,9 +679,7 @@ const deprecateCommand = new Command("deprecate")
       // block would double-append on every CLI re-run). Mirrors the
       // MCP `lore-procedure action='deprecate'` handler.
       if (existing.status === "deprecated") {
-        console.log(
-          `Procedure already deprecated: "${existing.title}" (${canonicalId})`
-        )
+        console.log(`Procedure already deprecated: "${existing.title}" (${canonicalId})`)
         return
       }
       // Status-boundary gate: a `Status: proposed` procedure must

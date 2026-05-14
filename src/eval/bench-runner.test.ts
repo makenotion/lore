@@ -59,7 +59,9 @@ describe("makeSubProjectName", () => {
   })
 
   it("produces names that match SUB_PROJECT_NAME_REGEX", () => {
-    expect(SUB_PROJECT_NAME_REGEX.test(makeSubProjectName("abc", generateUlid(1000)))).toBe(true)
+    expect(
+      SUB_PROJECT_NAME_REGEX.test(makeSubProjectName("abc", generateUlid(1000)))
+    ).toBe(true)
   })
 })
 
@@ -316,7 +318,7 @@ describe("extractUlidFromSubProjectName + filterOrphanSubProjects", () => {
         { name: `lme-fresh-${freshUlid}`, id: "id-fresh" },
         { name: "not-an-lme-project", id: "id-other" },
       ],
-      1_500_000,
+      1_500_000
     )
     expect(result).toHaveLength(1)
     expect(result[0]?.id).toBe("id-old")
@@ -359,11 +361,11 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
     expect(body).toContain('transport = "stdio"')
     expect(body).toContain('command = "lore"')
     expect(body).toContain(
-      'args = ["mcp", "--write-budget", "500", "--budget-state-file", "/tmp/state-file.json"]',
+      'args = ["mcp", "--write-budget", "500", "--budget-state-file", "/tmp/state-file.json"]'
     )
     expect(body).toContain("[mcp_servers.lore.env]")
     expect(body).toContain(
-      'NOTION_API_TOKEN = "ntn_TEST_FIXTURE_TOKEN_FOR_BUILD_BENCH_WORKSPACE"',
+      'NOTION_API_TOKEN = "ntn_TEST_FIXTURE_TOKEN_FOR_BUILD_BENCH_WORKSPACE"'
     )
     expect(body).toContain('LORE_CONFIG_ROOT = "/tmp/lore-bench-config-fixture"')
     // File mode is 0600 — owner read/write only. Mode bits below
@@ -380,7 +382,7 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
         workspace,
         budgetStateFile: "/tmp/state.json",
         perExampleWrites: 500,
-      }),
+      })
     ).rejects.toThrow(/NOTION_API_TOKEN/)
   })
 
@@ -391,7 +393,7 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
         workspace,
         budgetStateFile: "/tmp/state.json",
         perExampleWrites: 500,
-      }),
+      })
     ).rejects.toThrow(/LORE_CONFIG_ROOT/)
   })
 
@@ -401,14 +403,14 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
         workspace,
         budgetStateFile: "/tmp/state.json",
         perExampleWrites: 0,
-      }),
+      })
     ).rejects.toThrow(/perExampleWrites/)
     await expect(
       buildBenchWorkspace({
         workspace,
         budgetStateFile: "/tmp/state.json",
         perExampleWrites: -1,
-      }),
+      })
     ).rejects.toThrow(/perExampleWrites/)
   })
 
@@ -528,7 +530,7 @@ describe("benchSuiteSchema agent.retrieval enum", () => {
           recallPrompt: "evals/prompts/longmemeval-judge.txt",
           abstentionPrompt: "evals/prompts/longmemeval-judge-abstention.txt",
         },
-      }),
+      })
     ).toThrow(/retrieval/i)
   })
 })

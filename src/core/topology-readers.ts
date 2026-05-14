@@ -47,10 +47,7 @@
 import type { Client } from "@notionhq/client"
 import { VaultManager } from "./vault.js"
 import { MemoryService } from "./memory.js"
-import {
-  buildVaultTopology,
-  type UpstreamVaultTopologyRef,
-} from "./topology.js"
+import { buildVaultTopology, type UpstreamVaultTopologyRef } from "./topology.js"
 import type { LoreConfig, VaultDatabases } from "../types.js"
 import { redactDebugError, redactDebugMessage } from "../debug-redact.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
@@ -121,9 +118,7 @@ export function buildUpstreamVaultBundles(
   config: LoreConfig
 ): UpstreamVaultBundle[] {
   const topology = buildVaultTopology(config)
-  return topology.upstreams.map((upstream) =>
-    createUpstreamVaultBundle(client, upstream)
-  )
+  return topology.upstreams.map((upstream) => createUpstreamVaultBundle(client, upstream))
 }
 
 function createUpstreamVaultBundle(
@@ -231,11 +226,7 @@ function createUpstreamVaultBundle(
           // primary reads use against a legacy vault.
           const scopeCtxArg = scopeColumnsReady ? {} : undefined
           const readers: UpstreamReaders = {
-            memories: new MemoryService(
-              client,
-              vault.databases.memories,
-              scopeCtxArg
-            ),
+            memories: new MemoryService(client, vault.databases.memories, scopeCtxArg),
           }
           loaded = true
           cachedReaders = readers

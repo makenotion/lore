@@ -58,7 +58,10 @@ export const PROCEDURE_SOURCE_KINDS = ["incident", "postmortem", "runbook"] as c
  * deliberately abandoned task is itself a "this path didn't work"
  * signal that procedures can encode as a known failure mode.
  */
-export const PROCEDURE_RESOLVED_TASK_STATES: readonly TaskState[] = ["done", "cancelled"] as const
+export const PROCEDURE_RESOLVED_TASK_STATES: readonly TaskState[] = [
+  "done",
+  "cancelled",
+] as const
 
 /**
  * Minimum number of supporting memories required for a cluster to
@@ -194,7 +197,9 @@ export const PROCEDURE_VALID_SOURCE_KINDS: readonly Memory["kind"][] = [
   "note",
 ] as const
 
-const PROCEDURE_VALID_SOURCE_KIND_SET = new Set<Memory["kind"]>(PROCEDURE_VALID_SOURCE_KINDS)
+const PROCEDURE_VALID_SOURCE_KIND_SET = new Set<Memory["kind"]>(
+  PROCEDURE_VALID_SOURCE_KINDS
+)
 
 /**
  * Source memories with `Status = rejected` carry the explicit
@@ -219,9 +224,7 @@ const PROCEDURE_REJECTED_SOURCE_STATUSES = new Set<Memory["status"]>([
  * list). `open` / `in-progress` / `blocked` tasks are mid-flight
  * and not eligible as supporting evidence.
  */
-const PROCEDURE_VALID_TASK_STATES = new Set<TaskState>(
-  PROCEDURE_RESOLVED_TASK_STATES
-)
+const PROCEDURE_VALID_TASK_STATES = new Set<TaskState>(PROCEDURE_RESOLVED_TASK_STATES)
 
 export interface ResolvedProcedureSource {
   memoryId: string
@@ -320,7 +323,8 @@ export async function resolveProcedureSources(
     if (!PROCEDURE_VALID_SOURCE_KIND_SET.has(mem.kind)) {
       errors.push({
         id,
-        reason: `kind '${mem.kind}' is not a valid procedure source ` +
+        reason:
+          `kind '${mem.kind}' is not a valid procedure source ` +
           `(accept: ${PROCEDURE_VALID_SOURCE_KINDS.join(", ")})`,
       })
       continue
@@ -1036,7 +1040,8 @@ export function composeProcedureKeywords(
  * matching. Soft-capped at 200 chars; the MCP boundary caps at 500.
  */
 export function composeProcedureSynopsis(entity: string, stepCount: number): string {
-  const entityClause = entity.trim().length > 0 ? `Reusable procedure for "${entity}"` : "Reusable procedure"
+  const entityClause =
+    entity.trim().length > 0 ? `Reusable procedure for "${entity}"` : "Reusable procedure"
   const stepClause =
     stepCount === 0
       ? "(no steps specified yet)"
@@ -1103,7 +1108,9 @@ export interface ProposeProcedureInput {
  * a future wake-up parser can recover the activation conditions
  * without LLM assistance.
  */
-export function buildProposeProcedureInput(input: ProposeProcedureInput): CreateMemoryInput {
+export function buildProposeProcedureInput(
+  input: ProposeProcedureInput
+): CreateMemoryInput {
   const trimmedTitle = input.title.trim()
   if (trimmedTitle.length === 0) {
     throw new Error("Procedure title must be a non-empty string.")

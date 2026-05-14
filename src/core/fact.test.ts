@@ -2000,10 +2000,7 @@ describe("FactService.pageToFacts — batched relation hydration (issue #498)", 
   // `has_more: false`), so the assertion has to fire on the helper
   // boundary, not on `pages.properties.retrieve`.
   it("queryBySubject routes its result set through the batched helper", async () => {
-    const batchedSpy = vi.spyOn(
-      relationProperties,
-      "hydrateRelationPropertiesForPages"
-    )
+    const batchedSpy = vi.spyOn(relationProperties, "hydrateRelationPropertiesForPages")
 
     const pages = Array.from({ length: 5 }, (_, i) =>
       factPage({ id: `fact-${i}`, predicate: "uses" })
@@ -2032,10 +2029,7 @@ describe("FactService.pageToFacts — batched relation hydration (issue #498)", 
     // Covers the second result-set shape the refactor consolidates —
     // `listRecent` returns `{ items, hasMore }` and previously inlined
     // the same `Promise.all(pages.map(p => this.pageToFact(p)))`.
-    const batchedSpy = vi.spyOn(
-      relationProperties,
-      "hydrateRelationPropertiesForPages"
-    )
+    const batchedSpy = vi.spyOn(relationProperties, "hydrateRelationPropertiesForPages")
 
     const pages = Array.from({ length: 3 }, (_, i) =>
       factPage({ id: `recent-${i}`, predicate: "uses" })

@@ -177,13 +177,10 @@ export interface ReconcileServices {
  */
 export async function reconcileActiveTasks(
   services: ReconcileServices,
-  options: ReconcileOptions = {},
+  options: ReconcileOptions = {}
 ): Promise<{ candidates: ReconcileCandidate[]; activeTasksScanned: number }> {
   const minScore = options.minScore ?? DEFAULT_RECONCILE_MIN_SCORE
-  const limit = Math.min(
-    options.limit ?? DEFAULT_RECONCILE_LIMIT,
-    MAX_RECONCILE_LIMIT,
-  )
+  const limit = Math.min(options.limit ?? DEFAULT_RECONCILE_LIMIT, MAX_RECONCILE_LIMIT)
   const today = options.today ?? new Date().toISOString().split("T")[0]!
   const projectId = options.projectId
 
@@ -199,17 +196,14 @@ export async function reconcileActiveTasks(
   // hybrid searches simultaneously.
   const fetchLimit = Math.min(
     RECONCILE_PER_TASK_LIMIT * RECONCILE_INDEX_OVERFETCH,
-    RECONCILE_INDEX_CAP,
+    RECONCILE_INDEX_CAP
   )
-  const settled = await mapWithConcurrency(
-    activeTasks,
-    RECONCILE_CONCURRENCY,
-    (task) =>
-      scoreTaskCandidates(services.memories, task, {
-        projectId,
-        fetchLimit,
-        today,
-      }),
+  const settled = await mapWithConcurrency(activeTasks, RECONCILE_CONCURRENCY, (task) =>
+    scoreTaskCandidates(services.memories, task, {
+      projectId,
+      fetchLimit,
+      today,
+    })
   )
 
   const surviving: ReconcileCandidate[] = []
@@ -248,8 +242,7 @@ export async function reconcileActiveTasks(
     .sort((a, b) => {
       if (a.score !== b.score) return b.score - a.score
       return (
-        new Date(b.memory.createdAt).getTime() -
-        new Date(a.memory.createdAt).getTime()
+        new Date(b.memory.createdAt).getTime() - new Date(a.memory.createdAt).getTime()
       )
     })
     .slice(0, limit)
@@ -264,7 +257,7 @@ export async function reconcileActiveTasks(
  */
 async function fetchActiveTasks(
   tasks: Pick<TaskService, "list">,
-  projectId: string | undefined,
+  projectId: string | undefined
 ): Promise<TaskSummary[]> {
   const collected: TaskSummary[] = []
   let cursor: string | undefined = undefined
@@ -290,7 +283,7 @@ async function fetchActiveTasks(
 async function scoreTaskCandidates(
   memories: Pick<MemoryService, "search" | "materializeContent">,
   task: TaskSummary,
-  opts: { projectId: string | undefined; fetchLimit: number; today: string },
+  opts: { projectId: string | undefined; fetchLimit: number; today: string }
 ): Promise<ReconcileCandidate[]> {
   const query = composeReconcileQuery(task)
   if (query === "") return []
@@ -328,8 +321,8 @@ async function scoreTaskCandidates(
   // cue-gate below (no body, no cue match, no closure candidate).
   const hydrated = await Promise.all(
     eligible.map((m) =>
-      memories.materializeContent(m).catch(() => ({ ...m, content: "" })),
-    ),
+      memories.materializeContent(m).catch(() => ({ ...m, content: "" }))
+    )
   )
 
   const todayMs = new Date(opts.today).getTime()
@@ -353,7 +346,7 @@ async function scoreTaskCandidates(
  * degrade to entity + title matching.
  */
 export function composeReconcileQuery(
-  task: Pick<TaskSummary, "title" | "entity" | "synopsis">,
+  task: Pick<TaskSummary, "title" | "entity" | "synopsis">
 ): string {
   const parts: string[] = []
   for (const piece of [task.title, task.entity, task.synopsis]) {
@@ -376,15 +369,13 @@ export function composeReconcileQuery(
 export function scoreCandidate(
   task: TaskSummary,
   memory: Memory,
-  todayMs: number,
+  todayMs: number
 ): ReconcileCandidate {
   const entityMatch = scoreEntityMatch(task, memory)
   const { cueMatch, cueSnippet } = scoreCueMatch(memory)
   const recencyBonus = scoreRecency(memory, todayMs)
   const score =
-    entityMatch * WEIGHT_ENTITY +
-    cueMatch * WEIGHT_CUE +
-    recencyBonus * WEIGHT_RECENCY
+    entityMatch * WEIGHT_ENTITY + cueMatch * WEIGHT_CUE + recencyBonus * WEIGHT_RECENCY
   return { task, memory, score, entityMatch, cueMatch, recencyBonus, cueSnippet }
 }
 
@@ -485,7 +476,7 @@ function scoreRecency(memory: Memory, todayMs: number): number {
 async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
-  fn: (item: T) => Promise<R>,
+  fn: (item: T) => Promise<R>
 ): Promise<PromiseSettledResult<R>[]> {
   if (items.length === 0) return []
   const results: PromiseSettledResult<R>[] = new Array(items.length)
@@ -515,7 +506,7 @@ async function mapWithConcurrency<T, R>(
 export function formatReconcileOutput(
   candidates: ReconcileCandidate[],
   activeTasksScanned: number,
-  today: string,
+  today: string
 ): string {
   const header = `## ${candidates.length} candidate closure${candidates.length === 1 ? "" : "s"} (out of ${activeTasksScanned} active task${activeTasksScanned === 1 ? "" : "s"} scanned)`
   if (candidates.length === 0) return header
@@ -526,12 +517,8 @@ export function formatReconcileOutput(
     const memoryAge = computeMemoryAgeDays(c.memory, today)
     const stateLabel = c.task.taskState ?? "open"
     const ageLabel =
-      taskAge === null
-        ? ""
-        : `, ${taskAge} day${taskAge === 1 ? "" : "s"} old`
-    const memoryDate = c.memory.createdAt
-      ? c.memory.createdAt.split("T")[0]
-      : "?"
+      taskAge === null ? "" : `, ${taskAge} day${taskAge === 1 ? "" : "s"} old`
+    const memoryDate = c.memory.createdAt ? c.memory.createdAt.split("T")[0] : "?"
     const memoryAgeLabel =
       memoryAge === null
         ? ""
@@ -547,17 +534,15 @@ export function formatReconcileOutput(
         ? ` (${memoryDate})`
         : ""
     lines.push(
-      `### ${idx + 1}. Task ${c.task.id} — "${c.task.title}" [${stateLabel}${ageLabel}]`,
+      `### ${idx + 1}. Task ${c.task.id} — "${c.task.title}" [${stateLabel}${ageLabel}]`
     )
     lines.push(
-      `Best match: memory ${c.memory.id}${memoryWhenSuffix}, score ${c.score.toFixed(2)}`,
+      `Best match: memory ${c.memory.id}${memoryWhenSuffix}, score ${c.score.toFixed(2)}`
     )
     if (c.cueSnippet) {
       lines.push(`Cue: "${c.cueSnippet}"`)
     }
-    lines.push(
-      `Close: lore-task({ action: 'close', taskId: '${c.task.id}' })`,
-    )
+    lines.push(`Close: lore-task({ action: 'close', taskId: '${c.task.id}' })`)
     lines.push("")
   })
   // Drop the trailing blank line so the rendered output ends crisply.
@@ -567,7 +552,7 @@ export function formatReconcileOutput(
 
 function computeTaskAgeDays(
   task: Pick<TaskSummary, "createdAt">,
-  today: string,
+  today: string
 ): number | null {
   if (!task.createdAt) return null
   const createdMs = new Date(task.createdAt).getTime()
@@ -578,7 +563,7 @@ function computeTaskAgeDays(
 
 function computeMemoryAgeDays(
   memory: Pick<Memory, "createdAt">,
-  today: string,
+  today: string
 ): number | null {
   if (!memory.createdAt) return null
   const createdMs = new Date(memory.createdAt).getTime()

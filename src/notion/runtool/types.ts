@@ -268,7 +268,7 @@ export interface RunToolQueryDataSourcesResponse {
  * narrows defensively at use sites.
  */
 export function isQueryDataSourcesResponse(
-  value: unknown,
+  value: unknown
 ): value is RunToolQueryDataSourcesResponse {
   if (!value || typeof value !== "object") return false
   const v = value as Record<string, unknown>
@@ -391,7 +391,7 @@ export interface RunToolSearchParams {
  * (`id`, `url`).
  */
 export function isInternalSearchResponse(
-  value: unknown,
+  value: unknown
 ): value is RunToolInternalSearchResponse {
   if (!value || typeof value !== "object") return false
   const v = value as Record<string, unknown>

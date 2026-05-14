@@ -112,9 +112,7 @@ describe("eval baseline", () => {
         currentSuccess: false,
       },
     ])
-    expect(drift.regressions).toContain(
-      "1 previously-passing result(s) now failing"
-    )
+    expect(drift.regressions).toContain("1 previously-passing result(s) now failing")
   })
 
   it("flags any post-baseline memoryHarm bump as regression", () => {
@@ -209,9 +207,7 @@ describe("eval baseline", () => {
 
     expect(drift.regressed).toBe(true)
     expect(
-      drift.regressions.some((r) =>
-        r.includes("memoryHarm increased from 0 to 0.0005")
-      )
+      drift.regressions.some((r) => r.includes("memoryHarm increased from 0 to 0.0005"))
     ).toBe(true)
   })
 
@@ -274,9 +270,7 @@ describe("eval baseline", () => {
     // must flag the missing surface, not silently treat the two rows
     // as collapsing on the shared `(taskId, scenario)` key.
     const dropped = artifactFixture({
-      results: [
-        passingResult("task-a", "helpful-memory", "wake-up.taskMemories"),
-      ],
+      results: [passingResult("task-a", "helpful-memory", "wake-up.taskMemories")],
       summary: { tasks: 1, totalResults: 1, passedResults: 1, failedResults: 0 },
     })
 

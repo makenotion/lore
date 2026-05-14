@@ -40,7 +40,8 @@ vi.mock("../../auth/oauth.js", async (importOriginal) => {
 })
 
 vi.mock("../../config.js", async () => {
-  const realConfig = await vi.importActual<typeof import("../../config.js")>("../../config.js")
+  const realConfig =
+    await vi.importActual<typeof import("../../config.js")>("../../config.js")
   return {
     ...realConfig,
     findConfigFile: vi.fn(),
@@ -55,7 +56,7 @@ vi.mock("../../notion/client.js", () => ({
 
 vi.mock("../../notion/rate-limit.js", async () => {
   const real = await vi.importActual<typeof import("../../notion/rate-limit.js")>(
-    "../../notion/rate-limit.js",
+    "../../notion/rate-limit.js"
   )
   return {
     ...real,
@@ -130,7 +131,6 @@ describe("ensurePrerequisites — happy path", () => {
     expect(out).toMatch(/Auth source:\s+✓ ntn-issued/)
     expect(out).toMatch(/Vault page:\s+✓ My Vault/)
   })
-
 })
 
 describe("ensurePrerequisites — version warning", () => {
@@ -562,7 +562,7 @@ describe("ensurePrerequisites — --dev / shell-signal conflict guard", () => {
     expect(result.ready).toBe(false)
     expect(verifyVaultAccess).not.toHaveBeenCalled()
     expect(captured(consoleErrorSpy)).toMatch(
-      /NOTION_BASE_URL=https:\/\/api\.notion\.so routes auth/,
+      /NOTION_BASE_URL=https:\/\/api\.notion\.so routes auth/
     )
   })
 
@@ -581,7 +581,7 @@ describe("ensurePrerequisites — --dev / shell-signal conflict guard", () => {
     expect(result.ready).toBe(false)
     expect(verifyVaultAccess).not.toHaveBeenCalled()
     expect(captured(consoleErrorSpy)).toMatch(
-      /LORE_NOTION_BASE_URL=https:\/\/api\.notion\.so routes auth/,
+      /LORE_NOTION_BASE_URL=https:\/\/api\.notion\.so routes auth/
     )
   })
 
@@ -593,7 +593,7 @@ describe("ensurePrerequisites — --dev / shell-signal conflict guard", () => {
 
     expect(result.ready).toBe(false)
     expect(captured(consoleErrorSpy)).toMatch(
-      /NOTION_API_BASE_URL=https:\/\/api\.notion\.so routes auth/,
+      /NOTION_API_BASE_URL=https:\/\/api\.notion\.so routes auth/
     )
   })
 
@@ -940,9 +940,7 @@ describe("ensurePrerequisites — ntn env derivation for ntn login", () => {
       vault: { pageId: "page" },
       auth: { baseUrl: "https://my-corporate-proxy.example" },
     } as never)
-    vi.mocked(resolveAuth).mockRejectedValueOnce(
-      new Error("No Notion auth configured."),
-    )
+    vi.mocked(resolveAuth).mockRejectedValueOnce(new Error("No Notion auth configured."))
 
     const result = await ensurePrerequisites(makeContext(), { yes: true })
 
@@ -990,9 +988,7 @@ describe("ensurePrerequisites — ntn env derivation for ntn login", () => {
       vault: { pageId: "page" },
       auth: { baseUrl: "https://api-dev.notion.com" },
     } as never)
-    vi.mocked(resolveAuth).mockRejectedValueOnce(
-      new Error("No Notion auth configured."),
-    )
+    vi.mocked(resolveAuth).mockRejectedValueOnce(new Error("No Notion auth configured."))
     // Simulate operator declining: stub stdin.isTTY=false so
     // confirmPrompt returns false (non-TTY guard).
     const originalIsTTY = process.stdin.isTTY
@@ -1393,9 +1389,7 @@ describe("ensurePrerequisites — env-aware preflight-failure recovery", () => {
     expect(result.ready).toBe(false)
     const err = captured(consoleErrorSpy)
     expect(err).toMatch(/NOTION_KEYRING=0 NOTION_ENV=<env> ntn login/)
-    expect(err).toMatch(
-      /doesn't match a canonical ntn env[\s\S]*substitute <env>/,
-    )
+    expect(err).toMatch(/doesn't match a canonical ntn env[\s\S]*substitute <env>/)
   })
 
   it("operator NOTION_ENV beats config inference in recovery copy", async () => {
@@ -1560,7 +1554,7 @@ describe("ensurePrerequisites — Notion environment display", () => {
 
     const out = captured(consoleLogSpy)
     expect(out).toMatch(
-      /Notion environment:\s+prod \(ntn default; no shell or ntn config\.json override\)/,
+      /Notion environment:\s+prod \(ntn default; no shell or ntn config\.json override\)/
     )
   })
 
@@ -1590,7 +1584,7 @@ describe("ensurePrerequisites — Notion environment display", () => {
     const out = captured(consoleLogSpy)
     expect(out).toMatch(/Notion environment:\s+prod \(ntn default;/)
     expect(out).toMatch(
-      /! \.lore\.yaml declares auth\.baseUrl=dev but resolved auth targets prod/,
+      /! \.lore\.yaml declares auth\.baseUrl=dev but resolved auth targets prod/
     )
     expect(out).toMatch(/ntn's config\.json/)
     expect(out).toMatch(/set NOTION_ENV in your shell/)
@@ -1618,7 +1612,9 @@ describe("ensurePrerequisites — Notion environment display", () => {
     await ensurePrerequisites(makeContext(), { yes: true })
 
     const out = captured(consoleLogSpy)
-    expect(out).toMatch(/Notion environment:\s+prod \(default; no shell base-URL override\)/)
+    expect(out).toMatch(
+      /Notion environment:\s+prod \(default; no shell base-URL override\)/
+    )
     expect(out).toMatch(/! \.lore\.yaml declares auth\.baseUrl=dev/)
     expect(out).toMatch(/the NOTION_API_TOKEN environment/)
   })
@@ -1710,7 +1706,7 @@ describe("ensurePrerequisites — Notion environment display", () => {
     expect(out).toMatch(/Notion environment:\s+prod \(ntn default;/)
     expect(out).not.toMatch(/from shell NOTION_ENV=/)
     expect(out).toMatch(
-      /! \.lore\.yaml declares auth\.baseUrl=dev but resolved auth targets prod/,
+      /! \.lore\.yaml declares auth\.baseUrl=dev but resolved auth targets prod/
     )
   })
 
@@ -1760,7 +1756,7 @@ describe("ensurePrerequisites — Notion environment display", () => {
 
     const out = captured(consoleLogSpy)
     expect(out).toMatch(
-      /Notion environment:\s+https:\/\/notion\.corp\.example\.com \(from ntn config\.json\), non-canonical/,
+      /Notion environment:\s+https:\/\/notion\.corp\.example\.com \(from ntn config\.json\), non-canonical/
     )
   })
 

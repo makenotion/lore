@@ -51,10 +51,7 @@ describe("parseProposeCliOptions", () => {
     title: "PR-1234 latency triage",
     entity: "PR-1234",
     step: ["check Grafana", "page oncall"],
-    source: [
-      "1234567890abcdef1234567890abcdef",
-      "abcdef1234567890abcdef1234567890",
-    ],
+    source: ["1234567890abcdef1234567890abcdef", "abcdef1234567890abcdef1234567890"],
   }
 
   it("accepts a fully populated payload", () => {
@@ -122,9 +119,8 @@ describe("parseProposeCliOptions", () => {
       supersedes: ["1234567890abcdef1234567890abcdef"],
     })
     expect(result.ok).toBe(true)
-    if (result.ok) expect(result.value.supersedes).toEqual([
-      "1234567890abcdef1234567890abcdef",
-    ])
+    if (result.ok)
+      expect(result.value.supersedes).toEqual(["1234567890abcdef1234567890abcdef"])
   })
 
   it("threads normalized fields onto the parsed value", () => {
@@ -143,9 +139,7 @@ describe("parseProposeCliOptions", () => {
       expect(result.value.activation).toEqual(["entity matches PR-1234"])
       expect(result.value.failureMode).toEqual(["do not restart cache"])
       expect(result.value.notes).toBe("borrowed from postmortem")
-      expect(result.value.supersedes).toEqual([
-        "efefefefefefefefefefefefefefefef",
-      ])
+      expect(result.value.supersedes).toEqual(["efefefefefefefefefefefefefefefef"])
       expect(result.value.topicKey).toBe("procedure/pr-1234-runbook")
       expect(result.value.source).toEqual(baseValidRaw.source)
       expect(result.value.step).toEqual(baseValidRaw.step)
@@ -223,11 +217,16 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "P",
-        "--entity", "cache",
-        "--step", "do",
-        "--source", "not-a-page-id",
-        "--source", SOURCE_B,
+        "--title",
+        "P",
+        "--entity",
+        "cache",
+        "--step",
+        "do",
+        "--source",
+        "not-a-page-id",
+        "--source",
+        SOURCE_B,
       ],
       { from: "user" }
     )
@@ -263,11 +262,16 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "Retry propose",
-        "--entity", "cache",
-        "--step", "do",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
+        "--title",
+        "Retry propose",
+        "--entity",
+        "cache",
+        "--step",
+        "do",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
       ],
       { from: "user" }
     )
@@ -280,7 +284,10 @@ describe("proceduresCommand propose action", () => {
 
   it("rejects propose when an accepted procedure holds the topic-key slot", async () => {
     const services = makeServices() as {
-      memories: { findByTopicKey: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> }
+      memories: {
+        findByTopicKey: ReturnType<typeof vi.fn>
+        create: ReturnType<typeof vi.fn>
+      }
     }
     services.memories.findByTopicKey = vi.fn(async () =>
       makeMemory({
@@ -296,11 +303,16 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "Replacement attempt",
-        "--entity", "cache",
-        "--step", "do",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
+        "--title",
+        "Replacement attempt",
+        "--entity",
+        "cache",
+        "--step",
+        "do",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
       ],
       { from: "user" }
     )
@@ -331,11 +343,16 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "Wrong-kind source",
-        "--entity", "cache",
-        "--step", "do",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
+        "--title",
+        "Wrong-kind source",
+        "--entity",
+        "cache",
+        "--step",
+        "do",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
       ],
       { from: "user" }
     )
@@ -350,11 +367,16 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "!!!",
-        "--entity", "???",
-        "--step", "do",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
+        "--title",
+        "!!!",
+        "--entity",
+        "???",
+        "--step",
+        "do",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
       ],
       { from: "user" }
     )
@@ -369,12 +391,18 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "P",
-        "--entity", "cache",
-        "--step", "do",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
-        "--topic-key", "   ",
+        "--title",
+        "P",
+        "--entity",
+        "cache",
+        "--step",
+        "do",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
+        "--topic-key",
+        "   ",
       ],
       { from: "user" }
     )
@@ -389,12 +417,18 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "P",
-        "--entity", "cache",
-        "--step", "do",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
-        "--notes", "x".repeat(8001),
+        "--title",
+        "P",
+        "--entity",
+        "cache",
+        "--step",
+        "do",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
+        "--notes",
+        "x".repeat(8001),
       ],
       { from: "user" }
     )
@@ -410,12 +444,18 @@ describe("proceduresCommand propose action", () => {
     await proceduresCommand.parseAsync(
       [
         "propose",
-        "--title", "Cache miss triage",
-        "--entity", "cache-miss",
-        "--step", "Inspect grafana",
-        "--step", "Check deploys",
-        "--source", SOURCE_A,
-        "--source", SOURCE_B,
+        "--title",
+        "Cache miss triage",
+        "--entity",
+        "cache-miss",
+        "--step",
+        "Inspect grafana",
+        "--step",
+        "Check deploys",
+        "--source",
+        SOURCE_A,
+        "--source",
+        SOURCE_B,
       ],
       { from: "user" }
     )
@@ -463,10 +503,9 @@ describe("proceduresCommand deprecate action", () => {
 
   it("exits 1 once before initServices on --reason over the 500-char cap", async () => {
     const longReason = "x".repeat(501)
-    await proceduresCommand.parseAsync(
-      ["deprecate", VALID_ID, "--reason", longReason],
-      { from: "user" }
-    )
+    await proceduresCommand.parseAsync(["deprecate", VALID_ID, "--reason", longReason], {
+      from: "user",
+    })
     const errorText = errorSpy.mock.calls.flat().join("\n")
     expect(errorText).toContain("Procedure deprecate failed:")
     expect(errorText).toContain("--reason exceeds 500 chars")

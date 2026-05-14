@@ -165,10 +165,7 @@ export async function withEntityRelationLocks<T>(
     for (const id of ids) {
       const path = lockPath(id)
       const record = await acquireLock(path)
-      const heartbeat = setInterval(
-        () => refreshLock(path, record),
-        LOCK_HEARTBEAT_MS,
-      )
+      const heartbeat = setInterval(() => refreshLock(path, record), LOCK_HEARTBEAT_MS)
       heartbeat.unref?.()
       acquired.push({ path, record, heartbeat })
     }

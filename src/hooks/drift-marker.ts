@@ -41,7 +41,7 @@ export function driftMarkerPath(configRoot: string): string {
  */
 export async function driftMarkerAgeDays(
   configRoot: string,
-  now: Date = new Date(),
+  now: Date = new Date()
 ): Promise<number> {
   try {
     const stats = await stat(driftMarkerPath(configRoot))

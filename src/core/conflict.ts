@@ -115,7 +115,7 @@ export interface FindConflictCandidatesOptions {
  */
 export function findConflictCandidates(
   memories: Memory[],
-  options: FindConflictCandidatesOptions = {},
+  options: FindConflictCandidatesOptions = {}
 ): ConflictCandidate[] {
   const trigramThreshold = options.trigramThreshold ?? CONFLICT_TRIGRAM_THRESHOLD
   const tagOverlapThreshold =
@@ -188,7 +188,7 @@ interface BoundedLoopOptions extends PairLoopOptions {
  */
 function findConflictCandidatesBounded(
   memories: Memory[],
-  options: BoundedLoopOptions,
+  options: BoundedLoopOptions
 ): ConflictCandidate[] {
   const candidates: ConflictCandidate[] = []
   let minBar = Number.NEGATIVE_INFINITY
@@ -242,7 +242,7 @@ function findConflictCandidatesBounded(
  */
 function findConflictCandidatesUnbounded(
   memories: Memory[],
-  options: PairLoopOptions,
+  options: PairLoopOptions
 ): ConflictCandidate[] {
   const candidates: ConflictCandidate[] = []
 
@@ -278,8 +278,8 @@ function walkPairs(
     a: Memory,
     b: Memory,
     similarity: number,
-    buildSignals: () => string[],
-  ) => void,
+    buildSignals: () => string[]
+  ) => void
 ): void {
   for (let i = 0; i < memories.length; i++) {
     const a = memories[i]

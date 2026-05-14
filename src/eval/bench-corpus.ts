@@ -136,12 +136,12 @@ export class BenchCorpusChecksumMismatchError extends Error {
   constructor(
     public readonly path: string,
     public readonly expected: string,
-    public readonly actual: string,
+    public readonly actual: string
   ) {
     super(
       `Corpus checksum mismatch for ${path}: expected sha256 ${expected}, ` +
         `got ${actual}. The committed manifest pins a specific HF revision; ` +
-        `re-download the dataset or update checksums.json deliberately.`,
+        `re-download the dataset or update checksums.json deliberately.`
     )
     this.name = "BenchCorpusChecksumMismatchError"
   }
@@ -162,7 +162,7 @@ export function sha256Hex(buffer: Buffer | string): string {
  * manifest can't silently disable verification.
  */
 export async function readBenchCorpusChecksums(
-  checksumsPath: string,
+  checksumsPath: string
 ): Promise<BenchCorpusChecksums> {
   const raw = await readFile(checksumsPath, "utf-8")
   let parsed: unknown
@@ -194,7 +194,7 @@ export async function loadBenchCorpus(input: {
 }): Promise<LoadedBenchCorpus> {
   const corpusPath = resolve(input.corpusPath)
   const checksumsPath = resolve(
-    input.checksumsPath ?? resolve(dirname(corpusPath), "checksums.json"),
+    input.checksumsPath ?? resolve(dirname(corpusPath), "checksums.json")
   )
   const checksums = await readBenchCorpusChecksums(checksumsPath)
   const filename = corpusPath.split("/").pop() ?? corpusPath
@@ -202,7 +202,7 @@ export async function loadBenchCorpus(input: {
   if (!expected) {
     throw new Error(
       `checksums.json at ${checksumsPath} has no entry for "${filename}". ` +
-        `Known files: ${Object.keys(checksums.files).join(", ") || "(none)"}`,
+        `Known files: ${Object.keys(checksums.files).join(", ") || "(none)"}`
     )
   }
   const buffer = await readFile(corpusPath)
@@ -222,7 +222,7 @@ export async function loadBenchCorpus(input: {
   if (!Array.isArray(parsedJson)) {
     throw new Error(
       `Corpus JSON at ${corpusPath} must be an array of examples; ` +
-        `got ${typeof parsedJson}`,
+        `got ${typeof parsedJson}`
     )
   }
   const examples: LongMemEvalExample[] = []
@@ -231,7 +231,7 @@ export async function loadBenchCorpus(input: {
     if (!parsedExample.success) {
       throw new Error(
         `Corpus example at index ${index} failed schema validation: ` +
-          parsedExample.error.issues.map((issue) => issue.message).join("; "),
+          parsedExample.error.issues.map((issue) => issue.message).join("; ")
       )
     }
     examples.push(parsedExample.data)
@@ -258,7 +258,8 @@ export function renderSessionTranscript(session: LongMemEvalSessionTurn[]): stri
   if (!Array.isArray(session) || session.length === 0) return ""
   return session
     .map((turn) => {
-      const role = turn.role === "user" ? "User" : turn.role === "assistant" ? "Assistant" : "System"
+      const role =
+        turn.role === "user" ? "User" : turn.role === "assistant" ? "Assistant" : "System"
       return `${role}: ${turn.content}`
     })
     .join("\n\n")

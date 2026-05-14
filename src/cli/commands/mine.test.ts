@@ -420,7 +420,8 @@ describe("resolveMineProject", () => {
 
   it("returns the project when --project resolves", async () => {
     const services = makeServices({
-      findByName: async (n) => (n === "Widget" ? { id: "p-widget", name: "Widget" } : null),
+      findByName: async (n) =>
+        n === "Widget" ? { id: "p-widget", name: "Widget" } : null,
     })
     const result = await resolveMineProject(services, "Widget")
     expect(result).toEqual({ id: "p-widget" })
@@ -433,21 +434,19 @@ describe("resolveMineProject", () => {
     // with another project's existing rows.
     const services = makeServices({ findByName: async () => null })
     await expect(resolveMineProject(services, "Mial")).rejects.toThrow(
-      /Project "Mial" could not be resolved.*lore status projects/,
+      /Project "Mial" could not be resolved.*lore status projects/
     )
   })
 
   it("throws archived-specific wording when --project resolves only as archived", async () => {
     const findByName = vi.fn(
       async (name: string, options?: { includeArchived?: boolean }) =>
-        options?.includeArchived
-          ? { id: "p-archive", name, status: "archived" }
-          : null
+        options?.includeArchived ? { id: "p-archive", name, status: "archived" } : null
     )
     const services = makeServices({ findByName })
 
     await expect(resolveMineProject(services, "Archive")).rejects.toThrow(
-      /Project "Archive" could not be resolved because it is archived/,
+      /Project "Archive" could not be resolved because it is archived/
     )
     expect(findByName).toHaveBeenNthCalledWith(1, "Archive")
     expect(findByName).toHaveBeenNthCalledWith(2, "Archive", {
@@ -528,7 +527,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBe("m1")
   })
@@ -539,7 +538,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -560,7 +559,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -581,7 +580,7 @@ describe("findExistingFileMemory", () => {
       services,
       "foo.ts — src/foo.ts",
       "src/foo.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -604,7 +603,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -626,7 +625,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -646,7 +645,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -667,7 +666,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      undefined,
+      undefined
     )
     expect(id).toBe("m1")
   })
@@ -684,7 +683,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p-widget",
+      "p-widget"
     )
     expect(search).toHaveBeenCalledTimes(1)
     expect(search).toHaveBeenCalledWith(
@@ -694,7 +693,7 @@ describe("findExistingFileMemory", () => {
         projectId: "p-widget",
         limit: FIND_EXISTING_LIMIT,
         includeContent: false,
-      }),
+      })
     )
     expect(FIND_EXISTING_LIMIT).toBe(100)
   })
@@ -708,7 +707,7 @@ describe("classifyMineFailure", () => {
         pageId: "p-1",
         cleanedUp: true,
         bodyWriteError: new Error("oops"),
-      },
+      }
     )
 
     const record = classifyMineFailure("foo.ts", err)
@@ -732,7 +731,7 @@ describe("classifyMineFailure", () => {
         cleanedUp: false,
         bodyWriteError: new Error("oops"),
         cleanupError: new Error("boom"),
-      },
+      }
     )
 
     const record = classifyMineFailure("bar.py", err)
@@ -748,7 +747,7 @@ describe("classifyMineFailure", () => {
   it("keeps generic errors in the pre-existing failure shape", () => {
     const record = classifyMineFailure(
       "baz.md",
-      new Error("Notion 400: invalid relation"),
+      new Error("Notion 400: invalid relation")
     )
 
     expect(record.failure.partialPageId).toBeUndefined()
@@ -810,19 +809,19 @@ describe("formatMineSummary", () => {
     // Backwards compat anchor: scripts and CI logs scraping for
     // `Indexed N files.` keep working unchanged on a no-update mine.
     expect(formatMineSummary(summary({ indexed: 12 }), 12)).toBe(
-      "Done! Indexed 12 files.",
+      "Done! Indexed 12 files."
     )
   })
 
   it("appends the breakdown clause only when at least one update landed", () => {
     expect(formatMineSummary(summary({ indexed: 8, updated: 4 }), 12)).toBe(
-      "Done! Indexed 12 files (8 new, 4 updated).",
+      "Done! Indexed 12 files (8 new, 4 updated)."
     )
   })
 
   it("does NOT emit the breakdown clause when only fresh creates", () => {
     expect(formatMineSummary(summary({ indexed: 12, updated: 0 }), 12)).toBe(
-      "Done! Indexed 12 files.",
+      "Done! Indexed 12 files."
     )
   })
 
@@ -830,13 +829,13 @@ describe("formatMineSummary", () => {
     // Period (not exclamation) when failures are present — mirrors
     // pre-PR shape so log-scrape parsers stay stable.
     expect(formatMineSummary(summary({ indexed: 8, failed: 2 }), 10)).toBe(
-      "Done. Indexed 8/10 files (2 failed).",
+      "Done. Indexed 8/10 files (2 failed)."
     )
   })
 
   it("includes the breakdown clause alongside failures when both apply", () => {
     expect(formatMineSummary(summary({ indexed: 4, updated: 4, failed: 2 }), 10)).toBe(
-      "Done. Indexed 8/10 files (4 new, 4 updated) (2 failed).",
+      "Done. Indexed 8/10 files (4 new, 4 updated) (2 failed)."
     )
   })
 })
@@ -935,7 +934,7 @@ describe("runMineUpsert (orchestration)", () => {
 
   async function withFixture(
     files: Record<string, string>,
-    test: (dir: string) => Promise<void>,
+    test: (dir: string) => Promise<void>
   ) {
     const tmp = await mkdtemp(`${tmpdir()}/lore-mine-test-`)
     try {
@@ -962,7 +961,7 @@ describe("runMineUpsert (orchestration)", () => {
       projectId?: string
       pid?: number
       createdAt?: string
-    } = {},
+    } = {}
   ): Promise<string> {
     const pid = opts.pid ?? 4_000_001
     const createdAt = opts.createdAt ?? new Date().toISOString()
@@ -975,7 +974,7 @@ describe("runMineUpsert (orchestration)", () => {
         token: "stale-owner",
         relPath,
         createdAt,
-      }),
+      })
     )
     return path
   }
@@ -989,7 +988,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts", "b.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       expect(summary.indexed).toBe(2)
       expect(summary.updated).toBe(0)
@@ -1008,7 +1007,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       const relPath = relative("/repo", `${dir}/a.ts`)
       expect(summary.indexed).toBe(1)
@@ -1028,7 +1027,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["notes.md"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       const relPath = relative("/repo", `${dir}/notes.md`)
       expect(summary.indexed).toBe(1)
@@ -1055,7 +1054,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       expect(first.indexed).toBe(1)
       expect(first.updated).toBe(0)
@@ -1071,7 +1070,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       expect(second.indexed).toBe(0)
       expect(second.updated).toBe(1)
@@ -1109,7 +1108,7 @@ describe("runMineUpsert (orchestration)", () => {
           ["a.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         ),
         runMineUpsert(
           secondServices.services,
@@ -1117,7 +1116,7 @@ describe("runMineUpsert (orchestration)", () => {
           ["a.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         ),
       ])
 
@@ -1145,7 +1144,7 @@ describe("runMineUpsert (orchestration)", () => {
         undefined,
         undefined,
         () => {},
-        () => {},
+        () => {}
       )
 
       expect(summary.indexed).toBe(1)
@@ -1153,8 +1152,8 @@ describe("runMineUpsert (orchestration)", () => {
       expect(createCalls).toHaveLength(1)
       expect(
         summary.outcomes.some(
-          (o) => o.kind === "failed" && o.error.includes("Duplicate in-flight"),
-        ),
+          (o) => o.kind === "failed" && o.error.includes("Duplicate in-flight")
+        )
       ).toBe(true)
     })
   })
@@ -1171,7 +1170,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
 
       expect(summary.indexed).toBe(1)
@@ -1195,7 +1194,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
 
       expect(summary.indexed).toBe(1)
@@ -1238,7 +1237,7 @@ describe("runMineUpsert (orchestration)", () => {
         undefined,
         undefined,
         () => {},
-        () => {},
+        () => {}
       )
       expect(summary.indexed).toBe(1)
       expect(summary.failed).toBe(1)
@@ -1260,14 +1259,14 @@ describe("runMineUpsert (orchestration)", () => {
           ["big.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
         expect(summary.skipped).toBe(1)
         expect(summary.indexed).toBe(0)
         expect(summary.failed).toBe(0)
         expect(create).not.toHaveBeenCalled()
         expect(update).not.toHaveBeenCalled()
-      },
+      }
     )
   })
 
@@ -1292,7 +1291,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined, // no --topic on rerun
-        () => {},
+        () => {}
       )
       expect(updateCalls).toHaveLength(1)
       const payload = updateCalls[0]?.input as { topicId?: string }
@@ -1347,12 +1346,12 @@ describe("runMineUpsert (orchestration)", () => {
           ["1.ts", "2.ts", "3.ts", "4.ts", "5.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
         // Peak concurrency must equal the configured value, not 1
         // (sequential) and not all-N (unbounded).
         expect(Math.max(...inFlight)).toBe(2)
-      },
+      }
     )
   })
 })

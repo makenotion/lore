@@ -646,9 +646,9 @@ describe("runNoArgInit", () => {
     setupTestCwd()
     const exitTrap = trapProcessExit()
 
-    await expect(
-      runNoArgInit({ profile: "missing@1.0.0" })
-    ).rejects.toBeInstanceOf(ProcessExitSentinel)
+    await expect(runNoArgInit({ profile: "missing@1.0.0" })).rejects.toBeInstanceOf(
+      ProcessExitSentinel
+    )
 
     expect(exitTrap.lastCode()).toBe(1)
     expect(resolveAuth).not.toHaveBeenCalled()

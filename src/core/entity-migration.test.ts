@@ -45,7 +45,7 @@ function makeEntity(overrides: Partial<Entity>): Entity {
 describe("pickCanonical", () => {
   it("picks the longest raw form", () => {
     expect(
-      pickCanonical(["MemoryService", "MemoryService.create", "memoryservice"]),
+      pickCanonical(["MemoryService", "MemoryService.create", "memoryservice"])
     ).toBe("MemoryService.create")
   })
 
@@ -123,7 +123,7 @@ describe("planEntityMigration", () => {
     const facts: Fact[] = [
       // Group A — 3 facts referencing Foo
       ...Array.from({ length: 3 }, (_, i) =>
-        makeFact({ id: `a-${i}`, subject: "Foo", object: "Bar" }),
+        makeFact({ id: `a-${i}`, subject: "Foo", object: "Bar" })
       ),
       // Group B — 1 fact referencing Baz / Qux
       makeFact({ id: "b-0", subject: "Baz", object: "Qux" }),
@@ -137,9 +137,7 @@ describe("planEntityMigration", () => {
   })
 
   it("flags an existing entity row when the key already has one", () => {
-    const facts: Fact[] = [
-      makeFact({ id: "f1", subject: "MemoryService", object: "X" }),
-    ]
+    const facts: Fact[] = [makeFact({ id: "f1", subject: "MemoryService", object: "X" })]
     const existing = makeEntity({ id: "ent-1", name: "MemoryService" })
     const plans = planEntityMigration(facts, indexEntitiesByKey([existing]))
     const memoryServicePlan = plans.find((p) => p.key === "memoryservice")!
@@ -147,9 +145,7 @@ describe("planEntityMigration", () => {
   })
 
   it("matches an existing entity by alias as well as canonical name", () => {
-    const facts: Fact[] = [
-      makeFact({ id: "f1", subject: "memoryservice", object: "X" }),
-    ]
+    const facts: Fact[] = [makeFact({ id: "f1", subject: "memoryservice", object: "X" })]
     const existing = makeEntity({
       id: "ent-1",
       name: "MS",

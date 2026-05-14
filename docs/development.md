@@ -46,14 +46,16 @@ unbackfilled rows that need the SubjectKey substring fallback.
 
 ## Commands
 
-| Command              | What it does                     |
-| -------------------- | -------------------------------- |
-| `npm run build`      | tsup build                       |
-| `npm run typecheck`  | `tsc --noEmit`                   |
-| `npm run lint`       | `eslint src/`                    |
-| `npm run test`       | `vitest run`                     |
-| `npm run test:watch` | `vitest` watch mode              |
-| `npm run dev`        | `tsup --watch`                   |
+| Command                | What it does            |
+| ---------------------- | ----------------------- |
+| `npm run build`        | tsup build              |
+| `npm run typecheck`    | `tsc --noEmit`          |
+| `npm run lint`         | `eslint src/`           |
+| `npm run format`       | `prettier --write src/` |
+| `npm run format:check` | `prettier --check src/` |
+| `npm run test`         | `vitest run`            |
+| `npm run test:watch`   | `vitest` watch mode     |
+| `npm run dev`          | `tsup --watch`          |
 
 ## Notion SDK v5
 

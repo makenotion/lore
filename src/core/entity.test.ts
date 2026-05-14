@@ -39,9 +39,7 @@ function entityPage(overrides: EntityPageOverrides = {}): PageObjectResponse {
       } as unknown,
       Aliases: {
         type: "rich_text",
-        rich_text: overrides.aliases
-          ? [{ plain_text: overrides.aliases }]
-          : [],
+        rich_text: overrides.aliases ? [{ plain_text: overrides.aliases }] : [],
       } as unknown,
       Kind: overrides.kind
         ? ({
@@ -111,10 +109,10 @@ function truncatedProjectEntityPage(
 describe("normalizeEntityKey", () => {
   it("returns equal keys for case variants", () => {
     expect(normalizeEntityKey("MemoryService")).toEqual(
-      normalizeEntityKey("memoryservice"),
+      normalizeEntityKey("memoryservice")
     )
     expect(normalizeEntityKey("MemoryService")).toEqual(
-      normalizeEntityKey("memoryService "),
+      normalizeEntityKey("memoryService ")
     )
   })
 
@@ -243,7 +241,7 @@ describe("EntityService.findByName", () => {
         // title.contains pass surfaces them, but none normalize to
         // the bare `user` key.
         name: `UserSession${i}`,
-      }),
+      })
     )
     client.dataSources.query.mockResolvedValueOnce({
       results: [],
@@ -340,7 +338,7 @@ describe("EntityService.findByAlias", () => {
         // rich_text.contains pass surfaces them) but none normalize
         // to the bare `user` key.
         aliases: `Username${i}`,
-      }),
+      })
     )
     client.dataSources.query.mockResolvedValueOnce({
       results: candidates,
@@ -358,7 +356,7 @@ describe("EntityService.getById", () => {
   it("rejects archived entity rows", async () => {
     const client = createMockClient()
     client.pages.retrieve.mockResolvedValueOnce(
-      entityPage({ id: "ent-archived", archived: true }),
+      entityPage({ id: "ent-archived", archived: true })
     )
 
     const service = new EntityService(client, DB)
@@ -368,7 +366,7 @@ describe("EntityService.getById", () => {
   it("can explicitly read archived rows for merge retries", async () => {
     const client = createMockClient()
     client.pages.retrieve.mockResolvedValueOnce(
-      entityPage({ id: "ent-archived", name: "AuthSvc", archived: true }),
+      entityPage({ id: "ent-archived", name: "AuthSvc", archived: true })
     )
 
     const service = new EntityService(client, DB)
@@ -391,7 +389,7 @@ describe("EntityService.resolveOrCreateEntity", () => {
     expect((await service.findByName("AuthSvc"))?.id).toBe("ent-loser")
 
     client.pages.retrieve.mockResolvedValueOnce(
-      entityPage({ id: "ent-loser", name: "AuthSvc", archived: true }),
+      entityPage({ id: "ent-loser", name: "AuthSvc", archived: true })
     )
     client.dataSources.query.mockResolvedValueOnce({
       results: [],
@@ -516,7 +514,7 @@ describe("EntityService.resolveOrCreateEntity", () => {
     })
     // pages.create returns the new entity.
     client.pages.create.mockResolvedValueOnce(
-      entityPage({ id: "ent-new", name: "FreshService" }),
+      entityPage({ id: "ent-new", name: "FreshService" })
     )
 
     const service = new EntityService(client, DB)
@@ -577,7 +575,7 @@ describe("EntityService.resolveOrCreateEntity", () => {
       next_cursor: null,
     })
     client.pages.create.mockResolvedValueOnce(
-      entityPage({ id: "ent-scoped", name: "ScopedService" }),
+      entityPage({ id: "ent-scoped", name: "ScopedService" })
     )
 
     const service = new EntityService(client, DB)
@@ -617,7 +615,7 @@ describe("EntityService.resolveOrCreateEntity", () => {
       next_cursor: null,
     })
     client.pages.create.mockResolvedValueOnce(
-      entityPage({ id: "ent-empty", name: "EmptyScopeService" }),
+      entityPage({ id: "ent-empty", name: "EmptyScopeService" })
     )
 
     const service = new EntityService(client, DB)
@@ -648,7 +646,7 @@ describe("EntityService.resolveOrCreateEntity", () => {
       next_cursor: null,
     })
     client.pages.create.mockResolvedValueOnce(
-      entityPage({ id: "ent-unscoped", name: "UnscopedService" }),
+      entityPage({ id: "ent-unscoped", name: "UnscopedService" })
     )
 
     const service = new EntityService(client, DB)
@@ -852,11 +850,7 @@ describe("EntityService.addProjectIds", () => {
       description: "",
       projectIds: ["proj-a"],
     }
-    const result = await service.addProjectIds(existing, [
-      "proj-b",
-      "proj-b",
-      "proj-a",
-    ])
+    const result = await service.addProjectIds(existing, ["proj-b", "proj-b", "proj-a"])
     expect(result.projectIds).toEqual(["proj-a", "proj-b"])
     expect(client.pages.update).toHaveBeenCalledTimes(1)
   })
@@ -893,7 +887,7 @@ describe("EntityService.create", () => {
   it("writes the Project relation when projectIds is supplied directly", async () => {
     const client = createMockClient()
     client.pages.create.mockResolvedValueOnce(
-      entityPage({ id: "ent-direct", name: "DirectScopedService" }),
+      entityPage({ id: "ent-direct", name: "DirectScopedService" })
     )
 
     const service = new EntityService(client, DB)
@@ -914,11 +908,15 @@ describe("EntityService.addAliases", () => {
   it("dedupes against existing aliases when adding", async () => {
     const client = createMockClient()
     client.pages.retrieve.mockResolvedValueOnce(
-      entityPage({ id: "ent-1", name: "Auth", aliases: "auth, AuthService" }),
+      entityPage({ id: "ent-1", name: "Auth", aliases: "auth, AuthService" })
     )
 
     const service = new EntityService(client, DB)
-    const updated = await service.addAliases("ent-1", ["auth", "AUTHSERVICE", "Authority"])
+    const updated = await service.addAliases("ent-1", [
+      "auth",
+      "AUTHSERVICE",
+      "Authority",
+    ])
     expect(updated.aliases).toContain("Authority")
     // `auth` and `AUTHSERVICE` normalize onto existing aliases — neither
     // should be appended a second time.
@@ -944,17 +942,20 @@ describe("EntityService.archive", () => {
     const service = new EntityService(client, DB)
     expect(await service.findByName("Auth")).not.toBeNull()
 
-    await service.archive({
-      id: "ent-archive",
-      name: "Auth",
-      aliases: ["AuthSvc"],
-      kind: null,
-      description: "",
-      projectIds: [],
-    }, {
-      mergedInto: { id: "ent-winner", name: "AuthService" },
-      mergedAt: "2026-05-02",
-    })
+    await service.archive(
+      {
+        id: "ent-archive",
+        name: "Auth",
+        aliases: ["AuthSvc"],
+        kind: null,
+        description: "",
+        projectIds: [],
+      },
+      {
+        mergedInto: { id: "ent-winner", name: "AuthService" },
+        mergedAt: "2026-05-02",
+      }
+    )
 
     client.dataSources.query.mockResolvedValueOnce({
       results: [],
@@ -983,9 +984,9 @@ describe("EntityService.archive", () => {
       page_id: "ent-archive",
       archived: true,
     })
-    expect(
-      client.pages.updateMarkdown.mock.invocationCallOrder[0]
-    ).toBeLessThan(client.pages.update.mock.invocationCallOrder[0])
+    expect(client.pages.updateMarkdown.mock.invocationCallOrder[0]).toBeLessThan(
+      client.pages.update.mock.invocationCallOrder[0]
+    )
     expect(await service.findByName("Auth")).toBeNull()
   })
 
@@ -1132,7 +1133,7 @@ describe("expandEntityQueryVariants", () => {
     const result = expandEntityQueryVariants(
       "AuthSvc",
       { name: "AuthService", aliases: ["alpha", "beta", "gamma"] },
-      3,
+      3
     )
     // Cap = 3: raw ("AuthSvc"), canonical ("AuthService"), one alias.
     expect(result.variants).toHaveLength(3)

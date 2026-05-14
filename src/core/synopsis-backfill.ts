@@ -346,18 +346,14 @@ function truncateAtWordBoundary(text: string, maxLen: number): string {
  * Exported for the migrate CLI; tests inject a fake via
  * `BackfillOptions.synthesizer` and don't need this factory.
  */
-export function makeBackgroundSynthesizer(
-  agent: BackgroundAgentConfig,
-): SynthesizerFn {
-  return async function spawnSynthesizer(
-    input: SynthesizerInput,
-  ): Promise<string> {
+export function makeBackgroundSynthesizer(agent: BackgroundAgentConfig): SynthesizerFn {
+  return async function spawnSynthesizer(input: SynthesizerInput): Promise<string> {
     const binary = findBackgroundBinary(agent.command)
     if (!binary) {
       throw new Error(
         `background command "${agent.command}" not found on PATH — install ` +
           `the binary, override hooks.backgroundAgent.command in .lore.yaml, ` +
-          `or re-run with --synopsis-backend placeholder (synopsis-backfill only).`,
+          `or re-run with --synopsis-backend placeholder (synopsis-backfill only).`
       )
     }
     const prompt = buildSynopsisSynthesisPrompt(input)
@@ -380,8 +376,8 @@ export function makeBackgroundSynthesizer(
         if (code !== 0) {
           reject(
             new Error(
-              `${agent.command} exited with code ${code ?? "unknown"}: ${stderr.trim() || "<no stderr>"}`,
-            ),
+              `${agent.command} exited with code ${code ?? "unknown"}: ${stderr.trim() || "<no stderr>"}`
+            )
           )
           return
         }
@@ -473,7 +469,7 @@ export async function findSynopsisCandidates(
       candidates.push({ id: page.id, title })
     }
 
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   return { candidates, archivedSkipped, archivedExamples }
@@ -558,7 +554,7 @@ export async function backfillSynopses(
           "the binary, override hooks.backgroundAgent.command in .lore.yaml, " +
           "or re-run with `--synopsis-backend placeholder` (synopsis-backfill " +
           "only — writes a sentinel value to legacy rows without invoking the " +
-          "agent CLI).",
+          "agent CLI)."
       )
     }
   }
@@ -570,10 +566,7 @@ export async function backfillSynopses(
       const md = await client.pages.retrieveMarkdown({ page_id: pageId })
       return md.markdown ?? ""
     })
-  const batchSize = Math.max(
-    1,
-    options.batchSize ?? DEFAULT_SYNOPSIS_BATCH_SIZE
-  )
+  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_SYNOPSIS_BATCH_SIZE)
 
   // Process candidates in chunks of `batchSize`. Each worker is
   // independent (no shared mutable state mid-flight) and returns its
@@ -644,11 +637,7 @@ async function processCandidate(
     // the per-row `retrieveMarkdown` round-trip would be a real cost
     // with no payoff.
     try {
-      await writeSynopsis(
-        deps.client,
-        candidate.id,
-        SYNOPSIS_PLACEHOLDER_SENTINEL
-      )
+      await writeSynopsis(deps.client, candidate.id, SYNOPSIS_PLACEHOLDER_SENTINEL)
       return { kind: "placeholder-written" }
     } catch (err) {
       logPartialFailure(candidate.id, "write", err)
@@ -710,10 +699,7 @@ async function processCandidate(
  * serially in the parent loop after each `Promise.all` chunk settles
  * so concurrent workers never race on the counters.
  */
-function foldOutcomeIntoReport(
-  report: BackfillReport,
-  outcome: RowOutcome
-): void {
+function foldOutcomeIntoReport(report: BackfillReport, outcome: RowOutcome): void {
   switch (outcome.kind) {
     case "synthesized":
       report.synthesized++
@@ -762,7 +748,5 @@ function logPartialFailure(
   err: unknown
 ): void {
   const message = err instanceof Error ? err.message : String(err)
-  process.stderr.write(
-    `${STDERR_PREFIX}: id=${pageId} phase=${phase} error=${message}\n`
-  )
+  process.stderr.write(`${STDERR_PREFIX}: id=${pageId} phase=${phase} error=${message}\n`)
 }

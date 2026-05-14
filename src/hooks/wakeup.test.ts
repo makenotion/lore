@@ -40,9 +40,8 @@ vi.mock("../services.js", async () => {
 })
 
 vi.mock("../core/wakeup.js", async () => {
-  const actual = await vi.importActual<typeof import("../core/wakeup.js")>(
-    "../core/wakeup.js",
-  )
+  const actual =
+    await vi.importActual<typeof import("../core/wakeup.js")>("../core/wakeup.js")
   return {
     ...actual,
     loadWakeUpData: loadWakeUpDataMock,
@@ -51,10 +50,7 @@ vi.mock("../core/wakeup.js", async () => {
 
 import { wakeup, wakeupStatePath } from "./helpers.js"
 import type { Fact, Memory, Project, TaskSummary } from "../types.js"
-import {
-  buildEmptyWakeUpCoverage,
-  type WakeUpCoverageMetrics,
-} from "../core/wakeup.js"
+import { buildEmptyWakeUpCoverage, type WakeUpCoverageMetrics } from "../core/wakeup.js"
 import { UNTRUSTED_VAULT_PREAMBLE } from "./untrusted-text.js"
 
 function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
@@ -146,9 +142,11 @@ function setupMocks(opts: {
     relatedMemories: [],
     taskMemories: [],
     staleConfidence: [],
-    coverage: opts.coverage ?? buildEmptyWakeUpCoverage({
-      sectionCounts: { tasks: opts.tasks?.length ?? 0 },
-    }),
+    coverage:
+      opts.coverage ??
+      buildEmptyWakeUpCoverage({
+        sectionCounts: { tasks: opts.tasks?.length ?? 0 },
+      }),
   })
 }
 
@@ -232,7 +230,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     // Lead-in mirrors the save-side wording byte-for-byte (shared via
     // `formatCatchAllScopeSummary` in `src/core/context.ts`).
     expect(written).toContain(
-      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Widget, Web. Pass projectName to scope to a specific sub-project.',
+      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Widget, Web. Pass projectName to scope to a specific sub-project.'
     )
   })
 
@@ -306,9 +304,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
   it("emits privacy-conscious coverage counters when LORE_DEBUG=1", async () => {
     process.env["LORE_DEBUG"] = "1"
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     setupMocks({
       project: {
@@ -345,9 +341,11 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         }),
       })
 
-      const logLine = String(stderr.mock.calls.find((call) =>
-        String(call[0]).startsWith("[lore] wakeup:"),
-      )?.[0])
+      const logLine = String(
+        stderr.mock.calls.find((call) =>
+          String(call[0]).startsWith("[lore] wakeup:")
+        )?.[0]
+      )
       expect(logLine).toContain("mode=ranked")
       expect(logLine).toContain("ranked=true")
       expect(logLine).toContain("memory=3")
@@ -367,9 +365,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
   it("includes the default mode in unranked wake-up debug counters", async () => {
     process.env["LORE_DEBUG"] = "1"
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     setupMocks({
       project: {
@@ -392,9 +388,11 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         }),
       })
 
-      const logLine = String(stderr.mock.calls.find((call) =>
-        String(call[0]).startsWith("[lore] wakeup:"),
-      )?.[0])
+      const logLine = String(
+        stderr.mock.calls.find((call) =>
+          String(call[0]).startsWith("[lore] wakeup:")
+        )?.[0]
+      )
       expect(logLine).toContain("mode=default")
       expect(logLine).toContain("ranked=false")
       expect(logLine).toContain("reason=no-ranked-search")
@@ -405,9 +403,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
   it("emits the cache-hit coverage variant through the shared formatter", async () => {
     process.env["LORE_DEBUG"] = "1"
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     setupMocks({
       project: {
@@ -435,13 +431,11 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         .map((call) => String(call[0]))
         .filter((line) => line.startsWith("[lore] wakeup:"))
       expect(logLines).toContainEqual(
-        expect.stringContaining("reason=already-ranked-for-session"),
+        expect.stringContaining("reason=already-ranked-for-session")
       )
       expect(logLines).toContainEqual(expect.stringContaining("mode=default"))
       expect(logLines).toContainEqual(expect.stringContaining("ranked=false"))
-      expect(logLines).toContainEqual(
-        expect.stringContaining("digestAvailable=false"),
-      )
+      expect(logLines).toContainEqual(expect.stringContaining("digestAvailable=false"))
       expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
     } finally {
       stderr.mockRestore()
@@ -450,9 +444,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
   it("emits an error coverage variant when wake-up loading fails", async () => {
     process.env["LORE_DEBUG"] = "1"
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     setupMocks({
       project: {
         id: "proj-widget",
@@ -492,9 +484,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     // interpolate request-scoped detail (page ids, partial query
     // fragments) into `Error.message`. Pin that the failure logger
     // routes through the shared redactor before stderr.
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     setupMocks({
       project: {
         id: "proj-widget",
@@ -509,8 +499,8 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     })
     loadWakeUpDataMock.mockRejectedValueOnce(
       new Error(
-        "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found",
-      ),
+        "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found"
+      )
     )
 
     try {
@@ -535,9 +525,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
   it("does not crash when coverage is unexpectedly null under debug logging", async () => {
     process.env["LORE_DEBUG"] = "1"
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     setupMocks({
       project: {
         id: "proj-widget",
@@ -586,9 +574,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
   it("does not emit wake-up coverage counters when LORE_DEBUG is unset", async () => {
     delete process.env["LORE_DEBUG"]
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     setupMocks({
       project: {
@@ -637,7 +623,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
           title: `Overdue task ${i}`,
           reviewBy: daysAgoDate(7 + i),
           updatedAt: daysAgo(2),
-        }),
+        })
       )
     }
     tasks.push(
@@ -646,7 +632,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         title: "Null-date stale task",
         reviewBy: null,
         updatedAt: daysAgo(45),
-      }),
+      })
     )
     tasks.push(
       makeTask({
@@ -654,7 +640,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         title: "Null-date active task",
         reviewBy: null,
         updatedAt: daysAgo(2),
-      }),
+      })
     )
 
     setupMocks({
@@ -776,9 +762,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
     expect(stdout).toHaveBeenCalledTimes(1)
-    expect(readdirSync(stateDir).filter((entry) => entry.endsWith(".wakeup"))).toEqual(
-      [],
-    )
+    expect(readdirSync(stateDir).filter((entry) => entry.endsWith(".wakeup"))).toEqual([])
   })
 
   it("debounces later slash-command Codex prompts after ranked wake-up has run", async () => {

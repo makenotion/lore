@@ -110,9 +110,7 @@ export const CODEX_BACKGROUND_ARGS: readonly string[] = [
  * placeholder is absent, so a missing placeholder means a missing
  * allowlist hand-off.
  */
-export const KNOWN_COMMAND_PRESETS: Readonly<
-  Record<string, readonly string[]>
-> = {
+export const KNOWN_COMMAND_PRESETS: Readonly<Record<string, readonly string[]>> = {
   claude: DEFAULT_BACKGROUND_ARGS,
   codex: CODEX_BACKGROUND_ARGS,
 }
@@ -240,7 +238,7 @@ export function mergeHookDefaults(
   hooks: LoreConfig["hooks"] | undefined,
   catchAllName: string | null = null,
   subProjects: string[] = [],
-  envSource: NodeJS.ProcessEnv = process.env,
+  envSource: NodeJS.ProcessEnv = process.env
 ): HookConfig {
   return {
     saveInterval: hooks?.saveInterval ?? DEFAULT_SAVE_INTERVAL,
@@ -300,7 +298,7 @@ export function mergeHookDefaults(
  */
 function resolveBackgroundAgent(
   override: NonNullable<LoreConfig["hooks"]>["backgroundAgent"] | undefined,
-  envSource: NodeJS.ProcessEnv,
+  envSource: NodeJS.ProcessEnv
 ): BackgroundAgentConfig {
   const envCommand = envSource["LORE_BACKGROUND_COMMAND"]
   const trimmedEnvCommand =
@@ -320,10 +318,7 @@ function resolveBackgroundAgent(
     ? AGENT_BACKGROUND_COMMAND[canonicalAgent]
     : undefined
   const command =
-    trimmedEnvCommand ??
-    override?.command ??
-    derivedDefault ??
-    DEFAULT_BACKGROUND_COMMAND
+    trimmedEnvCommand ?? override?.command ?? derivedDefault ?? DEFAULT_BACKGROUND_COMMAND
   // Args resolution: explicit override > basename-aware preset for the
   // resolved command > Claude-shaped fallthrough. There is no
   // `LORE_BACKGROUND_ARGS` env path because args is structurally an

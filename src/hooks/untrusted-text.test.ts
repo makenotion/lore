@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import {
-  UNTRUSTED_VAULT_PREAMBLE,
-  indentUntrustedText,
-} from "./untrusted-text.js"
+import { UNTRUSTED_VAULT_PREAMBLE, indentUntrustedText } from "./untrusted-text.js"
 
 describe("indentUntrustedText", () => {
   it("prefixes every line with four spaces", () => {

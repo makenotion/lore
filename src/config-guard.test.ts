@@ -85,11 +85,11 @@ describe("repo invariants", () => {
     const repoRoot = fileURLToPath(new URL("..", import.meta.url))
     let tracked: string
     try {
-      tracked = execFileSync(
-        "git",
-        ["ls-files", "--", ".lore.yaml"],
-        { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
-      ).trim()
+      tracked = execFileSync("git", ["ls-files", "--", ".lore.yaml"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(

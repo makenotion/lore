@@ -94,7 +94,7 @@ export interface DigestData {
 
 function computeWindow(
   opts: GatherDigestOpts,
-  now: Date,
+  now: Date
 ): { start: string; end: string } {
   const end = opts.until ?? now.toISOString()
   if (opts.since) return { start: opts.since, end }
@@ -126,7 +126,7 @@ export function daysSince(iso: string, now: Date = new Date()): number {
 
 export async function gatherDigestData(
   services: DigestServices,
-  opts: GatherDigestOpts,
+  opts: GatherDigestOpts
 ): Promise<DigestData> {
   const now = opts.now ? opts.now() : new Date()
   const { start: windowStart, end: windowEnd } = computeWindow(opts, now)
@@ -181,9 +181,7 @@ export async function gatherDigestData(
 
   const sections: string[] = []
   sections.push(`# Digest Data — ${opts.projectLabel}`)
-  sections.push(
-    `Window: ${windowStart.split("T")[0]} → ${windowEnd.split("T")[0]}`,
-  )
+  sections.push(`Window: ${windowStart.split("T")[0]} → ${windowEnd.split("T")[0]}`)
   sections.push("")
 
   if (lastDigest) {
@@ -236,19 +234,18 @@ export async function gatherDigestData(
     for (const task of visible) {
       const stateLabel = task.taskState ?? "open"
       const blocker = task.blockedBy ? `, blocked by ${task.blockedBy}` : ""
-      const entityHint = task.entity && task.entity !== task.title ? ` — ${task.entity}` : ""
+      const entityHint =
+        task.entity && task.entity !== task.title ? ` — ${task.entity}` : ""
       const due = task.reviewBy
         ? task.reviewBy <= today
           ? ` (due ${task.reviewBy} **OVERDUE**)`
           : ` (due ${task.reviewBy})`
         : ""
-      sections.push(
-        `- **${task.title}**${entityHint} [${stateLabel}${blocker}]${due}`,
-      )
+      sections.push(`- **${task.title}**${entityHint} [${stateLabel}${blocker}]${due}`)
     }
     if (trulyTruncated) {
       sections.push(
-        `- … and many more open tasks not shown (call \`lore-task action='list'\` for the full picture).`,
+        `- … and many more open tasks not shown (call \`lore-task action='list'\` for the full picture).`
       )
     } else if (localHidden > 0) {
       sections.push(`- … and ${localHidden} more.`)

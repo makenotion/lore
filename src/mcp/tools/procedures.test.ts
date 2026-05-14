@@ -278,7 +278,12 @@ describe("lore-procedure action='propose'", () => {
 
   it("creates a kind=procedure status=proposed memory with composed body", async () => {
     services.memories.create = vi.fn(async (input: unknown) => {
-      const typed = input as { title: string; kind: string; status: string; content: string }
+      const typed = input as {
+        title: string
+        kind: string
+        status: string
+        content: string
+      }
       return makeMemory({
         id: "proc-new",
         title: typed.title,
@@ -293,12 +298,16 @@ describe("lore-procedure action='propose'", () => {
       entity: "PR-1234",
       activationConditions: ["Entity matches PR-1234"],
       steps: ["Check Grafana", "Page oncall"],
-      sourceMemoryIds: ["abababababababababababababababab", "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"],
+      sourceMemoryIds: [
+        "abababababababababababababababab",
+        "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      ],
     })
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("Proposed procedure:")
     expect(result.content[0]!.text).toContain("Status: proposed")
-    const callArg = (services.memories.create as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+    const callArg = (services.memories.create as ReturnType<typeof vi.fn>).mock
+      .calls[0]![0] as {
       kind: string
       status: string
       content: string
@@ -364,7 +373,8 @@ describe("lore-procedure action='propose'", () => {
       supersedesIds: ["efefefefefefefefefefefefefefefef"],
     })
     expect(result.isError).toBeFalsy()
-    const callArg = (services.memories.create as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+    const callArg = (services.memories.create as ReturnType<typeof vi.fn>).mock
+      .calls[0]![0] as {
       supersedesIds?: string[]
     }
     // The notionPageIdSchema canonicalizes 32-char hex into dashed UUID.
@@ -531,7 +541,9 @@ describe("lore-procedure action='propose'", () => {
       ],
     })
     expect(result.isError).toBe(true)
-    expect(result.content[0]!.text).toContain("kind 'decision' is not a valid procedure source")
+    expect(result.content[0]!.text).toContain(
+      "kind 'decision' is not a valid procedure source"
+    )
   })
 
   it("rejects propose when a source memory's project scope does not overlap", async () => {
@@ -770,7 +782,9 @@ describe("lore-procedure action='deprecate'", () => {
     expect(id).toBe("12345678-90ab-cdef-1234-567890abcdef")
     expect((input as { status: string }).status).toBe("deprecated")
     expect((input as { content?: string }).content).toContain("## Deprecated")
-    expect((input as { content?: string }).content).toContain("Replaced by automated alerting")
+    expect((input as { content?: string }).content).toContain(
+      "Replaced by automated alerting"
+    )
   })
 
   it("sanitizes Markdown header injections in --reason so callers can't forge an audit block", async () => {
@@ -848,14 +862,18 @@ describe("lore-procedure action='deprecate'", () => {
 
   it("refuses to deprecate non-procedure memories", async () => {
     services.memories.getById = vi.fn(async () =>
-      makeMemory({ id: "abcdef1234567890abcdef1234567890", title: "Not a procedure", kind: "note" })
+      makeMemory({
+        id: "abcdef1234567890abcdef1234567890",
+        title: "Not a procedure",
+        kind: "note",
+      })
     ) as never
     const result = await mock.get("lore-procedure")({
       action: "deprecate",
       memoryId: "abcdef1234567890abcdef1234567890",
     })
     expect(result.isError).toBe(true)
-    expect(result.content[0]!.text).toContain("not \"procedure\"")
+    expect(result.content[0]!.text).toContain('not "procedure"')
   })
 
   it("rejects deprecate on a Status: proposed procedure (must leave via review)", async () => {
@@ -872,7 +890,9 @@ describe("lore-procedure action='deprecate'", () => {
       memoryId: "1234567890abcdef1234567890abcdef",
     })
     expect(result.isError).toBe(true)
-    expect(result.content[0]!.text).toContain("Status: proposed and must leave the inbox via review")
+    expect(result.content[0]!.text).toContain(
+      "Status: proposed and must leave the inbox via review"
+    )
     expect(result.content[0]!.text).toContain("lore-memory action='reject'")
     expect(services.memories.update).not.toHaveBeenCalled()
   })

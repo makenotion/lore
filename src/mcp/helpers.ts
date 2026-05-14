@@ -74,7 +74,7 @@ type ToolResult = {
  */
 export async function withWakeUpCacheBump(
   cache: WakeUpCache | undefined,
-  run: () => Promise<ToolResult>,
+  run: () => Promise<ToolResult>
 ): Promise<ToolResult> {
   const result = await run()
   if (!result.noopWrite) cache?.bumpEpoch()
@@ -120,7 +120,7 @@ export function toolError(err: unknown): ToolResult {
  */
 export function paginationFooter(
   nextCursor: string | undefined,
-  opts: { truncated?: boolean } = {},
+  opts: { truncated?: boolean } = {}
 ): string {
   if (!nextCursor && !opts.truncated) return ""
   return `\n\n---\n\n\`\`\`json\n${JSON.stringify({
@@ -158,12 +158,12 @@ export function paginationFooter(
  */
 export function debugLogPartialFailures(
   toolName: string,
-  failures: ReadonlyArray<{ rootId: string; error: unknown }>,
+  failures: ReadonlyArray<{ rootId: string; error: unknown }>
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   for (const { rootId, error } of failures) {
     process.stderr.write(
-      `[lore] partial-failure: root=${oneLine(rootId)} error=${oneLine(redactDebugError(error))} tool=${toolName}\n`,
+      `[lore] partial-failure: root=${oneLine(rootId)} error=${oneLine(redactDebugError(error))} tool=${toolName}\n`
     )
   }
 }
@@ -215,11 +215,11 @@ export function debugLogAutoFactFailure(
   memoryId: string,
   entity: string,
   error: unknown,
-  kind: "create" | "invalidate" = "create",
+  kind: "create" | "invalidate" = "create"
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
-    `[lore] auto-fact-failure: source=${source} kind=${kind} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(redactDebugError(error))}\n`,
+    `[lore] auto-fact-failure: source=${source} kind=${kind} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(redactDebugError(error))}\n`
   )
 }
 
@@ -254,11 +254,11 @@ export function debugLogAutoFactFailure(
 export function debugLogContradictionFailure(
   source: "invalidate" | "supersede" | "decide-supersede",
   memoryId: string,
-  error: unknown,
+  error: unknown
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
-    `[lore] contradiction-failure: source=${oneLine(source)} memoryId=${oneLine(memoryId)} error=${oneLine(redactDebugError(error))}\n`,
+    `[lore] contradiction-failure: source=${oneLine(source)} memoryId=${oneLine(memoryId)} error=${oneLine(redactDebugError(error))}\n`
   )
 }
 
@@ -297,11 +297,11 @@ export function debugLogContradictionFailure(
 export function debugLogTouchFailure(
   tool: string,
   memoryId: string,
-  error: unknown,
+  error: unknown
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
-    `[lore] touch-failure: memory=${oneLine(memoryId)} error=${oneLine(redactDebugError(error))} tool=${tool}\n`,
+    `[lore] touch-failure: memory=${oneLine(memoryId)} error=${oneLine(redactDebugError(error))} tool=${tool}\n`
   )
 }
 
@@ -339,7 +339,7 @@ export function debugLogTouchFailure(
 export async function fireTouchOnRead(
   service: Pick<MemoryService, "touchOnRead">,
   rows: ReadonlyArray<Memory>,
-  tool: string,
+  tool: string
 ): Promise<void> {
   if (rows.length === 0) return
   try {
@@ -361,11 +361,11 @@ export async function fireTouchOnRead(
 export function debugLogFactTouchFailure(
   tool: string,
   factId: string,
-  error: unknown,
+  error: unknown
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
-    `[lore] fact-touch-failure: fact=${oneLine(factId)} error=${oneLine(redactDebugError(error))} tool=${tool}\n`,
+    `[lore] fact-touch-failure: fact=${oneLine(factId)} error=${oneLine(redactDebugError(error))} tool=${tool}\n`
   )
 }
 
@@ -380,7 +380,7 @@ export function debugLogFactTouchFailure(
 export async function fireFactTouchOnRead(
   service: Pick<FactService, "touchOnRead">,
   rows: ReadonlyArray<Fact>,
-  tool: string,
+  tool: string
 ): Promise<void> {
   if (rows.length === 0) return
   try {

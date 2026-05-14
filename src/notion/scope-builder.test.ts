@@ -64,9 +64,7 @@ describe("factsProperties — scope columns mirror Memories DB", () => {
     const factLifetimeProp = props[FACT_PROPS.LIFETIME] as {
       select: { options: Array<{ name: string }> }
     }
-    expect(factLifetimeProp.select.options.map((o) => o.name)).toEqual(
-      MEMORY_LIFETIMES
-    )
+    expect(factLifetimeProp.select.options.map((o) => o.name)).toEqual(MEMORY_LIFETIMES)
     expect(props[FACT_PROPS.SCOPE_KEY]).toEqual({ rich_text: {} })
     expect(props[FACT_PROPS.AUDIENCE]).toEqual({ rich_text: {} })
     expect(props[FACT_PROPS.EXPIRES_AT]).toEqual({ date: {} })

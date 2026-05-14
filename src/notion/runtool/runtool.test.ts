@@ -212,13 +212,8 @@ describe("createPagesViaRunTool — chunking", () => {
     const { client, captured } = makeStubClientWithRequest((_args, i) => {
       callIndex = i
       const start = i * RUNTOOL_CREATE_PAGES_MAX_CHUNK
-      const length = Math.min(
-        RUNTOOL_CREATE_PAGES_MAX_CHUNK,
-        pages.length - start
-      )
-      return makeCreatePagesResponse(
-        Array.from({ length }, (_, j) => `id-${start + j}`)
-      )
+      const length = Math.min(RUNTOOL_CREATE_PAGES_MAX_CHUNK, pages.length - start)
+      return makeCreatePagesResponse(Array.from({ length }, (_, j) => `id-${start + j}`))
     })
 
     const result = await createPagesViaRunTool({
@@ -238,19 +233,13 @@ describe("createPagesViaRunTool — chunking", () => {
   })
 
   it("uses the default chunk size when none is provided", async () => {
-    const pages = Array.from(
-      { length: RUNTOOL_CREATE_PAGES_DEFAULT_CHUNK + 1 },
-      (_, i) => makePage(`p${i}`)
+    const pages = Array.from({ length: RUNTOOL_CREATE_PAGES_DEFAULT_CHUNK + 1 }, (_, i) =>
+      makePage(`p${i}`)
     )
     const { client, captured } = makeStubClientWithRequest((_args, i) => {
       const start = i * RUNTOOL_CREATE_PAGES_DEFAULT_CHUNK
-      const length = Math.min(
-        RUNTOOL_CREATE_PAGES_DEFAULT_CHUNK,
-        pages.length - start
-      )
-      return makeCreatePagesResponse(
-        Array.from({ length }, (_, j) => `id-${start + j}`)
-      )
+      const length = Math.min(RUNTOOL_CREATE_PAGES_DEFAULT_CHUNK, pages.length - start)
+      return makeCreatePagesResponse(Array.from({ length }, (_, j) => `id-${start + j}`))
     })
 
     await createPagesViaRunTool({
@@ -383,9 +372,7 @@ describe("createPagesViaRunTool — failure semantics", () => {
     // First chunk (100 pages) lands; second chunk (50 pages) throws.
     const { client } = makeStubClientWithRequest((_args, i) => {
       if (i === 0) {
-        return makeCreatePagesResponse(
-          Array.from({ length: 100 }, (_, j) => `id-${j}`)
-        )
+        return makeCreatePagesResponse(Array.from({ length: 100 }, (_, j) => `id-${j}`))
       }
       throw sdkError
     })
@@ -427,9 +414,7 @@ describe("createPagesViaRunTool — failure semantics", () => {
     // chunk 3 throws.
     const { client, captured } = makeStubClientWithRequest((_args, i) => {
       if (i === 0) {
-        return makeCreatePagesResponse(
-          Array.from({ length: 100 }, (_, j) => `id-${j}`)
-        )
+        return makeCreatePagesResponse(Array.from({ length: 100 }, (_, j) => `id-${j}`))
       }
       if (i === 1) {
         return makeCreatePagesResponse(
@@ -463,7 +448,10 @@ describe("createPagesViaRunTool — failure semantics", () => {
 
   it("treats malformed responses (missing pages array) as protocol errors", async () => {
     const { client } = makeStubClientWithRequest(
-      () => ({ /* missing pages */ }) as unknown
+      () =>
+        ({
+          /* missing pages */
+        }) as unknown
     )
 
     await expect(
@@ -476,9 +464,7 @@ describe("createPagesViaRunTool — failure semantics", () => {
   })
 
   it("treats malformed responses (page missing id) as protocol errors", async () => {
-    const { client } = makeStubClientWithRequest(
-      () => ({ pages: [{}] }) as unknown
-    )
+    const { client } = makeStubClientWithRequest(() => ({ pages: [{}] }) as unknown)
 
     await expect(
       createPagesViaRunTool({
@@ -513,9 +499,7 @@ describe("createPagesViaRunTool — failure semantics", () => {
     expect(thrown).toBeInstanceOf(BatchCreateError)
     const batchErr = thrown as BatchCreateError
     expect(batchErr.committedIds).toEqual(["only-one"])
-    expect((batchErr.cause as Error).message).toMatch(
-      /does not match request chunk size/
-    )
+    expect((batchErr.cause as Error).message).toMatch(/does not match request chunk size/)
   })
 })
 

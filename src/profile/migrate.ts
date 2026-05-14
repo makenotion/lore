@@ -285,11 +285,7 @@ export interface ProfileMigrationLedger {
  * Locate the migration YAML inside a profile bundle. Throws when the file
  * is missing — Phase 3 has no inferred migrations.
  */
-export function findMigrationFile(
-  sourceRoot: string,
-  from: string,
-  to: string
-): string {
+export function findMigrationFile(sourceRoot: string, from: string, to: string): string {
   const path = join(sourceRoot, "migrations", `${from}__${to}.yaml`)
   if (!existsSync(path)) {
     throw new ProfileMigrationError(
@@ -579,12 +575,8 @@ function validateOptionAppendTarget(
     (database === "memories" &&
       property === "Tags" &&
       kind === "add_multi_select_options") ||
-    (database === "entities" &&
-      property === "Kind" &&
-      kind === "add_select_options") ||
-    (database === "facts" &&
-      property === "Predicate" &&
-      kind === "add_select_options")
+    (database === "entities" && property === "Kind" && kind === "add_select_options") ||
+    (database === "facts" && property === "Predicate" && kind === "add_select_options")
 
   if (!allowed) {
     throw new ProfileMigrationError(
@@ -658,9 +650,7 @@ function parseDatabaseKey(value: unknown, path: string): ProfileMigrationDatabas
   if (typeof value !== "string") {
     throw new ProfileMigrationError(`${path} must be a string.`)
   }
-  if (
-    !(PROFILE_MIGRATION_DATABASE_KEYS as readonly string[]).includes(value)
-  ) {
+  if (!(PROFILE_MIGRATION_DATABASE_KEYS as readonly string[]).includes(value)) {
     throw new ProfileMigrationError(
       `${path} "${value}" is not a core database. Expected one of: ${PROFILE_MIGRATION_DATABASE_KEYS.join(", ")}.`
     )
@@ -744,19 +734,13 @@ export async function buildMigrationPlan(
     )
   }
 
-  const sourceLocation = resolveProfileSelector(
-    sourceParsed,
-    inputs.services.configRoot
-  )
+  const sourceLocation = resolveProfileSelector(sourceParsed, inputs.services.configRoot)
   if (!sourceLocation) {
     throw new ProfileMigrationError(
       `Source profile not resolvable: ${inputs.sourceSelector}.`
     )
   }
-  const targetLocation = resolveProfileSelector(
-    targetParsed,
-    inputs.services.configRoot
-  )
+  const targetLocation = resolveProfileSelector(targetParsed, inputs.services.configRoot)
 
   const migrationPath = findMigrationFile(
     sourceLocation.rootDir,
@@ -784,11 +768,7 @@ export async function buildMigrationPlan(
       )
     }
   }
-  ensureConfigPinTargetLoadable(
-    document.steps,
-    targetParsed,
-    inputs.services.configRoot
-  )
+  ensureConfigPinTargetLoadable(document.steps, targetParsed, inputs.services.configRoot)
 
   const entries: ProfileMigrationPlanEntry[] = []
   for (const step of document.steps) {
@@ -801,7 +781,8 @@ export async function buildMigrationPlan(
       step,
       status: live.status,
       reason: live.reason,
-      estimatedWrites: live.status === "skip-already-satisfied" ? 0 : estimateWrites(step),
+      estimatedWrites:
+        live.status === "skip-already-satisfied" ? 0 : estimateWrites(step),
     })
   }
 
@@ -922,10 +903,7 @@ async function evaluateStepLive(
   }
 }
 
-function databaseRefId(
-  services: LoreServices,
-  key: ProfileMigrationDatabaseKey
-): string {
+function databaseRefId(services: LoreServices, key: ProfileMigrationDatabaseKey): string {
   const databases = services.vault.databases
   return databases[key].dataSourceId
 }
@@ -972,7 +950,11 @@ async function dataSourceOptions(
       `Property ${property} has type ${live.type}, expected ${expectedType} for option append.`
     )
   }
-  const opts = (live as unknown as { [k: string]: { options?: Array<{ name: string; color?: string; id?: string }> } })[expectedType]?.options
+  const opts = (
+    live as unknown as {
+      [k: string]: { options?: Array<{ name: string; color?: string; id?: string }> }
+    }
+  )[expectedType]?.options
   return opts ?? []
 }
 
@@ -1128,7 +1110,10 @@ async function verifyStepIdempotent(
         )
         return has
           ? { ok: true }
-          : { ok: false, reason: `${step.database}.${step.property} not present after write.` }
+          : {
+              ok: false,
+              reason: `${step.database}.${step.property} not present after write.`,
+            }
       }
       case "add_select_options":
       case "add_multi_select_options": {
@@ -1152,7 +1137,10 @@ async function verifyStepIdempotent(
         const parsed = parseYaml(raw) as { profile?: string }
         return parsed?.profile === step.selector
           ? { ok: true }
-          : { ok: false, reason: `profile in ${options.configPath} is ${parsed?.profile}.` }
+          : {
+              ok: false,
+              reason: `profile in ${options.configPath} is ${parsed?.profile}.`,
+            }
       }
       case "backfill_empty_property":
         return { ok: true }

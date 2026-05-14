@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import {
-  formatProposedInboxStatus,
-  loadProposedInboxStatus,
-} from "./proposed-inbox.js"
+import { formatProposedInboxStatus, loadProposedInboxStatus } from "./proposed-inbox.js"
 
 describe("formatProposedInboxStatus", () => {
   it("returns no lines on an empty inbox so the section is suppressed", () => {

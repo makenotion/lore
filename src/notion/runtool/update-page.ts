@@ -126,8 +126,7 @@ export async function updatePageContentViaRunTool(
 
   return {
     ok: true,
-    deletionWarning:
-      params.allowDeletingContent === true && hasDeletionWarning(response),
+    deletionWarning: params.allowDeletingContent === true && hasDeletionWarning(response),
   }
 }
 

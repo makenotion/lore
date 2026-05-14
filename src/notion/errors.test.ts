@@ -5,7 +5,7 @@ describe("isMissingPropertyError", () => {
   it("matches the canonical SDK message shape ('Could not find property')", () => {
     const err = Object.assign(
       new Error("Could not find property with name or id: Done At"),
-      { code: "validation_error" },
+      { code: "validation_error" }
     )
     expect(isMissingPropertyError(err)).toBe(true)
   })
@@ -16,16 +16,15 @@ describe("isMissingPropertyError", () => {
     // change on either side doesn't silently flip the fallback off.
     const err = Object.assign(
       new Error("property SubjectEntity does not exist on this database"),
-      { code: "validation_error" },
+      { code: "validation_error" }
     )
     expect(isMissingPropertyError(err)).toBe(true)
   })
 
   it("matches 'not found' phrasing too", () => {
-    const err = Object.assign(
-      new Error("filter property not found: Done At"),
-      { code: "validation_error" },
-    )
+    const err = Object.assign(new Error("filter property not found: Done At"), {
+      code: "validation_error",
+    })
     expect(isMissingPropertyError(err)).toBe(true)
   })
 
@@ -36,7 +35,7 @@ describe("isMissingPropertyError", () => {
     // missing-property branch.
     const err = Object.assign(
       new Error("filter operator 'date.before' is not valid for select property"),
-      { code: "validation_error" },
+      { code: "validation_error" }
     )
     expect(isMissingPropertyError(err)).toBe(false)
   })
@@ -50,20 +49,20 @@ describe("isMissingPropertyError", () => {
       isMissingPropertyError(
         Object.assign(new Error("Internal server error"), {
           code: "internal_server_error",
-        }),
-      ),
+        })
+      )
     ).toBe(false)
     expect(
       isMissingPropertyError(
-        Object.assign(new Error("Rate limited"), { code: "rate_limited" }),
-      ),
+        Object.assign(new Error("Rate limited"), { code: "rate_limited" })
+      )
     ).toBe(false)
     expect(
       isMissingPropertyError(
         Object.assign(new Error("Service unavailable"), {
           code: "service_unavailable",
-        }),
-      ),
+        })
+      )
     ).toBe(false)
   })
 

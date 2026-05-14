@@ -151,10 +151,7 @@ export function pickCanonical(rawForms: string[]): string {
 export function groupObservationsByKey(
   observations: RawObservation[]
 ): Map<string, { rawForms: Set<string>; factIds: string[] }> {
-  const groups = new Map<
-    string,
-    { rawForms: Set<string>; factIds: string[] }
-  >()
+  const groups = new Map<string, { rawForms: Set<string>; factIds: string[] }>()
   for (const obs of observations) {
     const key = computeSubjectKey(obs.raw)
     if (!key) continue
@@ -392,10 +389,7 @@ export async function buildEntities(
     if (objectEntity && fact.objectEntityId !== objectEntity.id) {
       updates.objectEntityId = objectEntity.id
     }
-    if (
-      updates.subjectEntityId === undefined &&
-      updates.objectEntityId === undefined
-    ) {
+    if (updates.subjectEntityId === undefined && updates.objectEntityId === undefined) {
       continue
     }
 
@@ -460,10 +454,7 @@ export interface OrphanRateReport {
  * otherwise the two paths produce different orphan counts on the
  * same fact corpus.
  */
-export function orphanMetricKey(
-  subjectEntityId: string | null,
-  subject: string,
-): string {
+export function orphanMetricKey(subjectEntityId: string | null, subject: string): string {
   if (subjectEntityId) return `entity:${subjectEntityId}`
   const key = computeSubjectKey(subject)
   return key ? `key:${key}` : ""
@@ -493,7 +484,7 @@ export function foldOrphanRateGroups(
     subjectEntityId: string | null
     subject: string
     count: number
-  }>,
+  }>
 ): OrphanRateReport {
   const counts = new Map<string, number>()
   let totalFacts = 0
@@ -524,9 +515,7 @@ export function foldOrphanRateGroups(
  * NOT counted — the metric is subject-cardinality, not edge
  * cardinality.
  */
-export function computeOrphanRateFromFacts(
-  facts: ReadonlyArray<Fact>,
-): OrphanRateReport {
+export function computeOrphanRateFromFacts(facts: ReadonlyArray<Fact>): OrphanRateReport {
   const rows = facts.map((fact) => ({
     subjectEntityId: fact.subjectEntityId ?? null,
     subject: fact.subject,
@@ -550,7 +539,7 @@ export function computeOrphanRateFromFacts(
  * fixture-pinned.
  */
 export function computeOrphanRateFromAggregateRows(
-  rows: ReadonlyArray<SqlSubjectGroupCount>,
+  rows: ReadonlyArray<SqlSubjectGroupCount>
 ): OrphanRateReport {
   const folded = rows.map((row) => ({
     subjectEntityId: extractFirstRelationId(row.subjectEntityRaw),

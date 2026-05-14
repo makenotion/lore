@@ -229,7 +229,7 @@ tasks:
 describe("bench suite schema ingestion extraction fields", () => {
   it("validates the committed simulated-autosave suite", async () => {
     const loaded = await loadBenchSuite(
-      "evals/bench-suites/longmemeval-simulated-autosave.yaml",
+      "evals/bench-suites/longmemeval-simulated-autosave.yaml"
     )
     expect(loaded.suite.ingestion.strategy).toBe("simulated-autosave")
     expect(loaded.suite.agent.retrieval).toBe("wake-up-prefetch")
@@ -237,7 +237,7 @@ describe("bench suite schema ingestion extraction fields", () => {
 
   it("validates the committed support simulated-autosave profile suite", async () => {
     const loaded = await loadBenchSuite(
-      "evals/bench-suites/support-simulated-autosave.yaml",
+      "evals/bench-suites/support-simulated-autosave.yaml"
     )
     expect(loaded.suite.profile?.selector).toBe("support@1.0.0")
     expect(loaded.suite.ingestion.strategy).toBe("simulated-autosave")
@@ -284,7 +284,7 @@ describe("bench suite schema ingestion extraction fields", () => {
           "ingestion.extractionPrompt",
           "ingestion.extractionModel",
           "ingestion.extractionMaxTokens",
-        ]),
+        ])
       )
     }
   })

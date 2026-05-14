@@ -370,7 +370,7 @@ describe("resolveOperatorBaseUrl", () => {
         LORE_NOTION_BASE_URL: "https://lore.dev.notion.com",
         NOTION_BASE_URL: "https://ntn.dev.notion.com",
         NOTION_API_BASE_URL: "https://api.dev.notion.com",
-      }),
+      })
     ).toBe("https://lore.dev.notion.com")
   })
 
@@ -379,13 +379,13 @@ describe("resolveOperatorBaseUrl", () => {
       resolveOperatorBaseUrl({
         NOTION_BASE_URL: "https://api-dev.notion.com",
         NOTION_API_BASE_URL: "https://api-stg.notion.com",
-      }),
+      })
     ).toBe("https://api-dev.notion.com")
   })
 
   it("falls back to NOTION_API_BASE_URL when neither Lore nor NOTION_BASE_URL is set", () => {
     expect(
-      resolveOperatorBaseUrl({ NOTION_API_BASE_URL: "https://api-stg.notion.com" }),
+      resolveOperatorBaseUrl({ NOTION_API_BASE_URL: "https://api-stg.notion.com" })
     ).toBe("https://api-stg.notion.com")
   })
 
@@ -398,7 +398,7 @@ describe("resolveOperatorBaseUrl", () => {
       resolveOperatorBaseUrl({
         LORE_NOTION_BASE_URL: "",
         NOTION_BASE_URL: "https://api-dev.notion.com",
-      }),
+      })
     ).toBe("https://api-dev.notion.com")
   })
 
@@ -408,13 +408,13 @@ describe("resolveOperatorBaseUrl", () => {
     // path (NOTION_API_TOKEN). Without this fallback, an operator
     // who only sets NOTION_ENV would silently default to prod.
     expect(resolveOperatorBaseUrl({ NOTION_ENV: "dev" })).toBe(
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
   })
 
   it("maps NOTION_ENV=stg to the canonical staging URL", () => {
     expect(resolveOperatorBaseUrl({ NOTION_ENV: "stg" })).toBe(
-      "https://api-stg.notion.com",
+      "https://api-stg.notion.com"
     )
   })
 
@@ -422,9 +422,7 @@ describe("resolveOperatorBaseUrl", () => {
     // Explicit `NOTION_ENV=prod` resolves to the canonical prod URL
     // rather than falling through to undefined — the operator chose
     // prod, the resolver should reflect that.
-    expect(resolveOperatorBaseUrl({ NOTION_ENV: "prod" })).toBe(
-      "https://api.notion.so",
-    )
+    expect(resolveOperatorBaseUrl({ NOTION_ENV: "prod" })).toBe("https://api.notion.so")
   })
 
   it("returns undefined for unrecognized NOTION_ENV values (no silent fallback)", () => {
@@ -443,7 +441,7 @@ describe("resolveOperatorBaseUrl", () => {
       resolveOperatorBaseUrl({
         NOTION_ENV: "dev",
         LORE_NOTION_BASE_URL: "https://my-proxy.example",
-      }),
+      })
     ).toBe("https://my-proxy.example")
   })
 })

@@ -206,8 +206,8 @@ export async function resolveCurrentDecisions(
             projectId: opts.projectId,
             predicates: ["supersedes_decision"],
             limit: 25,
-          }),
-        ),
+          })
+        )
       )
 
       // Exact-match guard: a fact only contributes a successor if its
@@ -330,8 +330,8 @@ export async function resolveCanonicalDecisionLinks(
         [
           rootId,
           resolveCurrentDecisions(services, [rootId], { ...opts, caches }),
-        ] as const,
-    ),
+        ] as const
+    )
   )
   const resolutions = new Map<string, ResolvedCurrentDecisions>(fulfilled)
 

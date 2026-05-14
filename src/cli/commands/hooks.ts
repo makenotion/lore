@@ -35,7 +35,7 @@ async function readStdinToString(): Promise<string> {
  * eager Notion / Zod boot cost.
  */
 export const hooksCommand = new Command("hooks").description(
-  "Dispatch a Lore hook event (used by host assistants)",
+  "Dispatch a Lore hook event (used by host assistants)"
 )
 
 hooksCommand

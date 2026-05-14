@@ -1,14 +1,8 @@
 import { createHash } from "node:crypto"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
-import {
-  resolveProfileFromConfig,
-  type ProfilePromptKey,
-} from "../profile/index.js"
-import {
-  loadProfileEvalSuite,
-  type ProfileEvalSuite,
-} from "./schema.js"
+import { resolveProfileFromConfig, type ProfilePromptKey } from "../profile/index.js"
+import { loadProfileEvalSuite, type ProfileEvalSuite } from "./schema.js"
 import {
   collectProfileThresholdFailures,
   mergeProfileMetricCounts,
@@ -114,9 +108,10 @@ export async function runProfileEvalSuite(
   return { artifact, outPath }
 }
 
-export function buildProfileEvalConfig(input: {
-  suite: ProfileEvalSuite
-}): { profile: string; thresholds: ProfileMetricThresholds } {
+export function buildProfileEvalConfig(input: { suite: ProfileEvalSuite }): {
+  profile: string
+  thresholds: ProfileMetricThresholds
+} {
   return {
     profile: input.suite.profile,
     thresholds: input.suite.thresholds,

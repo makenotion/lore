@@ -17,13 +17,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { LoreServices } from "../services.js"
-import type {
-  Decision,
-  DecisionSummary,
-  Fact,
-  Memory,
-  TaskSummary,
-} from "../types.js"
+import type { Decision, DecisionSummary, Fact, Memory, TaskSummary } from "../types.js"
 import { findSimilarTopicGroups } from "./topic-merge.js"
 import {
   DEBT_CATEGORIES,
@@ -38,9 +32,8 @@ import {
 // up the test stub. Tests that need a real group set return one via
 // `vi.mocked(findSimilarTopicGroups).mockResolvedValue(...)`.
 vi.mock("./topic-merge.js", async () => {
-  const actual = await vi.importActual<typeof import("./topic-merge.js")>(
-    "./topic-merge.js"
-  )
+  const actual =
+    await vi.importActual<typeof import("./topic-merge.js")>("./topic-merge.js")
   return {
     ...actual,
     findSimilarTopicGroups: vi.fn(async () => []),
@@ -175,14 +168,10 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
   const projects = opts.projects ?? [{ id: "proj-a", name: "Mail" }]
   const memoriesStub = {
     queryStaleConfidence: vi.fn(async () => opts.staleConfidence ?? []),
-    listForScan: vi.fn(async () =>
-      opts.scanMemoriesByProject ?? projects.map(() => [])
-    ),
+    listForScan: vi.fn(async () => opts.scanMemoriesByProject ?? projects.map(() => [])),
     list: vi.fn(async (listOpts?: { startCursor?: string }) => {
       if (opts.ownerlessByPage && opts.ownerlessByPage.length > 0) {
-        const cursorIndex = listOpts?.startCursor
-          ? Number(listOpts.startCursor)
-          : 0
+        const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
         const page = opts.ownerlessByPage[cursorIndex] ?? []
         const hasNext = cursorIndex + 1 < opts.ownerlessByPage.length
         return {
@@ -232,9 +221,7 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
     queryOverdue: vi.fn(async () => opts.overdueTasks ?? []),
     list: vi.fn(async (listOpts?: { startCursor?: string }) => {
       if (opts.activeTasksByPage && opts.activeTasksByPage.length > 0) {
-        const cursorIndex = listOpts?.startCursor
-          ? Number(listOpts.startCursor)
-          : 0
+        const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
         const page = opts.activeTasksByPage[cursorIndex] ?? []
         const hasNext = cursorIndex + 1 < opts.activeTasksByPage.length
         return {
@@ -613,7 +600,11 @@ describe("scanDebt — category detection", () => {
 
 describe("scanDebt — sort and priority ordering", () => {
   it("sorts P1 above P2 above P3, then by score descending", async () => {
-    const orphan = makeFact({ id: "f1", confidence: "certain", projectIds: ["proj-a", "proj-b"] })
+    const orphan = makeFact({
+      id: "f1",
+      confidence: "certain",
+      projectIds: ["proj-a", "proj-b"],
+    })
     const ownerless = makeMemory({
       id: "m1",
       title: "ownerless",
@@ -876,14 +867,16 @@ describe("scanDebt — bounded probes (issue #585 review)", () => {
     // Pretend Notion has many pages — the scanner only inspects up to
     // perCategoryLimit rows then stops with the flag set.
     const buildPage = (prefix: string, n: number): TaskSummary[] =>
-      Array.from({ length: n }, (_, i) =>
-        makeMemory({
-          id: `${prefix}-${i}`,
-          title: `stale ${prefix}-${i}`,
-          kind: "task",
-          taskState: "open",
-          updatedAt: oldUpdatedAt,
-        }) as TaskSummary
+      Array.from(
+        { length: n },
+        (_, i) =>
+          makeMemory({
+            id: `${prefix}-${i}`,
+            title: `stale ${prefix}-${i}`,
+            kind: "task",
+            taskState: "open",
+            updatedAt: oldUpdatedAt,
+          }) as TaskSummary
       )
     const services = makeStubServices({
       activeTasksByPage: [buildPage("a", 3), buildPage("b", 3), buildPage("c", 3)],
@@ -936,11 +929,7 @@ describe("scanDebt — bounded probes (issue #585 review)", () => {
         agent: "",
       })
     const services = makeStubServices({
-      ownerlessByPage: [
-        [ownerless("m0")],
-        [ownerless("m1")],
-        [ownerless("m2")],
-      ],
+      ownerlessByPage: [[ownerless("m0")], [ownerless("m1")], [ownerless("m2")]],
     })
     const report = await scanDebt(services, { today: TODAY, perCategoryLimit: 100 })
     expect(services.memories.list).toHaveBeenCalledTimes(3)

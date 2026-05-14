@@ -33,15 +33,11 @@ export async function buildBenchSandbox(): Promise<BenchSandbox> {
   const sandboxName = process.env["LORE_BENCH_SANDBOX_PROJECT_NAME"]
   if (!sandboxName) {
     throw new Error(
-      "LORE_BENCH_SANDBOX_PROJECT_NAME must be set to a sandbox project NAME (the bench-runner resolves it to an id at startup).",
+      "LORE_BENCH_SANDBOX_PROJECT_NAME must be set to a sandbox project NAME (the bench-runner resolves it to an id at startup)."
     )
   }
   const services = await initServices(undefined, { driftCheck: false })
-  const parent = await resolveProjectByName(
-    services.projects,
-    sandboxName,
-    "bench",
-  )
+  const parent = await resolveProjectByName(services.projects, sandboxName, "bench")
   return {
     authSource: services.authSource,
     activeProfileSelector: services.profile.selector,
@@ -87,8 +83,7 @@ export async function buildBenchSandbox(): Promise<BenchSandbox> {
         id: memory.id,
         memoryMutationCount,
         mentionFacts,
-        notionMutationCount:
-          memoryMutationCount + mentionFacts.notionMutationCount,
+        notionMutationCount: memoryMutationCount + mentionFacts.notionMutationCount,
       }
     },
     async getWakeUpForQuery(input) {

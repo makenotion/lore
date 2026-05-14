@@ -94,44 +94,40 @@ describe("classifyWriteBudget", () => {
     "classifies %s as mutation",
     (path) => {
       expect(classifyWriteBudget(path, [])).toBe("mutation")
-    },
+    }
   )
 
   it.each(WRITE_BUDGET_DIRECT_READS as readonly string[])(
     "classifies %s as read",
     (path) => {
       expect(classifyWriteBudget(path, [])).toBe("read")
-    },
+    }
   )
 
   it.each(WRITE_BUDGET_RUNTOOL_MUTATIONS as readonly string[])(
     "classifies request type=%s as mutation",
     (type) => {
-      expect(classifyWriteBudget("request", [{ body: { type } }])).toBe(
-        "mutation",
-      )
-    },
+      expect(classifyWriteBudget("request", [{ body: { type } }])).toBe("mutation")
+    }
   )
 
   it.each(WRITE_BUDGET_RUNTOOL_READS as readonly string[])(
     "classifies request type=%s as read",
     (type) => {
       expect(classifyWriteBudget("request", [{ body: { type } }])).toBe("read")
-    },
+    }
   )
 
   it("defaults unknown request body.type to mutation (default-deny)", () => {
-    expect(
-      classifyWriteBudget("request", [{ body: { type: "unknown_tool" } }]),
-    ).toBe("mutation")
+    expect(classifyWriteBudget("request", [{ body: { type: "unknown_tool" } }])).toBe(
+      "mutation"
+    )
   })
 
   it("treats request with missing/non-object body as read passthrough", () => {
     expect(classifyWriteBudget("request", [{}])).toBe("read")
     expect(classifyWriteBudget("request", [{ body: null }])).toBe("read")
-    expect(classifyWriteBudget("request", [{ body: "not-an-object" }])).toBe(
-      "read",
-    )
+    expect(classifyWriteBudget("request", [{ body: "not-an-object" }])).toBe("read")
   })
 })
 
@@ -172,9 +168,7 @@ describe("wrapWithWriteBudget", () => {
     // Third mutation hits the `count >= limit` preflight gate —
     // throws BEFORE dispatch. State file is written by the same call
     // (first observation of the cap) before throwing.
-    await expect(c.pages.create()).rejects.toBeInstanceOf(
-      WriteBudgetExceededError,
-    )
+    await expect(c.pages.create()).rejects.toBeInstanceOf(WriteBudgetExceededError)
     const body = JSON.parse(readFileSync(statePath, "utf-8")) as {
       writeBudgetExceeded: boolean
       count: number
@@ -187,9 +181,7 @@ describe("wrapWithWriteBudget", () => {
     // mutations = limit.
     expect(body.count).toBe(2)
     // Subsequent mutation: pre-call cap check throws before dispatch.
-    await expect(c.pages.update()).rejects.toBeInstanceOf(
-      WriteBudgetExceededError,
-    )
+    await expect(c.pages.update()).rejects.toBeInstanceOf(WriteBudgetExceededError)
     // Reads continue to function past the cap.
     await expect(c.pages.retrieve()).resolves.toBeDefined()
   })
@@ -203,7 +195,7 @@ describe("wrapWithWriteBudget", () => {
     const c = client as unknown as ProxyableStub
     await c.pages.updateMarkdown()
     await expect(c.pages.updateMarkdown()).rejects.toBeInstanceOf(
-      WriteBudgetExceededError,
+      WriteBudgetExceededError
     )
   })
 
@@ -215,9 +207,9 @@ describe("wrapWithWriteBudget", () => {
     })
     const c = client as unknown as ProxyableStub
     await c.request({ body: { type: "create_pages" } })
-    await expect(
-      c.request({ body: { type: "create_pages" } }),
-    ).rejects.toBeInstanceOf(WriteBudgetExceededError)
+    await expect(c.request({ body: { type: "create_pages" } })).rejects.toBeInstanceOf(
+      WriteBudgetExceededError
+    )
   })
 
   it("does not count request body type=query_data_sources", async () => {
@@ -243,7 +235,7 @@ describe("wrapWithWriteBudget", () => {
     const c = client as unknown as ProxyableStub
     await c.request({ body: { type: "totally_new_tool" } })
     await expect(
-      c.request({ body: { type: "another_new_tool" } }),
+      c.request({ body: { type: "another_new_tool" } })
     ).rejects.toBeInstanceOf(WriteBudgetExceededError)
   })
 
@@ -252,7 +244,7 @@ describe("wrapWithWriteBudget", () => {
       wrapWithWriteBudget({} as unknown as Client, {
         limit: 0,
         stateFilePath: statePath,
-      }),
+      })
     ).toThrow(/positive integer/)
   })
 
@@ -261,7 +253,7 @@ describe("wrapWithWriteBudget", () => {
       wrapWithWriteBudget({} as unknown as Client, {
         limit: 5,
         stateFilePath: "",
-      }),
+      })
     ).toThrow(/stateFilePath/)
   })
 
@@ -275,12 +267,8 @@ describe("wrapWithWriteBudget", () => {
     })
     const c = client as unknown as ProxyableStub
     await c.pages.create()
-    await expect(c.pages.create()).rejects.toBeInstanceOf(
-      WriteBudgetExceededError,
-    )
-    await expect(c.pages.create()).rejects.toBeInstanceOf(
-      WriteBudgetExceededError,
-    )
+    await expect(c.pages.create()).rejects.toBeInstanceOf(WriteBudgetExceededError)
+    await expect(c.pages.create()).rejects.toBeInstanceOf(WriteBudgetExceededError)
     expect(writes).toHaveLength(1)
   })
 
@@ -316,9 +304,7 @@ describe("wrapWithWriteBudget", () => {
     })
     const c = wrapped.client as unknown as ProxyableStub
     await c.pages.create()
-    await expect(c.pages.create()).rejects.toBeInstanceOf(
-      WriteBudgetExceededError,
-    )
+    await expect(c.pages.create()).rejects.toBeInstanceOf(WriteBudgetExceededError)
     // Inline cap-exceeded writer fires on the rejected call BEFORE
     // dispatch; count is the successful-mutation total (limit), not
     // limit+1.

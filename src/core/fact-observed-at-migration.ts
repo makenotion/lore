@@ -168,8 +168,7 @@ async function buildPlan(
       )
     }
 
-    const observedAtToWrite =
-      fact.observedAt == null ? fact.createdAt.slice(0, 10) : null
+    const observedAtToWrite = fact.observedAt == null ? fact.createdAt.slice(0, 10) : null
     // Only seed `Invalidated At` from `Valid Until` when the row IS
     // invalidated AND lacks the transaction-time column. Live rows
     // (`validUntil == null`) intentionally leave `Invalidated At`
@@ -241,9 +240,7 @@ async function executePlan(
       } else {
         const row = batch[idx]!
         const message =
-          result.reason instanceof Error
-            ? result.reason.message
-            : String(result.reason)
+          result.reason instanceof Error ? result.reason.message : String(result.reason)
         failures.push({ factId: row.factId, message })
       }
     })

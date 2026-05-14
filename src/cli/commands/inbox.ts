@@ -34,15 +34,16 @@ import { notionPageUrl, terminalLink } from "../output.js"
 
 const DEFAULT_LIST_LIMIT = 50
 
-export const inboxCommand = new Command("inbox")
-  .description("Review the proposed-memory inbox: list, approve, reject, archive")
+export const inboxCommand = new Command("inbox").description(
+  "Review the proposed-memory inbox: list, approve, reject, archive"
+)
 
 const listCmd = new Command("list")
   .description("List memories awaiting review (Status = proposed)")
   .option("--project <name>", "Scope to a single project")
   .option(
     "-n, --limit <number>",
-    `Max rows to render (default ${DEFAULT_LIST_LIMIT}, max 100)`,
+    `Max rows to render (default ${DEFAULT_LIST_LIMIT}, max 100)`
   )
   .action(async (opts: { project?: string; limit?: string }) => {
     try {
@@ -94,7 +95,9 @@ const listCmd = new Command("list")
         console.log()
       }
       const scope = project ? ` (${project.name})` : ""
-      console.log(`${items.length} memor${items.length === 1 ? "y" : "ies"} awaiting review${scope}.`)
+      console.log(
+        `${items.length} memor${items.length === 1 ? "y" : "ies"} awaiting review${scope}.`
+      )
     } catch (err) {
       console.error("Inbox list failed:", err instanceof Error ? err.message : err)
       process.exit(1)
@@ -107,7 +110,7 @@ const approveCmd = new Command("approve")
   .option("--reason <text>", "Optional reviewer rationale recorded in the audit block")
   .option(
     "--reviewer <name>",
-    "Override the resolved reviewer name (defaults to LORE_USER_NAME → users.me)",
+    "Override the resolved reviewer name (defaults to LORE_USER_NAME → users.me)"
   )
   .action(async (memoryId: string, opts: { reason?: string; reviewer?: string }) => {
     await runReview("approve", memoryId, opts.reason, opts.reviewer)
@@ -119,7 +122,7 @@ const rejectCmd = new Command("reject")
   .option("--reason <text>", "Optional reviewer rationale recorded in the audit block")
   .option(
     "--reviewer <name>",
-    "Override the resolved reviewer name (defaults to LORE_USER_NAME → users.me)",
+    "Override the resolved reviewer name (defaults to LORE_USER_NAME → users.me)"
   )
   .action(async (memoryId: string, opts: { reason?: string; reviewer?: string }) => {
     await runReview("reject", memoryId, opts.reason, opts.reviewer)
@@ -155,7 +158,7 @@ const archiveCmd = new Command("archive")
             `current status is "${memory.status}", expected "proposed". ` +
             `'lore inbox' subcommands are inbox-only — use ` +
             `\`lore-memory action='archive'\` (MCP) or update tooling ` +
-            `for general archives.`,
+            `for general archives.`
         )
         process.exit(1)
         return
@@ -178,7 +181,7 @@ const archiveCmd = new Command("archive")
             `use \`lore-decision action='supersede'\` to retire a ` +
             `decision or \`lore-decision action='review'\` to clear ` +
             `the proposed state. The memory-inbox archive action is ` +
-            `limited to non-decision proposed memories.`,
+            `limited to non-decision proposed memories.`
         )
         process.exit(1)
         return
@@ -200,7 +203,7 @@ async function runReview(
   verdict: "approve" | "reject",
   memoryId: string,
   reason: string | undefined,
-  explicitReviewer: string | undefined,
+  explicitReviewer: string | undefined
 ): Promise<void> {
   try {
     const services = await initServices(undefined, { driftCheck: false })
@@ -210,7 +213,7 @@ async function runReview(
         `Cannot ${verdict} memory ${memoryId}: no reviewer identity available.\n` +
           `Set LORE_USER_NAME in your shell, or pass \`--reviewer <name>\` ` +
           `directly so the audit trail can record who ` +
-          `${verdict === "approve" ? "approved" : "rejected"} the row.`,
+          `${verdict === "approve" ? "approved" : "rejected"} the row.`
       )
       process.exit(1)
       return
@@ -225,7 +228,7 @@ async function runReview(
 
     const verdictLabel = verdict === "approve" ? "Approved" : "Rejected"
     console.log(
-      `${verdictLabel} memory ${memoryId} (status: proposed → ${result.memory.status})`,
+      `${verdictLabel} memory ${memoryId} (status: proposed → ${result.memory.status})`
     )
     console.log(`  Reviewer: ${reviewer}`)
     if (reason && reason.trim().length > 0) {
@@ -239,23 +242,18 @@ async function runReview(
     // happened but audit is missing" without parsing the message
     // string.
     if (err instanceof MemoryReviewAuditError) {
-      console.error(
-        `Inbox ${verdict} completed with audit-trail failure: ${err.message}`,
-      )
+      console.error(`Inbox ${verdict} completed with audit-trail failure: ${err.message}`)
       process.exit(2)
       return
     }
-    console.error(
-      `Inbox ${verdict} failed:`,
-      err instanceof Error ? err.message : err,
-    )
+    console.error(`Inbox ${verdict} failed:`, err instanceof Error ? err.message : err)
     process.exit(1)
   }
 }
 
 async function resolveReviewerIdentity(
   services: LoreServices,
-  explicit: string | undefined,
+  explicit: string | undefined
 ): Promise<string | null> {
   const trimmedExplicit = explicit?.trim()
   if (trimmedExplicit && trimmedExplicit.length > 0) return trimmedExplicit
@@ -263,10 +261,7 @@ async function resolveReviewerIdentity(
   return resolved && resolved.trim().length > 0 ? resolved.trim() : null
 }
 
-async function resolveProject(
-  services: LoreServices,
-  raw: string | undefined,
-) {
+async function resolveProject(services: LoreServices, raw: string | undefined) {
   const explicitName = validateExplicitProjectScopeName(raw, "--project", {
     listHint: "run `lore status projects` to list configured projects",
   })

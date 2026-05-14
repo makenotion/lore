@@ -189,8 +189,7 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
       },
     })
     expect(out).toEqual({
-      SubjectEntity:
-        '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
+      SubjectEntity: '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
     })
   })
 
@@ -276,10 +275,8 @@ describe("convertNotionRestToSqliteProperties — full mentions-fact payload", (
       DedupKey: "abc123dedup",
       SubjectKey:
         "webview: customschemehandler.update(with:) must be unconditional in updateuiview",
-      SubjectEntity:
-        '["https://www.notion.so/cccccccccccccccccccccccccccccccc"]',
-      ObjectEntity:
-        '["https://www.notion.so/dddddddddddddddddddddddddddddddd"]',
+      SubjectEntity: '["https://www.notion.so/cccccccccccccccccccccccccccccccc"]',
+      ObjectEntity: '["https://www.notion.so/dddddddddddddddddddddddddddddddd"]',
     })
   })
 })

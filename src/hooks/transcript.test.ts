@@ -85,7 +85,7 @@ describe("transcript helpers", () => {
 
     expect(countTranscriptUserMessages(transcript)).toBe(1)
     expect(extractTranscriptSessionContent(transcript)).toBe(
-      "User: Fix Lore for Codex.\n\nAssistant: I'm checking Codex docs first.",
+      "User: Fix Lore for Codex.\n\nAssistant: I'm checking Codex docs first."
     )
   })
 

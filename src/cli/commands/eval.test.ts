@@ -88,21 +88,18 @@ describe("parseEvalRunCliOptions", () => {
     { flag: "minLift", value: "0.5" },
     { flag: "maxHarm", value: "0" },
     { flag: "project", value: "Widget" },
-  ])(
-    "rejects --$flag after peeking a YAML-declared task suite",
-    ({ flag, value }) => {
-      const parsed = parseEvalRunCliOptions({ [flag]: value })
-      expect(parsed.ok).toBe(true)
+  ])("rejects --$flag after peeking a YAML-declared task suite", ({ flag, value }) => {
+    const parsed = parseEvalRunCliOptions({ [flag]: value })
+    expect(parsed.ok).toBe(true)
 
-      const result = validateEvalRunRunnerCompatibility("task", {
-        [flag]: value,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.message).toContain("not supported with --runner task")
-      }
+    const result = validateEvalRunRunnerCompatibility("task", {
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner task")
     }
-  )
+  })
 
   it.each([
     { flag: "baseline", value: "evals/baselines/x.json" },
@@ -125,21 +122,18 @@ describe("parseEvalRunCliOptions", () => {
     { flag: "minLift", value: "0.5" },
     { flag: "maxHarm", value: "0" },
     { flag: "project", value: "Widget" },
-  ])(
-    "rejects --$flag after peeking a YAML-declared profile suite",
-    ({ flag, value }) => {
-      const parsed = parseEvalRunCliOptions({ [flag]: value })
-      expect(parsed.ok).toBe(true)
+  ])("rejects --$flag after peeking a YAML-declared profile suite", ({ flag, value }) => {
+    const parsed = parseEvalRunCliOptions({ [flag]: value })
+    expect(parsed.ok).toBe(true)
 
-      const result = validateEvalRunRunnerCompatibility("profile", {
-        [flag]: value,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.message).toContain("not supported with --runner profile")
-      }
+    const result = validateEvalRunRunnerCompatibility("profile", {
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner profile")
     }
-  )
+  })
 
   it("requires --project when --runner notion is set", () => {
     const result = parseEvalRunCliOptions({ runner: "notion" })

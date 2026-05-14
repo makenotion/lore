@@ -2,7 +2,12 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
 import { z } from "zod"
 import type { EvalRunArtifact, EvalTaskResult } from "./runner.js"
-import { EVAL_RUNNERS, EVAL_SURFACES, type EvalRunner, type EvalSurface } from "./schema.js"
+import {
+  EVAL_RUNNERS,
+  EVAL_SURFACES,
+  type EvalRunner,
+  type EvalSurface,
+} from "./schema.js"
 
 /**
  * Snapshot schema version. Bump when the baseline shape changes; the
@@ -180,9 +185,7 @@ export function buildEvalBaselineSnapshot(
       failedResults: artifact.summary.failedResults,
       retrieval: { ...artifact.summary.retrieval },
     },
-    results: artifact.results
-      .map(toBaselineResult)
-      .sort(compareBaselineResultKeys),
+    results: artifact.results.map(toBaselineResult).sort(compareBaselineResultKeys),
   }
 }
 
@@ -309,18 +312,14 @@ export function compareToEvalBaseline(input: {
 
   const regressions: string[] = []
   if (newFailures.length > 0) {
-    regressions.push(
-      `${newFailures.length} previously-passing result(s) now failing`
-    )
+    regressions.push(`${newFailures.length} previously-passing result(s) now failing`)
   }
   if (removedResults.length > 0) {
     regressions.push(
       `${removedResults.length} baseline result(s) missing from the current run (refresh baseline if intentional)`
     )
   }
-  if (
-    input.artifact.summary.failedResults > input.baseline.summary.failedResults
-  ) {
+  if (input.artifact.summary.failedResults > input.baseline.summary.failedResults) {
     regressions.push(
       `failedResults increased from ${input.baseline.summary.failedResults} to ${input.artifact.summary.failedResults}`
     )
@@ -340,9 +339,7 @@ export function compareToEvalBaseline(input: {
     // The baseline had no harm signal; any current harm is a regression
     // because the previous run didn't measure it (e.g., scenarios were
     // newly added). Treat it as a regression so an operator notices.
-    regressions.push(
-      `memoryHarm now ${harmChange.current} (baseline had no harm signal)`
-    )
+    regressions.push(`memoryHarm now ${harmChange.current} (baseline had no harm signal)`)
   }
 
   return {
@@ -360,9 +357,7 @@ export function compareToEvalBaseline(input: {
 
 export function formatBaselineDriftReport(report: BaselineDriftReport): string {
   const lines: string[] = []
-  lines.push(
-    `Baseline: ${report.baselinePath} (captured ${report.baselineCapturedAt})`
-  )
+  lines.push(`Baseline: ${report.baselinePath} (captured ${report.baselineCapturedAt})`)
   if (report.regressed) {
     lines.push("Drift: REGRESSED")
     for (const reason of report.regressions) lines.push(`  - ${reason}`)
@@ -372,9 +367,7 @@ export function formatBaselineDriftReport(report: BaselineDriftReport): string {
   if (report.newFailures.length > 0) {
     lines.push(`New failures (${report.newFailures.length}):`)
     for (const failure of report.newFailures) {
-      lines.push(
-        `  - ${failure.taskId} / ${failure.scenario} (${failure.surface})`
-      )
+      lines.push(`  - ${failure.taskId} / ${failure.scenario} (${failure.surface})`)
     }
   }
   if (report.fixedFailures.length > 0) {
@@ -393,9 +386,7 @@ export function formatBaselineDriftReport(report: BaselineDriftReport): string {
     }
   }
   if (report.removedResults.length > 0) {
-    lines.push(
-      `Removed results (${report.removedResults.length}, refresh baseline):`
-    )
+    lines.push(`Removed results (${report.removedResults.length}, refresh baseline):`)
     for (const item of report.removedResults.slice(0, 5)) {
       lines.push(`  - ${item.taskId} / ${item.scenario} (${item.surface})`)
     }
@@ -475,10 +466,7 @@ function toBaselineResult(result: EvalTaskResult): EvalBaselineResult {
   }
 }
 
-function compareBaselineResultKeys(
-  a: EvalBaselineResult,
-  b: EvalBaselineResult
-): number {
+function compareBaselineResultKeys(a: EvalBaselineResult, b: EvalBaselineResult): number {
   return resultKey(a).localeCompare(resultKey(b))
 }
 
@@ -492,11 +480,8 @@ function compareBaselineResultKeys(
  * had a unique `(taskId, scenario)` per surface.
  */
 function resultKey(
-  result:
-    | { taskId: string; scenario: string; surface: EvalSurface }
-    | EvalTaskResult
+  result: { taskId: string; scenario: string; surface: EvalSurface } | EvalTaskResult
 ): string {
-  const surface =
-    "surface" in result ? result.surface : result.retrieval.surface
+  const surface = "surface" in result ? result.surface : result.retrieval.surface
   return `${result.taskId}::${result.scenario}::${surface}`
 }

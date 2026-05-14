@@ -41,9 +41,7 @@ vi.mock("node:fs", async () => {
 
 import { LockPathTooLongError, tryAcquireSessionLock } from "./lock.js"
 
-function makeFsError(
-  code: "ENAMETOOLONG" | "ENOENT" | "ENOSPC"
-): NodeJS.ErrnoException {
+function makeFsError(code: "ENAMETOOLONG" | "ENOENT" | "ENOSPC"): NodeJS.ErrnoException {
   const err = new Error(code) as NodeJS.ErrnoException
   err.code = code
   return err
@@ -212,9 +210,7 @@ describe("tryAcquireSessionLock — LockPathTooLongError defense (#485)", () => 
       throw enospc
     })
 
-    expect(() => tryAcquireSessionLock("session-disk-full", process.pid)).toThrow(
-      enospc
-    )
+    expect(() => tryAcquireSessionLock("session-disk-full", process.pid)).toThrow(enospc)
   })
 
   it("throws LockPathTooLongError when ensureStateDirSync itself throws ENAMETOOLONG", () => {

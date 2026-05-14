@@ -25,10 +25,7 @@ import type {
 } from "../types.js"
 import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
 import { buildFactProps, FACT_PROPS } from "../notion/schema.js"
-import {
-  extractMissingPropertyName,
-  isMissingPropertyError,
-} from "../notion/errors.js"
+import { extractMissingPropertyName, isMissingPropertyError } from "../notion/errors.js"
 import {
   projectOrUnscopedFilter,
   withDefaultScopeFilter,
@@ -614,11 +611,11 @@ function logRunToolBatchCreatesAuthFallbackOnce(err: unknown): void {
   // the operator action ("check your auth source") is the same.
   const status =
     typeof (err as { status?: unknown }).status === "number"
-      ? ((err as { status: number }).status)
+      ? (err as { status: number }).status
       : undefined
   const code =
     typeof (err as { code?: unknown }).code === "string"
-      ? ((err as { code: string }).code)
+      ? (err as { code: string }).code
       : undefined
   if (status !== 401 && status !== 403 && code !== "restricted_resource") {
     return
@@ -972,7 +969,8 @@ export class FactService {
           factId: page.id,
           subjectEntityId:
             extractRelationIds(page.properties[FACT_PROPS.SUBJECT_ENTITY])[0] ?? null,
-          objectEntityId: extractRelationIds(page.properties[FACT_PROPS.OBJECT_ENTITY])[0] ?? null,
+          objectEntityId:
+            extractRelationIds(page.properties[FACT_PROPS.OBJECT_ENTITY])[0] ?? null,
         })
       }
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
@@ -1370,9 +1368,7 @@ export class FactService {
       // historically achieved via `Promise.all` with inline
       // `.then(success, failure)` — same shape, fewer call-site
       // boilerplate per emitter.
-      return await Promise.allSettled(
-        inputs.map((input) => this.createWithDedup(input))
-      )
+      return await Promise.allSettled(inputs.map((input) => this.createWithDedup(input)))
     }
 
     // Flag-on path: batch fresh creates via RunTool. Acquire every
@@ -1399,9 +1395,7 @@ export class FactService {
   private async createBatchWithDedupRunToolLocked(
     inputs: CreateFactInput[]
   ): Promise<PromiseSettledResult<CreateFactResult>[]> {
-    const results: PromiseSettledResult<CreateFactResult>[] = new Array(
-      inputs.length
-    )
+    const results: PromiseSettledResult<CreateFactResult>[] = new Array(inputs.length)
 
     type ReadyMiss = {
       idx: number
@@ -1425,8 +1419,7 @@ export class FactService {
             subject: decodeTextEntities(input.subject),
             object: decodeTextEntities(input.object),
           }
-          const relationSafeInput =
-            await this.dropArchivedEntityRelations(decodedInput)
+          const relationSafeInput = await this.dropArchivedEntityRelations(decodedInput)
           const reviewBy = relationSafeInput.reviewBy
           const dedupKey = computeFactDedupKey({
             subject: relationSafeInput.subject,
@@ -1613,9 +1606,7 @@ export class FactService {
             // response for. Cost: N probes per failed batch.
             // Benefit: idempotent recovery from network drops on
             // an undelivered RunTool response.
-            const result = await this.createWithDedupLocked(
-              m.relationSafeInput
-            )
+            const result = await this.createWithDedupLocked(m.relationSafeInput)
             results[m.idx] = { status: "fulfilled", value: result }
           } else {
             const result = await this.freshCreateAfterDedupMiss({
@@ -1925,8 +1916,7 @@ export class FactService {
       })
     }
 
-    const audience =
-      scope?.audience && scope.audience.length > 0 ? scope.audience : null
+    const audience = scope?.audience && scope.audience.length > 0 ? scope.audience : null
     if (audience === null) {
       filters.push({
         property: FACT_PROPS.AUDIENCE,
@@ -2598,10 +2588,7 @@ export class FactService {
    * thousands of orphan rows when the report will only surface the
    * first N.
    */
-  async queryOrphans(opts?: {
-    projectId?: string
-    limit?: number
-  }): Promise<Fact[]> {
+  async queryOrphans(opts?: { projectId?: string; limit?: number }): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
       { property: FACT_PROPS.SOURCE, relation: { is_empty: true } },
       { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
@@ -2737,7 +2724,8 @@ export class FactService {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        [FACT_PROPS.REVIEW_BY]: reviewBy === null ? { date: null } : { date: { start: reviewBy } },
+        [FACT_PROPS.REVIEW_BY]:
+          reviewBy === null ? { date: null } : { date: { start: reviewBy } },
       },
     })
   }
@@ -3150,8 +3138,7 @@ export class FactService {
     narrowScopeOutOfContext: number
   }> {
     const today = todayUtc()
-    const horizonMs =
-      Date.parse(today) + EXPIRING_SOON_DAYS * MS_PER_DAY
+    const horizonMs = Date.parse(today) + EXPIRING_SOON_DAYS * MS_PER_DAY
     const horizon = new Date(horizonMs).toISOString().slice(0, 10)
     let expired = 0
     let expiringSoon = 0
@@ -3343,7 +3330,10 @@ export class FactService {
           }
 
     const filter = {
-      and: [{ property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } }, predicateClause],
+      and: [
+        { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
+        predicateClause,
+      ],
     }
 
     let count = 0
@@ -3468,7 +3458,10 @@ export class FactService {
       invalidatedBySourceMemoryId: invalidatedByIds[0] ?? null,
       reviewBy: extractDate(props[FACT_PROPS.REVIEW_BY]),
       sourceMemoryId: sourceIds[0] ?? null,
-      confidence: extractSelect(props[FACT_PROPS.CONFIDENCE], "certain") as FactConfidence,
+      confidence: extractSelect(
+        props[FACT_PROPS.CONFIDENCE],
+        "certain"
+      ) as FactConfidence,
       // DEFERRED-02 — system-managed numeric mirror of the categorical
       // `Confidence` select. `null` on unmigrated rows; populated by
       // `touchOnRead` / `decrementConfidence` / the build-fact-confidence-
@@ -3491,9 +3484,7 @@ export class FactService {
  * "all-empty → null" rule so rows without scope columns deserialize
  * as null.
  */
-function extractFactScope(
-  props: PageObjectResponse["properties"]
-): MemoryScope | null {
+function extractFactScope(props: PageObjectResponse["properties"]): MemoryScope | null {
   const kindProp = props[FACT_PROPS.SCOPE_KIND]
   const kind =
     kindProp && kindProp.type === "select" && kindProp.select
@@ -3589,8 +3580,7 @@ export function scopesMatchForMerge(
   const existingKey = existing.key.trim().length > 0 ? existing.key : null
   const incomingKey =
     incoming.key !== undefined && incoming.key.trim().length > 0 ? incoming.key : null
-  const existingAudience =
-    existing.audience.trim().length > 0 ? existing.audience : null
+  const existingAudience = existing.audience.trim().length > 0 ? existing.audience : null
   const incomingAudience =
     incoming.audience !== undefined && incoming.audience.trim().length > 0
       ? incoming.audience
@@ -3616,9 +3606,7 @@ function isMeaningful(value: string | undefined): boolean {
  * docstring carries the rationale on keeping the bundle-to-primitive
  * translation outside the builder.
  */
-function factScopeInputToBuilderProps(
-  scope: MemoryScopeInput | undefined
-): {
+function factScopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
   scopeKind?: string | null
   scopeKey?: string
   audience?: string

@@ -361,7 +361,9 @@ memoryKinds:
 `,
       },
       (dir) => {
-        expect(() => loadProfileFromRoot(dir)).toThrow(/unsupported schema field "memoryKinds"/)
+        expect(() => loadProfileFromRoot(dir)).toThrow(
+          /unsupported schema field "memoryKinds"/
+        )
       }
     )
     withProfileDir(
@@ -374,7 +376,9 @@ databases:
 `,
       },
       (dir) => {
-        expect(() => loadProfileFromRoot(dir)).toThrow(/unsupported schema database field "memores"/)
+        expect(() => loadProfileFromRoot(dir)).toThrow(
+          /unsupported schema database field "memores"/
+        )
       }
     )
     withProfileDir(
@@ -387,7 +391,9 @@ databases:
 `,
       },
       (dir) => {
-        expect(() => loadProfileFromRoot(dir)).toThrow(/unsupported schema database field "propreties"/)
+        expect(() => loadProfileFromRoot(dir)).toThrow(
+          /unsupported schema database field "propreties"/
+        )
       }
     )
   })

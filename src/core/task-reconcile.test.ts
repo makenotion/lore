@@ -97,7 +97,7 @@ describe("composeReconcileQuery", () => {
       synopsis: "Outlook classifier review",
     })
     expect(composeReconcileQuery(task)).toBe(
-      "Track PR-1234 review PR-1234 Outlook classifier review",
+      "Track PR-1234 review PR-1234 Outlook classifier review"
     )
   })
 
@@ -121,9 +121,7 @@ describe("composeReconcileQuery", () => {
       entity: "PR-1234",
       synopsis: "",
     })
-    expect(composeReconcileQuery(task)).toBe(
-      "Track outlook classifier PR-1234",
-    )
+    expect(composeReconcileQuery(task)).toBe("Track outlook classifier PR-1234")
   })
 })
 
@@ -305,15 +303,11 @@ describe("reconcileActiveTasks — orchestration", () => {
     candidatesByTask: Record<string, Memory[]>
   }): ReconcileServices {
     const tasksList = vi.fn(async () => ({ items: opts.activeTasks }))
-    const memoriesSearch = vi.fn(
-      async ({ query }: { query: string }) => {
-        // Find the task this search is for by matching the composed query.
-        const task = opts.activeTasks.find(
-          (t) => composeReconcileQuery(t) === query,
-        )
-        return task ? (opts.candidatesByTask[task.id] ?? []) : []
-      },
-    )
+    const memoriesSearch = vi.fn(async ({ query }: { query: string }) => {
+      // Find the task this search is for by matching the composed query.
+      const task = opts.activeTasks.find((t) => composeReconcileQuery(t) === query)
+      return task ? (opts.candidatesByTask[task.id] ?? []) : []
+    })
     const memoriesMaterialize = vi.fn(async (m: Memory) => m)
     return {
       tasks: { list: tasksList } as unknown as ReconcileServices["tasks"],
@@ -567,7 +561,7 @@ describe("reconcileActiveTasks — orchestration", () => {
     }
     const result = await reconcileActiveTasks(services, { today: TODAY })
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ includeContent: false, mode: "hybrid" }),
+      expect.objectContaining({ includeContent: false, mode: "hybrid" })
     )
     expect(memoriesMaterialize).toHaveBeenCalledTimes(1)
     expect(result.candidates).toHaveLength(1)
@@ -610,7 +604,7 @@ describe("reconcileActiveTasks — orchestration", () => {
     const task = makeTask({ id: "t1", entity: "PR-1234" })
     const tasksList = vi.fn(async () => ({ items: [task] }))
     const memoriesSearch = vi.fn<(args: { limit: number }) => Promise<Memory[]>>(
-      async () => [],
+      async () => []
     )
     const memoriesMaterialize = vi.fn(async (m: Memory) => m)
     const services: ReconcileServices = {
@@ -661,10 +655,10 @@ describe("reconcileActiveTasks — orchestration", () => {
     // `nextCursor` set, the second without; assert both pages were
     // exhausted and the count matches the safety cap correctly.
     const page1Tasks = Array.from({ length: 100 }, (_, i) =>
-      makeTask({ id: `t1-${i}`, entity: "" }),
+      makeTask({ id: `t1-${i}`, entity: "" })
     )
     const page2Tasks = Array.from({ length: 50 }, (_, i) =>
-      makeTask({ id: `t2-${i}`, entity: "" }),
+      makeTask({ id: `t2-${i}`, entity: "" })
     )
     const tasksList = vi
       .fn()
@@ -704,14 +698,14 @@ describe("reconcileActiveTasks — orchestration", () => {
         id: `slow-${i}`,
         title: `Slow task ${i}`,
         entity: "",
-      }),
+      })
     )
     const fastTasks = Array.from({ length: 8 }, (_, i) =>
       makeTask({
         id: `fast-${i}`,
         title: `Fast task ${i}`,
         entity: "",
-      }),
+      })
     )
     const tasksList = vi.fn(async () => ({
       items: [...slowTasks, ...fastTasks],
@@ -764,10 +758,10 @@ describe("reconcileActiveTasks — orchestration", () => {
 describe("formatReconcileOutput", () => {
   it("renders the empty-set form when no candidates surface, regardless of activeTasksScanned", () => {
     expect(formatReconcileOutput([], 0, TODAY)).toBe(
-      "## 0 candidate closures (out of 0 active tasks scanned)",
+      "## 0 candidate closures (out of 0 active tasks scanned)"
     )
     expect(formatReconcileOutput([], 5, TODAY)).toBe(
-      "## 0 candidate closures (out of 5 active tasks scanned)",
+      "## 0 candidate closures (out of 5 active tasks scanned)"
     )
   })
 
@@ -787,9 +781,9 @@ describe("formatReconcileOutput", () => {
     const candidate = scoreCandidate(task, memory, TODAY_MS)
     const rendered = formatReconcileOutput([candidate], 1, TODAY)
     expect(rendered).toContain("## 1 candidate closure (out of 1 active task scanned)")
-    expect(rendered).toContain("### 1. Task t-abc — \"Track PR-1234\" [in-progress")
+    expect(rendered).toContain('### 1. Task t-abc — "Track PR-1234" [in-progress')
     expect(rendered).toContain("Best match: memory m-xyz")
-    expect(rendered).toContain("Cue: \"")
+    expect(rendered).toContain('Cue: "')
     expect(rendered).toContain("Close: lore-task({ action: 'close', taskId: 't-abc' })")
   })
 })

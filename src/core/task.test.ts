@@ -1421,13 +1421,11 @@ describe("TaskService.countClosedSince", () => {
     // must propagate so the caller surfaces the failure rather than
     // showing "no closures" to the operator while the vault is
     // actually broken.
-    const dataSourceQuery = vi
-      .fn()
-      .mockRejectedValue(
-        Object.assign(new Error("Internal server error"), {
-          code: "internal_server_error",
-        })
-      )
+    const dataSourceQuery = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Internal server error"), {
+        code: "internal_server_error",
+      })
+    )
     const client = {
       pages: {},
       dataSources: { query: dataSourceQuery },

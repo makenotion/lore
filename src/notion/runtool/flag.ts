@@ -100,7 +100,7 @@ function emitUnrecognizedValueWarning(name: string, raw: string): void {
   process.stderr.write(
     `[lore] notion-runtool warn: ignoring unrecognized ${name} value ` +
       `${JSON.stringify(raw)}; falling through to ${describeFlagDefault(name)}. ` +
-      `Use ${name}=0 or ${name}=1 to set explicitly.\n`,
+      `Use ${name}=0 or ${name}=1 to set explicitly.\n`
   )
 }
 
@@ -142,9 +142,7 @@ export function isRunToolEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
  * the per-feature switch available for narrower experiments (e.g.
  * disable block edits but keep search and filter on).
  */
-export function isRunToolBlockEditEnabled(
-  env: NodeJS.ProcessEnv = process.env
-): boolean {
+export function isRunToolBlockEditEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_BLOCK_EDIT")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)
@@ -161,9 +159,7 @@ export function isRunToolBlockEditEnabled(
  * `lore conflicts scan`'s already-judged pre-filter. Same
  * inheritance posture as the block-edit sub-flag.
  */
-export function isRunToolFilterSqlEnabled(
-  env: NodeJS.ProcessEnv = process.env
-): boolean {
+export function isRunToolFilterSqlEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_FILTER_SQL")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)
@@ -182,9 +178,7 @@ export function isRunToolFilterSqlEnabled(
  * falls back to REST per-call on those windows. Same parent-inherit
  * posture as the block-edit and filter-sql sub-flags.
  */
-export function isRunToolSearchEnabled(
-  env: NodeJS.ProcessEnv = process.env
-): boolean {
+export function isRunToolSearchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_SEARCH")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)
@@ -210,9 +204,7 @@ export function isRunToolSearchEnabled(
  * verified on their target workspace tier — the capability-gate
  * subsection of the runtool README covers the operator runbook.
  */
-export function isRunToolAggregateEnabled(
-  env: NodeJS.ProcessEnv = process.env
-): boolean {
+export function isRunToolAggregateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_AGGREGATE")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)

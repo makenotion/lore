@@ -35,10 +35,7 @@ import {
   resetNtnProbeCache,
   runNtnLogin,
 } from "../../auth/ntn.js"
-import {
-  ntnEnvFromBaseUrl,
-  verifyVaultAccess,
-} from "../../auth/oauth.js"
+import { ntnEnvFromBaseUrl, verifyVaultAccess } from "../../auth/oauth.js"
 import {
   classifyTokenPrefix,
   describeTokenPrefix,
@@ -89,21 +86,15 @@ export function pickAuthAction(opts: AuthOpts): {
 export const authCommand = new Command("auth")
   .description("Authenticate with Notion and inspect auth state")
   .option("--status", "Show authentication status (default)")
-  .option(
-    "--login",
-    "Run `ntn login` (auto-installs ntn if missing) + vault preflight",
-  )
+  .option("--login", "Run `ntn login` (auto-installs ntn if missing) + vault preflight")
   .option("--whoami", "Print the authenticated identity (one line)")
   .option("--logout", "Show how to log out of the active auth source")
-  .option(
-    "-y, --yes",
-    'Auto-confirm prompts (e.g., "Install ntn? [Y/n]")',
-  )
+  .option("-y, --yes", 'Auto-confirm prompts (e.g., "Install ntn? [Y/n]")')
   .action(async (opts: AuthOpts) => {
     const { action, ignored } = pickAuthAction(opts)
     if (ignored.length > 0) {
       console.warn(
-        `Warning: multiple auth flags supplied; running --${action} and ignoring ${ignored.join(", ")}.`,
+        `Warning: multiple auth flags supplied; running --${action} and ignoring ${ignored.join(", ")}.`
       )
     }
     switch (action) {
@@ -176,9 +167,7 @@ export async function runStatus(): Promise<void> {
       if (!isNtnInstalled()) {
         console.log("")
         console.log("  Note: `ntn` does not appear to be installed.")
-        console.log(
-          "  Install per the rollout runbook: docs/team-rollout.md",
-        )
+        console.log("  Install per the rollout runbook: docs/team-rollout.md")
       }
     }
     const workspaces = await listNtnWorkspaces()
@@ -187,7 +176,7 @@ export async function runStatus(): Promise<void> {
       console.log(`ntn workspaces with tokens: ${workspaces.length}`)
       console.log(`  ${workspaces.join(", ")}`)
       console.log(
-        "(Run `lore auth --status` from inside a Lore project to see vault-specific details.)",
+        "(Run `lore auth --status` from inside a Lore project to see vault-specific details.)"
       )
     }
     return
@@ -251,9 +240,7 @@ export async function runStatus(): Promise<void> {
   const client = createLimitedClient(createClient(auth.token, auth.baseUrl))
   const result = await verifyVaultAccess(client, config.vault.pageId)
   if (result.kind === "ok") {
-    console.log(
-      `  ✓ Vault page accessible: ${result.pageTitle ?? config.vault.pageId}`,
-    )
+    console.log(`  ✓ Vault page accessible: ${result.pageTitle ?? config.vault.pageId}`)
   } else if (result.kind === "not-found") {
     console.log("  ✗ Vault page NOT accessible")
     console.log(`    ${result.message}`)
@@ -292,40 +279,38 @@ function printStatusVaultRecovery(
   if (auth.source === "env-notion-api-token") {
     if (auth.token.startsWith("secret_")) {
       console.log(
-        "  The token shape is `secret_…` — an integration token from notion.so/profile/integrations, NOT a PAT.",
+        "  The token shape is `secret_…` — an integration token from notion.so/profile/integrations, NOT a PAT."
       )
       console.log(
-        "  Rotate to a PAT from notion.so/developers/tokens for per-user isolation.",
+        "  Rotate to a PAT from notion.so/developers/tokens for per-user isolation."
       )
       console.log("")
     }
     console.log("  Recommended for NOTION_API_TOKEN / PAT:")
     if (kind === "unauthorized") {
+      console.log("    1. Rotate the PAT at https://www.notion.so/developers/tokens.")
       console.log(
-        "    1. Rotate the PAT at https://www.notion.so/developers/tokens.",
+        "       The current value may be expired, revoked, or scoped to the wrong workspace."
       )
       console.log(
-        "       The current value may be expired, revoked, or scoped to the wrong workspace.",
-      )
-      console.log(
-        "    2. Confirm the vault page is shared with the PAT's owning Notion identity.",
+        "    2. Confirm the vault page is shared with the PAT's owning Notion identity."
       )
     } else {
       console.log(
-        `    1. Confirm the PAT was created in the workspace containing ${vaultPageId}.`,
+        `    1. Confirm the PAT was created in the workspace containing ${vaultPageId}.`
       )
       console.log(
-        "       Create or rotate it at https://www.notion.so/developers/tokens.",
+        "       Create or rotate it at https://www.notion.so/developers/tokens."
       )
       console.log(
-        "    2. Confirm the vault page is shared with the PAT's owning Notion identity.",
+        "    2. Confirm the vault page is shared with the PAT's owning Notion identity."
       )
     }
     console.log(
-      "       If you can't open the page in Notion's UI, the PAT can't read it either.",
+      "       If you can't open the page in Notion's UI, the PAT can't read it either."
     )
     console.log(
-      "    3. Export the PAT as NOTION_API_TOKEN, then re-run `lore auth --status`.",
+      "    3. Export the PAT as NOTION_API_TOKEN, then re-run `lore auth --status`."
     )
     return
   }
@@ -334,17 +319,17 @@ function printStatusVaultRecovery(
   if (kind === "unauthorized") {
     console.log("    Run `lore auth --login` to issue a fresh ntn token.")
     console.log(
-      "    If the issue persists, check that your Notion identity is a member of the workspace.",
+      "    If the issue persists, check that your Notion identity is a member of the workspace."
     )
     return
   }
 
   console.log(
-    `    1. Run \`lore auth --login\` and pick the workspace containing ${vaultPageId}.`,
+    `    1. Run \`lore auth --login\` and pick the workspace containing ${vaultPageId}.`
   )
   console.log("    2. Confirm the vault page is shared with your Notion identity.")
   console.log(
-    "       If you can't open it in Notion's UI, the ntn token can't read it either.",
+    "       If you can't open it in Notion's UI, the ntn token can't read it either."
   )
 }
 
@@ -399,9 +384,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   const found = await findConfigFile(cwd)
 
   if (!found) {
-    console.error(
-      "No .lore.yaml found. `lore auth --login` requires a vault context.",
-    )
+    console.error("No .lore.yaml found. `lore auth --login` requires a vault context.")
     console.error("Run `lore init` first (or `cd` to a Lore-managed project).")
     process.exit(1)
     return
@@ -417,11 +400,9 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   if (!isNtnInstalled()) {
     if (!opts.yes && !process.stdin.isTTY) {
       console.error(
-        "ntn is not installed and `lore auth --login` is running in a non-interactive context.",
+        "ntn is not installed and `lore auth --login` is running in a non-interactive context."
       )
-      console.error(
-        "Pass --yes to consent to the canonical install non-interactively:",
-      )
+      console.error("Pass --yes to consent to the canonical install non-interactively:")
       console.error(`  ${NTN_INSTALL_COMMAND}`)
       process.exit(1)
       return
@@ -435,9 +416,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
 
     const okToInstall = opts.yes || (await confirmPrompt("Install ntn now?"))
     if (!okToInstall) {
-      console.error(
-        "ntn is required for `lore auth --login`. Install manually:",
-      )
+      console.error("ntn is required for `lore auth --login`. Install manually:")
       console.error(`  ${NTN_INSTALL_COMMAND}`)
       process.exit(1)
       return
@@ -446,9 +425,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
     const installResult = await installNtn()
     if (installResult.kind !== "success") {
       console.error("ntn install failed.")
-      console.error(
-        "Check your network and shell, then re-run `lore auth --login`.",
-      )
+      console.error("Check your network and shell, then re-run `lore auth --login`.")
       process.exit(1)
       return
     }
@@ -461,7 +438,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
     const installed = getNtnVersion()
     console.log(
       `Note: your ntn version (${installed ?? "unknown"}) is below Lore's tested minimum (${MIN_NTN_VERSION}). ` +
-        "Lore will proceed, but if you hit auth resolution issues, run `ntn update` and try again.",
+        "Lore will proceed, but if you hit auth resolution issues, run `ntn update` and try again."
     )
     console.log("")
   }
@@ -490,13 +467,13 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   const ntnEnv: NtnEnv | undefined = shellNtnEnv ?? inferredNtnEnv
   if (!shellNtnEnv && inferredNtnEnv) {
     console.log(
-      `(Inferring \`NOTION_ENV=${inferredNtnEnv}\` from auth.baseUrl in .lore.yaml.)`,
+      `(Inferring \`NOTION_ENV=${inferredNtnEnv}\` from auth.baseUrl in .lore.yaml.)`
     )
   }
   console.log(
     ntnEnv
       ? `Running \`NOTION_KEYRING=0 NOTION_ENV=${ntnEnv} ntn login\`...`
-      : "Running `NOTION_KEYRING=0 ntn login`...",
+      : "Running `NOTION_KEYRING=0 ntn login`..."
   )
   console.log("")
   const loginResult = await runNtnLogin(ntnEnv ? { env: ntnEnv } : {})
@@ -515,9 +492,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
       // from PATH at this point. Probe again and either offer
       // re-install (TTY/--yes) or surface the install command as a
       // manual recovery path.
-      console.error(
-        `  ntn could not be spawned: ${formatErrorDetail(loginResult.error)}`,
-      )
+      console.error(`  ntn could not be spawned: ${formatErrorDetail(loginResult.error)}`)
       // `isNtnInstalled` memoizes its first result per process — Step 1
       // already populated the cache with `true`. Bust it before the
       // second probe so we actually re-shell-out to detect a mid-flow
@@ -534,7 +509,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
           const reinstall =
             opts.yes ||
             (await confirmPrompt(
-              "Re-install ntn now via the canonical curl-pipe-bash path?",
+              "Re-install ntn now via the canonical curl-pipe-bash path?"
             ))
           if (reinstall) {
             console.error("")
@@ -546,11 +521,11 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
               // in yet. Pairing a "✓" with an exit-1 misreads as
               // success; phrase the line as the next-step it is.
               console.error(
-                "ntn re-installed. Re-run `lore auth --login` to complete login.",
+                "ntn re-installed. Re-run `lore auth --login` to complete login."
               )
             } else {
               console.error(
-                "ntn re-install failed. Install manually and re-run `lore auth --login`:",
+                "ntn re-install failed. Install manually and re-run `lore auth --login`:"
               )
               console.error(`  ${NTN_INSTALL_COMMAND}`)
             }
@@ -564,7 +539,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
           // Mirror the install-from-missing branch's hint so a script
           // consumer hitting this in CI sees the auto-recovery option.
           console.error(
-            "  Pass --yes (next run) to consent to the canonical re-install non-interactively.",
+            "  Pass --yes (next run) to consent to the canonical re-install non-interactively."
           )
         }
       } else {
@@ -582,9 +557,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   try {
     auth = await resolveAuth(config, found.root)
   } catch (err) {
-    console.error(
-      "ntn login completed, but Lore could not resolve a token.",
-    )
+    console.error("ntn login completed, but Lore could not resolve a token.")
     // Preserve resolveAuth's diagnostic — multi-workspace ambiguity
     // and selector-not-found cases carry the actionable next step
     // (which workspaces are present, which env var to set). Dropping
@@ -614,26 +587,16 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
       console.error("")
       console.error("Most likely causes:")
       console.error(
-        "  1. You authenticated against the wrong workspace during ntn login.",
+        "  1. You authenticated against the wrong workspace during ntn login."
       )
       console.error(
-        `     Re-run \`lore auth --login\` and pick the workspace containing ${config.vault.pageId}.`,
+        `     Re-run \`lore auth --login\` and pick the workspace containing ${config.vault.pageId}.`
       )
-      console.error(
-        "  2. The vault page isn't shared with you (your Notion identity)",
-      )
-      console.error(
-        "     in this workspace. Your ntn-issued token inherits your",
-      )
-      console.error(
-        "     personal Notion permissions, so any page you can see in",
-      )
-      console.error(
-        "     Notion's UI is reachable. Ask whoever owns the vault to",
-      )
-      console.error(
-        "     share it with you, or check that you're a member of the",
-      )
+      console.error("  2. The vault page isn't shared with you (your Notion identity)")
+      console.error("     in this workspace. Your ntn-issued token inherits your")
+      console.error("     personal Notion permissions, so any page you can see in")
+      console.error("     Notion's UI is reachable. Ask whoever owns the vault to")
+      console.error("     share it with you, or check that you're a member of the")
       console.error("     workspace containing the page.")
     } else if (result.kind === "unauthorized") {
       console.error(`  ${result.message}`)
@@ -646,12 +609,14 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
       // can't bypass.
       console.error("Recommended: re-run `lore auth --login` to issue a fresh token.")
       console.error(
-        "If the issue persists, check that your Notion identity is a member of the workspace.",
+        "If the issue persists, check that your Notion identity is a member of the workspace."
       )
     } else if (result.kind === "rate-limited") {
       console.error(`  ${result.message}`)
       console.error("")
-      console.error("Wait a few seconds and re-run `lore auth --login` to retry the preflight.")
+      console.error(
+        "Wait a few seconds and re-run `lore auth --login` to retry the preflight."
+      )
     } else {
       console.error(`  ${formatErrorDetail(result.error)}`)
       console.error("")
@@ -662,7 +627,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   }
 
   console.log(
-    `✓ Authenticated; vault page reachable: ${result.pageTitle ?? config.vault.pageId}`,
+    `✓ Authenticated; vault page reachable: ${result.pageTitle ?? config.vault.pageId}`
   )
   if (auth.workspaceId) {
     console.log(`  Workspace: ${auth.workspaceId}`)
@@ -750,10 +715,7 @@ export async function renderWhoamiIdentity(client: Client): Promise<string> {
   try {
     me = await client.users.me({})
   } catch (err) {
-    console.error(
-      "Could not fetch identity:",
-      err instanceof Error ? err.message : err,
-    )
+    console.error("Could not fetch identity:", err instanceof Error ? err.message : err)
     process.exit(1)
     // process.exit doesn't throw under mocked test setups, so fall
     // through to a sentinel string the test harness can assert on.
@@ -771,10 +733,7 @@ export async function renderWhoamiIdentity(client: Client): Promise<string> {
   if (typeof ownerUser?.["id"] === "string" && ownerUser["id"].length > 0) {
     return ownerUser["id"]
   }
-  if (
-    typeof bot?.["workspace_name"] === "string" &&
-    bot["workspace_name"].length > 0
-  ) {
+  if (typeof bot?.["workspace_name"] === "string" && bot["workspace_name"].length > 0) {
     return `<bot in ${bot["workspace_name"]}>`
   }
 
@@ -784,7 +743,7 @@ export async function renderWhoamiIdentity(client: Client): Promise<string> {
   // operator can distinguish "valid token, opaque identity" from "the
   // CLI silently returned a sentinel."
   process.stderr.write(
-    "[lore] users.me returned no bot owner or workspace name; identity is opaque.\n",
+    "[lore] users.me returned no bot owner or workspace name; identity is opaque.\n"
   )
   return "<unknown>"
 }
@@ -835,9 +794,7 @@ export async function runLogout(): Promise<void> {
       console.log("To log out, run:")
       console.log("  ntn logout")
       console.log("")
-      console.log(
-        "This is ntn's responsibility; Lore reads but doesn't write auth.json.",
-      )
+      console.log("This is ntn's responsibility; Lore reads but doesn't write auth.json.")
       break
   }
 }
@@ -861,11 +818,11 @@ export async function runLogout(): Promise<void> {
  */
 export async function confirmPrompt(
   message: string,
-  defaultYes = true,
+  defaultYes = true
 ): Promise<boolean> {
   if (!process.stdin.isTTY) {
     process.stderr.write(
-      "[lore] confirmPrompt called in a non-interactive context; refusing. Pass --yes to skip prompts.\n",
+      "[lore] confirmPrompt called in a non-interactive context; refusing. Pass --yes to skip prompts.\n"
     )
     return false
   }

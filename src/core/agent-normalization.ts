@@ -167,7 +167,9 @@ export async function normalizeAgents(
       await client.pages.update({
         page_id: row.id,
         properties: {
-          [MEMORY_PROPS.AGENT]: { rich_text: [{ text: { content: row.canonicalAgent } }] },
+          [MEMORY_PROPS.AGENT]: {
+            rich_text: [{ text: { content: row.canonicalAgent } }],
+          },
         } as CreatePageParameters["properties"],
       })
       fixes.push(row)

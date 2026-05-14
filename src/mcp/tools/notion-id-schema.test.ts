@@ -63,9 +63,7 @@ describe("notionPageIdSchema", () => {
   })
 
   it("trims surrounding whitespace before validation", () => {
-    const result = notionPageIdSchema.safeParse(
-      "  1f1e2d3c4b5a69788796a5b4c3d2e1f0  "
-    )
+    const result = notionPageIdSchema.safeParse("  1f1e2d3c4b5a69788796a5b4c3d2e1f0  ")
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data).toBe("1f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
@@ -80,16 +78,20 @@ describe("notionPageIdSchema", () => {
 
   it("rejects strings of the wrong length", () => {
     // 31 hex chars (one short of undashed)
-    expect(notionPageIdSchema.safeParse("1f1e2d3c4b5a69788796a5b4c3d2e1f").success).toBe(false)
+    expect(notionPageIdSchema.safeParse("1f1e2d3c4b5a69788796a5b4c3d2e1f").success).toBe(
+      false
+    )
     // 33 hex chars (one long)
-    expect(notionPageIdSchema.safeParse("1f1e2d3c4b5a69788796a5b4c3d2e1f01").success).toBe(false)
+    expect(
+      notionPageIdSchema.safeParse("1f1e2d3c4b5a69788796a5b4c3d2e1f01").success
+    ).toBe(false)
   })
 
   it("rejects strings with non-hex characters", () => {
     // 32 chars but contains a `g`
-    expect(
-      notionPageIdSchema.safeParse("1f1e2d3c4b5a69788796a5b4c3d2e1g0").success
-    ).toBe(false)
+    expect(notionPageIdSchema.safeParse("1f1e2d3c4b5a69788796a5b4c3d2e1g0").success).toBe(
+      false
+    )
   })
 
   it("rejects malformed dashed shapes", () => {

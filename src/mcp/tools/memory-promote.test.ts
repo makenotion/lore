@@ -4,7 +4,7 @@ import { promoteMemory } from "../../core/promote.js"
 
 vi.mock("../../core/promote.js", async () => {
   const actual = await vi.importActual<typeof import("../../core/promote.js")>(
-    "../../core/promote.js",
+    "../../core/promote.js"
   )
   return {
     ...actual,
@@ -34,17 +34,14 @@ interface MockServer {
     registerTool: (
       name: string,
       _config: unknown,
-      handler: (args: Record<string, unknown>) => Promise<unknown>,
+      handler: (args: Record<string, unknown>) => Promise<unknown>
     ) => void
   }
   get(name: string): (args: Record<string, unknown>) => Promise<unknown>
 }
 
 function createMockServer(): MockServer {
-  const handlers = new Map<
-    string,
-    (args: Record<string, unknown>) => Promise<unknown>
-  >()
+  const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>()
   return {
     server: {
       registerTool: (name, _config, handler) => {
@@ -75,7 +72,7 @@ function makePromoteServices(
       requireReview?: boolean
     }>
     resolveAuthor?: () => Promise<string | null>
-  } = {},
+  } = {}
 ): unknown {
   return {
     client: {} as unknown,
@@ -112,7 +109,7 @@ describe("lore-memory action='promote' dispatch", () => {
           { name: "Team", pageId: "team-vault" },
           { name: "Org", pageId: "org-vault" },
         ],
-      }) as never,
+      }) as never
     )
 
     const result = await mock.get("lore-memory")({
@@ -135,7 +132,7 @@ describe("lore-memory action='promote' dispatch", () => {
       makePromoteServices({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
         resolveAuthor: async () => null,
-      }) as never,
+      }) as never
     )
 
     const result = await mock.get("lore-memory")({
@@ -166,7 +163,7 @@ describe("lore-memory action='promote' dispatch", () => {
       makePromoteServices({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
         resolveAuthor: async () => "Server Resolved Engineer",
-      }) as never,
+      }) as never
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Promoted title" } as never,
@@ -194,10 +191,8 @@ describe("lore-memory action='promote' dispatch", () => {
     registerMemoryTools(
       mock.server as never,
       makePromoteServices({
-        promotionTargets: [
-          { name: "Team", pageId: "team-vault", requireReview: true },
-        ],
-      }) as never,
+        promotionTargets: [{ name: "Team", pageId: "team-vault", requireReview: true }],
+      }) as never
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
@@ -222,7 +217,7 @@ describe("lore-memory action='promote' dispatch", () => {
       mock.server as never,
       makePromoteServices({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
-      }) as never,
+      }) as never
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
@@ -242,7 +237,7 @@ describe("lore-memory action='promote' dispatch", () => {
     // Source URL must be the dashless Notion form — matches the
     // shared `notionPageUrl` helper that strips hyphens.
     expect(callInput?.sourceMemoryUrl).toBe(
-      "https://notion.so/abc1234567894def8123456789012345",
+      "https://notion.so/abc1234567894def8123456789012345"
     )
     const text = extractText(result)
     expect(text).toContain("Reason: Generalizes pattern")
@@ -254,10 +249,10 @@ describe("lore-memory action='promote' dispatch", () => {
       mock.server as never,
       makePromoteServices({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
-      }) as never,
+      }) as never
     )
     vi.mocked(promoteMemory).mockRejectedValue(
-      new Error("Memory mem-1 is not in the Memories database."),
+      new Error("Memory mem-1 is not in the Memories database.")
     )
 
     const result = await mock.get("lore-memory")({
@@ -277,7 +272,7 @@ describe("lore-memory action='promote' dispatch", () => {
       mock.server as never,
       makePromoteServices({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
-      }) as never,
+      }) as never
     )
 
     const result = await mock.get("lore-memory")({
@@ -303,15 +298,13 @@ describe("lore-memory action='promote' dispatch", () => {
     registerMemoryTools(
       mock.server as never,
       makePromoteServices({
-        promotionTargets: [
-          { name: "SameAsPrimary", pageId: "primary-vault" },
-        ],
-      }) as never,
+        promotionTargets: [{ name: "SameAsPrimary", pageId: "primary-vault" }],
+      }) as never
     )
     vi.mocked(promoteMemory).mockRejectedValue(
       new Error(
-        'Cannot promote into the primary vault (target "SameAsPrimary" points at the same page id as the primary).',
-      ),
+        'Cannot promote into the primary vault (target "SameAsPrimary" points at the same page id as the primary).'
+      )
     )
 
     const result = await mock.get("lore-memory")({
@@ -337,7 +330,7 @@ describe("lore-memory action='promote' dispatch", () => {
       mock.server as never,
       makePromoteServices({
         promotionTargets: [{ name: "Team", pageId: "team-vault" }],
-      }) as never,
+      }) as never
     )
 
     const result = await mock.get("lore-memory")({
@@ -367,7 +360,7 @@ describe("lore-memory action='promote' dispatch", () => {
 
   it("supports dryRun: true via preparePromotion without target-vault writes", async () => {
     const preparePromotion = vi.mocked(
-      await import("../../core/promote.js"),
+      await import("../../core/promote.js")
     ).preparePromotion
     preparePromotion.mockResolvedValue({
       source: { id: "mem-1", title: "Source memory title" } as never,
@@ -381,10 +374,8 @@ describe("lore-memory action='promote' dispatch", () => {
     registerMemoryTools(
       mock.server as never,
       makePromoteServices({
-        promotionTargets: [
-          { name: "Team", pageId: "team-vault", requireReview: true },
-        ],
-      }) as never,
+        promotionTargets: [{ name: "Team", pageId: "team-vault", requireReview: true }],
+      }) as never
     )
 
     const result = await mock.get("lore-memory")({
@@ -401,9 +392,7 @@ describe("lore-memory action='promote' dispatch", () => {
     expect(text).toContain("(awaiting review)")
     expect(text).toContain("[dry-run] Resolved status: proposed")
     expect(text).toContain("## Promoted from Primary")
-    expect(text).toContain(
-      "[dry-run] No target-vault write was issued.",
-    )
+    expect(text).toContain("[dry-run] No target-vault write was issued.")
     preparePromotion.mockReset()
   })
 })

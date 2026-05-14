@@ -44,24 +44,24 @@ export const promoteCommand = new Command("promote")
   .description(
     "Copy a memory from the primary vault into a configured promotion target. " +
       "Skips schema drift checks on init (same posture as `lore mine`); " +
-      "run `lore status` first to confirm target reachability.",
+      "run `lore status` first to confirm target reachability."
   )
   .argument("<memoryId>", "Notion page ID of the memory to promote")
   .requiredOption(
     "--to <name>",
-    "Name of the promotion target as configured in `.lore.yaml`'s promotionTargets",
+    "Name of the promotion target as configured in `.lore.yaml`'s promotionTargets"
   )
   .option(
     "--reason <text>",
-    "Optional rationale recorded in the promoted memory's origin audit block",
+    "Optional rationale recorded in the promoted memory's origin audit block"
   )
   .option(
     "--promoter <name>",
-    "Override the resolved promoter name (defaults to LORE_USER_NAME → users.me)",
+    "Override the resolved promoter name (defaults to LORE_USER_NAME → users.me)"
   )
   .option(
     "--dry-run",
-    "Preview the audit block and resolved status without writing to the target vault",
+    "Preview the audit block and resolved status without writing to the target vault"
   )
   .action(
     async (
@@ -71,14 +71,12 @@ export const promoteCommand = new Command("promote")
         reason?: string
         promoter?: string
         dryRun?: boolean
-      },
+      }
     ) => {
       try {
         const services = await initServices(undefined, { driftCheck: false })
         const topology = buildVaultTopology(services.config)
-        const target = topology.promotionTargets.find(
-          (entry) => entry.label === opts.to,
-        )
+        const target = topology.promotionTargets.find((entry) => entry.label === opts.to)
         if (!target) {
           const configured =
             topology.promotionTargets.length === 0
@@ -87,7 +85,7 @@ export const promoteCommand = new Command("promote")
                   .map((entry) => `"${entry.label}"`)
                   .join(", ")}`
           console.error(
-            `Promote failed: no promotion target named "${opts.to}" — ${configured}.`,
+            `Promote failed: no promotion target named "${opts.to}" — ${configured}.`
           )
           process.exit(1)
           return
@@ -98,7 +96,7 @@ export const promoteCommand = new Command("promote")
           console.error(
             `Promote failed: no promoter identity available. ` +
               `Set LORE_USER_NAME in your shell, or pass \`--promoter <name>\` ` +
-              `directly so the origin audit block records who promoted the row.`,
+              `directly so the origin audit block records who promoted the row.`
           )
           process.exit(1)
           return
@@ -131,7 +129,7 @@ export const promoteCommand = new Command("promote")
           const preview = await preparePromotion(helperServices, helperInput)
           const reviewSuffix = target.requireReview ? " (awaiting review)" : ""
           console.log(
-            `[dry-run] Would promote to ${target.label}: ${preview.source.title || "(untitled)"}${reviewSuffix}`,
+            `[dry-run] Would promote to ${target.label}: ${preview.source.title || "(untitled)"}${reviewSuffix}`
           )
           console.log(`[dry-run] Resolved status: ${preview.status}`)
           console.log(`[dry-run] Promoter: ${preview.promoter}`)
@@ -140,7 +138,7 @@ export const promoteCommand = new Command("promote")
             console.log(`  ${line}`)
           }
           console.log(
-            "[dry-run] No target-vault write was issued. Re-run without --dry-run to apply.",
+            "[dry-run] No target-vault write was issued. Re-run without --dry-run to apply."
           )
           return
         }
@@ -149,10 +147,12 @@ export const promoteCommand = new Command("promote")
 
         const linkedTitle = terminalLink(
           result.promoted.title || "(untitled)",
-          notionPageUrl(result.promoted.id),
+          notionPageUrl(result.promoted.id)
         )
         const reviewSuffix = target.requireReview ? " (awaiting review)" : ""
-        console.log(`Promoted to ${result.targetVaultLabel}: ${linkedTitle}${reviewSuffix}`)
+        console.log(
+          `Promoted to ${result.targetVaultLabel}: ${linkedTitle}${reviewSuffix}`
+        )
         console.log(`  Target memory ID: ${result.promoted.id}`)
         console.log(`  Status: ${result.status}`)
         console.log(`  Promoter: ${promoter}`)
@@ -160,18 +160,15 @@ export const promoteCommand = new Command("promote")
           console.log(`  Reason: ${opts.reason.trim()}`)
         }
       } catch (err) {
-        console.error(
-          "Promote failed:",
-          err instanceof Error ? err.message : err,
-        )
+        console.error("Promote failed:", err instanceof Error ? err.message : err)
         process.exit(1)
       }
-    },
+    }
   )
 
 async function resolvePromoterIdentity(
   services: LoreServices,
-  explicit: string | undefined,
+  explicit: string | undefined
 ): Promise<string | null> {
   const trimmedExplicit = explicit?.trim()
   if (trimmedExplicit && trimmedExplicit.length > 0) return trimmedExplicit

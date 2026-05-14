@@ -265,7 +265,7 @@ describe("findNearDuplicates", () => {
         kind: "decision",
         statuses: ["accepted", "proposed"],
         threshold: 0.6,
-      },
+      }
     )
     expect(listSpy).toHaveBeenCalledTimes(1)
     expect(listSpy.mock.calls[0]![0]).toMatchObject({ includeProposed: true })
@@ -286,7 +286,7 @@ describe("findNearDuplicates", () => {
         tags: [],
         projectId: "proj-a",
         threshold: 0.7,
-      },
+      }
     )
     expect(listSpy).toHaveBeenCalledTimes(1)
     expect(listSpy.mock.calls[0]![0].includeProposed).toBeUndefined()
@@ -391,11 +391,12 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
   // Explicit parameter type so vitest infers a non-empty `mock.calls`
   // tuple. `vi.fn(async () => [])` would otherwise infer `[]` for
   // params and `mock.calls[0]![0]` becomes a type error.
-  type SqlListerOpts = NonNullable<MemoryLister["listForNearDuplicates"]> extends (
-    o: infer O,
-  ) => Promise<unknown>
-    ? O
-    : never
+  type SqlListerOpts =
+    NonNullable<MemoryLister["listForNearDuplicates"]> extends (
+      o: infer O
+    ) => Promise<unknown>
+      ? O
+      : never
 
   it("routes through listForNearDuplicates when the lister exposes it", async () => {
     const listSpy = vi.fn().mockResolvedValue({ items: [] })
@@ -412,7 +413,7 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
         excludeKinds: ["decision"],
         statuses: ["accepted", "proposed"],
         limit: 25,
-      },
+      }
     )
 
     expect(result.map((m) => m.id)).toEqual(["mem-1"])
@@ -437,7 +438,7 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
         tags: [],
         projectId: "proj-a",
         threshold: 0.5,
-      },
+      }
     )
     expect(result.map((m) => m.id)).toEqual(["mem-1"])
     expect(listSpy).toHaveBeenCalledTimes(1)
@@ -453,7 +454,7 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
         projectId: "proj-a",
         threshold: 0.5,
         statuses: ["accepted", "proposed"],
-      },
+      }
     )
     expect(sqlSpy.mock.calls[0]![0]!.includeProposed).toBe(true)
   })
@@ -468,7 +469,7 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
         projectId: "proj-a",
         threshold: 0.5,
         statuses: ["accepted"],
-      },
+      }
     )
     expect(sqlSpy.mock.calls[0]![0]!.includeProposed).toBeUndefined()
   })
@@ -486,7 +487,7 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
         projectId: "proj-a",
         threshold: 0.5,
         onError,
-      },
+      }
     )
     expect(result).toEqual([])
     expect(onError).toHaveBeenCalledTimes(1)
@@ -506,8 +507,8 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
             id: `mem-${i}`,
             title: `MemoryService refactor v${i}`,
             kind: "note",
-          }),
-        ),
+          })
+        )
     )
     const result = await findNearDuplicates(
       { list: vi.fn(), listForNearDuplicates: sqlSpy },
@@ -518,7 +519,7 @@ describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () 
         threshold: 0.3,
         excludeKinds: ["decision"],
         limit: 50,
-      },
+      }
     )
     // Limit is forwarded to the lister; trigram match still runs.
     expect(sqlSpy.mock.calls[0]![0]!.limit).toBe(50)

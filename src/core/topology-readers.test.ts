@@ -47,7 +47,7 @@ function makeFakeClient(
   options: {
     scopeColumnsPresent?: boolean
     retrieveImpl?: (args: { data_source_id: string }) => Promise<unknown>
-  } = {},
+  } = {}
 ): Client {
   const present = options.scopeColumnsPresent ?? true
   const retrieve = vi.fn(
@@ -59,7 +59,7 @@ function makeFakeClient(
               "Expires At": { type: "date" },
             }
           : {},
-      })),
+      }))
   )
   return { dataSources: { retrieve } } as unknown as Client
 }

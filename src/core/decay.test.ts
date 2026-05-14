@@ -87,7 +87,7 @@ describe("decayConfidenceScore", () => {
     // 0.9 * 0.99^30 ≈ 0.6651
     expect(decayConfidenceScore(0.9, "2026-01-29", TODAY)).toBeCloseTo(
       0.9 * Math.pow(0.99, 30),
-      6,
+      6
     )
   })
 
@@ -95,7 +95,7 @@ describe("decayConfidenceScore", () => {
     // 2026-04-29 minus 180 days = 2025-10-31 → 120 stale days.
     expect(decayConfidenceScore(0.9, "2025-10-31", TODAY)).toBeCloseTo(
       0.9 * Math.pow(0.99, 120),
-      6,
+      6
     )
   })
 

@@ -20,13 +20,7 @@
  * `handleSessionEnd`, and `handleAutoDigest` directly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 

@@ -82,15 +82,12 @@ export async function loadBenchPricing(path: string): Promise<BenchPricing> {
   return benchPricingSchema.parse(parsed)
 }
 
-export function getModelPricing(
-  pricing: BenchPricing,
-  model: string,
-): PerModelPricing {
+export function getModelPricing(pricing: BenchPricing, model: string): PerModelPricing {
   const entry = pricing.models[model]
   if (!entry) {
     throw new Error(
       `Bench pricing has no entry for model "${model}". ` +
-        `Known models: ${Object.keys(pricing.models).join(", ")}`,
+        `Known models: ${Object.keys(pricing.models).join(", ")}`
     )
   }
   return entry
@@ -116,7 +113,7 @@ export function parseCodexUsage(usage: unknown): CodexTurnUsage | null {
 
 export function computeAgentCostUsd(
   usage: CodexTurnUsage,
-  pricing: PerModelPricing,
+  pricing: PerModelPricing
 ): number {
   // Codex's `input_tokens` is the TOTAL prompt-token count;
   // `cached_input_tokens` is the cached portion OF that total (matches
@@ -147,10 +144,7 @@ export interface JudgeUsage {
   cachedPromptTokens?: number
 }
 
-export function computeJudgeCostUsd(
-  usage: JudgeUsage,
-  pricing: PerModelPricing,
-): number {
+export function computeJudgeCostUsd(usage: JudgeUsage, pricing: PerModelPricing): number {
   const cached = usage.cachedPromptTokens ?? 0
   const uncached = Math.max(0, usage.promptTokens - cached)
   return (
@@ -162,7 +156,7 @@ export function computeJudgeCostUsd(
 
 export function computeExtractionCostUsd(
   usage: BenchExtractionUsage,
-  pricing: PerModelPricing,
+  pricing: PerModelPricing
 ): number {
   const cached = usage.cachedPromptTokens
   const uncached = Math.max(0, usage.promptTokens - cached)
@@ -175,7 +169,7 @@ export function computeExtractionCostUsd(
 
 export function estimateIngestionCostUsd(
   sessionCount: number,
-  pricing: BenchPricing,
+  pricing: BenchPricing
 ): number {
   return sessionCount * pricing.ingestion.perSessionEstimatedUsd
 }

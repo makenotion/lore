@@ -90,10 +90,7 @@ import {
   type BenchSummary,
   type BenchSummaryCategoryStat,
 } from "./bench-runner-types.js"
-import {
-  canonicalJsonStringify,
-  computeConfigHash,
-} from "./bench-baseline.js"
+import { canonicalJsonStringify, computeConfigHash } from "./bench-baseline.js"
 import {
   BENCH_AGENT_MODEL,
   BENCH_MODE_SENTINEL,
@@ -108,8 +105,7 @@ import {
 } from "./schema.js"
 import { resolveProfileFromConfig, type ResolvedProfile } from "../profile/index.js"
 
-const SANDBOX_NAME_REGEX =
-  /\b(sandbox|eval|test|scratch|staging|dev|playground)\b/i
+const SANDBOX_NAME_REGEX = /\b(sandbox|eval|test|scratch|staging|dev|playground)\b/i
 const PRODUCTION_NAME_REGEX = /\bproduction\b|\bprod\b/i
 
 /**
@@ -200,15 +196,11 @@ export function makeSubProjectName(exampleId: string, runId: string): string {
   if (baseSuffix.length + 4 > PROJECT_NAME_MAX_LENGTH) {
     // Pathological: runId alone exceeds budget. ULID is 26 chars so
     // this can't happen for the standard case; defensive throw.
-    throw new Error(
-      `Run id length ${runId.length} exceeds project name budget`,
-    )
+    throw new Error(`Run id length ${runId.length} exceeds project name budget`)
   }
   const exampleBudget = PROJECT_NAME_MAX_LENGTH - baseSuffix.length - "lme-".length
   const safeExampleId =
-    exampleId.length <= exampleBudget
-      ? exampleId
-      : exampleId.slice(0, exampleBudget)
+    exampleId.length <= exampleBudget ? exampleId : exampleId.slice(0, exampleBudget)
   return `lme-${safeExampleId}${baseSuffix}`
 }
 
@@ -270,10 +262,7 @@ export interface BenchSandbox {
    * an empty string when no relevant memories surface (the agent will
    * abstain honestly).
    */
-  getWakeUpForQuery(input: {
-    projectId: string
-    userQuery: string
-  }): Promise<string>
+  getWakeUpForQuery(input: { projectId: string; userQuery: string }): Promise<string>
   /** Archive (not delete) a project — used in the cleanup teardown. */
   archiveProject(id: string): Promise<void>
   /**
@@ -375,7 +364,7 @@ export function assertBenchEnvReady(): BenchEnvRestore {
   if (process.env["LORE_EVAL_BENCH_REAL"] !== "1") {
     throw new Error(
       "LORE_EVAL_BENCH_REAL=1 is required to run the bench against real APIs. " +
-        "Set it explicitly when invoking the runner — never default it on.",
+        "Set it explicitly when invoking the runner — never default it on."
     )
   }
   const required = [
@@ -388,7 +377,7 @@ export function assertBenchEnvReady(): BenchEnvRestore {
   if (missing.length > 0) {
     throw new Error(
       `Bench missing required env: ${missing.join(", ")}. Set every ` +
-        `LORE_BENCH_* secret before running the bench.`,
+        `LORE_BENCH_* secret before running the bench.`
     )
   }
   // Bench mode is authoritative — overwrite regardless of whether
@@ -439,13 +428,13 @@ export function restoreBenchEnv(snapshot: BenchEnvRestore): void {
 export function assertSandboxProjectName(name: string): void {
   if (PRODUCTION_NAME_REGEX.test(name)) {
     throw new Error(
-      `Project "${name}" matches the production-name regex. Refusing to run bench.`,
+      `Project "${name}" matches the production-name regex. Refusing to run bench.`
     )
   }
   if (!SANDBOX_NAME_REGEX.test(name)) {
     throw new Error(
       `Project "${name}" does not look like a sandbox (no word-bounded match for ` +
-        `sandbox/eval/test/scratch/staging/dev/playground). Refusing to run bench.`,
+        `sandbox/eval/test/scratch/staging/dev/playground). Refusing to run bench.`
     )
   }
 }
@@ -458,7 +447,7 @@ export function assertBenchSandboxProfileMatchesSuite(input: {
   if (input.sandbox.activeProfileSelector === input.profile.selector) return
   throw new Error(
     `Bench suite profile ${input.profile.selector} does not match the active sandbox profile ${input.sandbox.activeProfileSelector}. ` +
-      "Run the bench against a vault initialized with the suite profile before any bench sub-projects are created.",
+      "Run the bench against a vault initialized with the suite profile before any bench sub-projects are created."
   )
 }
 
@@ -506,12 +495,12 @@ export async function buildBenchWorkspace(input: {
     throw new Error(
       "buildBenchWorkspace: NOTION_API_TOKEN and LORE_CONFIG_ROOT must be set " +
         "in process.env (assertBenchEnvReady writes both from the LORE_BENCH_* sources). " +
-        "Refusing to build a bench workspace without auth.",
+        "Refusing to build a bench workspace without auth."
     )
   }
   if (!Number.isInteger(input.perExampleWrites) || input.perExampleWrites <= 0) {
     throw new Error(
-      `buildBenchWorkspace: perExampleWrites must be a positive integer, got ${input.perExampleWrites}`,
+      `buildBenchWorkspace: perExampleWrites must be a positive integer, got ${input.perExampleWrites}`
     )
   }
   // Tighten the perms — mkdtemp on POSIX is already 0700 but be
@@ -649,9 +638,7 @@ function emptyFailureBreakdown(): BenchSummary["failureBreakdown"] {
  * Classify a mining/ingest failure into the runner's failure
  * vocabulary. Cleanup failures route to `cleanupFailure`, NOT here.
  */
-function ingestFailureToReason(
-  ingest: BenchIngestResult,
-): BenchFailureReason | null {
+function ingestFailureToReason(ingest: BenchIngestResult): BenchFailureReason | null {
   if (!ingest.failureReason) return null
   if (ingest.failureReason === "write-cap-exceeded") return "write-cap-exceeded"
   if (ingest.failureReason === "mining-timeout") return "mining-timeout"
@@ -665,7 +652,7 @@ function ingestFailureToReason(
 function agentFailureToReason(
   result: AgentRunResult,
   parsed: { usage: ReturnType<typeof parseCodexUsage> },
-  answer: string,
+  answer: string
 ): BenchFailureReason | null {
   if (result.refused) return "adapter-refused"
   if (result.timedOut) return "agent-timeout"
@@ -783,7 +770,7 @@ export async function runBenchExample(input: {
     projectId = await input.sandbox.createSubProject(projectName)
   } catch (err) {
     input.log.warn(
-      `createSubProject failed for ${projectName}: ${err instanceof Error ? err.message : String(err)}`,
+      `createSubProject failed for ${projectName}: ${err instanceof Error ? err.message : String(err)}`
     )
     return {
       exampleId: input.example.question_id,
@@ -850,8 +837,7 @@ export async function runBenchExample(input: {
     // upward `.lore.yaml` walk hits the bench config. `buildSafeEnv`
     // does not forward `LORE_CONFIG_ROOT`, so the cwd is the only
     // discovery channel for the mining child.
-    const miningCwd =
-      process.env["LORE_BENCH_CONFIG_ROOT"] ?? workspace
+    const miningCwd = process.env["LORE_BENCH_CONFIG_ROOT"] ?? workspace
     let ingest: BenchIngestResult
     if (input.ingestionStrategy === "raw-transcript") {
       ingest = await runBenchRawTranscriptIngest({
@@ -865,7 +851,7 @@ export async function runBenchExample(input: {
     } else if (input.ingestionStrategy === "simulated-autosave") {
       if (!input.extractionPrompt || !input.extractionClient) {
         throw new Error(
-          "simulated-autosave ingestion requires extractionPrompt and extractionClient",
+          "simulated-autosave ingestion requires extractionPrompt and extractionClient"
         )
       }
       ingest = await runBenchSimulatedAutosaveIngest({
@@ -903,8 +889,8 @@ export async function runBenchExample(input: {
           ingest.extractionUsage,
           getModelPricing(
             input.pricing,
-            input.extractionModel ?? SIMULATED_AUTOSAVE_EXTRACTION_MODEL,
-          ),
+            input.extractionModel ?? SIMULATED_AUTOSAVE_EXTRACTION_MODEL
+          )
         )
       : 0
     const ingestion = exampleIngestionFromResult({
@@ -959,7 +945,7 @@ export async function runBenchExample(input: {
           })
         } catch (err) {
           input.log.warn(
-            `wake-up prefetch failed for ${input.example.question_id}: ${err instanceof Error ? err.message : String(err)}`,
+            `wake-up prefetch failed for ${input.example.question_id}: ${err instanceof Error ? err.message : String(err)}`
           )
           // Continue with empty context; the agent will see only the
           // system prompt + question and likely abstain. The
@@ -1017,7 +1003,7 @@ export async function runBenchExample(input: {
         }
       } else {
         const promptKind = selectJudgePromptKind(
-          input.example.question_type as LongMemEvalCategory,
+          input.example.question_type as LongMemEvalCategory
         )
         const judgeResult = await runJudge({
           promptKind,
@@ -1029,8 +1015,7 @@ export async function runBenchExample(input: {
         })
         const judgeFailureReason: BenchFailureReason | null =
           judgeResult.verdict === null ? "judge-error" : null
-        const success =
-          judgeFailureReason === null && judgeResult.verdict === "correct"
+        const success = judgeFailureReason === null && judgeResult.verdict === "correct"
         result = {
           exampleId: input.example.question_id,
           category: input.example.question_type as LongMemEvalCategory,
@@ -1072,7 +1057,8 @@ export async function runBenchExample(input: {
     // it back exactly.
     if (priorBudgetEnv === undefined) delete process.env["LORE_MCP_WRITE_BUDGET"]
     else process.env["LORE_MCP_WRITE_BUDGET"] = priorBudgetEnv
-    if (priorBudgetStateEnv === undefined) delete process.env["LORE_MCP_BUDGET_STATE_FILE"]
+    if (priorBudgetStateEnv === undefined)
+      delete process.env["LORE_MCP_BUDGET_STATE_FILE"]
     else process.env["LORE_MCP_BUDGET_STATE_FILE"] = priorBudgetStateEnv
     // BOTH workspace cleanup AND project archive belong in this
     // finally so a synchronous throw inside the work (e.g. a fault
@@ -1085,7 +1071,7 @@ export async function runBenchExample(input: {
         await rm(workspace, { recursive: true, force: true })
       } catch (err) {
         input.log.warn(
-          `workspace cleanup failed for ${workspace}: ${err instanceof Error ? err.message : String(err)}`,
+          `workspace cleanup failed for ${workspace}: ${err instanceof Error ? err.message : String(err)}`
         )
       }
     }
@@ -1101,7 +1087,7 @@ export async function runBenchExample(input: {
         // diagnostic so the orphaned-archive failure is observable
         // even when we cannot stamp it on a result.
         input.log.warn(
-          `archive cleanup failed for ${projectId} after pre-result throw: ${message}`,
+          `archive cleanup failed for ${projectId} after pre-result throw: ${message}`
         )
       }
     }
@@ -1113,7 +1099,7 @@ export async function runBenchExample(input: {
     // a synchronous throw — the function still needs to return
     // something typed.
     throw new Error(
-      `runBenchExample: inner work did not set a result for example ${input.example.question_id}`,
+      `runBenchExample: inner work did not set a result for example ${input.example.question_id}`
     )
   }
   return result
@@ -1127,9 +1113,7 @@ export async function runBenchExample(input: {
  * examples would race on the suite-wide write cap and the cost cap;
  * sequencing keeps both caps interpretable.
  */
-export async function runBenchSuite(
-  options: RunBenchOptions,
-): Promise<RunBenchResult> {
+export async function runBenchSuite(options: RunBenchOptions): Promise<RunBenchResult> {
   const envSnapshot = assertBenchEnvReady()
   try {
     return await runBenchSuiteUnderBenchEnv(options)
@@ -1139,7 +1123,7 @@ export async function runBenchSuite(
 }
 
 async function runBenchSuiteUnderBenchEnv(
-  options: RunBenchOptions,
+  options: RunBenchOptions
 ): Promise<RunBenchResult> {
   // Validate the parent sandbox project name once before any
   // per-example work. Sub-projects inherit the safety guarantee from
@@ -1162,13 +1146,11 @@ async function runBenchSuiteUnderBenchEnv(
   // directory). Falls back to `process.cwd()` when the walk fails so
   // the production invocation from the repo root still works.
   const repoRoot = await findRepoRoot(loadedSuite.path)
-  const resolveAsset = (assetPath: string): string =>
-    resolve(repoRoot, assetPath)
+  const resolveAsset = (assetPath: string): string => resolve(repoRoot, assetPath)
   const pricing =
     options.pricing ??
     (await loadBenchPricing(
-      process.env["LORE_BENCH_PRICING_PATH"] ??
-        resolveAsset("evals/bench/pricing.json"),
+      process.env["LORE_BENCH_PRICING_PATH"] ?? resolveAsset("evals/bench/pricing.json")
     ))
   const judgePrompts =
     options.judgePrompts ??
@@ -1192,9 +1174,7 @@ async function runBenchSuiteUnderBenchEnv(
   const extractionPrompt = extractionPromptPath
     ? await readFile(resolveAsset(extractionPromptPath), "utf-8")
     : null
-  const extractionPromptSha256 = extractionPrompt
-    ? sha256Hex(extractionPrompt)
-    : null
+  const extractionPromptSha256 = extractionPrompt ? sha256Hex(extractionPrompt) : null
   const judgeClient =
     options.judgeClient ??
     new FetchOpenAIChatClient(process.env["LORE_BENCH_OPENAI_API_KEY"] ?? "")
@@ -1224,7 +1204,7 @@ async function runBenchSuiteUnderBenchEnv(
       const parent = resolve(options.outPath, "..")
       if (basename(parent) === "baselines") {
         throw new Error(
-          "--limit is rejected when --out writes into an evals/baselines/ directory; smoke runs cannot baseline.",
+          "--limit is rejected when --out writes into an evals/baselines/ directory; smoke runs cannot baseline."
         )
       }
     }
@@ -1277,15 +1257,13 @@ async function runBenchSuiteUnderBenchEnv(
       ...(suite.ingestion.strategy === "simulated-autosave"
         ? {
             extractionModel:
-              suite.ingestion.extractionModel ??
-              SIMULATED_AUTOSAVE_EXTRACTION_MODEL,
+              suite.ingestion.extractionModel ?? SIMULATED_AUTOSAVE_EXTRACTION_MODEL,
             extractionPromptSha256: extractionPromptSha256 ?? "",
             extractionTemperature: SIMULATED_AUTOSAVE_EXTRACTION_TEMPERATURE,
             extractionMaxTokens:
               suite.ingestion.extractionMaxTokens ??
               SIMULATED_AUTOSAVE_EXTRACTION_MAX_TOKENS,
-            extractionSchemaVersion:
-              SIMULATED_AUTOSAVE_EXTRACTION_SCHEMA_VERSION,
+            extractionSchemaVersion: SIMULATED_AUTOSAVE_EXTRACTION_SCHEMA_VERSION,
           }
         : {}),
     },
@@ -1321,13 +1299,13 @@ async function runBenchSuiteUnderBenchEnv(
   // disable the cap.
   if (!/^\d+(\.\d+)?$/.test(costCapRaw)) {
     throw new Error(
-      `LORE_EVAL_BENCH_MAX_USD must be a positive decimal number, got "${costCapRaw}"`,
+      `LORE_EVAL_BENCH_MAX_USD must be a positive decimal number, got "${costCapRaw}"`
     )
   }
   const costCapUsd = Number.parseFloat(costCapRaw)
   if (!Number.isFinite(costCapUsd) || costCapUsd <= 0) {
     throw new Error(
-      `LORE_EVAL_BENCH_MAX_USD must be a positive finite number, got "${costCapRaw}"`,
+      `LORE_EVAL_BENCH_MAX_USD must be a positive finite number, got "${costCapRaw}"`
     )
   }
 
@@ -1366,7 +1344,7 @@ async function runBenchSuiteUnderBenchEnv(
       break
     }
     log.info(
-      `example ${example.question_id} (${example.question_type}) — ${results.length + 1}/${examples.length}`,
+      `example ${example.question_id} (${example.question_type}) — ${results.length + 1}/${examples.length}`
     )
     const result = await runBenchExample({
       example,
@@ -1404,7 +1382,7 @@ async function runBenchSuiteUnderBenchEnv(
           output_tokens: result.agent.tokensCompletion,
           reasoning_output_tokens: result.agent.tokensReasoningOutput,
         },
-        agentPricing,
+        agentPricing
       )
     }
     judgeUsdSoFar += computeJudgeCostUsd(
@@ -1413,7 +1391,7 @@ async function runBenchSuiteUnderBenchEnv(
         cachedPromptTokens: result.judge.tokensPromptCached,
         completionTokens: result.judge.tokensCompletion,
       },
-      judgePricing,
+      judgePricing
     )
     extractionUsdSoFar += result.ingestion.extractionCostUsd
     const stat = byCategory[result.category]
@@ -1422,14 +1400,13 @@ async function runBenchSuiteUnderBenchEnv(
       if (result.success) stat.correct += 1
       stat.accuracy = stat.n > 0 ? stat.correct / stat.n : 0
     }
-    const reason: BenchFailureReason | "no-failure" =
-      result.failureReason ?? "no-failure"
+    const reason: BenchFailureReason | "no-failure" = result.failureReason ?? "no-failure"
     failureBreakdown[reason] = (failureBreakdown[reason] ?? 0) + 1
   }
 
   const totalExamples = examples.length
   const scoredExamples = results.filter(
-    (r) => r.judge.verdict !== null && r.failureReason !== "judge-error",
+    (r) => r.judge.verdict !== null && r.failureReason !== "judge-error"
   ).length
   const correct = results.filter((r) => r.success).length
   const accuracy = scoredExamples > 0 ? correct / scoredExamples : 0
@@ -1472,15 +1449,10 @@ async function runBenchSuiteUnderBenchEnv(
         agentUsd: round2(agentUsdSoFar),
         judgeUsd: round2(judgeUsdSoFar),
         extractionUsd: round2(extractionUsdSoFar),
-        runnerMeasuredUsd: round2(
-          agentUsdSoFar + judgeUsdSoFar + extractionUsdSoFar,
-        ),
+        runnerMeasuredUsd: round2(agentUsdSoFar + judgeUsdSoFar + extractionUsdSoFar),
         ingestionEstimatedUsd: round2(ingestionEstimatedUsd),
         totalEstimatedUsd: round2(
-          agentUsdSoFar +
-            judgeUsdSoFar +
-            extractionUsdSoFar +
-            ingestionEstimatedUsd,
+          agentUsdSoFar + judgeUsdSoFar + extractionUsdSoFar + ingestionEstimatedUsd
         ),
       },
     },
@@ -1507,7 +1479,7 @@ async function runBenchSuiteUnderBenchEnv(
   benchSuiteSchema.parse(loadedSuite.suite)
 
   const outPath = resolve(
-    options.outPath ?? resolveAsset(`evals/results/bench-${runId}.json`),
+    options.outPath ?? resolveAsset(`evals/results/bench-${runId}.json`)
   )
   await mkdir(resolve(outPath, ".."), { recursive: true })
   await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
@@ -1567,9 +1539,7 @@ async function findRepoRoot(suitePath: string): Promise<string> {
  * sub-project name regex so callers can scan for matching names.
  * Crockford base32, 26 char ULID suffix.
  */
-export const SUB_PROJECT_NAME_REGEX = new RegExp(
-  `^lme-.+-${CROCKFORD_CHAR_CLASS}{26}$`,
-)
+export const SUB_PROJECT_NAME_REGEX = new RegExp(`^lme-.+-${CROCKFORD_CHAR_CLASS}{26}$`)
 
 /**
  * Parse the embedded ULID timestamp from a sub-project name. Returns
@@ -1604,7 +1574,7 @@ export function extractUlidFromSubProjectName(name: string): string | null {
  */
 export function filterOrphanSubProjects(
   projects: Array<{ name: string; id: string }>,
-  cutoffMs: number,
+  cutoffMs: number
 ): Array<{ name: string; id: string; ageMs: number }> {
   const out: Array<{ name: string; id: string; ageMs: number }> = []
   for (const project of projects) {

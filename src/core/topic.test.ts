@@ -99,9 +99,7 @@ describe("decodeTextEntities", () => {
   })
 
   it("decodes double-escape `&amp;amp;` all the way to `&`", () => {
-    expect(decodeTextEntities("Build &amp;amp; Tooling")).toBe(
-      "Build & Tooling"
-    )
+    expect(decodeTextEntities("Build &amp;amp; Tooling")).toBe("Build & Tooling")
   })
 
   it("decodes triple-escape without stopping early", () => {
@@ -137,12 +135,8 @@ describe("decodeTextEntities", () => {
     // Coverage for the long-tail of HTML5 named entities that a hand-rolled
     // table would miss. Real-world upstream producers (markdown renderers,
     // rich-text editors) emit these routinely.
-    expect(decodeTextEntities("Build &nbsp; Tooling")).toBe(
-      "Build   Tooling"
-    )
-    expect(decodeTextEntities("today&rsquo;s work")).toBe(
-      "today’s work"
-    )
+    expect(decodeTextEntities("Build &nbsp; Tooling")).toBe("Build   Tooling")
+    expect(decodeTextEntities("today&rsquo;s work")).toBe("today’s work")
   })
 
   it("decodes numeric character references in any radix", () => {
@@ -188,9 +182,7 @@ describe("TopicService.create", () => {
     await service.create({ name: "Build & Tooling", projectIds: [] })
 
     const createArgs = client.pages.create.mock.calls[0][0]
-    expect(createArgs.properties.Name.title[0].text.content).toBe(
-      "Build & Tooling"
-    )
+    expect(createArgs.properties.Name.title[0].text.content).toBe("Build & Tooling")
   })
 
   it("decodes `&amp;` on write so re-saves are idempotent", async () => {
@@ -200,9 +192,7 @@ describe("TopicService.create", () => {
     await service.create({ name: "Build &amp; Tooling", projectIds: [] })
 
     const createArgs = client.pages.create.mock.calls[0][0]
-    expect(createArgs.properties.Name.title[0].text.content).toBe(
-      "Build & Tooling"
-    )
+    expect(createArgs.properties.Name.title[0].text.content).toBe("Build & Tooling")
   })
 
   it("decodes double-escape `&amp;amp;` all the way to `&` on write", async () => {
@@ -212,9 +202,7 @@ describe("TopicService.create", () => {
     await service.create({ name: "Build &amp;amp; Tooling", projectIds: [] })
 
     const createArgs = client.pages.create.mock.calls[0][0]
-    expect(createArgs.properties.Name.title[0].text.content).toBe(
-      "Build & Tooling"
-    )
+    expect(createArgs.properties.Name.title[0].text.content).toBe("Build & Tooling")
   })
 })
 
@@ -436,10 +424,7 @@ describe("TopicService.getOrCreate — extend-on-find", () => {
     })
     const service = new TopicService(client, DB)
 
-    const topic = await service.getOrCreate("GraphQL federation", [
-      "proj-a",
-      "proj-b",
-    ])
+    const topic = await service.getOrCreate("GraphQL federation", ["proj-a", "proj-b"])
 
     expect(client.pages.create).not.toHaveBeenCalled()
     expect(client.pages.update).toHaveBeenCalledTimes(1)
@@ -533,9 +518,7 @@ describe("TopicService.getOrCreate — extend-on-find", () => {
 
     expect(client.pages.create).toHaveBeenCalledTimes(1)
     const createArgs = client.pages.create.mock.calls[0][0]
-    expect(createArgs.properties.Name.title[0].text.content).toBe(
-      "Build & Tooling"
-    )
+    expect(createArgs.properties.Name.title[0].text.content).toBe("Build & Tooling")
   })
 
   it("carries the decoded name through retries when a concurrent writer clobbers the extension", async () => {
@@ -749,9 +732,7 @@ describe("TopicService.getOrCreate — normalized-equivalent collapse (issue #10
       findByNameEmpty: true,
       projectScans: [[sibling]],
     })
-    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      created
-    )
+    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(created)
     const service = new TopicService(client, DB)
 
     const topic = await service.getOrCreate("Billing Pipeline", ["proj-a"])
@@ -853,16 +834,12 @@ describe("TopicService.getOrCreate — trigram-similar reject (issue #109)", () 
       has_more: false,
       next_cursor: null,
     })
-    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      created
-    )
+    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(created)
     const service = new TopicService(client, DB)
 
-    const topic = await service.getOrCreate(
-      "GraphQLL Federation",
-      ["proj-a"],
-      { forceNew: true }
-    )
+    const topic = await service.getOrCreate("GraphQLL Federation", ["proj-a"], {
+      forceNew: true,
+    })
 
     expect(topic.id).toBe("t-new")
     expect(client.pages.create).toHaveBeenCalledTimes(1)
@@ -893,9 +870,7 @@ describe("TopicService.getOrCreate — trigram-similar reject (issue #109)", () 
         has_more: false,
         next_cursor: null,
       })
-    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      created
-    )
+    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(created)
     const service = new TopicService(client, DB)
 
     const topic = await service.getOrCreate("Evals & Quality", ["proj-a"])
@@ -1190,8 +1165,7 @@ describe("TopicService.findByName — stampede dedup", () => {
     await service.getOrCreate("auth", ["p2"])
     await aRead
 
-    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     // Post-fix: merge base is the fresh view (contains p3).
     expect(updateArgs.properties.Project.relation).toEqual([
       { id: "p1" },
@@ -1244,13 +1218,14 @@ describe("TopicService.findByName — stampede dedup", () => {
         )
     )
     const updateMock = client.pages.update as ReturnType<typeof vi.fn>
-    updateMock.mockImplementation(async (args: { properties: Record<string, unknown> }) => {
-      const relation = (
-        args.properties.Project as { relation: Array<{ id: string }> }
-      ).relation
-      notionProjectIds = relation.map((r) => r.id)
-      return {}
-    })
+    updateMock.mockImplementation(
+      async (args: { properties: Record<string, unknown> }) => {
+        const relation = (args.properties.Project as { relation: Array<{ id: string }> })
+          .relation
+        notionProjectIds = relation.map((r) => r.id)
+        return {}
+      }
+    )
     const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
     retrieveMock.mockImplementation(async () =>
       topicPage(TOPIC_ID, { name: "auth", projectIds: [...notionProjectIds] })

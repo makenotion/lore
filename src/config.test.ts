@@ -1,9 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -258,9 +253,7 @@ auth:
     )
 
     try {
-      await expect(loadConfig(path)).rejects.toThrow(
-        /auth\.token has been removed/
-      )
+      await expect(loadConfig(path)).rejects.toThrow(/auth\.token has been removed/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -610,7 +603,6 @@ describe("resolveAuth", () => {
       /Run `ntn login` against/
     )
   })
-
 })
 
 describe("resolveToken", () => {
@@ -644,5 +636,4 @@ describe("resolveToken", () => {
 
     expect(await resolveToken(undefined, SCRATCH)).toBe("tok-from-env-api")
   })
-
 })

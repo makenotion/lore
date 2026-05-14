@@ -87,9 +87,7 @@ export async function loadJudgePrompts(input: {
  * answer (theoretical, not present in `longmemeval_s_cleaned` today)
  * would still go through the recall judge.
  */
-export function selectJudgePromptKind(
-  category: LongMemEvalCategory,
-): JudgePromptKind {
+export function selectJudgePromptKind(category: LongMemEvalCategory): JudgePromptKind {
   return category === "abstention" ? "abstention" : "recall"
 }
 
@@ -116,7 +114,7 @@ export interface OpenAIChatClient {
 export class FetchOpenAIChatClient implements OpenAIChatClient {
   constructor(
     private readonly apiKey: string,
-    private readonly baseUrl: string = "https://api.openai.com/v1",
+    private readonly baseUrl: string = "https://api.openai.com/v1"
   ) {}
 
   async complete(input: {
@@ -141,7 +139,7 @@ export class FetchOpenAIChatClient implements OpenAIChatClient {
       // on the artifact, which uploads as a 90-day GitHub artifact.
       // Status + statusText is enough operator-actionable detail.
       throw new Error(
-        `OpenAI chat-completion failed: HTTP ${response.status} ${response.statusText}`,
+        `OpenAI chat-completion failed: HTTP ${response.status} ${response.statusText}`
       )
     }
     const json = (await response.json()) as {
@@ -159,8 +157,7 @@ export class FetchOpenAIChatClient implements OpenAIChatClient {
     const usage: JudgeUsage = {
       promptTokens: json.usage?.prompt_tokens ?? 0,
       completionTokens: json.usage?.completion_tokens ?? 0,
-      cachedPromptTokens:
-        json.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      cachedPromptTokens: json.usage?.prompt_tokens_details?.cached_tokens ?? 0,
     }
     return { content, usage }
   }
@@ -193,7 +190,7 @@ function indentForJudge(text: string): string {
  */
 function renderPlaceholders(
   template: string,
-  substitutions: Record<string, string>,
+  substitutions: Record<string, string>
 ): string {
   return template.replace(/\{(question|reference|answer)\}/g, (match, key: string) => {
     return substitutions[key] !== undefined ? substitutions[key] : match
@@ -204,7 +201,7 @@ function renderRecallPrompt(
   template: string,
   question: string,
   reference: string,
-  answer: string,
+  answer: string
 ): string {
   return renderPlaceholders(template, {
     question: indentForJudge(question),
@@ -216,7 +213,7 @@ function renderRecallPrompt(
 function renderAbstentionPrompt(
   template: string,
   question: string,
-  answer: string,
+  answer: string
 ): string {
   return renderPlaceholders(template, {
     question: indentForJudge(question),
@@ -289,11 +286,9 @@ export async function runJudge(input: RunJudgeInput): Promise<JudgeResult> {
           input.prompts.recall,
           input.question,
           input.reference ?? "",
-          input.answer,
+          input.answer
         )
-  const baseMessages = [
-    { role: "user" as const, content: promptText },
-  ]
+  const baseMessages = [{ role: "user" as const, content: promptText }]
   let tokensPrompt = 0
   let tokensPromptCached = 0
   let tokensCompletion = 0

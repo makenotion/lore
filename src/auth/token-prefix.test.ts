@@ -12,9 +12,7 @@ describe("classifyTokenPrefix", () => {
   })
 
   it("classifies dev-environment tokens as personal-dev", () => {
-    expect(classifyTokenPrefix("development_ntn_abcdefghijklmnop")).toBe(
-      "personal-dev",
-    )
+    expect(classifyTokenPrefix("development_ntn_abcdefghijklmnop")).toBe("personal-dev")
   })
 
   it("classifies integration tokens as integration", () => {
@@ -32,9 +30,7 @@ describe("classifyTokenPrefix", () => {
     // classifier MUST check the dev prefix first so the prod branch
     // can't shadow it. A regression that flipped the order would route
     // every dev token through the prod label.
-    expect(classifyTokenPrefix("development_ntn_aaaaaaaaaaaaaaaa")).toBe(
-      "personal-dev",
-    )
+    expect(classifyTokenPrefix("development_ntn_aaaaaaaaaaaaaaaa")).toBe("personal-dev")
   })
 
   it("does NOT match ntn_ inside a larger string (anchoring contract)", () => {
@@ -53,9 +49,7 @@ describe("describeTokenPrefix", () => {
   })
 
   it("renders personal-dev with the development_ntn_ shape", () => {
-    expect(describeTokenPrefix("personal-dev")).toBe(
-      "personal token — development_ntn_",
-    )
+    expect(describeTokenPrefix("personal-dev")).toBe("personal token — development_ntn_")
   })
 
   it("renders integration tokens as a single-line, paren-free label", () => {

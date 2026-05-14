@@ -100,9 +100,7 @@ function relationToUrlArrayString(
   relation: ReadonlyArray<{ id: string }>,
   relationUrlBase: string
 ): string {
-  const urls = relation.map(
-    (entry) => `${relationUrlBase}${normalizePageId(entry.id)}`
-  )
+  const urls = relation.map((entry) => `${relationUrlBase}${normalizePageId(entry.id)}`)
   return JSON.stringify(urls)
 }
 
@@ -277,11 +275,7 @@ export function convertNotionRestToSqliteProperties(
 ): SqliteProperties {
   const out: SqliteProperties = {}
   for (const [name, value] of Object.entries(notionRestProps)) {
-    for (const [outKey, outValue] of convertProperty(
-      name,
-      value,
-      relationUrlBase
-    )) {
+    for (const [outKey, outValue] of convertProperty(name, value, relationUrlBase)) {
       out[outKey] = outValue
     }
   }

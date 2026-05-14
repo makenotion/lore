@@ -520,9 +520,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(BODY_SIZE_CAP_BYTES)
 
     const client = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: body },
     })
 
@@ -535,7 +533,15 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     const call = client.request.mock.calls[0]![0] as {
       path: string
       method: string
-      body: { update_page: { content_updates: Array<{ old_str: string; new_str: string; replace_all_matches?: boolean }> } }
+      body: {
+        update_page: {
+          content_updates: Array<{
+            old_str: string
+            new_str: string
+            replace_all_matches?: boolean
+          }>
+        }
+      }
     }
     expect(call.path).toBe("tools/run")
     // Wire payload size: just the entity substitutions, NOT the body.
@@ -559,9 +565,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
   it("falls back to canonical replace_content for non-oversized bodies on RunTool fall-back-able failure", async () => {
     process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
     const client = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: "small body with &amp; one entity" },
     })
     // Simulate a `restricted_resource` 403 (security review B1) on
@@ -601,9 +605,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     const filler = "x".repeat(BODY_SIZE_CAP_BYTES + 1024)
     const body = `${filler} &amp; suffix`
     const client = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: body },
     })
     // No-match: server didn't find the substitution anchor (rare
@@ -639,9 +641,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     // existing fixed-point behavior.
     process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
     const client = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: "Body with &amp;amp; double-encoded" },
     })
 
@@ -661,9 +661,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
   it("rethrows non-fall-back-able RunTool errors (401, 429, 5xx) to preserve the auth-refresh / backoff gates", async () => {
     process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
     const client = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: "small body with &amp;" },
     })
     const unauthorized = new APIResponseError({
@@ -700,9 +698,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     // Phase 1: flag ON — oversized must be fixed via anchored path.
     process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
     const onClient = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: body },
     })
     const onReport = await fixMemoryEncoding(onClient, DB, { dryRun: false })
@@ -717,9 +713,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "0"
     process.env.LORE_USE_RUNTOOL = "0"
     const offClient = createMockClient({
-      queryResponses: [
-        { results: [memoryPage({ id: ID, title: "clean title" })] },
-      ],
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
       markdownByPageId: { [ID]: body },
     })
     const offReport = await fixMemoryEncoding(offClient, DB, { dryRun: false })

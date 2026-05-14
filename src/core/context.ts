@@ -75,7 +75,7 @@ export function formatCatchAllScopeSummary(name: string, candidates: string[]): 
 export function resolveProjectPathFromCwd(
   cwd: string,
   configRoot: string,
-  config: LoreConfig,
+  config: LoreConfig
 ): { name: string; path: string } | null {
   if (!config.projects?.length) return null
 
@@ -130,7 +130,7 @@ export async function resolveProject(
   cwd: string,
   configRoot: string,
   config: LoreConfig,
-  projectService: ProjectService,
+  projectService: ProjectService
 ): Promise<ProjectResolution> {
   const candidates = subProjectNames(config)
 

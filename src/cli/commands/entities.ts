@@ -14,9 +14,7 @@ export function parseEntityMergeCliOptions(
   positionalWinnerId: string | undefined,
   positionalLoserId: string | undefined,
   raw: { from?: string; into?: string; yes?: boolean; dryRun?: boolean }
-):
-  | { ok: true; value: EntityMergeCliOptions }
-  | { ok: false; message: string } {
+): { ok: true; value: EntityMergeCliOptions } | { ok: false; message: string } {
   const hasNamed = Boolean(raw.from || raw.into)
   const hasPositional = Boolean(positionalWinnerId || positionalLoserId)
 
@@ -112,13 +110,11 @@ export function formatEntityMergeResult(result: EntityMergeResult): string {
     const aliasList = result.aliasesToAdd.map((a) => `"${a}"`).join(", ")
     if (result.planOnly) {
       lines.push(
-        `  Would add ${plural(result.aliasesPlanned, "alias", "aliases")}: ` +
-          aliasList
+        `  Would add ${plural(result.aliasesPlanned, "alias", "aliases")}: ` + aliasList
       )
     } else if (result.aliasesAdded > 0) {
       lines.push(
-        `  Added ${plural(result.aliasesAdded, "alias", "aliases")}: ` +
-          aliasList
+        `  Added ${plural(result.aliasesAdded, "alias", "aliases")}: ` + aliasList
       )
     } else {
       lines.push(
@@ -180,7 +176,10 @@ const mergeCommand = new Command("merge")
   .description("Merge a duplicate Entity row into a canonical winner")
   .usage("[options] --from <loser-id> --into <winner-id>")
   .argument("[winner-id]", "Entity row ID to keep (legacy positional form)")
-  .argument("[loser-id]", "Duplicate Entity row ID to merge and archive (legacy positional form)")
+  .argument(
+    "[loser-id]",
+    "Duplicate Entity row ID to merge and archive (legacy positional form)"
+  )
   .option("--from <loser-id>", "Duplicate Entity row ID to merge and archive")
   .option("--into <winner-id>", "Entity row ID to keep")
   .option("--yes", "Apply the merge. Without this, only print the plan.")

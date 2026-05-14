@@ -152,9 +152,9 @@ describe("VaultManager.migrate — atomicity gate", () => {
     ])
     const manager = makeVaultManager(client)
 
-    await expect(
-      manager.migrate({ fixTopicEncoding: true })
-    ).rejects.toThrow(/Decoding would surface 1 duplicate-name topic group/)
+    await expect(manager.migrate({ fixTopicEncoding: true })).rejects.toThrow(
+      /Decoding would surface 1 duplicate-name topic group/
+    )
 
     // Critical invariant: no write hit Notion. A half-migrated vault is
     // exactly what the gate is designed to prevent.
@@ -185,9 +185,7 @@ describe("VaultManager.migrate — atomicity gate", () => {
     ])
     const manager = makeVaultManager(client)
 
-    await expect(
-      manager.migrate({ fixTopicEncoding: true })
-    ).rejects.toThrow() // migrateVaultSchema fails on the mock
+    await expect(manager.migrate({ fixTopicEncoding: true })).rejects.toThrow() // migrateVaultSchema fails on the mock
     // The decode write happened — that's the point: the gate did not veto.
     expect(updateMock).toHaveBeenCalledWith(
       expect.objectContaining({

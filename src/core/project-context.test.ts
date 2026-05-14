@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  composeProjectContext,
-  renderProjectContextLines,
-} from "./project-context.js"
+import { composeProjectContext, renderProjectContextLines } from "./project-context.js"
 import type { LoreConfig, Project } from "../types.js"
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -52,11 +49,7 @@ describe("composeProjectContext", () => {
     // this filter the renderer would print the active project as its
     // own sibling — which reads like a typo to anyone who doesn't have
     // the implementation in their head.
-    const ctx = composeProjectContext(
-      makeProject({ name: "Web" }),
-      makeConfig(),
-      false,
-    )
+    const ctx = composeProjectContext(makeProject({ name: "Web" }), makeConfig(), false)
     expect(ctx?.siblings).toEqual(["Widget", "Desktop"])
   })
 
@@ -69,7 +62,7 @@ describe("composeProjectContext", () => {
     const ctx = composeProjectContext(
       makeProject({ description: "" }),
       makeConfig(),
-      false,
+      false
     )
     expect(ctx?.description).toBeNull()
   })
@@ -78,7 +71,7 @@ describe("composeProjectContext", () => {
     const ctx = composeProjectContext(
       makeProject({ description: "   \n\t  " }),
       makeConfig(),
-      false,
+      false
     )
     expect(ctx?.description).toBeNull()
   })
@@ -87,14 +80,10 @@ describe("composeProjectContext", () => {
     const ctx = composeProjectContext(
       makeProject({ path: "  apps/widget  " }),
       makeConfig(),
-      false,
+      false
     )
     expect(ctx?.path).toBe("apps/widget")
-    const empty = composeProjectContext(
-      makeProject({ path: "" }),
-      makeConfig(),
-      false,
-    )
+    const empty = composeProjectContext(makeProject({ path: "" }), makeConfig(), false)
     expect(empty?.path).toBeNull()
   })
 
@@ -119,7 +108,7 @@ describe("composeProjectContext", () => {
     const ctx = composeProjectContext(
       makeProject({ name: "Monorepo", path: "." }),
       config,
-      true,
+      true
     )
     expect(ctx?.siblings).toEqual([])
   })
@@ -201,7 +190,7 @@ describe("renderProjectContextLines", () => {
     const ctx = composeProjectContext(
       makeProject({ description: "" }),
       makeConfig(),
-      false,
+      false
     )
     expect(renderProjectContextLines(ctx)).toEqual([
       "Project: Widget (apps/widget)",
@@ -223,7 +212,7 @@ describe("renderProjectContextLines", () => {
     const ctx = composeProjectContext(
       makeProject({ path: "" }),
       makeConfig({ projects: [] }),
-      false,
+      false
     )
     expect(renderProjectContextLines(ctx)?.[0]).toBe("Project: Widget")
   })
@@ -237,13 +226,13 @@ describe("renderProjectContextLines", () => {
     const ctx = composeProjectContext(
       makeProject({ name: "Monorepo", path: "." }),
       makeConfig(),
-      true,
+      true
     )
     const lines = renderProjectContextLines(ctx)
     expect(lines[0]).toBe(
       `> Scoped to catch-all "Monorepo" (monorepo-wide). ` +
         `Sub-projects available: Widget, Web, Desktop. ` +
-        `Pass projectName to scope to a specific sub-project.`,
+        `Pass projectName to scope to a specific sub-project.`
     )
     expect(lines[1]).toBe("Project: Monorepo (.)")
   })
@@ -256,7 +245,7 @@ describe("renderProjectContextLines", () => {
     const ctx = composeProjectContext(
       makeProject({ name: "Monorepo", path: "." }),
       config,
-      true,
+      true
     )
     const lines = renderProjectContextLines(ctx)
     expect(lines[0]).toBe("Project: Monorepo (.)")

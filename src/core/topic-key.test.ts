@@ -58,15 +58,12 @@ describe("suggestTopicKey — example table (issue 0.9.0/07)", () => {
     },
   ]
 
-  it.each(cases)(
-    "$kind: $title → $expected",
-    ({ title, kind, expected }) => {
-      const result = suggestTopicKey({ title, kind })
-      expect(result.key).toBe(expected)
-      expect(typeof result.reason).toBe("string")
-      expect(result.reason.length).toBeGreaterThan(0)
-    },
-  )
+  it.each(cases)("$kind: $title → $expected", ({ title, kind, expected }) => {
+    const result = suggestTopicKey({ title, kind })
+    expect(result.key).toBe(expected)
+    expect(typeof result.reason).toBe("string")
+    expect(result.reason.length).toBeGreaterThan(0)
+  })
 })
 
 describe("suggestTopicKey — acceptance criteria (issue 0.9.0/07)", () => {
@@ -262,7 +259,8 @@ describe("suggestTopicKey — slug character cap", () => {
     // the last hyphen that fits — preserving whole tokens — rather
     // than mid-token.
     const result = suggestTopicKey({
-      title: "antidisestablishmentarianism floccinaucinihilipilification supercalifragilisticexpialidocious",
+      title:
+        "antidisestablishmentarianism floccinaucinihilipilification supercalifragilisticexpialidocious",
       kind: "decision",
     })
     expect(result.key).not.toBeNull()

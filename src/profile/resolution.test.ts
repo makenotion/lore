@@ -49,14 +49,7 @@ describe("Phase 3 profile resolution priority", () => {
   })
 
   it("prefers a local profile over the built-in version", () => {
-    const localDir = join(
-      configRoot,
-      ".lore",
-      "profiles",
-      "local",
-      "default",
-      "1.0.0"
-    )
+    const localDir = join(configRoot, ".lore", "profiles", "local", "default", "1.0.0")
     writeFiles(localDir, minimalProfileFiles("default"))
 
     const profile = resolveProfileFromConfigAtRoot(
@@ -88,10 +81,7 @@ describe("Phase 3 profile resolution priority", () => {
 
   it("throws when the selector resolves nowhere", () => {
     expect(() =>
-      resolveProfileFromConfigAtRoot(
-        { profile: "ghost@9.9.9" },
-        configRoot
-      )
+      resolveProfileFromConfigAtRoot({ profile: "ghost@9.9.9" }, configRoot)
     ).toThrow(/Profile not found/)
   })
 

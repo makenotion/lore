@@ -67,7 +67,7 @@ export interface TitleResolvers {
  */
 export async function resolveTitles(
   ids: readonly string[],
-  loader: (id: string) => Promise<string | null>,
+  loader: (id: string) => Promise<string | null>
 ): Promise<Map<string, string>> {
   const unique = new Set<string>()
   for (const id of ids) {
@@ -80,11 +80,11 @@ export async function resolveTitles(
     Array.from(unique).map(async (id) => {
       const title = await loader(id)
       return title ? ([id, title] as const) : null
-    }),
+    })
   )
 
   return new Map(
-    entries.filter((entry): entry is readonly [string, string] => entry !== null),
+    entries.filter((entry): entry is readonly [string, string] => entry !== null)
   )
 }
 
@@ -96,7 +96,7 @@ export async function resolveTitles(
  */
 export async function resolveReferencedTitles(
   facts: readonly Fact[],
-  services: TitleResolvers,
+  services: TitleResolvers
 ): Promise<Map<string, string>> {
   const ids: string[] = []
   for (const fact of facts) {
@@ -145,10 +145,7 @@ export function renderFact(fact: Fact, options: RenderFactOptions): string {
  * non-fact structures (e.g., `lore-decision action='get'`'s Supersedes section)
  * share the same lookup discipline as `renderFact`.
  */
-export function displayId(
-  id: string,
-  titleMap: Map<string, string>,
-): string {
+export function displayId(id: string, titleMap: Map<string, string>): string {
   const title = titleMap.get(id.toLowerCase())
   return title ?? unresolvedHint(id)
 }
@@ -159,10 +156,7 @@ export function displayId(
  * Shared by `renderFact` and call sites that need per-side substitution
  * inside a non-standard line format.
  */
-export function displayValue(
-  value: string,
-  titleMap: Map<string, string>,
-): string {
+export function displayValue(value: string, titleMap: Map<string, string>): string {
   if (!isUuid(value)) return value
   return displayId(value, titleMap)
 }
@@ -356,7 +350,7 @@ export function renderRevisionMarker(revisionCount: number): string | null {
 export function renderTrustLine(
   confidenceScore: number | null,
   /** Prefixed before the underscore. `""` for heading-shaped surfaces, `"  "` for bullet rows. */
-  indent: string = "",
+  indent: string = ""
 ): string | null {
   if (confidenceScore === null) return null
   const label = formatTrustLabel(confidenceScore)
@@ -431,7 +425,7 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
  */
 export function formatMemoryListItem(
   memory: MemoryListItem,
-  options: FormatMemoryListItemOptions = {},
+  options: FormatMemoryListItemOptions = {}
 ): string {
   const headingLevel = options.headingLevel ?? 3
   const heading = "#".repeat(headingLevel)
@@ -472,7 +466,7 @@ export function formatMemoryListItem(
 
 function renderMetaLine(
   memory: MemoryListItem,
-  meta: FormatMemoryListItemOptions["meta"],
+  meta: FormatMemoryListItemOptions["meta"]
 ): string | null {
   if (typeof meta === "string") return meta
   if (typeof meta === "function") return meta(memory)
@@ -627,7 +621,7 @@ export interface CollapseOverlappingOptions {
 
 export function collapseOverlappingMemories(
   memories: readonly Memory[],
-  options: CollapseOverlappingOptions = {},
+  options: CollapseOverlappingOptions = {}
 ): CollapsedMemoryGroup[] {
   const titleThreshold = options.titleJaccardThreshold ?? DEFAULT_TITLE_JACCARD_THRESHOLD
   const tagThreshold = options.tagOverlapThreshold ?? DEFAULT_TAG_OVERLAP_THRESHOLD
@@ -646,7 +640,9 @@ export function collapseOverlappingMemories(
 
     let attached = false
     for (const cluster of clusters) {
-      if (areTopicallySimilar(signature, cluster.signature, titleThreshold, tagThreshold)) {
+      if (
+        areTopicallySimilar(signature, cluster.signature, titleThreshold, tagThreshold)
+      ) {
         cluster.group.collapsedIds.push(memory.id)
         attached = true
         break
@@ -673,7 +669,7 @@ function areTopicallySimilar(
   a: MemorySignature,
   b: MemorySignature,
   titleThreshold: number,
-  tagThreshold: number,
+  tagThreshold: number
 ): boolean {
   if (jaccard(a.titleTokens, b.titleTokens) >= titleThreshold) return true
   // Szymkiewicz-Simpson: biases toward "one set is a subset of the

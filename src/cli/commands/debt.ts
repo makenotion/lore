@@ -77,7 +77,10 @@ function parseDebtScanCliOptions(raw: {
   }
   let perCategoryLimit: number | undefined
   if (raw.perCategoryLimit !== undefined) {
-    const parsed = parsePositiveDecimalInteger("--per-category-limit", raw.perCategoryLimit)
+    const parsed = parsePositiveDecimalInteger(
+      "--per-category-limit",
+      raw.perCategoryLimit
+    )
     if (!parsed.ok) return parsed
     perCategoryLimit = parsed.value
   }
@@ -120,9 +123,7 @@ function parseDebtCreateTasksCliOptions(raw: {
   priorityFloor?: string
   limit?: string
   dryRun?: boolean
-}):
-  | { ok: true; value: DebtCreateTasksCliOptions }
-  | { ok: false; message: string } {
+}): { ok: true; value: DebtCreateTasksCliOptions } | { ok: false; message: string } {
   // Mutually-exclusive parity with `parseDebtScanCliOptions`. Same
   // rationale.
   if (raw.project !== undefined && raw.allProjects === true) {
@@ -204,7 +205,8 @@ export function renderDebtMarkdown(report: DebtReport): string {
   // operator hasn't paid for yet.
   const cappedCategories: string[] = []
   if (report.stats.orphanFactsCapped) cappedCategories.push("orphan_fact")
-  if (report.stats.staleTasksScanCapped) cappedCategories.push("overdue_governance (stale-task probe)")
+  if (report.stats.staleTasksScanCapped)
+    cappedCategories.push("overdue_governance (stale-task probe)")
   if (report.stats.ownerlessScanCapped) cappedCategories.push("ownerless")
   // `scopeAnomalies === null` is the degraded-probe signal ONLY when
   // the probe was actually attempted. A category-filtered scan that
@@ -317,11 +319,11 @@ const scanSubcommand = new Command("scan")
   .description(
     "Inventory memory debt across the vault: low-trust memories, orphan facts, overdue governance, duplicate clusters, topic sprawl, scope anomalies, and ownerless rows."
   )
+  .option("-p, --project <name>", "Restrict scan to one project (default: all projects)")
   .option(
-    "-p, --project <name>",
-    "Restrict scan to one project (default: all projects)"
+    "--all-projects",
+    "Scan every active project (default when --project is omitted)"
   )
-  .option("--all-projects", "Scan every active project (default when --project is omitted)")
   .option("-n, --limit <n>", "Cap on total items surfaced after sort (default 200)")
   .option(
     "--per-category-limit <n>",
@@ -462,10 +464,7 @@ const createTasksSubcommand = new Command("create-tasks")
     "P1 surfaces only the highest-severity debt; P2 includes most actionable items (default P2)"
   )
   .option("-n, --limit <n>", "Cap on tasks created per run (default 25)")
-  .option(
-    "--dry-run",
-    "Show the tasks that would be created without writing to Notion"
-  )
+  .option("--dry-run", "Show the tasks that would be created without writing to Notion")
   .action(
     async (raw: {
       project?: string
@@ -515,11 +514,7 @@ const createTasksSubcommand = new Command("create-tasks")
         }
         const plan: PlanRow[] = []
         for (const item of slice) {
-          const existing = await findExistingDebtTask(
-            services,
-            item,
-            project?.id
-          )
+          const existing = await findExistingDebtTask(services, item, project?.id)
           plan.push({
             item,
             action: existing === null ? "create" : "reuse",

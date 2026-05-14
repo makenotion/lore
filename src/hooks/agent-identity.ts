@@ -102,7 +102,10 @@ export function canonicalizeAgentName(raw: string): string {
   if (!trimmed) return trimmed
   // Collapse separators for matching only — the original is what we return
   // when the pattern doesn't match.
-  const normalized = trimmed.toLowerCase().replace(/[\s-]+/g, " ").trim()
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[\s-]+/g, " ")
+    .trim()
   if (CLAUDE_VARIANTS.test(normalized)) return CANONICAL_CLAUDE_CODE
   return trimmed
 }

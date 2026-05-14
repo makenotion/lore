@@ -274,7 +274,9 @@ export async function fixFactEncoding(
       properties: {
         [FACT_PROPS.SUBJECT]: { title: [{ text: { content: row.decodedSubject } }] },
         [FACT_PROPS.OBJECT]: { rich_text: [{ text: { content: row.decodedObject } }] },
-        [FACT_PROPS.DEDUP_KEY]: { rich_text: [{ text: { content: row.decodedDedupKey } }] },
+        [FACT_PROPS.DEDUP_KEY]: {
+          rich_text: [{ text: { content: row.decodedDedupKey } }],
+        },
         [FACT_PROPS.SUBJECT_KEY]: {
           rich_text: [{ text: { content: decodedSubjectKey } }],
         },

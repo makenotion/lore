@@ -277,7 +277,7 @@ describe("buildBenchBaselineSnapshot + compareBenchBaseline", () => {
     const driftedArtifact = buildArtifact()
     driftedArtifact.summary.configHash = "0".repeat(64)
     expect(() =>
-      compareBenchBaseline({ artifact: driftedArtifact, baseline: snapshot }),
+      compareBenchBaseline({ artifact: driftedArtifact, baseline: snapshot })
     ).toThrow(BenchBaselineConfigMismatchError)
   })
 

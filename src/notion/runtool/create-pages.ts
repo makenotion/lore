@@ -61,10 +61,7 @@
 import type { Client } from "@notionhq/client"
 import { runTool } from "./client.js"
 import { convertNotionRestToSqliteProperties } from "./sqlite-properties.js"
-import type {
-  RunToolCreatePagesInputPage,
-  RunToolCreatePagesParent,
-} from "./types.js"
+import type { RunToolCreatePagesInputPage, RunToolCreatePagesParent } from "./types.js"
 
 /**
  * RunTool `create_pages` documents `pages.maxItems = 100` on the

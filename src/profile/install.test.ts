@@ -73,9 +73,7 @@ describe("parseInstallSource", () => {
   })
 
   it("rejects empty strings", () => {
-    expect(() => parseInstallSource("   ", process.cwd())).toThrow(
-      /cannot be empty/
-    )
+    expect(() => parseInstallSource("   ", process.cwd())).toThrow(/cannot be empty/)
   })
 })
 
@@ -117,9 +115,7 @@ describe("previewInstall + applyInstall (local path)", () => {
     })
     expect(installed.manifestDigest).toBe(preview.manifestDigest)
     const lock = readProfilesLock(configRoot)
-    expect(lock.profiles["custom@1.0.0"]?.manifestDigest).toBe(
-      preview.manifestDigest
-    )
+    expect(lock.profiles["custom@1.0.0"]?.manifestDigest).toBe(preview.manifestDigest)
     expect(lock.profiles["custom@1.0.0"]?.source).toEqual({
       kind: "path",
       path: bundleDir,
@@ -178,10 +174,7 @@ describe("previewInstall + applyInstall (local path)", () => {
       "profile: custom\nfrom: 1.0.0\nto: 1.1.0\nsteps: []\n"
     )
     mkdirSync(join(bundleDir, "migrations"))
-    symlinkSync(
-      externalMigration,
-      join(bundleDir, "migrations", "1.0.0__1.1.0.yaml")
-    )
+    symlinkSync(externalMigration, join(bundleDir, "migrations", "1.0.0__1.1.0.yaml"))
 
     expect(() =>
       previewInstall({
@@ -190,16 +183,13 @@ describe("previewInstall + applyInstall (local path)", () => {
       })
     ).toThrow(/contains symlink migrations\/1\.0\.0__1\.1\.0\.yaml/)
     expect(
-      existsSync(
-        join(configRoot, ".lore", "profiles", "installed", "custom", "1.0.0")
-      )
+      existsSync(join(configRoot, ".lore", "profiles", "installed", "custom", "1.0.0"))
     ).toBe(false)
   })
 
   it("installs the staged snapshot when local source mutates after preview", () => {
     const migrationPath = join(bundleDir, "migrations", "1.0.0__1.1.0.yaml")
-    const approvedMigration =
-      "profile: custom\nfrom: 1.0.0\nto: 1.1.0\nsteps: []\n"
+    const approvedMigration = "profile: custom\nfrom: 1.0.0\nto: 1.1.0\nsteps: []\n"
     makeBundle(bundleDir, {
       "migrations/1.0.0__1.1.0.yaml": approvedMigration,
     })
@@ -310,14 +300,7 @@ describe("checkInstallShadowing", () => {
   })
 
   it("reports a local profile collision when one exists at the same selector", () => {
-    const localDir = join(
-      configRoot,
-      ".lore",
-      "profiles",
-      "local",
-      "custom",
-      "1.0.0"
-    )
+    const localDir = join(configRoot, ".lore", "profiles", "local", "custom", "1.0.0")
     mkdirSync(localDir, { recursive: true })
     makeBundle(localDir, minimalProfileFiles("custom"))
     const profile = loadProfileFromRoot(localDir, { source: "local" })
@@ -363,28 +346,12 @@ describe("checkInstallCollision", () => {
   })
 
   it("returns none when the install target does not exist yet", () => {
-    const target = join(
-      configRoot,
-      ".lore",
-      "profiles",
-      "installed",
-      "custom",
-      "1.0.0"
-    )
-    expect(
-      checkInstallCollision(target, "sha256:" + "a".repeat(64)).kind
-    ).toBe("none")
+    const target = join(configRoot, ".lore", "profiles", "installed", "custom", "1.0.0")
+    expect(checkInstallCollision(target, "sha256:" + "a".repeat(64)).kind).toBe("none")
   })
 
   it("treats an existing non-bundle target as a fail-closed collision", () => {
-    const target = join(
-      configRoot,
-      ".lore",
-      "profiles",
-      "installed",
-      "custom",
-      "1.0.0"
-    )
+    const target = join(configRoot, ".lore", "profiles", "installed", "custom", "1.0.0")
     mkdirSync(target, { recursive: true })
     writeFileSync(join(target, "README.md"), "not a profile bundle\n")
 
@@ -398,14 +365,7 @@ describe("checkInstallCollision", () => {
     const bundleDir = join(workDir, "bundle")
     mkdirSync(bundleDir, { recursive: true })
     makeBundle(bundleDir, minimalProfileFiles("custom"))
-    const target = join(
-      configRoot,
-      ".lore",
-      "profiles",
-      "installed",
-      "custom",
-      "1.0.0"
-    )
+    const target = join(configRoot, ".lore", "profiles", "installed", "custom", "1.0.0")
     mkdirSync(target, { recursive: true })
     writeFileSync(join(target, "README.md"), "not a profile bundle\n")
 

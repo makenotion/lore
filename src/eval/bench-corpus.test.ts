@@ -25,7 +25,7 @@ describe("sha256Hex", () => {
     const result = sha256Hex("hello")
     expect(result).toMatch(/^[a-f0-9]{64}$/)
     expect(result).toBe(
-      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
     )
   })
 })
@@ -80,7 +80,7 @@ describe("loadBenchCorpus", () => {
         revision: "abc123",
         files: { "corpus.json": { sha256: sha } },
         license: "MIT",
-      }),
+      })
     )
     const loaded = await loadBenchCorpus({
       name: "longmemeval_s_cleaned",
@@ -106,11 +106,11 @@ describe("loadBenchCorpus", () => {
           },
         },
         license: "MIT",
-      }),
+      })
     )
-    await expect(
-      loadBenchCorpus({ name: "x", corpusPath }),
-    ).rejects.toBeInstanceOf(BenchCorpusChecksumMismatchError)
+    await expect(loadBenchCorpus({ name: "x", corpusPath })).rejects.toBeInstanceOf(
+      BenchCorpusChecksumMismatchError
+    )
   })
 
   it("throws when checksums.json shape is invalid", async () => {

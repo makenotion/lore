@@ -52,7 +52,8 @@ function makeHarness(
     archive: vi.fn(),
   }
   const facts = {
-    repointEntity: vi.fn()
+    repointEntity: vi
+      .fn()
       .mockResolvedValueOnce(repoint)
       .mockResolvedValueOnce(postArchiveRepoint),
   }
@@ -227,9 +228,7 @@ describe("mergeEntities", () => {
       apply: true,
     })
 
-    expect(result.errors).toEqual([
-      { phase: "archive", message: "archive failed" },
-    ])
+    expect(result.errors).toEqual([{ phase: "archive", message: "archive failed" }])
     expect(result.aliasesAdded).toBe(2)
     expect(result.loserArchived).toBe(false)
     expect(facts.repointEntity).toHaveBeenCalledTimes(1)

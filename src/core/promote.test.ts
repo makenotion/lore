@@ -26,8 +26,14 @@ vi.mock("../notion/setup.js", async () => {
       const vault: Vault = {
         pageId,
         databases: {
-          projects: { databaseId: `${pageId}-proj-db`, dataSourceId: `${pageId}-proj-ds` },
-          topics: { databaseId: `${pageId}-topics-db`, dataSourceId: `${pageId}-topics-ds` },
+          projects: {
+            databaseId: `${pageId}-proj-db`,
+            dataSourceId: `${pageId}-proj-ds`,
+          },
+          topics: {
+            databaseId: `${pageId}-topics-db`,
+            dataSourceId: `${pageId}-topics-ds`,
+          },
           memories: {
             databaseId: `${pageId}-mem-db`,
             dataSourceId: `${pageId}-mem-ds`,
@@ -97,7 +103,7 @@ function makePromotionHarness(
   source: Memory,
   options: {
     getPropertiesByIdImpl?: (id: string) => Promise<Memory>
-  } = {},
+  } = {}
 ): PromotionHarness {
   const createSpy = vi.fn(
     async (args: { parent: unknown; properties: Record<string, unknown> }) => ({
@@ -109,7 +115,7 @@ function makePromotionHarness(
       properties: args.properties,
       parent: { type: "database_id", database_id: "target-vault-mem-db" },
       url: "",
-    }),
+    })
   )
   const updateMarkdownSpy = vi.fn(async () => ({}))
   const client = {
@@ -140,7 +146,7 @@ function makePromotionHarness(
 }
 
 function makeTarget(
-  overrides: Partial<PromotionTargetTopologyRef> = {},
+  overrides: Partial<PromotionTargetTopologyRef> = {}
 ): PromotionTargetTopologyRef {
   return {
     role: "promotion-target",
@@ -185,7 +191,7 @@ describe("buildPromotionAuditBlock", () => {
         "- **Promoter:** Engineer Name",
         `- **Promoted at:** ${FIXED_NOW.toISOString()}`,
         "- **Reason:** Generalizes from the project pattern.",
-      ].join("\n"),
+      ].join("\n")
     )
   })
 
@@ -233,7 +239,8 @@ describe("buildPromotionAuditBlock", () => {
 describe("promoteMemory", () => {
   it("creates the promoted memory in the target vault with origin audit block", async () => {
     const source = makeSourceMemory()
-    const { client, createSpy, updateMarkdownSpy, memories } = makePromotionHarness(source)
+    const { client, createSpy, updateMarkdownSpy, memories } =
+      makePromotionHarness(source)
 
     const result = await promoteMemory(
       {
@@ -248,7 +255,7 @@ describe("promoteMemory", () => {
         promoter: "Engineer Name",
         sourceMemoryUrl: "https://notion.so/sourcemem1",
         now: FIXED_NOW,
-      },
+      }
     )
 
     expect(createSpy).toHaveBeenCalledTimes(1)
@@ -258,8 +265,12 @@ describe("promoteMemory", () => {
       database_id: "target-vault-mem-db",
     })
     // Title preserved verbatim.
-    const titleRich = (createArgs.properties as Record<string, { title: Array<{ text: { content: string } }> }>)
-      .Title.title
+    const titleRich = (
+      createArgs.properties as Record<
+        string,
+        { title: Array<{ text: { content: string } }> }
+      >
+    ).Title.title
     expect(titleRich[0]?.text.content).toBe(source.title)
 
     // Body write happened with the audit block prepended.
@@ -273,7 +284,7 @@ describe("promoteMemory", () => {
     expect(bodyArgs.insert_content.content).toContain(
       // Displayed id is dashless (`normalizePageId` strips hyphens)
       // to match the URL slug. `source-mem-1` → `sourcemem1`.
-      "- **Source memory:** [sourcemem1](https://notion.so/sourcemem1)",
+      "- **Source memory:** [sourcemem1](https://notion.so/sourcemem1)"
     )
     expect(bodyArgs.insert_content.content).toContain("- **Promoter:** Engineer Name")
     expect(bodyArgs.insert_content.content).toContain(source.content)
@@ -293,7 +304,7 @@ describe("promoteMemory", () => {
         target: makeTarget({ requireReview: true }),
         promoter: "Engineer Name",
         now: FIXED_NOW,
-      },
+      }
     )
 
     expect(result.status).toBe("proposed")
@@ -324,7 +335,7 @@ describe("promoteMemory", () => {
         target: makeTarget({ requireReview: false }),
         promoter: "Engineer Name",
         now: FIXED_NOW,
-      },
+      }
     )
 
     expect(result.status).toBe("informational")
@@ -347,8 +358,8 @@ describe("promoteMemory", () => {
           target: makeTarget({ pageId: "shared-page" }),
           promoter: "Engineer Name",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/Cannot promote into the primary vault/)
 
     expect(createSpy).not.toHaveBeenCalled()
@@ -376,8 +387,8 @@ describe("promoteMemory", () => {
           target: makeTarget({ pageId: dashless }),
           promoter: "Engineer Name",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/Cannot promote into the primary vault/)
 
     // Symmetric: dashless primary, dashed target.
@@ -389,8 +400,8 @@ describe("promoteMemory", () => {
           target: makeTarget({ pageId: dashed.toUpperCase() }),
           promoter: "Engineer Name",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/Cannot promote into the primary vault/)
 
     expect(createSpy).not.toHaveBeenCalled()
@@ -407,9 +418,7 @@ describe("promoteMemory", () => {
     const source = makeSourceMemory()
     const { client, memories, createSpy } = makePromotionHarness(source, {
       getPropertiesByIdImpl: async () => {
-        throw new Error(
-          `Memory ${source.id} is not in the Memories database.`,
-        )
+        throw new Error(`Memory ${source.id} is not in the Memories database.`)
       },
     })
 
@@ -421,8 +430,8 @@ describe("promoteMemory", () => {
           target: makeTarget(),
           promoter: "Engineer Name",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/not in the Memories database/)
 
     expect(createSpy).not.toHaveBeenCalled()
@@ -449,8 +458,8 @@ describe("promoteMemory", () => {
           target: makeTarget(),
           promoter: "Engineer Name",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/archived/)
 
     expect(createSpy).not.toHaveBeenCalled()
@@ -468,8 +477,8 @@ describe("promoteMemory", () => {
           target: makeTarget(),
           promoter: "   ",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/non-empty promoter name/)
 
     expect(createSpy).not.toHaveBeenCalled()
@@ -486,7 +495,7 @@ describe("promoteMemory", () => {
         target: makeTarget(),
         promoter: "Engineer Name",
         now: FIXED_NOW,
-      },
+      }
     )
 
     // `buildMemoryProps` omits the Project relation property entirely
@@ -520,7 +529,7 @@ describe("promoteMemory", () => {
         target: makeTarget(),
         promoter: "Engineer Name",
         now: FIXED_NOW,
-      },
+      }
     )
 
     // `buildMemoryProps` omits the Tags multi-select property when
@@ -541,7 +550,7 @@ describe("promoteMemory", () => {
         target: makeTarget(),
         promoter: "Engineer Name",
         now: FIXED_NOW,
-      },
+      }
     )
 
     const sourceProp = createSpy.mock.calls[0]![0].properties.Source as {
@@ -564,11 +573,12 @@ describe("promoteMemory", () => {
         promoter: "Engineer Name",
         reason: longReason,
         now: FIXED_NOW,
-      },
+      }
     )
 
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } })
-      .insert_content.content
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } }
+    ).insert_content.content
     expect(body).toContain("… [truncated]")
     // The truncated reason line carries the trailing marker; the
     // pre-truncation portion stays intact.
@@ -587,11 +597,12 @@ describe("promoteMemory", () => {
         promoter: "Engineer Name",
         reason: "   ",
         now: FIXED_NOW,
-      },
+      }
     )
 
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } })
-      .insert_content.content
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } }
+    ).insert_content.content
     expect(body).not.toContain("Reason:")
   })
 
@@ -623,12 +634,13 @@ describe("promoteMemory", () => {
           promoter: "Engineer Name",
           reason: longReason,
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).resolves.toMatchObject({ targetVaultLabel: "Team" })
 
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } })
-      .insert_content.content
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } }
+    ).insert_content.content
     expect(body).toContain(longSynopsis)
     expect(body).toContain(longReason)
     // Body content from the source is appended after the audit block.
@@ -653,13 +665,14 @@ describe("promoteMemory", () => {
         promoter: "Engineer Name",
         sourceMemoryUrl: `https://notion.so/${dashlessSourceId}`,
         now: FIXED_NOW,
-      },
+      }
     )
 
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } })
-      .insert_content.content
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } }
+    ).insert_content.content
     expect(body).toContain(
-      `- **Source memory:** [${dashlessSourceId}](https://notion.so/${dashlessSourceId})`,
+      `- **Source memory:** [${dashlessSourceId}](https://notion.so/${dashlessSourceId})`
     )
     expect(body).not.toContain(dashedSourceId)
   })
@@ -675,11 +688,12 @@ describe("promoteMemory", () => {
         target: makeTarget(),
         promoter: "Engineer Name",
         now: FIXED_NOW,
-      },
+      }
     )
 
-    const body = (updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } })
-      .insert_content.content
+    const body = (
+      updateMarkdownSpy.mock.calls[0]![0] as { insert_content: { content: string } }
+    ).insert_content.content
     expect(body.startsWith("## Promoted from")).toBe(true)
     // No body content was appended — the audit block stands alone.
     expect(body.trim().endsWith("[truncated]")).toBe(false)
@@ -689,7 +703,8 @@ describe("promoteMemory", () => {
 describe("preparePromotion (dry-run)", () => {
   it("composes the audit block and resolved status without target-vault writes", async () => {
     const source = makeSourceMemory()
-    const { client, createSpy, updateMarkdownSpy, memories } = makePromotionHarness(source)
+    const { client, createSpy, updateMarkdownSpy, memories } =
+      makePromotionHarness(source)
 
     const preview = await preparePromotion(
       {
@@ -705,7 +720,7 @@ describe("preparePromotion (dry-run)", () => {
         sourceMemoryUrl: "https://notion.so/sourcemem1",
         reason: "Trial run",
         now: FIXED_NOW,
-      },
+      }
     )
 
     // No target-vault round-trips were issued — the apply path's
@@ -737,8 +752,8 @@ describe("preparePromotion (dry-run)", () => {
           target: makeTarget({ pageId: "primary-vault" }),
           promoter: "Engineer Name",
           now: FIXED_NOW,
-        },
-      ),
+        }
+      )
     ).rejects.toThrow(/Cannot promote into the primary vault/)
 
     // The same-vault guard fires before the source read — a

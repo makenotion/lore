@@ -22,7 +22,7 @@ describe("parseCodexUsage", () => {
         cached_input_tokens: 0,
         output_tokens: 20,
         // reasoning_output_tokens missing
-      }),
+      })
     ).toBeNull()
   })
 
@@ -62,11 +62,9 @@ describe("computeAgentCostUsd", () => {
         output_tokens: 500,
         reasoning_output_tokens: 250,
       },
-      pricing,
+      pricing
     )
-    expect(cost).toBeCloseTo(
-      2 * 0.001 + 1 * 0.0005 + 0.5 * 0.002 + 0.25 * 0.004,
-    )
+    expect(cost).toBeCloseTo(2 * 0.001 + 1 * 0.0005 + 0.5 * 0.002 + 0.25 * 0.004)
   })
 
   it("treats cached = 0 as 'no cached portion' (all input at input rate)", () => {
@@ -77,7 +75,7 @@ describe("computeAgentCostUsd", () => {
         output_tokens: 500,
         reasoning_output_tokens: 0,
       },
-      pricing,
+      pricing
     )
     expect(cost).toBeCloseTo(1 * 0.001 + 0.5 * 0.002)
   })
@@ -90,7 +88,7 @@ describe("computeAgentCostUsd", () => {
         output_tokens: 0,
         reasoning_output_tokens: 0,
       },
-      pricing,
+      pricing
     )
     // 0 uncached at full rate; 200 cached at cached rate. The clamp
     // prevents a malformed Codex usage from producing a negative
@@ -109,7 +107,7 @@ describe("computeJudgeCostUsd", () => {
     }
     const cost = computeJudgeCostUsd(
       { promptTokens: 2000, completionTokens: 100 },
-      pricing,
+      pricing
     )
     expect(cost).toBeCloseTo(2 * 0.005 + 0.1 * 0.02)
   })
@@ -129,7 +127,7 @@ describe("computeExtractionCostUsd", () => {
         cachedPromptTokens: 1000,
         completionTokens: 500,
       },
-      pricing,
+      pricing
     )
     expect(cost).toBeCloseTo(2 * 0.001 + 1 * 0.0005 + 0.5 * 0.002)
   })
@@ -157,7 +155,7 @@ describe("projectedTotalUsd", () => {
         judgeUsdSoFar: 0.4,
         extractionUsdSoFar: 0.3,
         ingestionEstimatedUsdSoFar: 2.0,
-      }),
+      })
     ).toBeCloseTo(3.9)
   })
 })

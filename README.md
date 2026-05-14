@@ -513,6 +513,7 @@ npm run typecheck    # Type-check with tsc --noEmit
 npm run lint         # Lint with eslint
 npm run lint:fix     # Lint and auto-fix
 npm run format       # Format with prettier
+npm run format:check # Check prettier formatting
 npm run test         # Run tests with vitest
 npm run dev          # Watch mode (tsup --watch)
 ```

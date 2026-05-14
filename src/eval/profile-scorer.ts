@@ -96,10 +96,7 @@ export function profileMetricsFromCounts(
   counts: ProfileMetricCounts
 ): ProfileMetricBreakdown {
   return {
-    entityKindRecall: ratioOrPerfect(
-      counts.correctEntityKinds,
-      counts.expectedEntities
-    ),
+    entityKindRecall: ratioOrPerfect(counts.correctEntityKinds, counts.expectedEntities),
     predicatePrecision: ratioOrPerfect(
       counts.correctWritableFacts,
       counts.predictedWritableFacts
@@ -109,10 +106,7 @@ export function profileMetricsFromCounts(
       counts.completeRequiredFields,
       counts.requiredFields
     ),
-    invalidTaxonomyRate: ratioOrZero(
-      counts.invalidTaxonomyValues,
-      counts.taxonomyValues
-    ),
+    invalidTaxonomyRate: ratioOrZero(counts.invalidTaxonomyValues, counts.taxonomyValues),
     counts,
   }
 }
@@ -210,10 +204,7 @@ export function collectProfileThresholdFailures(
       `Hallucinated-fact rate ${formatMetric(metrics.hallucinatedFactRate)} exceeds ${formatMetric(thresholds.hallucinatedFactRateMax)}.`
     )
   }
-  if (
-    metrics.requiredFieldCompleteness <
-    thresholds.requiredFieldCompletenessMin
-  ) {
+  if (metrics.requiredFieldCompleteness < thresholds.requiredFieldCompletenessMin) {
     failures.push(
       `Required-field completeness ${formatMetric(metrics.requiredFieldCompleteness)} is below ${formatMetric(thresholds.requiredFieldCompletenessMin)}.`
     )

@@ -2213,9 +2213,7 @@ describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBU
   it("stamps services.identity.resolveAuthor on decisions.create when args.author is omitted", async () => {
     const { handler, create } = setUpCreateHarness("Test User")
     await handler({ decision: "Use bcrypt", rationale: "Fast enough" } as never)
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Test User" })
-    )
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: "Test User" }))
   })
 
   it("explicit args.author wins without calling services.identity.resolveAuthor", async () => {
@@ -2345,9 +2343,7 @@ describe("lore-decision action='create' — nonblank decision/rationale (issue #
       rationale,
     })
     expect(ok).toBe(true)
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ rationale })
-    )
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ rationale }))
   })
 
   it("preserves rationale whitespace verbatim — leading/trailing spaces", async () => {
@@ -2357,9 +2353,7 @@ describe("lore-decision action='create' — nonblank decision/rationale (issue #
       rationale,
     })
     expect(ok).toBe(true)
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ rationale })
-    )
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ rationale }))
   })
 })
 
@@ -2379,7 +2373,11 @@ describe("lore-decision decided_by scope inheritance (issue #283 round-4 Test C)
     const handlers = new Map<string, (args: never) => unknown>()
     const mockServer = {
       server: {
-        registerTool: (name: string, _config: unknown, handler: (args: never) => unknown) => {
+        registerTool: (
+          name: string,
+          _config: unknown,
+          handler: (args: never) => unknown
+        ) => {
           handlers.set(name, handler)
         },
       },
@@ -2415,9 +2413,12 @@ describe("lore-decision decided_by scope inheritance (issue #283 round-4 Test C)
       topics: { getOrCreate: vi.fn() },
       projects: { findByName: vi.fn() },
       entities: {
-        resolveOrCreateEntity: vi
-          .fn()
-          .mockResolvedValue({ entity: null, ambiguous: false, candidates: [], created: false }),
+        resolveOrCreateEntity: vi.fn().mockResolvedValue({
+          entity: null,
+          ambiguous: false,
+          candidates: [],
+          created: false,
+        }),
       },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       sessionMemories: { record: vi.fn(), get: vi.fn() },

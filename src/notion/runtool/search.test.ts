@@ -77,7 +77,10 @@ const DASHED_UUID = "11111111-2222-3333-4444-555555555555"
 const ANOTHER_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 const UNDASHED_UUID = "ffffffffffffffffffffffffffffffff"
 
-function makeNotionHit(id: string, title: string): RunToolInternalSearchResponse["results"][number] {
+function makeNotionHit(
+  id: string,
+  title: string
+): RunToolInternalSearchResponse["results"][number] {
   return {
     id,
     title,
@@ -122,9 +125,7 @@ describe("isRunToolSearchEnabled", () => {
 
   it("ignores unrecognized values, falling through to the default-on parent", () => {
     expect(isRunToolSearchEnabled({ LORE_USE_RUNTOOL: "maybe" })).toBe(true)
-    expect(
-      isRunToolSearchEnabled({ LORE_USE_RUNTOOL_SEARCH: "garbage" })
-    ).toBe(true)
+    expect(isRunToolSearchEnabled({ LORE_USE_RUNTOOL_SEARCH: "garbage" })).toBe(true)
   })
 })
 
@@ -160,9 +161,7 @@ describe("searchViaRunTool — wire envelope", () => {
   })
 
   it("clamps page_size to RUNTOOL_SEARCH_MAX_PAGE_SIZE", async () => {
-    const { client, captured } = makeStubClient(() =>
-      makeAiSearchResponse([])
-    )
+    const { client, captured } = makeStubClient(() => makeAiSearchResponse([]))
 
     await searchViaRunTool(client, {
       query: "x",
@@ -177,9 +176,7 @@ describe("searchViaRunTool — wire envelope", () => {
   })
 
   it("clamps page_size lower bound to 1", async () => {
-    const { client, captured } = makeStubClient(() =>
-      makeAiSearchResponse([])
-    )
+    const { client, captured } = makeStubClient(() => makeAiSearchResponse([]))
 
     await searchViaRunTool(client, {
       query: "x",
@@ -192,9 +189,7 @@ describe("searchViaRunTool — wire envelope", () => {
   })
 
   it("defaults page_size to RUNTOOL_SEARCH_MAX_PAGE_SIZE when omitted", async () => {
-    const { client, captured } = makeStubClient(() =>
-      makeAiSearchResponse([])
-    )
+    const { client, captured } = makeStubClient(() => makeAiSearchResponse([]))
 
     await searchViaRunTool(client, {
       query: "x",
@@ -206,10 +201,12 @@ describe("searchViaRunTool — wire envelope", () => {
   })
 
   it("defaults page_size to RUNTOOL_SEARCH_MAX_PAGE_SIZE on NaN / Infinity (Number.isFinite defense)", async () => {
-    for (const bogus of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-      const { client, captured } = makeStubClient(() =>
-        makeAiSearchResponse([])
-      )
+    for (const bogus of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      const { client, captured } = makeStubClient(() => makeAiSearchResponse([]))
 
       await searchViaRunTool(client, {
         query: "x",
@@ -226,9 +223,7 @@ describe("searchViaRunTool — wire envelope", () => {
   })
 
   it("does not set query_type or content_search_mode (preserves workflow-bot compatibility)", async () => {
-    const { client, captured } = makeStubClient(() =>
-      makeAiSearchResponse([])
-    )
+    const { client, captured } = makeStubClient(() => makeAiSearchResponse([]))
 
     await searchViaRunTool(client, {
       query: "x",
@@ -319,23 +314,26 @@ describe("searchViaRunTool — error classification", () => {
     { status: 400, code: "validation_error" },
     { status: 429, code: "rate_limited" },
     { status: 500, code: "internal_server_error" },
-  ])("propagates $status verbatim so proxy chain stays authoritative", async ({ status, code }) => {
-    const sdkError = Object.assign(new Error(code), { status, code })
-    let calls = 0
-    const { client } = makeStubClient(() => {
-      calls += 1
-      throw sdkError
-    })
-
-    await expect(
-      searchViaRunTool(client, {
-        query: "x",
-        dataSourceId: "ds-mem",
-        pageSize: 5,
+  ])(
+    "propagates $status verbatim so proxy chain stays authoritative",
+    async ({ status, code }) => {
+      const sdkError = Object.assign(new Error(code), { status, code })
+      let calls = 0
+      const { client } = makeStubClient(() => {
+        calls += 1
+        throw sdkError
       })
-    ).rejects.toBe(sdkError)
-    expect(calls).toBe(1)
-  })
+
+      await expect(
+        searchViaRunTool(client, {
+          query: "x",
+          dataSourceId: "ds-mem",
+          pageSize: 5,
+        })
+      ).rejects.toBe(sdkError)
+      expect(calls).toBe(1)
+    }
+  )
 
   it("rejects malformed responses", async () => {
     const { client } = makeStubClient(() => ({ unexpected: "shape" }))
@@ -371,7 +369,16 @@ describe("searchViaRunTool — error classification", () => {
     // response branch.
     const { client: numericIdClient } = makeStubClient(() => ({
       type: "ai_search",
-      results: [{ id: 123 as unknown as string, title: "M", url: "u", type: "page", highlight: "", timestamp: "t" }],
+      results: [
+        {
+          id: 123 as unknown as string,
+          title: "M",
+          url: "u",
+          type: "page",
+          highlight: "",
+          timestamp: "t",
+        },
+      ],
     }))
     await expect(
       searchViaRunTool(numericIdClient, {
@@ -383,7 +390,9 @@ describe("searchViaRunTool — error classification", () => {
 
     const { client: emptyIdClient } = makeStubClient(() => ({
       type: "ai_search",
-      results: [{ id: "", title: "M", url: "u", type: "page", highlight: "", timestamp: "t" }],
+      results: [
+        { id: "", title: "M", url: "u", type: "page", highlight: "", timestamp: "t" },
+      ],
     }))
     await expect(
       searchViaRunTool(emptyIdClient, {
@@ -458,9 +467,15 @@ describe("searchViaRunTool — result narrowing", () => {
     const { client } = makeStubClient(() =>
       makeAiSearchResponse([
         // Each non-boolean value must coerce to false.
-        { ...makeNotionHit(DASHED_UUID, "M1"), is_archived: "true" as unknown as boolean },
+        {
+          ...makeNotionHit(DASHED_UUID, "M1"),
+          is_archived: "true" as unknown as boolean,
+        },
         { ...makeNotionHit(ANOTHER_UUID, "M2"), is_archived: 1 as unknown as boolean },
-        { ...makeNotionHit(UNDASHED_UUID, "M3"), is_archived: null as unknown as boolean },
+        {
+          ...makeNotionHit(UNDASHED_UUID, "M3"),
+          is_archived: null as unknown as boolean,
+        },
       ])
     )
 
@@ -492,8 +507,9 @@ describe("searchViaRunTool — result narrowing", () => {
   })
 
   it("flags saturated=true when raw response returns the cap", async () => {
-    const ids = Array.from({ length: RUNTOOL_SEARCH_MAX_PAGE_SIZE }, (_, i) =>
-      `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
+    const ids = Array.from(
+      { length: RUNTOOL_SEARCH_MAX_PAGE_SIZE },
+      (_, i) => `${i.toString(16).padStart(8, "0")}-aaaa-bbbb-cccc-dddddddddddd`
     )
     const { client } = makeStubClient(() =>
       makeAiSearchResponse(ids.map((id) => makeNotionHit(id, `M-${id}`)))

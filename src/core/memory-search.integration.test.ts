@@ -133,11 +133,11 @@ class MemoriesFixtureVault {
       // at typecheck-time when the `Filter` union grows.
       const unknown: never = filter
       throw new Error(
-        `MemoriesFixtureVault: property filter not modeled by the fixture: ${JSON.stringify(unknown)}`,
+        `MemoriesFixtureVault: property filter not modeled by the fixture: ${JSON.stringify(unknown)}`
       )
     }
     throw new Error(
-      `MemoriesFixtureVault: unsupported filter shape ${JSON.stringify(filter)}`,
+      `MemoriesFixtureVault: unsupported filter shape ${JSON.stringify(filter)}`
     )
   }
 
@@ -185,14 +185,12 @@ class MemoriesFixtureVault {
           // Recency sort: last_edited_time desc, mirroring `searchByContainsPages`.
           matched.sort((a, b) => b.lastEditedTime.localeCompare(a.lastEditedTime))
           const cursor = args.start_cursor
-          const startIdx = cursor
-            ? matched.findIndex((r) => r.id === cursor) + 1
-            : 0
+          const startIdx = cursor ? matched.findIndex((r) => r.id === cursor) + 1 : 0
           if (cursor && startIdx === 0) {
             // findIndex returned -1 → +1 = 0, but a real Notion cursor
             // would not be re-issued for a missing row. Treat as misuse.
             throw new Error(
-              `MemoriesFixtureVault: start_cursor ${cursor} not found in result set`,
+              `MemoriesFixtureVault: start_cursor ${cursor} not found in result set`
             )
           }
           const pageSize = args.page_size ?? 100
@@ -251,9 +249,7 @@ function preSynopsisOrClause(query: string): QueryDataSourceParameters["filter"]
  * test where we need to walk the continuation cursor outside the service
  * surface.
  */
-function postSynopsisOrClause(
-  query: string,
-): QueryDataSourceParameters["filter"] {
+function postSynopsisOrClause(query: string): QueryDataSourceParameters["filter"] {
   return {
     or: [
       { property: MEMORY_PROPS.TITLE, title: { contains: query } },
@@ -312,7 +308,7 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
     })
     expect(post.map((m) => m.id).sort()).toEqual(["synopsis-only", "title-hit"])
     expect(post.find((m) => m.id === "synopsis-only")?.synopsis).toBe(
-      "Replaces freeform rationale notes with traversable chain.",
+      "Replaces freeform rationale notes with traversable chain."
     )
   })
 
@@ -357,9 +353,7 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
       sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
       page_size: 100,
     })
-    const preIds = new Set(
-      (preResponse.results as PageObjectResponse[]).map((p) => p.id),
-    )
+    const preIds = new Set((preResponse.results as PageObjectResponse[]).map((p) => p.id))
     const post = await service.search({
       query: "decision",
       mode: "contains",
@@ -370,9 +364,7 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
 
     // Pre returns title + keywords matches; post adds the synopsis match.
     expect(preIds).toEqual(new Set(["title-match", "keywords-match"]))
-    expect(postIds).toEqual(
-      new Set(["title-match", "keywords-match", "synopsis-match"]),
-    )
+    expect(postIds).toEqual(new Set(["title-match", "keywords-match", "synopsis-match"]))
     // Subset assertion: every pre id is in post.
     for (const id of preIds) {
       expect(postIds.has(id)).toBe(true)
@@ -511,13 +503,7 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
       includeContent: false,
     })
     const postTop5 = post.map((m) => m.id)
-    expect(postTop5).toEqual([
-      "synopsis-newest",
-      "t-1",
-      "t-2",
-      "t-3",
-      "t-4",
-    ])
+    expect(postTop5).toEqual(["synopsis-newest", "t-1", "t-2", "t-3", "t-4"])
     // t-5 fell off post-#04's page.
     expect(postTop5).not.toContain("t-5")
     const preSet = new Set(preTop5)
@@ -546,7 +532,7 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
       start_cursor: postFirstPage.next_cursor!,
     })
     const continuationIds = (postContinuation.results as PageObjectResponse[]).map(
-      (p) => p.id,
+      (p) => p.id
     )
     expect(continuationIds).toContain("t-5")
     expect(postContinuation.has_more).toBe(false)
@@ -602,11 +588,7 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
       mode: "hybrid",
       includeContent: false,
     })
-    expect(memories.map((m) => m.id)).toEqual([
-      "title-1",
-      "keywords-1",
-      "synopsis-1",
-    ])
+    expect(memories.map((m) => m.id)).toEqual(["title-1", "keywords-1", "synopsis-1"])
     expect(memories.length).toBeGreaterThanOrEqual(3)
     for (const e of explain) {
       expect(e.branch).toBe("contains-saturated")

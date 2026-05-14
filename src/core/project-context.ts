@@ -64,7 +64,7 @@ export interface ProjectContext {
 export function composeProjectContext(
   project: Project | null,
   config: LoreConfig,
-  isCatchAllFallback: boolean,
+  isCatchAllFallback: boolean
 ): ProjectContext | null {
   if (!project) return null
 
@@ -114,7 +114,7 @@ export function renderProjectContextLines(context: ProjectContext | null): strin
   if (context.isCatchAllFallback && context.siblings.length > 0) {
     lines.push(
       `> ${formatCatchAllScopeSummary(context.name, context.siblings)} ` +
-        `Pass projectName to scope to a specific sub-project.`,
+        `Pass projectName to scope to a specific sub-project.`
     )
   }
 

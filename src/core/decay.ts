@@ -115,7 +115,7 @@ export function decrementConfidenceScore(current: number): number {
 export function decayConfidenceScore(
   current: number,
   lastReferencedAt: string | null,
-  today: string,
+  today: string
 ): number {
   if (lastReferencedAt === null) return current
   const todayMs = new Date(today).getTime()

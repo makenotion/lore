@@ -316,16 +316,16 @@ export class TokenBucket {
   constructor(
     public readonly capacity: number,
     public readonly refillPerSecond: number,
-    deps: NotionRateLimitDeps = {},
+    deps: NotionRateLimitDeps = {}
   ) {
     if (!Number.isFinite(capacity) || capacity <= 0) {
       throw new Error(
-        `Notion rate-limit burstSize must be a positive number (got ${capacity})`,
+        `Notion rate-limit burstSize must be a positive number (got ${capacity})`
       )
     }
     if (!Number.isFinite(refillPerSecond) || refillPerSecond <= 0) {
       throw new Error(
-        `Notion rate-limit requestsPerSecond must be a positive number (got ${refillPerSecond})`,
+        `Notion rate-limit requestsPerSecond must be a positive number (got ${refillPerSecond})`
       )
     }
     this.now = deps.now ?? Date.now
@@ -405,7 +405,7 @@ export class TokenBucket {
     if (elapsedSec > 0) {
       this.tokens = Math.min(
         this.capacity,
-        this.tokens + elapsedSec * this.refillPerSecond,
+        this.tokens + elapsedSec * this.refillPerSecond
       )
       this.lastRefillMs = now
     }
@@ -437,9 +437,7 @@ function defaultSetTimer(callback: () => void, delayMs: number): void {
  * `[lore]`-prefixed log aggregation keeps working unchanged.
  */
 function defaultOnBackoff(ms: number, source: BackoffSource): void {
-  process.stderr.write(
-    `[lore] notion-sdk warn: 429 backoff ${ms}ms (source=${source})\n`,
-  )
+  process.stderr.write(`[lore] notion-sdk warn: 429 backoff ${ms}ms (source=${source})\n`)
 }
 
 /**
@@ -469,7 +467,7 @@ function isRateLimitError(err: unknown): boolean {
  */
 function extractRetryAfterMs(
   err: unknown,
-  now: () => number = Date.now,
+  now: () => number = Date.now
 ): number | undefined {
   if (!err || typeof err !== "object") return undefined
   const headers = (err as { headers?: unknown }).headers
@@ -481,9 +479,7 @@ function extractRetryAfterMs(
     "get" in headers &&
     typeof (headers as { get?: unknown }).get === "function"
   ) {
-    retryAfter = (headers as { get: (key: string) => string | null }).get(
-      "retry-after",
-    )
+    retryAfter = (headers as { get: (key: string) => string | null }).get("retry-after")
   } else if (typeof headers === "object") {
     const record = headers as Record<string, string | undefined>
     retryAfter = record["retry-after"] ?? record["Retry-After"] ?? null
@@ -500,23 +496,19 @@ function extractRetryAfterMs(
 
 function validatePositiveInteger(name: string, value: number): void {
   if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(
-      `Notion rate-limit ${name} must be a positive integer (got ${value})`,
-    )
+    throw new Error(`Notion rate-limit ${name} must be a positive integer (got ${value})`)
   }
 }
 
 function validatePositiveNumber(name: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(
-      `Notion rate-limit ${name} must be a positive number (got ${value})`,
-    )
+    throw new Error(`Notion rate-limit ${name} must be a positive number (got ${value})`)
   }
 }
 
 function capBuiltInEndpointOverrides(
   defaults: Readonly<Record<string, NotionRateLimitEndpointOverride>>,
-  caps: Required<NotionRateLimitEndpointOverride>,
+  caps: Required<NotionRateLimitEndpointOverride>
 ): Record<string, NotionRateLimitEndpointOverride> {
   const capped: Record<string, NotionRateLimitEndpointOverride> = {}
   for (const [path, override] of Object.entries(defaults)) {
@@ -574,7 +566,7 @@ interface RateGate {
 export function createLimitedClient(
   client: Client,
   options: number | NotionRateLimitOptions = {},
-  deps: NotionRateLimitDeps = {},
+  deps: NotionRateLimitDeps = {}
 ): Client {
   const opts: NotionRateLimitOptions =
     typeof options === "number" ? { concurrency: options } : options
@@ -585,8 +577,7 @@ export function createLimitedClient(
     opts.burstSize !== undefined
 
   const concurrency = opts.concurrency ?? DEFAULT_NOTION_CONCURRENCY
-  const requestsPerSecond =
-    opts.requestsPerSecond ?? DEFAULT_NOTION_REQUESTS_PER_SECOND
+  const requestsPerSecond = opts.requestsPerSecond ?? DEFAULT_NOTION_REQUESTS_PER_SECOND
   const burstSize = opts.burstSize ?? DEFAULT_NOTION_BURST_SIZE
 
   validatePositiveInteger("concurrency", concurrency)
@@ -622,24 +613,18 @@ export function createLimitedClient(
   for (const [path, override] of Object.entries(overrideMap)) {
     if (!path) {
       throw new Error(
-        "Notion rate-limit endpointOverrides key must be a non-empty string",
+        "Notion rate-limit endpointOverrides key must be a non-empty string"
       )
     }
     const epConcurrency = override.concurrency ?? concurrency
     const epRequestsPerSecond = override.requestsPerSecond ?? requestsPerSecond
     const epBurstSize = override.burstSize ?? burstSize
-    validatePositiveInteger(
-      `endpointOverrides["${path}"].concurrency`,
-      epConcurrency,
-    )
+    validatePositiveInteger(`endpointOverrides["${path}"].concurrency`, epConcurrency)
     validatePositiveNumber(
       `endpointOverrides["${path}"].requestsPerSecond`,
-      epRequestsPerSecond,
+      epRequestsPerSecond
     )
-    validatePositiveInteger(
-      `endpointOverrides["${path}"].burstSize`,
-      epBurstSize,
-    )
+    validatePositiveInteger(`endpointOverrides["${path}"].burstSize`, epBurstSize)
     endpointGates.set(path, {
       bucket: new TokenBucket(epBurstSize, epRequestsPerSecond, deps),
       limit: pLimit(epConcurrency),
@@ -657,15 +642,10 @@ export function createLimitedClient(
     ...Array.from(endpointGates.values(), (g) => g.bucket),
   ]
 
-  const gateFor = (path: string): RateGate =>
-    endpointGates.get(path) ?? globalGate
+  const gateFor = (path: string): RateGate => endpointGates.get(path) ?? globalGate
 
   const wrapMethod =
-    (
-      fn: (...args: unknown[]) => unknown,
-      thisArg: unknown,
-      path: string,
-    ) =>
+    (fn: (...args: unknown[]) => unknown, thisArg: unknown, path: string) =>
     async (...args: unknown[]) => {
       const gate = gateFor(path)
       // Claim the p-limit slot FIRST and acquire the bucket token
@@ -752,11 +732,7 @@ export function createLimitedClient(
         const value = Reflect.get(target, prop, receiver)
         const nextPath = path === "" ? prop : `${path}.${prop}`
         if (typeof value === "function") {
-          return wrapMethod(
-            value as (...args: unknown[]) => unknown,
-            target,
-            nextPath,
-          )
+          return wrapMethod(value as (...args: unknown[]) => unknown, target, nextPath)
         }
         if (typeof value === "object" && value !== null) {
           return wrapLevel(value as object, nextPath)
@@ -876,7 +852,7 @@ export type WriteBudgetClassification = "mutation" | "read"
  */
 export function classifyWriteBudget(
   path: string,
-  args: readonly unknown[],
+  args: readonly unknown[]
 ): WriteBudgetClassification {
   if (WRITE_BUDGET_DIRECT_MUTATIONS.includes(path)) return "mutation"
   if (path === "request") {
@@ -907,11 +883,9 @@ export class WriteBudgetExceededError extends Error {
   constructor(
     public readonly toolPath: string,
     public readonly limit: number,
-    public readonly count: number,
+    public readonly count: number
   ) {
-    super(
-      `WriteBudgetExceeded: tool=${toolPath} limit=${limit} count=${count}`,
-    )
+    super(`WriteBudgetExceeded: tool=${toolPath} limit=${limit} count=${count}`)
     this.name = "WriteBudgetExceededError"
   }
 }
@@ -960,10 +934,7 @@ export interface WriteBudgetOptions {
  * pre-cap-hit nonexistent file OR the fully-written post-cap-hit body
  * — never a partial write.
  */
-function defaultWriteStateFile(
-  path: string,
-  body: WriteBudgetStateFileBody,
-): void {
+function defaultWriteStateFile(path: string, body: WriteBudgetStateFileBody): void {
   const tmp = `${dirname(path)}/.${basename(path)}.tmp-${process.pid}-${Date.now()}`
   writeFileSync(tmp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
   renameSync(tmp, path)
@@ -1013,17 +984,15 @@ export interface WrappedWriteBudget {
 
 export function wrapWithWriteBudget(
   client: Client,
-  options: WriteBudgetOptions,
+  options: WriteBudgetOptions
 ): WrappedWriteBudget {
   if (!Number.isInteger(options.limit) || options.limit <= 0) {
     throw new Error(
-      `wrapWithWriteBudget: limit must be a positive integer (got ${options.limit})`,
+      `wrapWithWriteBudget: limit must be a positive integer (got ${options.limit})`
     )
   }
   if (!options.stateFilePath || typeof options.stateFilePath !== "string") {
-    throw new Error(
-      "wrapWithWriteBudget: stateFilePath is required (absolute path)",
-    )
+    throw new Error("wrapWithWriteBudget: stateFilePath is required (absolute path)")
   }
   const writeStateFile = options.writeStateFile ?? defaultWriteStateFile
   const now = options.now ?? (() => new Date())
@@ -1045,17 +1014,13 @@ export function wrapWithWriteBudget(
     } catch (err) {
       process.stderr.write(
         `[lore] write-budget: failed to write state file ` +
-          `"${options.stateFilePath}" (${(err as Error).message ?? "unknown"})\n`,
+          `"${options.stateFilePath}" (${(err as Error).message ?? "unknown"})\n`
       )
     }
   }
 
   const wrapMethod =
-    (
-      fn: (...args: unknown[]) => unknown,
-      thisArg: unknown,
-      path: string,
-    ) =>
+    (fn: (...args: unknown[]) => unknown, thisArg: unknown, path: string) =>
     async (...args: unknown[]): Promise<unknown> => {
       const verdict = classifyWriteBudget(path, args)
       if (verdict === "read") {

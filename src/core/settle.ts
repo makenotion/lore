@@ -27,7 +27,7 @@ export interface SettleResult<K, T> {
  * identity hoop.
  */
 export async function settleAll<K, T>(
-  keyed: Array<readonly [K, Promise<T>]>,
+  keyed: Array<readonly [K, Promise<T>]>
 ): Promise<SettleResult<K, T>> {
   const settled = await Promise.allSettled(keyed.map(([, promise]) => promise))
   const fulfilled: Array<readonly [K, T]> = []

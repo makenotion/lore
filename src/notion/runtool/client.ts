@@ -263,8 +263,7 @@ export async function runUpdatePageContent(
   // When the caller explicitly opts into deletion, the warning is
   // informational and tolerated.
   if (
-    (params as { allow_deleting_content?: boolean }).allow_deleting_content !==
-      true &&
+    (params as { allow_deleting_content?: boolean }).allow_deleting_content !== true &&
     hasDeletionWarning(response)
   ) {
     throw new RunToolBlockEditError(

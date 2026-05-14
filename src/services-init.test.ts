@@ -164,14 +164,7 @@ describe("initServicesFromConfig — required Entities database", () => {
   it("resolves an installed external profile through the config root", async () => {
     const root = mkdtempSync(join(tmpdir(), "lore-services-profile-"))
     scratchRoots.push(root)
-    const profileDir = join(
-      root,
-      ".lore",
-      "profiles",
-      "installed",
-      "sales",
-      "1.0.0"
-    )
+    const profileDir = join(root, ".lore", "profiles", "installed", "sales", "1.0.0")
     writeFiles(profileDir, minimalProfileFiles("sales"))
     vi.mocked(createClient).mockReturnValue(clientWithVault())
 

@@ -39,6 +39,7 @@ and why it stays inside the envelope.
 | Checkout | `actions/checkout` (SHA-pinned, see rule #6) | No | Public Git over HTTPS | No | Reads the PR's own commit; no secrets injected. |
 | Setup Node.js | `actions/setup-node` (SHA-pinned, see rule #6) | No | Public npm mirror | No | Standard action; pulls Node 20 binary. |
 | Install dependencies | `npm ci` | No | Public npm registry | No | No `.npmrc`, no `@makenotion`-scoped runtime deps. `prepare` script (`tools/install-git-hooks.mjs`) returns early when `CI=true`. |
+| Format check | `npm run format:check` (`prettier --check src/`) | No | No | No | Pure static formatting check. |
 | Lint | `npm run lint` (`eslint src/`) | No | No | No | Pure static analysis. |
 | Typecheck | `npm run typecheck` (`tsc --noEmit`) | No | No | No | Pure static analysis. |
 | Test | `npm test` (`vitest run`) | No | No | No | Tests use fixture-backed services. `tests/setup-runtool-flag.ts` pins all RunTool flags to `0` so no test path can accidentally hit Notion. |
@@ -233,6 +234,7 @@ env -u NOTION_API_TOKEN -u GITHUB_TOKEN CI=true \
   bash -c '
     set -euo pipefail
     npm ci
+    npm run format:check
     npm run lint
     npm run typecheck
     npm test

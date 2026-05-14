@@ -14,7 +14,7 @@ import type { BenchExtractionClient } from "./bench-simulated-autosave.js"
 
 function buildExample(
   sessionCount: number,
-  category: LongMemEvalExample["question_type"] = "single-session-user",
+  category: LongMemEvalExample["question_type"] = "single-session-user"
 ): LongMemEvalExample {
   return {
     question_id: "lme_s_test_001",
@@ -50,7 +50,7 @@ describe("readBudgetCount", () => {
         limit: 500,
         count: 510,
         exceededAt: "2026-05-13T06:00:00Z",
-      }),
+      })
     )
     expect(readBudgetCount(path)).toBe(510)
   })
@@ -247,10 +247,7 @@ describe("runBenchRawTranscriptIngest", () => {
       countMemoriesForProject: async () => 2,
       countFactsForProject: async () => 0,
     })
-    expect(titles).toEqual([
-      "Session 1: custom-id-a",
-      "Session 2: custom-id-b",
-    ])
+    expect(titles).toEqual(["Session 1: custom-id-a", "Session 2: custom-id-b"])
   })
 })
 
@@ -282,8 +279,7 @@ describe("runBenchSimulatedAutosaveIngest", () => {
   }
 
   it("dispatches every extracted memory while sessionsReplayed counts input sessions", async () => {
-    const writes: Array<{ session: string | undefined; mentionEntities: string[] }> =
-      []
+    const writes: Array<{ session: string | undefined; mentionEntities: string[] }> = []
     const result = await runBenchSimulatedAutosaveIngest({
       example: buildExample(5),
       projectId: "project-1",

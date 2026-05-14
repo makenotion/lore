@@ -30,9 +30,8 @@ const ntnMocks = vi.hoisted(() => ({
 }))
 
 vi.mock("../../auth/ntn.js", async () => {
-  const actual = await vi.importActual<typeof import("../../auth/ntn.js")>(
-    "../../auth/ntn.js",
-  )
+  const actual =
+    await vi.importActual<typeof import("../../auth/ntn.js")>("../../auth/ntn.js")
   return {
     ...actual,
     isNtnInstalled: ntnMocks.isNtnInstalled,
@@ -48,9 +47,8 @@ vi.mock("../../auth/ntn.js", async () => {
 
 const verifyVaultAccessMock = vi.hoisted(() => vi.fn())
 vi.mock("../../auth/oauth.js", async () => {
-  const actual = await vi.importActual<typeof import("../../auth/oauth.js")>(
-    "../../auth/oauth.js",
-  )
+  const actual =
+    await vi.importActual<typeof import("../../auth/oauth.js")>("../../auth/oauth.js")
   return { ...actual, verifyVaultAccess: verifyVaultAccessMock }
 })
 
@@ -68,14 +66,14 @@ const fakeClientHolder = vi.hoisted(() => {
 })
 vi.mock("../../notion/client.js", async () => {
   const actual = await vi.importActual<typeof import("../../notion/client.js")>(
-    "../../notion/client.js",
+    "../../notion/client.js"
   )
   return { ...actual, createClient: fakeClientHolder.createClient }
 })
 vi.mock("../../notion/rate-limit.js", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../notion/rate-limit.js")
-  >("../../notion/rate-limit.js")
+  const actual = await vi.importActual<typeof import("../../notion/rate-limit.js")>(
+    "../../notion/rate-limit.js"
+  )
   return {
     ...actual,
     createLimitedClient: vi.fn((c: Client) => c),
@@ -137,9 +135,7 @@ function setupVaultProject(opts: { authToken?: string } = {}): string {
   const dir = mkdtempSync(join(SCRATCH, "vault-"))
   const yaml =
     `vault:\n  pageId: page-${Math.random().toString(36).slice(2, 10)}\n` +
-    (opts.authToken
-      ? `auth:\n  token: ${opts.authToken}\n`
-      : "")
+    (opts.authToken ? `auth:\n  token: ${opts.authToken}\n` : "")
   writeFileSync(join(dir, ".lore.yaml"), yaml, "utf-8")
   scratchDirsToClean.push(dir)
   process.chdir(dir)
@@ -166,10 +162,7 @@ const ORIGINAL_CWD = process.cwd()
 // "isTTY", { value: ... })` to drive the TTY-gated branches; without
 // this restore, an isTTY override from one test leaks into the next
 // and subtle order-dependence creeps in.
-const ORIGINAL_ISTTY_DESCRIPTOR = Object.getOwnPropertyDescriptor(
-  process.stdin,
-  "isTTY",
-)
+const ORIGINAL_ISTTY_DESCRIPTOR = Object.getOwnPropertyDescriptor(process.stdin, "isTTY")
 
 function restoreIsTTY(): void {
   if (ORIGINAL_ISTTY_DESCRIPTOR) {
@@ -202,8 +195,7 @@ beforeEach(() => {
   ntnMocks.loadNtnToken.mockReset().mockResolvedValue(null)
   ntnMocks.resetNtnProbeCache.mockReset()
   verifyVaultAccessMock.mockReset()
-  ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-    .mockReset()
+  ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>).mockReset()
   // Reset createClient spy and re-arm with the default factory so per-test
   // call counts are clean, but the same `client` is still returned (tests
   // that assert on `users.me` calls keep working).
@@ -240,7 +232,6 @@ afterEach(() => {
 // pickAuthAction
 // ---------------------------------------------------------------------------
 
-
 describe("pickAuthAction", () => {
   it("defaults to --status when no flag is set", () => {
     expect(pickAuthAction({})).toEqual({ action: "status", ignored: [] })
@@ -275,7 +266,7 @@ describe("pickAuthAction", () => {
         login: true,
         whoami: true,
         logout: true,
-      }),
+      })
     ).toEqual({
       action: "login",
       ignored: ["--logout", "--whoami", "--status"],
@@ -318,7 +309,6 @@ describe("printAuthSourceLines", () => {
     expect(stdoutText()).toContain("Workspace: ws-1")
     expect(stdoutText()).toContain("Status: ✓ active")
   })
-
 })
 
 // ---------------------------------------------------------------------------
@@ -377,8 +367,7 @@ describe("runStatus — vault context", () => {
     verifyVaultAccessMock.mockResolvedValue({
       kind: "not-found",
       pageId: "abc",
-      message:
-        "Vault page not accessible. The resolved token cannot read this page.",
+      message: "Vault page not accessible. The resolved token cannot read this page.",
     })
     await runStatus()
     expect(stdoutText()).toContain("✗ Vault page NOT accessible")
@@ -395,8 +384,7 @@ describe("runStatus — vault context", () => {
     verifyVaultAccessMock.mockResolvedValue({
       kind: "not-found",
       pageId: "abc",
-      message:
-        "Vault page not accessible. The resolved token cannot read this page.",
+      message: "Vault page not accessible. The resolved token cannot read this page.",
     })
     await runStatus()
     const out = stdoutText()
@@ -434,9 +422,7 @@ describe("runStatus — vault context", () => {
         "Notion rejected the bearer token. The token is invalid, expired, or revoked.",
     })
     await runStatus()
-    expect(stdoutText()).toContain(
-      "✗ Vault preflight: token rejected (unauthorized)",
-    )
+    expect(stdoutText()).toContain("✗ Vault preflight: token rejected (unauthorized)")
     expect(stdoutText()).toContain("invalid, expired, or revoked")
     expect(stdoutText()).toContain("NOTION_API_TOKEN / PAT")
     expect(stdoutText()).toContain("Rotate the PAT")
@@ -483,9 +469,7 @@ describe("runStatus — vault context", () => {
         "Notion rejected the bearer token. The token is invalid, expired, or revoked.",
     })
     await runStatus()
-    expect(stdoutText()).toContain(
-      "✗ Vault preflight: token rejected (unauthorized)",
-    )
+    expect(stdoutText()).toContain("✗ Vault preflight: token rejected (unauthorized)")
     expect(stdoutText()).toContain("Recommended for ntn auth")
     expect(stdoutText()).toContain("lore auth --login")
     expect(stdoutText()).not.toContain("Rotate the PAT")
@@ -508,7 +492,7 @@ describe("runStatus — vault context", () => {
     // operator's time. Pin against a future revert that lumps it
     // back into `unauthorized`'s copy.
     expect(stdoutText()).not.toContain(
-      "Recommended: run `lore auth --login` to issue a fresh token",
+      "Recommended: run `lore auth --login` to issue a fresh token"
     )
   })
 
@@ -537,7 +521,6 @@ describe("runStatus — vault context", () => {
     // forward rather than silently dropped.
     expect(stdoutText()).toMatch(/NOTION_WORKSPACE_ID|workspaces|specify one/i)
   })
-
 })
 
 // ---------------------------------------------------------------------------
@@ -614,9 +597,7 @@ describe("runLogin", () => {
       value: false,
     })
     const exit = mockProcessExit()
-    await expect(runLogin({ yes: false })).rejects.toThrow(
-      "__process_exit_1__",
-    )
+    await expect(runLogin({ yes: false })).rejects.toThrow("__process_exit_1__")
     expect(stderrText()).toContain("non-interactive context")
     expect(stderrText()).toContain("Pass --yes")
     // The prompt-copy MUST NOT have leaked to stdout — that's the
@@ -677,7 +658,9 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "dev" })
-    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`...")
+    expect(stdoutText()).toContain(
+      "Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`..."
+    )
   })
 
   it("threads NOTION_ENV=stg through (not just dev) — pin so a future hard-coded `dev` regresses loudly", async () => {
@@ -690,7 +673,9 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "stg" })
-    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`...")
+    expect(stdoutText()).toContain(
+      "Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`..."
+    )
   })
 
   it("infers `--env dev` from .lore.yaml `auth.baseUrl` when shell NOTION_ENV is unset (PnP-style dev project)", async () => {
@@ -706,7 +691,7 @@ describe("runLogin", () => {
     writeFileSync(
       join(dir, ".lore.yaml"),
       `vault:\n  pageId: page-dev\nauth:\n  baseUrl: https://api-dev.notion.com\n`,
-      "utf-8",
+      "utf-8"
     )
     process.chdir(dir)
     process.env["NOTION_API_TOKEN"] = "tok"
@@ -718,9 +703,11 @@ describe("runLogin", () => {
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "dev" })
     expect(stdoutText()).toContain(
-      "(Inferring `NOTION_ENV=dev` from auth.baseUrl in .lore.yaml.)",
+      "(Inferring `NOTION_ENV=dev` from auth.baseUrl in .lore.yaml.)"
     )
-    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`...")
+    expect(stdoutText()).toContain(
+      "Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`..."
+    )
   })
 
   it("shell NOTION_ENV beats config-derived env (operator override wins)", async () => {
@@ -733,7 +720,7 @@ describe("runLogin", () => {
     writeFileSync(
       join(dir, ".lore.yaml"),
       `vault:\n  pageId: page-x\nauth:\n  baseUrl: https://api-dev.notion.com\n`,
-      "utf-8",
+      "utf-8"
     )
     process.chdir(dir)
     process.env["NOTION_API_TOKEN"] = "tok"
@@ -744,7 +731,9 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "stg" })
-    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`...")
+    expect(stdoutText()).toContain(
+      "Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`..."
+    )
     expect(stdoutText()).not.toContain("Inferring `NOTION_ENV=")
   })
 
@@ -758,7 +747,7 @@ describe("runLogin", () => {
     writeFileSync(
       join(dir, ".lore.yaml"),
       `vault:\n  pageId: page-x\nauth:\n  baseUrl: https://internal.team/api\n`,
-      "utf-8",
+      "utf-8"
     )
     process.chdir(dir)
     process.env["NOTION_API_TOKEN"] = "tok"
@@ -795,7 +784,7 @@ describe("runLogin", () => {
     writeFileSync(
       join(dir, ".lore.yaml"),
       `vault:\n  pageId: page-dev\nauth:\n  baseUrl: https://api-dev.notion.com\n`,
-      "utf-8",
+      "utf-8"
     )
     process.chdir(dir)
     delete process.env["NOTION_API_TOKEN"]
@@ -819,9 +808,11 @@ describe("runLogin", () => {
     // Step 3 — config-derived `--env dev` reaches the spawn.
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "dev" })
     expect(stdoutText()).toContain(
-      "(Inferring `NOTION_ENV=dev` from auth.baseUrl in .lore.yaml.)",
+      "(Inferring `NOTION_ENV=dev` from auth.baseUrl in .lore.yaml.)"
     )
-    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`...")
+    expect(stdoutText()).toContain(
+      "Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`..."
+    )
 
     // Step 4 — createClient receives the ntn-resolved (dev) baseUrl.
     // This is the round-6 reviewer's specific ask: prove that the
@@ -829,16 +820,14 @@ describe("runLogin", () => {
     // default that bare-args createClient would resolve.
     expect(fakeClientHolder.createClient).toHaveBeenCalledWith(
       "tok-ntn-dev",
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
 
     // Step 4 — preflight ran against the constructed client and the
     // operator sees the workspace label confirming the ntn-auth-json
     // path resolved.
     expect(verifyVaultAccessMock).toHaveBeenCalledTimes(1)
-    expect(stdoutText()).toContain(
-      "✓ Authenticated; vault page reachable: Test Vault",
-    )
+    expect(stdoutText()).toContain("✓ Authenticated; vault page reachable: Test Vault")
     expect(stdoutText()).toContain("Workspace: ws-dev")
   })
 
@@ -886,9 +875,7 @@ describe("runLogin", () => {
     // First probe (Step 1) returns true; cache reset fires before
     // the spawn-error branch's second probe, which then returns
     // false → re-install offer fires under --yes.
-    ntnMocks.isNtnInstalled
-      .mockReturnValueOnce(true)
-      .mockReturnValue(false)
+    ntnMocks.isNtnInstalled.mockReturnValueOnce(true).mockReturnValue(false)
     ntnMocks.installNtn.mockResolvedValue({ kind: "success" })
     const exit = mockProcessExit()
     await expect(runLogin({ yes: true })).rejects.toThrow("__process_exit_1__")
@@ -915,17 +902,13 @@ describe("runLogin", () => {
       kind: "spawn-error",
       error: new Error("ENOENT"),
     })
-    ntnMocks.isNtnInstalled
-      .mockReturnValueOnce(true)
-      .mockReturnValue(false)
+    ntnMocks.isNtnInstalled.mockReturnValueOnce(true).mockReturnValue(false)
     Object.defineProperty(process.stdin, "isTTY", {
       configurable: true,
       value: false,
     })
     const exit = mockProcessExit()
-    await expect(runLogin({ yes: false })).rejects.toThrow(
-      "__process_exit_1__",
-    )
+    await expect(runLogin({ yes: false })).rejects.toThrow("__process_exit_1__")
     // Re-install offer is gated on (--yes || TTY); this branch hits
     // neither, so we fall through to the manual-recovery copy.
     expect(stderrText()).toContain("`ntn` does not appear to be on PATH")
@@ -934,7 +917,7 @@ describe("runLogin", () => {
     // this knows about the auto-recovery option, mirroring the
     // install-from-missing branch's hint.
     expect(stderrText()).toContain(
-      "Pass --yes (next run) to consent to the canonical re-install",
+      "Pass --yes (next run) to consent to the canonical re-install"
     )
     expect(ntnMocks.installNtn).not.toHaveBeenCalled()
     exit.restore()
@@ -973,9 +956,7 @@ describe("runLogin", () => {
     const exit = mockProcessExit()
     await expect(runLogin({ yes: true })).rejects.toThrow("__process_exit_1__")
     expect(stderrText()).toContain("✗ Vault page not accessible after login")
-    expect(stderrText()).toContain(
-      "authenticated against the wrong workspace",
-    )
+    expect(stderrText()).toContain("authenticated against the wrong workspace")
     expect(stderrText()).toContain("personal Notion permissions")
     exit.restore()
   })
@@ -998,18 +979,16 @@ describe("runLogin", () => {
     const exit = mockProcessExit()
     await expect(runLogin({ yes: true })).rejects.toThrow("__process_exit_1__")
     expect(stderrText()).toContain(
-      "✗ Vault page not accessible after login (unauthorized)",
+      "✗ Vault page not accessible after login (unauthorized)"
     )
     expect(stderrText()).toContain("Notion rejected the bearer token")
     expect(stderrText()).toContain(
-      "Recommended: re-run `lore auth --login` to issue a fresh token.",
+      "Recommended: re-run `lore auth --login` to issue a fresh token."
     )
     expect(stderrText()).toContain("workspace")
     // The wrong-workspace numbered list MUST NOT fire — that's the
     // not-found branch's copy.
-    expect(stderrText()).not.toContain(
-      "1. You authenticated against the wrong workspace",
-    )
+    expect(stderrText()).not.toContain("1. You authenticated against the wrong workspace")
     exit.restore()
   })
 
@@ -1025,17 +1004,13 @@ describe("runLogin", () => {
     const exit = mockProcessExit()
     await expect(runLogin({ yes: true })).rejects.toThrow("__process_exit_1__")
     expect(stderrText()).toContain(
-      "✗ Vault page not accessible after login (rate-limited)",
+      "✗ Vault page not accessible after login (rate-limited)"
     )
     expect(stderrText()).toContain("throttled")
-    expect(stderrText()).toContain(
-      "Wait a few seconds and re-run `lore auth --login`",
-    )
+    expect(stderrText()).toContain("Wait a few seconds and re-run `lore auth --login`")
     // 429 is transient — must NOT trigger re-auth or wrong-workspace
     // copy.
-    expect(stderrText()).not.toContain(
-      "1. You authenticated against the wrong workspace",
-    )
+    expect(stderrText()).not.toContain("1. You authenticated against the wrong workspace")
     expect(stderrText()).not.toContain("Recommended: re-run")
     exit.restore()
   })
@@ -1052,7 +1027,7 @@ describe("runLogin", () => {
     const exit = mockProcessExit()
     await expect(runLogin({ yes: true })).rejects.toThrow("__process_exit_1__")
     expect(stderrText()).toContain(
-      "✗ Vault page not accessible after login (unknown-error)",
+      "✗ Vault page not accessible after login (unknown-error)"
     )
     expect(stderrText()).toContain("5xx Bad Gateway")
     expect(stderrText()).toContain("Re-run `lore auth --login` after investigating")
@@ -1117,9 +1092,7 @@ describe("runWhoami / renderWhoamiIdentity", () => {
   })
 
   it("returns <unknown> as the final fallback AND emits a stderr breadcrumb", async () => {
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     const client = {
       users: { me: vi.fn().mockResolvedValue({ bot: {} }) },
     } as unknown as Client
@@ -1127,9 +1100,7 @@ describe("runWhoami / renderWhoamiIdentity", () => {
     // The breadcrumb tells the operator the token is valid but the
     // identity is opaque — distinguishes "valid token, opaque shape"
     // from "the CLI silently returned a sentinel."
-    expect(stderrSpy).toHaveBeenCalledWith(
-      expect.stringContaining("identity is opaque"),
-    )
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("identity is opaque"))
     stderrSpy.mockRestore()
   })
 
@@ -1140,9 +1111,7 @@ describe("runWhoami / renderWhoamiIdentity", () => {
       },
     } as unknown as Client
     const exit = mockProcessExit()
-    await expect(renderWhoamiIdentity(client)).rejects.toThrow(
-      "__process_exit_1__",
-    )
+    await expect(renderWhoamiIdentity(client)).rejects.toThrow("__process_exit_1__")
     expect(stderrText()).toContain("Could not fetch identity")
     expect(stderrText()).toContain("network exploded")
     expect(exit.calls).toContain(1)
@@ -1156,15 +1125,16 @@ describe("runWhoami / renderWhoamiIdentity", () => {
     // identity prints to stdout; no vault-context error.
     setupNoVaultContext()
     process.env["NOTION_API_TOKEN"] = "tok"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: {
-            type: "user",
-            user: { id: "id-x", name: "Test", object: "user" },
-          },
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: {
+          type: "user",
+          user: { id: "id-x", name: "Test", object: "user" },
         },
-      })
+      },
+    })
     await runWhoami()
     expect(stdoutText()).toBe("Test\n")
   })
@@ -1188,15 +1158,16 @@ describe("runWhoami / renderWhoamiIdentity", () => {
   it("runWhoami prints just the name on the happy path", async () => {
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "tok"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: {
-            type: "user",
-            user: { id: "id-1", name: "Test", object: "user" },
-          },
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: {
+          type: "user",
+          user: { id: "id-1", name: "Test", object: "user" },
         },
-      })
+      },
+    })
     await runWhoami()
     // Single trailing newline; the only stdout line is the identity.
     expect(stdoutText()).toBe("Test\n")
@@ -1205,12 +1176,13 @@ describe("runWhoami / renderWhoamiIdentity", () => {
   it("runWhoami prints just the id when only an id is present (script-friendly)", async () => {
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "tok"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: { type: "user", user: { id: "user-id-only", object: "user" } },
-        },
-      })
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: { type: "user", user: { id: "user-id-only", object: "user" } },
+      },
+    })
     await runWhoami()
     expect(stdoutText()).toBe("user-id-only\n")
   })
@@ -1218,13 +1190,14 @@ describe("runWhoami / renderWhoamiIdentity", () => {
   it("runWhoami prints just the workspace fallback when bot owner is workspace-typed", async () => {
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "tok"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: { type: "workspace", workspace: true },
-          workspace_name: "Notion HQ",
-        },
-      })
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: { type: "workspace", workspace: true },
+        workspace_name: "Notion HQ",
+      },
+    })
     await runWhoami()
     expect(stdoutText()).toBe("<bot in Notion HQ>\n")
   })
@@ -1236,12 +1209,13 @@ describe("runWhoami / renderWhoamiIdentity", () => {
     // don't change AuthSource or any on-wire behavior.
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "ntn_prod-token-bearer"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
-        },
-      })
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+      },
+    })
     await runWhoami()
     expect(stdoutText()).toBe("Hesham  (personal token — ntn_)\n")
   })
@@ -1249,12 +1223,13 @@ describe("runWhoami / renderWhoamiIdentity", () => {
   it("runWhoami appends `(personal token — development_ntn_)` for dev-environment tokens", async () => {
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "development_ntn_dev-bearer"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
-        },
-      })
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+      },
+    })
     await runWhoami()
     expect(stdoutText()).toBe("Hesham  (personal token — development_ntn_)\n")
   })
@@ -1271,12 +1246,13 @@ describe("runWhoami / renderWhoamiIdentity", () => {
     // --whoami` output gets one identity line, no nested parens.
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "secret_integration-bearer"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
-        },
-      })
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+      },
+    })
     await runWhoami()
     const out = stdoutText()
     expect(out).toContain("Hesham")
@@ -1301,12 +1277,13 @@ describe("runWhoami / renderWhoamiIdentity", () => {
     // stdout output stays clean.
     setupVaultProject()
     process.env["NOTION_API_TOKEN"] = "ntn_prod-bearer"
-    ;(fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        bot: {
-          owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
-        },
-      })
+    ;(
+      fakeClientHolder.client.users.me as unknown as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      bot: {
+        owner: { type: "user", user: { id: "id", name: "Hesham", object: "user" } },
+      },
+    })
     await runWhoami()
     expect(stderrText()).toBe("")
   })
@@ -1356,7 +1333,6 @@ describe("runLogout", () => {
     expect(stdoutText()).toContain("ntn logout")
     expect(stdoutText()).toContain("Lore reads but doesn't write auth.json")
   })
-
 })
 
 // ---------------------------------------------------------------------------
@@ -1409,9 +1385,7 @@ describe("confirmPrompt", () => {
   })
 
   it("refuses on non-TTY and writes a breadcrumb to stderr (signal, not silence)", async () => {
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     Object.defineProperty(process.stdin, "isTTY", {
       configurable: true,
       value: false,
@@ -1419,7 +1393,7 @@ describe("confirmPrompt", () => {
     try {
       expect(await confirmPrompt("Install?")).toBe(false)
       expect(stderrSpy).toHaveBeenCalledWith(
-        expect.stringContaining("non-interactive context"),
+        expect.stringContaining("non-interactive context")
       )
     } finally {
       Object.defineProperty(process.stdin, "isTTY", {
@@ -1455,7 +1429,7 @@ describe("authCommand action handler", () => {
     ])
     // Logout wins per precedence (--login > --logout > --whoami > --status).
     expect(stderrText()).toContain(
-      "Warning: multiple auth flags supplied; running --logout and ignoring --whoami, --status",
+      "Warning: multiple auth flags supplied; running --logout and ignoring --whoami, --status"
     )
     // Logout body actually ran (NOTION_API_TOKEN source).
     expect(stdoutText()).toContain("unset NOTION_API_TOKEN")

@@ -21,10 +21,7 @@ export {
   isRunToolFilterSqlEnabled,
   isRunToolSearchEnabled,
 } from "./flag.js"
-export {
-  RunToolBlockEditError,
-  updatePageContentViaRunTool,
-} from "./update-page.js"
+export { RunToolBlockEditError, updatePageContentViaRunTool } from "./update-page.js"
 export type {
   RunToolBlockEditFailureKind,
   UpdatePageContentEdit,
@@ -48,10 +45,7 @@ export type {
 } from "./query.js"
 
 // SQL aggregate helpers
-export {
-  extractFirstRelationId,
-  querySubjectGroupCountsViaRunTool,
-} from "./query.js"
+export { extractFirstRelationId, querySubjectGroupCountsViaRunTool } from "./query.js"
 export type { SqlSubjectGroupCount } from "./query.js"
 
 export {
@@ -72,14 +66,8 @@ export type {
 } from "./types.js"
 
 // Search consumer
-export {
-  RunToolSearchRestrictedError,
-  searchViaRunTool,
-} from "./search.js"
-export type {
-  RunToolSearchHit,
-  RunToolSearchOutcome,
-} from "./search.js"
+export { RunToolSearchRestrictedError, searchViaRunTool } from "./search.js"
+export type { RunToolSearchHit, RunToolSearchOutcome } from "./search.js"
 
 // Re-export the generic dispatcher so call sites that build their own
 // SQL helpers can reach `runTool(client, "query_data_sources", params)`

@@ -114,9 +114,7 @@ profileCommand
       console.log(`Manifest digest: ${profile.manifestDigest}`)
       console.log(`Tags:           ${profile.taxonomy.tags.length}`)
       console.log(`Entity kinds:   ${profile.taxonomy.entityKinds.length}`)
-      console.log(
-        `Writable preds: ${profile.taxonomy.writableFactPredicates.length}`
-      )
+      console.log(`Writable preds: ${profile.taxonomy.writableFactPredicates.length}`)
       const migrations = listProfileMigrations(profile.rootDir)
       console.log(`Migrations:     ${migrations.length}`)
     } catch (err) {
@@ -141,7 +139,9 @@ profileCommand
         `Preview: ${summary.selector} would resolve from ${summary.source} (${summary.rootDir}).`
       )
       console.log(`Manifest digest: ${summary.manifestDigest}`)
-      console.log("`profile.yaml extends` was rejected: built-in validator enforces #577.")
+      console.log(
+        "`profile.yaml extends` was rejected: built-in validator enforces #577."
+      )
       console.log("Schema additions:")
       for (const [db, count] of Object.entries(summary.schemaAdditions)) {
         console.log(`  - ${db}: ${count}`)
@@ -245,9 +245,7 @@ profileCommand
       const parsed = parseProfileSelector(selectorArg)
       const found = await findConfigFile(process.cwd())
       if (!found) {
-        console.error(
-          "Profile set failed: no .lore.yaml found. Run `lore init` first."
-        )
+        console.error("Profile set failed: no .lore.yaml found. Run `lore init` first.")
         process.exit(1)
         return
       }
@@ -280,62 +278,60 @@ profileCommand
   .description(
     "Plan or apply a profile migration. Dry-run by default; pass --apply after reviewing the plan."
   )
-  .option("--from <selector>", "Source selector; defaults to the currently pinned profile.")
+  .option(
+    "--from <selector>",
+    "Source selector; defaults to the currently pinned profile."
+  )
   .option("--apply", "Apply the migration after planning. Requires the migration lock.")
-  .action(
-    async (
-      targetSelectorArg: string,
-      opts: { from?: string; apply?: boolean }
-    ) => {
-      let lock: MigrationLock | null = null
-      try {
-        const services = await initServices()
-        const fromSelector = opts.from ?? services.profile.selector
-        const targetSelector = targetSelectorArg
-        const plan = await buildMigrationPlan({
-          services,
-          sourceSelector: fromSelector,
-          targetSelector,
-        })
-        printMigrationPlan(plan)
-        if (!opts.apply) {
-          console.log("\nDry-run only; pass --apply to execute.")
-          return
-        }
-        const acquire = tryAcquireMigrationLock({
-          name: `profile.${plan.document.profile}`,
-          configRoot: services.configRoot,
-          vaultPageId: services.config.vault.pageId,
-        })
-        if (!acquire.acquired) {
-          console.error(
-            `Profile migrate failed: migration lock held by pid ${
-              acquire.ownerPid ?? "<unknown>"
-            } at ${acquire.path}.`
-          )
-          process.exit(1)
-          return
-        }
-        lock = acquire.lock
-        const result = await applyMigrationPlan(services, plan, {
-          configPath: defaultConfigPath(services.configRoot),
-        })
-        console.log(
-          `\nApplied ${result.appliedStepIds.length} step(s); skipped ${result.skippedStepIds.length}.`
-        )
-        console.log(`Ledger written to ${result.plan.ledgerPath}.`)
-      } catch (err) {
+  .action(async (targetSelectorArg: string, opts: { from?: string; apply?: boolean }) => {
+    let lock: MigrationLock | null = null
+    try {
+      const services = await initServices()
+      const fromSelector = opts.from ?? services.profile.selector
+      const targetSelector = targetSelectorArg
+      const plan = await buildMigrationPlan({
+        services,
+        sourceSelector: fromSelector,
+        targetSelector,
+      })
+      printMigrationPlan(plan)
+      if (!opts.apply) {
+        console.log("\nDry-run only; pass --apply to execute.")
+        return
+      }
+      const acquire = tryAcquireMigrationLock({
+        name: `profile.${plan.document.profile}`,
+        configRoot: services.configRoot,
+        vaultPageId: services.config.vault.pageId,
+      })
+      if (!acquire.acquired) {
         console.error(
-          "Profile migrate failed:",
-          err instanceof Error ? err.message : String(err)
+          `Profile migrate failed: migration lock held by pid ${
+            acquire.ownerPid ?? "<unknown>"
+          } at ${acquire.path}.`
         )
         process.exit(1)
         return
-      } finally {
-        if (lock) releaseMigrationLock(lock)
       }
+      lock = acquire.lock
+      const result = await applyMigrationPlan(services, plan, {
+        configPath: defaultConfigPath(services.configRoot),
+      })
+      console.log(
+        `\nApplied ${result.appliedStepIds.length} step(s); skipped ${result.skippedStepIds.length}.`
+      )
+      console.log(`Ledger written to ${result.plan.ledgerPath}.`)
+    } catch (err) {
+      console.error(
+        "Profile migrate failed:",
+        err instanceof Error ? err.message : String(err)
+      )
+      process.exit(1)
+      return
+    } finally {
+      if (lock) releaseMigrationLock(lock)
     }
-  )
+  })
 
 function printDiscoveryTable(
   discoveries: DiscoveredProfile[],
@@ -361,9 +357,9 @@ function printDiscoveryTable(
   console.log("------------------------------------------------------------------")
   const keys = [...grouped.keys()].sort()
   for (const key of keys) {
-    const variants = grouped.get(key)!.sort(
-      (a, b) => priority[a.source] - priority[b.source]
-    )
+    const variants = grouped
+      .get(key)!
+      .sort((a, b) => priority[a.source] - priority[b.source])
     for (let i = 0; i < variants.length; i += 1) {
       const variant = variants[i]!
       const isActive = variant.rootDir === active.rootDir && active.selector === key
@@ -382,9 +378,7 @@ function resolveByArgOrBare(configRoot: string, selectorArg: string): ResolvedPr
   if (selectorArg.includes("@")) {
     return resolveProfileFromConfigAtRoot({ profile: selectorArg }, configRoot)
   }
-  const discoveries = discoverProfiles(configRoot).filter(
-    (d) => d.name === selectorArg
-  )
+  const discoveries = discoverProfiles(configRoot).filter((d) => d.name === selectorArg)
   if (discoveries.length === 0) {
     throw new ProfileLoadError(`profile not found: ${selectorArg}`)
   }
@@ -451,7 +445,9 @@ function printInstallSummary(
       console.log("Collision:       none")
       break
     case "same-digest":
-      console.log("Collision:       same-digest no-op (install will only refresh the lock)")
+      console.log(
+        "Collision:       same-digest no-op (install will only refresh the lock)"
+      )
       break
     case "different-digest":
       console.log(
@@ -521,9 +517,13 @@ function printInstallSummary(
   if (allowMatch) {
     console.log("Allow-list match: yes (CI/automation may proceed with --yes).")
   } else if (lockNoOp) {
-    console.log("Lock no-op: identical install already recorded; --yes will refresh the lock.")
+    console.log(
+      "Lock no-op: identical install already recorded; --yes will refresh the lock."
+    )
   } else {
-    console.log("Allow-list match: no — add to profiles.allowedInstallSources for non-interactive installs.")
+    console.log(
+      "Allow-list match: no — add to profiles.allowedInstallSources for non-interactive installs."
+    )
   }
 }
 
@@ -550,9 +550,7 @@ async function confirmInstall(preview: InstallPreview): Promise<boolean> {
   return /^y(es)?$/i.test(answer)
 }
 
-function printMigrationPlan(
-  plan: Awaited<ReturnType<typeof buildMigrationPlan>>
-): void {
+function printMigrationPlan(plan: Awaited<ReturnType<typeof buildMigrationPlan>>): void {
   console.log(`Migration plan: ${plan.sourceSelector} → ${plan.targetSelector}`)
   console.log(`Source root: ${plan.sourceRoot}`)
   console.log(`Target root: ${plan.targetRoot ?? "(target not installed)"}`)

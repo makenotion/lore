@@ -22,13 +22,10 @@ import { join } from "node:path"
 import { getStateDir } from "./lock.js"
 import { configKey, safeFilenameSegment } from "./marker-key.js"
 
-export function digestMarkerPath(
-  configRoot: string,
-  projectName: string,
-): string {
+export function digestMarkerPath(configRoot: string, projectName: string): string {
   return join(
     getStateDir(),
-    `digest.${configKey(configRoot)}.${safeFilenameSegment(projectName)}.last`,
+    `digest.${configKey(configRoot)}.${safeFilenameSegment(projectName)}.last`
   )
 }
 
@@ -39,7 +36,7 @@ export function digestMarkerPath(
 export async function digestMarkerAgeDays(
   configRoot: string,
   projectName: string,
-  now: Date = new Date(),
+  now: Date = new Date()
 ): Promise<number> {
   try {
     const stats = await stat(digestMarkerPath(configRoot, projectName))
@@ -51,7 +48,7 @@ export async function digestMarkerAgeDays(
 
 export async function touchDigestMarker(
   configRoot: string,
-  projectName: string,
+  projectName: string
 ): Promise<void> {
   await mkdir(getStateDir(), { recursive: true })
   const path = digestMarkerPath(configRoot, projectName)
@@ -78,7 +75,7 @@ export async function touchDigestMarker(
  */
 export async function clearDigestMarker(
   configRoot: string,
-  projectName: string,
+  projectName: string
 ): Promise<void> {
   await rm(digestMarkerPath(configRoot, projectName), { force: true })
 }

@@ -266,7 +266,9 @@ async function mergeOneGroup(
   })
   const [canonical, ...losers] = sorted
 
-  const canonicalProjectIds = extractRelationIds(canonical.properties[TOPIC_PROPS.PROJECT])
+  const canonicalProjectIds = extractRelationIds(
+    canonical.properties[TOPIC_PROPS.PROJECT]
+  )
   const union = unionAllProjectIds(pages)
   const missing = union.filter((id) => !canonicalProjectIds.includes(id))
   const mergedProjectIds = [...canonicalProjectIds, ...missing]
@@ -486,7 +488,9 @@ export async function findSimilarTopicGroups(
   for (const [normalizedKey, pages] of byKey.entries()) {
     if (pages.length < 2) continue
 
-    const distinctNames = new Set(pages.map((p) => extractTitle(p.properties[TOPIC_PROPS.NAME])))
+    const distinctNames = new Set(
+      pages.map((p) => extractTitle(p.properties[TOPIC_PROPS.NAME]))
+    )
     // Pure exact-name duplicates surface via `findDuplicateTopicNames`;
     // here we want only groups where stored names actually differ.
     if (distinctNames.size < 2) continue
@@ -576,7 +580,9 @@ async function mergeOneSimilarGroup(
     if (page.archived) continue
     fetchedPages.push(page)
   }
-  const pages = await hydrateRelationPropertiesForPages(client, fetchedPages, [TOPIC_PROPS.PROJECT])
+  const pages = await hydrateRelationPropertiesForPages(client, fetchedPages, [
+    TOPIC_PROPS.PROJECT,
+  ])
 
   const canonical = pages.find((p) => p.id === group.canonicalId)
   if (!canonical) {
@@ -594,7 +600,9 @@ async function mergeOneSimilarGroup(
   }
   const siblings = pages.filter((p) => p.id !== group.canonicalId)
 
-  const canonicalProjectIds = extractRelationIds(canonical.properties[TOPIC_PROPS.PROJECT])
+  const canonicalProjectIds = extractRelationIds(
+    canonical.properties[TOPIC_PROPS.PROJECT]
+  )
   const union = unionAllProjectIds(pages)
   const missing = union.filter((id) => !canonicalProjectIds.includes(id))
   const mergedProjectIds = [...canonicalProjectIds, ...missing]

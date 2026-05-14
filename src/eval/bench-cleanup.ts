@@ -61,7 +61,7 @@ export interface CleanupOrphansReport {
  */
 export function isInsideSandboxScope(
   projectPath: string,
-  sandboxParentPath: string,
+  sandboxParentPath: string
 ): boolean {
   // Exact-equality is the parent itself; prefix-match with a path
   // separator is a sub-project. Either branch returning true is a
@@ -72,16 +72,14 @@ export function isInsideSandboxScope(
 }
 
 export async function runBenchCleanupOrphans(
-  options: CleanupOrphansOptions,
+  options: CleanupOrphansOptions
 ): Promise<CleanupOrphansReport> {
   if (process.env["LORE_EVAL_BENCH_REAL"] !== "1") {
-    throw new Error(
-      "LORE_EVAL_BENCH_REAL is not set; refusing to archive",
-    )
+    throw new Error("LORE_EVAL_BENCH_REAL is not set; refusing to archive")
   }
   if (!Number.isInteger(options.olderThanHours) || options.olderThanHours <= 0) {
     throw new Error(
-      `--older-than must be a positive integer, got ${options.olderThanHours}`,
+      `--older-than must be a positive integer, got ${options.olderThanHours}`
     )
   }
   const now = options.now ?? (() => new Date())
@@ -135,7 +133,7 @@ async function buildDefaultAccessor(): Promise<
   const sandboxName = process.env["LORE_BENCH_SANDBOX_PROJECT_NAME"]
   if (!sandboxName) {
     throw new Error(
-      "LORE_BENCH_SANDBOX_PROJECT_NAME must be set when calling bench cleanup-orphans without --services override",
+      "LORE_BENCH_SANDBOX_PROJECT_NAME must be set when calling bench cleanup-orphans without --services override"
     )
   }
   const services = await initServices(undefined, { driftCheck: false })
@@ -145,7 +143,7 @@ async function buildDefaultAccessor(): Promise<
   const parent = await resolveProjectByName(
     services.projects,
     sandboxName,
-    "bench-cleanup",
+    "bench-cleanup"
   )
   const sandboxParentPath = parent.path && parent.path.length > 0 ? parent.path : "."
   return {

@@ -33,10 +33,8 @@ export type BenchFailureReason =
 
 export const COST_MEASUREMENT_CODEX_REPORTED = "codex-reported" as const
 export type CostMeasurement = typeof COST_MEASUREMENT_CODEX_REPORTED
-export const EXTRACTION_COST_MEASUREMENT_OPENAI_REPORTED =
-  "openai-reported" as const
-export const EXTRACTION_COST_MEASUREMENT_NOT_APPLICABLE =
-  "not-applicable" as const
+export const EXTRACTION_COST_MEASUREMENT_OPENAI_REPORTED = "openai-reported" as const
+export const EXTRACTION_COST_MEASUREMENT_NOT_APPLICABLE = "not-applicable" as const
 export type ExtractionCostMeasurement =
   | typeof EXTRACTION_COST_MEASUREMENT_OPENAI_REPORTED
   | typeof EXTRACTION_COST_MEASUREMENT_NOT_APPLICABLE

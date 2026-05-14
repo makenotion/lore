@@ -53,14 +53,9 @@ async function handleGet(
   args: { name: string }
 ): Promise<ToolResult> {
   try {
-    const project = await resolveProjectByName(
-      services.projects,
-      args.name,
-      "name",
-      {
-        listHint: "call `lore-project action='list'` to see configured projects",
-      }
-    )
+    const project = await resolveProjectByName(services.projects, args.name, "name", {
+      listHint: "call `lore-project action='list'` to see configured projects",
+    })
 
     const [topics, { items: recentMemories }] = await Promise.all([
       services.topics.listByProject(project.id),

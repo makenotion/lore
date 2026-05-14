@@ -113,7 +113,9 @@ describe("install helpers", () => {
   })
 
   it("rewrites paths under the current home directory into ${HOME}", () => {
-    expect(toPortablePath(`${homedir()}/.lore/dist/mcp.js`)).toBe("${HOME}/.lore/dist/mcp.js")
+    expect(toPortablePath(`${homedir()}/.lore/dist/mcp.js`)).toBe(
+      "${HOME}/.lore/dist/mcp.js"
+    )
     expect(toPortablePath("/opt/lore/dist/mcp.js")).toBe("/opt/lore/dist/mcp.js")
   })
 
@@ -166,12 +168,14 @@ describe("install helpers", () => {
     ]
 
     expect(detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh")).toBe(
-      "legacy-current",
+      "legacy-current"
     )
-    expect(detectClaudeHook(entries, "autosave.sh", "/tmp/elsewhere/hooks/autosave.sh")).toBe(
-      "stale",
+    expect(
+      detectClaudeHook(entries, "autosave.sh", "/tmp/elsewhere/hooks/autosave.sh")
+    ).toBe("stale")
+    expect(detectClaudeHook(entries, "wakeup.sh", "/tmp/lore/hooks/wakeup.sh")).toBe(
+      "missing"
     )
-    expect(detectClaudeHook(entries, "wakeup.sh", "/tmp/lore/hooks/wakeup.sh")).toBe("missing")
   })
 
   it("detects bin-dispatch Claude hook entries as current", () => {
@@ -185,7 +189,7 @@ describe("install helpers", () => {
     // Legacy path doesn't match (no `.sh` suffix) but the bin-dispatch
     // command does — `current`.
     expect(
-      detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh", binCommand),
+      detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh", binCommand)
     ).toBe("current")
   })
 
@@ -209,8 +213,8 @@ describe("install helpers", () => {
       detectCodexHook(
         [{ hooks: [{ type: "command" as const, command: "echo autosave.sh backup" }] }],
         "autosave.sh",
-        currentCommand,
-      ),
+        currentCommand
+      )
     ).toBe("missing")
   })
 
@@ -219,16 +223,20 @@ describe("install helpers", () => {
     const legacyCommand = buildLegacyCodexHookCommand("/tmp/lore/hooks/autosave.sh")
     const entries = [{ hooks: [{ type: "command" as const, command: binCommand }] }]
 
-    expect(detectCodexHook(entries, "autosave.sh", legacyCommand, binCommand)).toBe("current")
+    expect(detectCodexHook(entries, "autosave.sh", legacyCommand, binCommand)).toBe(
+      "current"
+    )
   })
 
   it("prefixes Codex hook commands with LORE_AGENT_NAME=Codex (bin-dispatch and legacy)", () => {
-    expect(buildCodexHookCommand("wakeup")).toBe("LORE_AGENT_NAME=Codex lore hooks wakeup")
+    expect(buildCodexHookCommand("wakeup")).toBe(
+      "LORE_AGENT_NAME=Codex lore hooks wakeup"
+    )
     const legacy = buildLegacyCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
     expect(legacy.startsWith("LORE_AGENT_NAME=Codex ")).toBe(true)
     // The quoted script path stays intact after the prefix so Codex can
     // invoke it verbatim as a shell string.
-    expect(legacy.endsWith("/wakeup.sh\"")).toBe(true)
+    expect(legacy.endsWith('/wakeup.sh"')).toBe(true)
   })
 
   it("emits the bin-dispatch Claude hook command anchored to $CLAUDE_PROJECT_DIR for each event name", () => {
@@ -240,13 +248,13 @@ describe("install helpers", () => {
     // (substituted by Claude's hook shell at fire time, not by
     // Lore's writer).
     expect(buildClaudeHookCommand("wakeup")).toBe(
-      `cd "$CLAUDE_PROJECT_DIR" && lore hooks wakeup`,
+      `cd "$CLAUDE_PROJECT_DIR" && lore hooks wakeup`
     )
     expect(buildClaudeHookCommand("autosave")).toBe(
-      `cd "$CLAUDE_PROJECT_DIR" && lore hooks autosave`,
+      `cd "$CLAUDE_PROJECT_DIR" && lore hooks autosave`
     )
     expect(buildClaudeHookCommand("session-end")).toBe(
-      `cd "$CLAUDE_PROJECT_DIR" && lore hooks session-end`,
+      `cd "$CLAUDE_PROJECT_DIR" && lore hooks session-end`
     )
   })
 
@@ -300,10 +308,10 @@ describe("install helpers", () => {
     // wrapper anchors to project root and `-T` (top-level) handles
     // the cross-package binary lookup.
     expect(buildClaudeHookCommand("autosave", "yarn")).toBe(
-      `cd "$CLAUDE_PROJECT_DIR" && yarn run -T lore hooks autosave`,
+      `cd "$CLAUDE_PROJECT_DIR" && yarn run -T lore hooks autosave`
     )
     expect(buildClaudeHookCommand("wakeup", "yarn")).toBe(
-      `cd "$CLAUDE_PROJECT_DIR" && yarn run -T lore hooks wakeup`,
+      `cd "$CLAUDE_PROJECT_DIR" && yarn run -T lore hooks wakeup`
     )
   })
 
@@ -315,10 +323,10 @@ describe("install helpers", () => {
     // context (no `cd` anchor needed; hooks fire with project cwd
     // by convention).
     expect(buildCodexHookCommand("wakeup", "yarn")).toBe(
-      "LORE_AGENT_NAME=Codex yarn run -T lore hooks wakeup",
+      "LORE_AGENT_NAME=Codex yarn run -T lore hooks wakeup"
     )
     expect(buildCodexHookCommand("autosave", "yarn")).toBe(
-      "LORE_AGENT_NAME=Codex yarn run -T lore hooks autosave",
+      "LORE_AGENT_NAME=Codex yarn run -T lore hooks autosave"
     )
   })
 
@@ -330,7 +338,7 @@ describe("install helpers", () => {
     // for workspace-root binary resolution from subdirectory cwds.
     const section = buildCodexMcpSection("yarn", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     expect(section).toContain(
-      `args = ["-lc", "LORE_SUPPRESS_DEPRECATIONS='1' yarn run -T lore mcp"]`,
+      `args = ["-lc", "LORE_SUPPRESS_DEPRECATIONS='1' yarn run -T lore mcp"]`
     )
     expect(section).not.toContain("LORE_CONFIG_ROOT=")
     expect(section).toContain('command = "bash"')
@@ -364,7 +372,7 @@ describe("install helpers", () => {
     // prefix; the bin name `lore` is the tail of the launch command.
     expect(section).toContain('command = "bash"')
     expect(section).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`
     )
     // env_vars carries only the runtime-resolved forwards
     // (NOTION_API_TOKEN / LORE_NOTION_BASE_URL),
@@ -383,16 +391,21 @@ describe("install helpers", () => {
     const binCommand = buildClaudeHookCommand("autosave")
     const entries = [
       { matcher: "", hooks: [{ type: "command", command: binCommand }] },
-      { matcher: "", hooks: [{ type: "command", command: "/tmp/lore/hooks/autosave.sh" }] },
+      {
+        matcher: "",
+        hooks: [{ type: "command", command: "/tmp/lore/hooks/autosave.sh" }],
+      },
     ]
     expect(
-      detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh", binCommand),
+      detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh", binCommand)
     ).toBe("current")
   })
 
   it("flags TOML array-of-tables as unsupported for Lore rewrites", () => {
-    expect(containsTomlArrayOfTables("[[profile]]\nname = \"default\"\n")).toBe(true)
-    expect(containsTomlArrayOfTables("# [[comment]]\n[features]\nhooks = true\n")).toBe(false)
+    expect(containsTomlArrayOfTables('[[profile]]\nname = "default"\n')).toBe(true)
+    expect(containsTomlArrayOfTables("# [[comment]]\n[features]\nhooks = true\n")).toBe(
+      false
+    )
   })
 })
 
@@ -404,7 +417,7 @@ describe("Cursor helpers", () => {
 
   it("builds a bin-dispatch Cursor MCP entry that matches the Claude entry shape", () => {
     expect(buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)).toEqual(
-      buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL),
+      buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
     )
     expect(buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)).toEqual({
       command: "lore",
@@ -421,7 +434,7 @@ describe("Cursor helpers", () => {
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     expect(entry).toEqual({
       command: "node",
@@ -441,13 +454,13 @@ describe("Cursor helpers", () => {
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     const b = buildLegacyCursorMcpEntry(
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     expect(deepEqual(a, b)).toBe(true)
   })
@@ -457,13 +470,13 @@ describe("Cursor helpers", () => {
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     const current = buildLegacyCursorMcpEntry(
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore-2",
       TEST_CONFIG_ROOT,
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     expect(deepEqual(previous, current)).toBe(false)
   })
@@ -471,13 +484,13 @@ describe("Cursor helpers", () => {
   it("resolves the project-scoped Cursor mcp.json path by default", () => {
     const projectDir = "/Users/operator/work/project"
     expect(resolveCursorMcpPath(projectDir, false)).toBe(
-      "/Users/operator/work/project/.cursor/mcp.json",
+      "/Users/operator/work/project/.cursor/mcp.json"
     )
   })
 
   it("resolves the global Cursor mcp.json path under --cursor-global", () => {
     expect(resolveCursorMcpPath("/Users/operator/work/project", true)).toBe(
-      `${homedir()}/.cursor/mcp.json`,
+      `${homedir()}/.cursor/mcp.json`
     )
   })
 
@@ -488,10 +501,10 @@ describe("Cursor helpers", () => {
     // one of the three branches), the flag is meaningful and no note is
     // emitted.
     expect(buildCursorGlobalIgnoredNotice(true, "claude")).toBe(
-      "Note: --cursor-global has no effect under --client claude (Cursor not selected); ignored.",
+      "Note: --cursor-global has no effect under --client claude (Cursor not selected); ignored."
     )
     expect(buildCursorGlobalIgnoredNotice(true, "codex")).toBe(
-      "Note: --cursor-global has no effect under --client codex (Cursor not selected); ignored.",
+      "Note: --cursor-global has no effect under --client codex (Cursor not selected); ignored."
     )
     expect(buildCursorGlobalIgnoredNotice(true, "cursor")).toBeNull()
     expect(buildCursorGlobalIgnoredNotice(true, "all")).toBeNull()
@@ -572,7 +585,9 @@ describe("SessionEnd cleanup (issue 0.6.0/26)", () => {
     // only entry was Lore-owned. A regression that returned an empty
     // array here would leave `"SessionEnd": []` in settings.json,
     // which is harmless but visible.
-    expect(removeClaudeScriptEntries([loreSessionEndEntry()], "session-end.sh")).toBeUndefined()
+    expect(
+      removeClaudeScriptEntries([loreSessionEndEntry()], "session-end.sh")
+    ).toBeUndefined()
     expect(removeClaudeScriptEntries(undefined, "session-end.sh")).toBeUndefined()
   })
 
@@ -726,19 +741,19 @@ describe("stripLoreOwnedSessionEndEntries (integration plan)", () => {
 describe("stripShellEnvPrefix", () => {
   it("strips a single LORE_AGENT_NAME=<value> prefix", () => {
     expect(stripShellEnvPrefix('LORE_AGENT_NAME=Codex "/path/to/script.sh"')).toBe(
-      '"/path/to/script.sh"',
+      '"/path/to/script.sh"'
     )
   })
 
   it("strips multiple sequential env prefixes", () => {
-    expect(stripShellEnvPrefix('FOO=1 BAR=2 LORE_AGENT_NAME=Codex "/path/to/script.sh"')).toBe(
-      '"/path/to/script.sh"',
-    )
+    expect(
+      stripShellEnvPrefix('FOO=1 BAR=2 LORE_AGENT_NAME=Codex "/path/to/script.sh"')
+    ).toBe('"/path/to/script.sh"')
   })
 
   it("tolerates leading whitespace before the first assignment", () => {
     expect(stripShellEnvPrefix('  LORE_AGENT_NAME=Codex "/path/to/script.sh"')).toBe(
-      '"/path/to/script.sh"',
+      '"/path/to/script.sh"'
     )
   })
 
@@ -762,8 +777,8 @@ describe("stripShellEnvPrefix", () => {
   })
 
   it("accepts digits and underscores after the first alphabetical character in keys", () => {
-    expect(stripShellEnvPrefix('MY_VAR_1=value rest')).toBe('rest')
-    expect(stripShellEnvPrefix('_VAR=value rest')).toBe('rest')
+    expect(stripShellEnvPrefix("MY_VAR_1=value rest")).toBe("rest")
+    expect(stripShellEnvPrefix("_VAR=value rest")).toBe("rest")
   })
 })
 
@@ -821,14 +836,14 @@ describe("runCodexInstall (integration)", () => {
     expect(config).not.toContain("codex_hooks")
 
     const written = JSON.parse(
-      await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8"),
+      await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8")
     ) as CodexHooksFixture
     expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
-      buildCodexHookCommand("wakeup"),
+      buildCodexHookCommand("wakeup")
     )
     expect(written.hooks.SessionStart).toBeUndefined()
     expect(written.hooks.Stop?.[0]?.hooks[0]?.command).toBe(
-      buildCodexHookCommand("autosave"),
+      buildCodexHookCommand("autosave")
     )
   })
 
@@ -861,26 +876,30 @@ describe("runCodexInstall (integration)", () => {
     mkdirSync(join(projectDir, ".codex"), { recursive: true })
     writeFileSync(
       join(projectDir, ".codex", "hooks.json"),
-      JSON.stringify({
-        hooks: {
-          SessionStart: [
-            {
-              matcher: "startup|resume",
-              hooks: [{ type: "command", command: buildCodexHookCommand("wakeup") }],
-            },
-          ],
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "startup|resume",
+                hooks: [{ type: "command", command: buildCodexHookCommand("wakeup") }],
+              },
+            ],
+          },
         },
-      }, null, 2),
+        null,
+        2
+      )
     )
 
     await runCodexInstall(makeContext(projectDir, pkgRoot), null)
 
     const written = JSON.parse(
-      await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8"),
+      await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8")
     ) as CodexHooksFixture
     expect(written.hooks.SessionStart).toBeUndefined()
     expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
-      buildCodexHookCommand("wakeup"),
+      buildCodexHookCommand("wakeup")
     )
   })
 
@@ -907,10 +926,9 @@ describe("runCodexInstall (integration)", () => {
     expect(written.hooks.SessionStart).toBeUndefined()
     expect(written.hooks.UserPromptSubmit).toHaveLength(1)
     expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
-      buildCodexHookCommand("wakeup"),
+      buildCodexHookCommand("wakeup")
     )
   })
-
 })
 
 describe("runCursorInstall (integration)", () => {
@@ -957,7 +975,10 @@ describe("runCursorInstall (integration)", () => {
 
     await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const servers = written.mcpServers as Record<string, unknown>
     expect(servers).toBeDefined()
     // makeContext()'s legacyPaths is false → bin-dispatch shape.
@@ -995,7 +1016,10 @@ describe("runCursorInstall (integration)", () => {
 
     await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const servers = written.mcpServers as Record<string, unknown>
     expect(servers.other).toEqual(seeded.mcpServers.other)
     expect(servers.lore).toBeDefined()
@@ -1023,7 +1047,10 @@ describe("runCursorInstall (integration)", () => {
 
     await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const servers = written.mcpServers as Record<string, unknown>
     const loreEntry = servers.lore as { command: string; args: string[] }
     // makeContext()'s legacyPaths is false → bin-dispatch overwrite of
@@ -1067,7 +1094,10 @@ describe("runCursorInstall (integration)", () => {
     const ctx: InstallContext = { ...makeContext(projectDir, pkgRoot), yarnPnp: true }
     await runCursorInstall(ctx, null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const servers = written.mcpServers as Record<string, unknown>
     const loreEntry = servers.lore as {
       command: string
@@ -1104,7 +1134,10 @@ describe("runCursorInstall (integration)", () => {
     // builder.
     await runCursorInstall(ctx, null, targetPath, true)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const loreEntry = (written.mcpServers as Record<string, unknown>).lore as {
       command: string
       args: string[]
@@ -1169,7 +1202,10 @@ describe("runCursorInstall (integration)", () => {
     }
     await runCursorInstall(ctx, null, targetPath, true)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const loreEntry = (written.mcpServers as Record<string, unknown>).lore as {
       cwd?: string
       env: Record<string, string>
@@ -1200,7 +1236,10 @@ describe("runCursorInstall (integration)", () => {
     const ctx: InstallContext = { ...makeContext(projectDir, pkgRoot), yarnPnp: true }
     await runCursorInstall(ctx, null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const loreEntry = (written.mcpServers as Record<string, unknown>).lore as {
       cwd?: string
       env: Record<string, string>
@@ -1248,7 +1287,10 @@ describe("runCursorInstall (integration)", () => {
 
     await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, true)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     expect((written.mcpServers as Record<string, unknown>).lore).toBeDefined()
   })
 
@@ -1267,7 +1309,10 @@ describe("runCursorInstall (integration)", () => {
     }
     await runCursorInstall(ctx, null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     const servers = written.mcpServers as Record<string, unknown>
     const loreEntry = servers.lore as { command: string; args: string[]; cwd: string }
     expect(loreEntry.command).toBe("node")
@@ -1291,18 +1336,24 @@ describe("runCursorInstall (integration)", () => {
       toPortablePath(join(pkgRoot, "dist", "mcp.js")),
       toPortablePath(pkgRoot),
       projectDir,
-      process.env,
+      process.env
     )
     const fs = await import("node:fs/promises")
     await fs.mkdir(join(projectDir, ".cursor"), { recursive: true })
-    writeFileSync(targetPath, JSON.stringify({ mcpServers: { lore: seededEntry } }, null, 2))
+    writeFileSync(
+      targetPath,
+      JSON.stringify({ mcpServers: { lore: seededEntry } }, null, 2)
+    )
 
     consoleLogSpy.mockClear()
     await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     expect((written.mcpServers as Record<string, unknown>).lore).toEqual(
-      buildCursorMcpEntry("bare", projectDir, process.env),
+      buildCursorMcpEntry("bare", projectDir, process.env)
     )
 
     const messages = consoleLogSpy.mock.calls.map((args) => args.join(" ")).join("\n")
@@ -1324,7 +1375,10 @@ describe("runCursorInstall (integration)", () => {
 
     await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, false)
 
-    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<
+      string,
+      unknown
+    >
     expect((written.mcpServers as Record<string, unknown>).lore).toBeDefined()
   })
 })
@@ -1365,7 +1419,7 @@ describe("ensureHookPrerequisites", () => {
     const pkgRoot = mkdtempSync(join(SCRATCH, "missing-"))
 
     await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).rejects.toThrow(
-      /Required hook scripts not found.*autosave\.sh.*wakeup\.sh/,
+      /Required hook scripts not found.*autosave\.sh.*wakeup\.sh/
     )
   })
 
@@ -1378,7 +1432,7 @@ describe("ensureHookPrerequisites", () => {
     writeFileSync(join(pkgRoot, "hooks", "autosave.sh"), "#!/bin/sh\n")
 
     await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).rejects.toThrow(
-      /Required hook scripts not found.*wakeup\.sh/,
+      /Required hook scripts not found.*wakeup\.sh/
     )
   })
 
@@ -1389,7 +1443,9 @@ describe("ensureHookPrerequisites", () => {
     writeFileSync(join(pkgRoot, "hooks", "autosave.sh"), "#!/bin/sh\n", { mode: 0o644 })
     writeFileSync(join(pkgRoot, "hooks", "wakeup.sh"), "#!/bin/sh\n", { mode: 0o644 })
 
-    await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).resolves.toBeUndefined()
+    await expect(
+      ensureHookPrerequisites(makeLegacyContext(pkgRoot))
+    ).resolves.toBeUndefined()
 
     // Chmod side-effect: scripts now executable. The exact mode bits depend
     // on the process umask, so we only assert the user-execute bit (0o100).
@@ -1447,10 +1503,7 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
 
   it("defaults to `claude` when neither `.lore.yaml` nor env override is set", async () => {
     const projectDir = mkdtempSync(join(SCRATCH, "default-"))
-    const result = await resolveBackgroundAgentForInstall(
-      makeContext(projectDir),
-      {},
-    )
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {})
     expect(result.command).toBe("claude")
     expect(result.presetMatched).toBe(true)
     // Default args carry the placeholder — the lore allowlist passes
@@ -1502,12 +1555,9 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
         "    command: claude",
         "    args: ['-p', '--model', 'sonnet']",
         "",
-      ].join("\n"),
+      ].join("\n")
     )
-    const result = await resolveBackgroundAgentForInstall(
-      makeContext(projectDir),
-      {},
-    )
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {})
     expect(result.argsContainAllowedToolsPlaceholder).toBe(false)
   })
 
@@ -1522,7 +1572,7 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
         "  backgroundAgent:",
         "    command: my-custom-agent",
         "",
-      ].join("\n"),
+      ].join("\n")
     )
     const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {})
     expect(result.command).toBe("my-custom-agent")
@@ -1539,7 +1589,7 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
         "  backgroundAgent:",
         "    command: from-yaml",
         "",
-      ].join("\n"),
+      ].join("\n")
     )
     const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
       LORE_BACKGROUND_COMMAND: "from-env",
@@ -1600,7 +1650,7 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
     const result = await resolveBackgroundAgentForInstall(
       makeContext(projectDir),
       {}, // empty env — no LORE_AGENT_NAME, no LORE_BACKGROUND_COMMAND
-      "Codex",
+      "Codex"
     )
     expect(result.command).toBe("codex")
     expect(result.presetMatched).toBe(true)
@@ -1615,7 +1665,7 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
     const result = await resolveBackgroundAgentForInstall(
       makeContext(projectDir),
       { LORE_BACKGROUND_COMMAND: "claude" },
-      "Codex",
+      "Codex"
     )
     expect(result.command).toBe("claude")
   })
@@ -1635,12 +1685,12 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
         "  backgroundAgent:",
         "    command: claude",
         "",
-      ].join("\n"),
+      ].join("\n")
     )
     const result = await resolveBackgroundAgentForInstall(
       makeContext(projectDir),
       {},
-      "Codex",
+      "Codex"
     )
     expect(result.command).toBe("claude")
   })
@@ -1660,12 +1710,9 @@ describe("resolveBackgroundAgentForInstall (issue #194)", () => {
         "  backgroundAgent:",
         "    command: /opt/homebrew/bin/codex",
         "",
-      ].join("\n"),
+      ].join("\n")
     )
-    const result = await resolveBackgroundAgentForInstall(
-      makeContext(projectDir),
-      {},
-    )
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {})
     expect(result.command).toBe("/opt/homebrew/bin/codex")
     expect(result.presetMatched).toBe(true)
     expect(result.args).toEqual([
@@ -1711,8 +1758,11 @@ describe("dispatchInstall (--client all orchestration)", () => {
   }
 
   function trackingRunners(
-    failures: { claude?: boolean; codex?: boolean; cursor?: boolean } = {},
-  ): { runners: InstallRunners; called: { claude: number; codex: number; cursor: number } } {
+    failures: { claude?: boolean; codex?: boolean; cursor?: boolean } = {}
+  ): {
+    runners: InstallRunners
+    called: { claude: number; codex: number; cursor: number }
+  } {
     const called = { claude: 0, codex: 0, cursor: 0 }
     const runners: InstallRunners = {
       claude: async () => {
@@ -1766,7 +1816,7 @@ describe("dispatchInstall (--client all orchestration)", () => {
     // just the original throw bubbling out.
     const { runners, called } = trackingRunners({ claude: true })
     await expect(
-      dispatchInstall(makeContext(), null, { client: "claude" }, runners),
+      dispatchInstall(makeContext(), null, { client: "claude" }, runners)
     ).rejects.toThrow(/claude install failed \(mock\)/)
     expect(called).toEqual({ claude: 1, codex: 0, cursor: 0 })
   })
@@ -1777,7 +1827,7 @@ describe("dispatchInstall (--client all orchestration)", () => {
       makeContext(),
       null,
       { client: "cursor", cursorGlobal: false },
-      runners,
+      runners
     )
     expect(called).toEqual({ claude: 0, codex: 0, cursor: 1 })
     expect(errors).toHaveLength(0)
@@ -1794,7 +1844,12 @@ describe("dispatchInstall (--client all orchestration)", () => {
         receivedGlobal = global
       },
     }
-    await dispatchInstall(makeContext(), null, { client: "cursor", cursorGlobal: true }, runners)
+    await dispatchInstall(
+      makeContext(),
+      null,
+      { client: "cursor", cursorGlobal: true },
+      runners
+    )
     expect(receivedGlobal).toBe(true)
     expect(receivedPath).toBe(`${homedir()}/.cursor/mcp.json`)
   })
@@ -1841,15 +1896,17 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     const parsed = JSON.parse(output) as {
-      mcpServers: { lore: { command: string; args: string[]; env: Record<string, string> } }
+      mcpServers: {
+        lore: { command: string; args: string[]; env: Record<string, string> }
+      }
     }
     expect(parsed.mcpServers.lore.command).toBe("lore")
     expect(parsed.mcpServers.lore.args).toEqual(["mcp"])
     expect(parsed.mcpServers.lore.env["LORE_NOTION_BASE_URL"]).toBe(
-      "${LORE_NOTION_BASE_URL}",
+      "${LORE_NOTION_BASE_URL}"
     )
     expect(parsed.mcpServers.lore.env["LORE_CONFIG_ROOT"]).toBe(TEST_CONFIG_ROOT)
     expect(parsed.mcpServers.lore.env["LORE_SUPPRESS_DEPRECATIONS"]).toBe("1")
@@ -1864,12 +1921,12 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     expect(output.startsWith("[mcp_servers.lore]\n")).toBe(true)
     expect(output).toContain('command = "bash"')
     expect(output).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`
     )
     expect(output).toContain("env_vars = ")
     expect(output).toContain('"LORE_NOTION_BASE_URL"')
@@ -1889,7 +1946,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_NONE,
+      ENV_NONE
     )
     const parsed = JSON.parse(output) as {
       mcpServers: { lore: { env: Record<string, string> } }
@@ -1900,9 +1957,13 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
   it("byte-matches buildClaudeMcpEntry() under the bin-dispatch default", () => {
     const expected =
       JSON.stringify(
-        { mcpServers: { lore: buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL) } },
+        {
+          mcpServers: {
+            lore: buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL),
+          },
+        },
         null,
-        2,
+        2
       ) + "\n"
     expect(
       buildPrintConfigOutput(
@@ -1912,13 +1973,14 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
         TEST_CONFIG_ROOT,
         false,
         "bare",
-        ENV_WITH_BASE_URL,
-      ),
+        ENV_WITH_BASE_URL
+      )
     ).toBe(expected)
   })
 
   it("byte-matches buildCodexMcpSection() under the bin-dispatch default", () => {
-    const expected = buildCodexMcpSection("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL) + "\n"
+    const expected =
+      buildCodexMcpSection("bare", TEST_CONFIG_ROOT, ENV_WITH_BASE_URL) + "\n"
     expect(
       buildPrintConfigOutput(
         "toml",
@@ -1927,8 +1989,8 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
         TEST_CONFIG_ROOT,
         false,
         "bare",
-        ENV_WITH_BASE_URL,
-      ),
+        ENV_WITH_BASE_URL
+      )
     ).toBe(expected)
   })
 
@@ -1943,7 +2005,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     const second = buildPrintConfigOutput(
       "json",
@@ -1952,7 +2014,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      ENV_WITH_BASE_URL,
+      ENV_WITH_BASE_URL
     )
     expect(second).toBe(first)
   })
@@ -1974,17 +2036,15 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       "bare",
       ENV_NONE,
       undefined,
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
     const parsed = JSON.parse(output) as {
       mcpServers: { lore: { env: Record<string, string> } }
     }
     expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).toBe(
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
-    expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).not.toBe(
-      "${NOTION_BASE_URL}",
-    )
+    expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).not.toBe("${NOTION_BASE_URL}")
   })
 
   it("writes literal NOTION_BASE_URL=dev to TOML snippet when notionBaseUrlLiteral is set", () => {
@@ -2003,7 +2063,7 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       "bare",
       ENV_NONE,
       undefined,
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
     expect(output).toContain("NOTION_BASE_URL='https://api-dev.notion.com'")
   })
@@ -2026,19 +2086,17 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
       "bare",
       env,
       undefined,
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
     const parsed = JSON.parse(output) as {
       mcpServers: { lore: { env: Record<string, string> } }
     }
     expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).toBe(
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
     // The placeholder MUST NOT be in the env block — that's the
     // entire point of the literal-and-suppress posture.
-    expect(Object.values(parsed.mcpServers.lore.env)).not.toContain(
-      "${NOTION_BASE_URL}",
-    )
+    expect(Object.values(parsed.mcpServers.lore.env)).not.toContain("${NOTION_BASE_URL}")
   })
 })
 
@@ -2054,12 +2112,12 @@ describe("install command runtime — --print-config short-circuits other flags"
 
   it("emits only the JSON snippet when --client is set alongside --print-config", async () => {
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
 
     try {
       // --client claude is a valid value pre-#158 and post-#158; the test
@@ -2069,10 +2127,9 @@ describe("install command runtime — --print-config short-circuits other flags"
       // prerequisites...") land on stdout.
       // `from: "user"` means argv contains only the option args — installCommand
       // is the leaf command, not a `node lore install …` invocation.
-      await installCommand.parseAsync(
-        ["--client", "claude", "--print-config", "json"],
-        { from: "user" },
-      )
+      await installCommand.parseAsync(["--client", "claude", "--print-config", "json"], {
+        from: "user",
+      })
     } finally {
       stdoutSpy.mockRestore()
     }
@@ -2100,22 +2157,17 @@ describe("install command runtime — --print-config short-circuits other flags"
     // though no file is written. The bin-dispatch entry has no `cwd`
     // field, so the proof is the env value, not cwd.
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
 
     try {
       await installCommand.parseAsync(
-        [
-          "--project",
-          "/tmp/nonexistent-print-config-test",
-          "--print-config",
-          "json",
-        ],
-        { from: "user" },
+        ["--project", "/tmp/nonexistent-print-config-test", "--print-config", "json"],
+        { from: "user" }
       )
     } finally {
       stdoutSpy.mockRestore()
@@ -2130,7 +2182,7 @@ describe("install command runtime — --print-config short-circuits other flags"
     // fictitious path, so configRoot falls back to the resolved
     // `--project` directory itself.
     expect(parsed.mcpServers.lore.env["LORE_CONFIG_ROOT"]).toBe(
-      "/tmp/nonexistent-print-config-test",
+      "/tmp/nonexistent-print-config-test"
     )
     expect(parsed.mcpServers.lore.env["LORE_SUPPRESS_DEPRECATIONS"]).toBe("1")
     // No file write side-effect: the install banner never landed on
@@ -2145,12 +2197,12 @@ describe("install command runtime — --print-config short-circuits other flags"
     // drops the `dev` thread between the action handler and
     // `runPrintConfig` fails loudly.
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
     const priorEnv = {
       NOTION_ENV: process.env["NOTION_ENV"],
       NOTION_BASE_URL: process.env["NOTION_BASE_URL"],
@@ -2163,10 +2215,9 @@ describe("install command runtime — --print-config short-circuits other flags"
     delete process.env["LORE_NOTION_BASE_URL"]
 
     try {
-      await installCommand.parseAsync(
-        ["--print-config", "json", "--dev"],
-        { from: "user" },
-      )
+      await installCommand.parseAsync(["--print-config", "json", "--dev"], {
+        from: "user",
+      })
     } finally {
       stdoutSpy.mockRestore()
       for (const [k, v] of Object.entries(priorEnv)) {
@@ -2180,7 +2231,7 @@ describe("install command runtime — --print-config short-circuits other flags"
       mcpServers: { lore: { env: Record<string, string> } }
     }
     expect(parsed.mcpServers.lore.env["NOTION_BASE_URL"]).toBe(
-      "https://api-dev.notion.com",
+      "https://api-dev.notion.com"
     )
     // None of the four base-URL selector placeholders should be in
     // the emitted env block (C-blocker fix: literal dominates ALL
@@ -2209,12 +2260,12 @@ describe("install command runtime — --print-config short-circuits other flags"
     // production behavior the C2 fix targets (no double-print
     // tail after the diagnostic block).
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
     const errors: string[] = []
     const stderrSpy = vi
       .spyOn(console, "error")
@@ -2226,10 +2277,9 @@ describe("install command runtime — --print-config short-circuits other flags"
     process.env["LORE_NOTION_BASE_URL"] = "https://api.notion.so"
 
     try {
-      await installCommand.parseAsync(
-        ["--print-config", "json", "--dev"],
-        { from: "user" },
-      )
+      await installCommand.parseAsync(["--print-config", "json", "--dev"], {
+        from: "user",
+      })
     } finally {
       stdoutSpy.mockRestore()
       stderrSpy.mockRestore()
@@ -2263,12 +2313,12 @@ describe("install command runtime — --print-config short-circuits other flags"
 
   it("--print-config toml --dev emits the literal dev base URL in the bash-lc prefix", async () => {
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
     const priorEnv = {
       NOTION_ENV: process.env["NOTION_ENV"],
       NOTION_BASE_URL: process.env["NOTION_BASE_URL"],
@@ -2281,10 +2331,9 @@ describe("install command runtime — --print-config short-circuits other flags"
     delete process.env["LORE_NOTION_BASE_URL"]
 
     try {
-      await installCommand.parseAsync(
-        ["--print-config", "toml", "--dev"],
-        { from: "user" },
-      )
+      await installCommand.parseAsync(["--print-config", "toml", "--dev"], {
+        from: "user",
+      })
     } finally {
       stdoutSpy.mockRestore()
       for (const [k, v] of Object.entries(priorEnv)) {
@@ -2303,7 +2352,6 @@ describe("install command runtime — --print-config short-circuits other flags"
     expect(output).not.toContain('"LORE_NOTION_BASE_URL"')
     expect(output).not.toContain('"NOTION_API_BASE_URL"')
   })
-
 })
 
 describe("runPrintConfig auth-source orchestration (issue #451)", () => {
@@ -2340,19 +2388,19 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     // set in process.env, the snippet emits the `${VAR}` placeholder.
     const projectDir = mkdtempSync(join(SCRATCH, "no-config-"))
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
 
     const previousApi = process.env["NOTION_API_TOKEN"]
     process.env["NOTION_API_TOKEN"] = "api-tok"
     try {
       await installCommand.parseAsync(
         ["--project", projectDir, "--print-config", "json"],
-        { from: "user" },
+        { from: "user" }
       )
     } finally {
       stdoutSpy.mockRestore()
@@ -2363,9 +2411,7 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     const parsed = JSON.parse(writes.join("")) as {
       mcpServers: { lore: { env: Record<string, string> } }
     }
-    expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBe(
-      "${NOTION_API_TOKEN}",
-    )
+    expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
   })
 
   it(".lore.yaml present but no auth resolves → catch swallows, source stays undefined", async () => {
@@ -2381,16 +2427,16 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     const projectDir = mkdtempSync(join(SCRATCH, "no-auth-"))
     writeFileSync(
       join(projectDir, ".lore.yaml"),
-      "vault:\n  pageId: '00000000000000000000000000000000'\n",
+      "vault:\n  pageId: '00000000000000000000000000000000'\n"
     )
 
     const writes: string[] = []
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(((chunk: string | Uint8Array) => {
-        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-        return true
-      }) as never)
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+      chunk: string | Uint8Array
+    ) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as never)
 
     // Force resolveAuth's env-token miss; path 2 (ntn) is
     // unmocked and behaves per the developer's machine — its outcome
@@ -2401,7 +2447,7 @@ describe("runPrintConfig auth-source orchestration (issue #451)", () => {
     try {
       await installCommand.parseAsync(
         ["--project", projectDir, "--print-config", "json"],
-        { from: "user" },
+        { from: "user" }
       )
     } finally {
       stdoutSpy.mockRestore()
@@ -2428,17 +2474,15 @@ describe("shellQuoteSingle (issue 0.10.0/08)", () => {
   // for the metacharacters bash would otherwise interpret.
 
   it("inhibits parameter expansion ($VAR)", () => {
-    expect(shellQuoteSingle("/Users/foo/$bar/project")).toBe(
-      "'/Users/foo/$bar/project'",
-    )
+    expect(shellQuoteSingle("/Users/foo/$bar/project")).toBe("'/Users/foo/$bar/project'")
   })
 
   it("inhibits command substitution (backticks and $())", () => {
     expect(shellQuoteSingle("/Users/foo/`whoami`/project")).toBe(
-      "'/Users/foo/`whoami`/project'",
+      "'/Users/foo/`whoami`/project'"
     )
     expect(shellQuoteSingle("/Users/foo/$(whoami)/project")).toBe(
-      "'/Users/foo/$(whoami)/project'",
+      "'/Users/foo/$(whoami)/project'"
     )
   })
 
@@ -2472,14 +2516,14 @@ describe("shellQuotePortablePath (issue 0.10.0/08)", () => {
   // suffix single-quoted (literal). Adjacent-string concatenation in
   // bash joins the two halves into a single argv entry.
 
-  it("emits bare \"${HOME}\" when the value is exactly the home marker", () => {
+  it('emits bare "${HOME}" when the value is exactly the home marker', () => {
     expect(shellQuotePortablePath("${HOME}")).toBe(`"\${HOME}"`)
   })
 
   it("preserves ${HOME} expansion AND inhibits suffix metacharacter expansion", () => {
     // The load-bearing case: home-portable path under Lore install.
     expect(shellQuotePortablePath("${HOME}/.lore/dist/mcp.js")).toBe(
-      `"\${HOME}"'/.lore/dist/mcp.js'`,
+      `"\${HOME}"'/.lore/dist/mcp.js'`
     )
   })
 
@@ -2487,13 +2531,13 @@ describe("shellQuotePortablePath (issue 0.10.0/08)", () => {
     // Pathological: home-portable prefix + suffix containing literal
     // `$bar` (legal Unix, illegal under double-quoted bash).
     expect(shellQuotePortablePath("${HOME}/$build/mcp.js")).toBe(
-      `"\${HOME}"'/$build/mcp.js'`,
+      `"\${HOME}"'/$build/mcp.js'`
     )
   })
 
   it("inhibits backtick command substitution in the suffix", () => {
     expect(shellQuotePortablePath("${HOME}/`whoami`/mcp.js")).toBe(
-      `"\${HOME}"'/\`whoami\`/mcp.js'`,
+      `"\${HOME}"'/\`whoami\`/mcp.js'`
     )
   })
 
@@ -2501,12 +2545,14 @@ describe("shellQuotePortablePath (issue 0.10.0/08)", () => {
     // Lore installed outside the operator's home (e.g., /opt/lore) —
     // there's no portability marker to preserve, so single-quote the
     // whole path the same way `shellQuoteSingle` would.
-    expect(shellQuotePortablePath("/opt/lore/dist/mcp.js")).toBe("'/opt/lore/dist/mcp.js'")
+    expect(shellQuotePortablePath("/opt/lore/dist/mcp.js")).toBe(
+      "'/opt/lore/dist/mcp.js'"
+    )
   })
 
   it("falls through to plain single-quoting on absolute paths with shell metacharacters", () => {
     expect(shellQuotePortablePath("/opt/lore/$build/mcp.js")).toBe(
-      "'/opt/lore/$build/mcp.js'",
+      "'/opt/lore/$build/mcp.js'"
     )
   })
 
@@ -2515,7 +2561,7 @@ describe("shellQuotePortablePath (issue 0.10.0/08)", () => {
     // path like `/home/foo/${HOME}-suffix` (rare but legal) doesn't
     // start with the marker and falls through to single-quoting.
     expect(shellQuotePortablePath("/home/foo/${HOME}-suffix")).toBe(
-      "'/home/foo/${HOME}-suffix'",
+      "'/home/foo/${HOME}-suffix'"
     )
   })
 })
@@ -2533,7 +2579,7 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
     // The literal `$bar` must appear in the launch command unquoted
     // by double-quotes, so bash treats it as a literal string.
     expect(section).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT='/Users/foo/$bar/project' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT='/Users/foo/$bar/project' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`
     )
   })
 
@@ -2541,7 +2587,7 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
     const root = "/Users/foo/`whoami`/project"
     const section = buildCodexMcpSection("bare", root, ENV_WITH_BASE_URL)
     expect(section).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT='/Users/foo/\`whoami\`/project' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT='/Users/foo/\`whoami\`/project' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`
     )
   })
 
@@ -2551,15 +2597,13 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
     // `'foo'\''s'` ↦ bash concatenation of `foo` + `'` + `s`.
     // Inside the TOML JSON-encoded string, the backslash is escaped
     // again as `\\\\` (one for JSON, one for literal backslash).
-    expect(section).toContain(
-      `LORE_CONFIG_ROOT='/Users/foo'\\\\''s/project'`,
-    )
+    expect(section).toContain(`LORE_CONFIG_ROOT='/Users/foo'\\\\''s/project'`)
   })
 
   it("preserves ${HOME} expansion on committed portable configRoots", () => {
     const section = buildCodexMcpSection("bare", "${HOME}/.lore", ENV_NONE)
     expect(section).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`
     )
   })
 })
@@ -2581,23 +2625,35 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
 
   it("single-quotes absolute (non-${HOME}) $-bearing mcp.js paths so bash does not expand the variable", () => {
     const mcpPath = "/opt/lore/$build/dist/mcp.js"
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
+    const section = buildLegacyCodexMcpSection(
+      mcpPath,
+      TEST_CONFIG_ROOT,
+      ENV_WITH_BASE_URL
+    )
     expect(section).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' node '/opt/lore/$build/dist/mcp.js'"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' node '/opt/lore/$build/dist/mcp.js'"]`
     )
   })
 
   it("single-quotes backtick-bearing mcp.js paths so bash does not run command substitution", () => {
     const mcpPath = "/opt/lore/`whoami`/dist/mcp.js"
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
+    const section = buildLegacyCodexMcpSection(
+      mcpPath,
+      TEST_CONFIG_ROOT,
+      ENV_WITH_BASE_URL
+    )
     expect(section).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' node '/opt/lore/\`whoami\`/dist/mcp.js'"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT='${TEST_CONFIG_ROOT}' LORE_SUPPRESS_DEPRECATIONS='1' node '/opt/lore/\`whoami\`/dist/mcp.js'"]`
     )
   })
 
   it("escapes embedded single quotes in mcp.js paths via close-escape-reopen", () => {
     const mcpPath = "/opt/lore/foo's/dist/mcp.js"
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
+    const section = buildLegacyCodexMcpSection(
+      mcpPath,
+      TEST_CONFIG_ROOT,
+      ENV_WITH_BASE_URL
+    )
     // `'foo'\''s'` after JSON-encoding for TOML emission.
     expect(section).toContain(`node '/opt/lore/foo'\\\\''s/dist/mcp.js'`)
   })
@@ -2612,8 +2668,12 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
     // After JSON-encoding for TOML emission: `"${HOME}"` becomes
     // `\"${HOME}\"` and the single quotes pass through.
     const mcpPath = `${homedir()}/.lore/dist/mcp.js`
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
-    expect(section).toContain('node \\"${HOME}\\"\'/.lore/dist/mcp.js\'')
+    const section = buildLegacyCodexMcpSection(
+      mcpPath,
+      TEST_CONFIG_ROOT,
+      ENV_WITH_BASE_URL
+    )
+    expect(section).toContain("node \\\"${HOME}\\\"'/.lore/dist/mcp.js'")
   })
 
   it("preserves ${HOME} expansion AND inhibits suffix metacharacter expansion simultaneously", () => {
@@ -2622,17 +2682,25 @@ describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
     // but NOT `$bar` (security). Adjacent-quoted-string concatenation
     // is what keeps the two halves on a single argv entry.
     const mcpPath = `${homedir()}/.lore/$build/dist/mcp.js`
-    const section = buildLegacyCodexMcpSection(mcpPath, TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
-    expect(section).toContain('node \\"${HOME}\\"\'/.lore/$build/dist/mcp.js\'')
+    const section = buildLegacyCodexMcpSection(
+      mcpPath,
+      TEST_CONFIG_ROOT,
+      ENV_WITH_BASE_URL
+    )
+    expect(section).toContain("node \\\"${HOME}\\\"'/.lore/$build/dist/mcp.js'")
   })
 
-  it("emits bare \"${HOME}\" when the path is exactly ${HOME} (no suffix)", () => {
+  it('emits bare "${HOME}" when the path is exactly ${HOME} (no suffix)', () => {
     // Edge case: toPortablePath returns the bare string "${HOME}" when
     // the input equals the operator's home directory exactly. Pass
     // that through as a no-suffix portable token so bash expands it
     // verbatim. (No real-world Lore install lives at the home root,
     // but pinning this branch keeps the helper honest.)
-    const section = buildLegacyCodexMcpSection(homedir(), TEST_CONFIG_ROOT, ENV_WITH_BASE_URL)
+    const section = buildLegacyCodexMcpSection(
+      homedir(),
+      TEST_CONFIG_ROOT,
+      ENV_WITH_BASE_URL
+    )
     expect(section).toContain('node \\"${HOME}\\"')
   })
 })
@@ -2922,7 +2990,11 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       NOTION_API_BASE_URL: "https://api-dev.notion.com",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
-    expect(build.forwarded).toEqual(["NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL"])
+    expect(build.forwarded).toEqual([
+      "NOTION_ENV",
+      "NOTION_BASE_URL",
+      "NOTION_API_BASE_URL",
+    ])
   })
 
   it("omits LORE_CONFIG_ROOT from staticEnv when omitConfigRoot is true (PnP path)", () => {
@@ -3056,7 +3128,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "bare",
       TEST_CONFIG_ROOT,
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
     // Environment selectors still flow.
@@ -3069,7 +3141,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "yarn",
       TEST_CONFIG_ROOT,
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
     expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
@@ -3081,7 +3153,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
     expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
@@ -3101,7 +3173,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "${HOME}/.lore",
       TEST_CONFIG_ROOT,
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
   })
@@ -3113,7 +3185,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "bare",
       TEST_CONFIG_ROOT,
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(section).not.toContain('"NOTION_API_TOKEN"')
     expect(section).toContain('"NOTION_ENV"')
@@ -3125,7 +3197,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "${HOME}/.lore/dist/mcp.js",
       TEST_CONFIG_ROOT,
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(section).not.toContain('"NOTION_API_TOKEN"')
     expect(section).toContain('"NOTION_ENV"')
@@ -3136,12 +3208,14 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       "${HOME}/.lore/dist/mcp.js",
       "${HOME}/.lore",
       { ...ENV_NTN_LIKE, LORE_NOTION_BASE_URL: "https://api-dev.notion.com" },
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(section).toContain(
-      `LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' node \\"\${HOME}\\"'/.lore/dist/mcp.js'`,
+      `LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' node \\"\${HOME}\\"'/.lore/dist/mcp.js'`
     )
-    expect(section).toContain('env_vars = ["LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV"]')
+    expect(section).toContain(
+      'env_vars = ["LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV"]'
+    )
     expect(section).not.toContain('"NOTION_API_TOKEN"')
   })
 
@@ -3154,7 +3228,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       false,
       "bare",
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(output).not.toContain("${NOTION_API_TOKEN}")
     expect(output).toContain("${NOTION_ENV}")
@@ -3169,7 +3243,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       false,
       "bare",
       ENV_NTN_LIKE,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(output).not.toContain('"NOTION_API_TOKEN"')
     expect(output).toContain('"NOTION_ENV"')
@@ -3188,7 +3262,7 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       true,
       "bare",
       env,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     const parsed = JSON.parse(json) as {
       mcpServers: {
@@ -3215,10 +3289,10 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
       true,
       "bare",
       env,
-      "ntn-auth-json",
+      "ntn-auth-json"
     )
     expect(toml).toContain(
-      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`
     )
     expect(toml).toContain('env_vars = ["LORE_NOTION_BASE_URL"]')
     expect(toml).not.toContain("NOTION_API_TOKEN")
@@ -3236,20 +3310,15 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
               "bare",
               "${HOME}/.lore",
               committedEnv,
-              "ntn-auth-json",
+              "ntn-auth-json"
             ),
           },
         },
         null,
-        2,
+        2
       ) + "\n"
     const expectedToml =
-      buildCodexMcpSection(
-        "bare",
-        "${HOME}/.lore",
-        committedEnv,
-        "ntn-auth-json",
-      ) + "\n"
+      buildCodexMcpSection("bare", "${HOME}/.lore", committedEnv, "ntn-auth-json") + "\n"
 
     await expect(readFile(".mcp.json", "utf8")).resolves.toBe(expectedJson)
     await expect(readFile(".cursor/mcp.json", "utf8")).resolves.toBe(expectedJson)
@@ -3260,7 +3329,6 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
     const mcpSection = codexConfig.slice(sectionStart)
     expect(mcpSection).toBe(expectedToml)
   })
-
 })
 
 describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", () => {
@@ -3290,7 +3358,9 @@ describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", 
 
   it("Codex PnP TOML uses `yarn run -T` and omits LORE_CONFIG_ROOT from the bash prefix", () => {
     const section = buildCodexMcpSection("yarn", TEST_CONFIG_ROOT, ENV_NONE)
-    expect(section).toContain('args = ["-lc", "LORE_SUPPRESS_DEPRECATIONS=\'1\' yarn run -T lore mcp"]')
+    expect(section).toContain(
+      'args = ["-lc", "LORE_SUPPRESS_DEPRECATIONS=\'1\' yarn run -T lore mcp"]'
+    )
     expect(section).not.toContain("LORE_CONFIG_ROOT=")
   })
 
@@ -3350,12 +3420,10 @@ describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", 
     // from `launchCwd` and `LORE_CONFIG_ROOT` from `configRoot`.
     const TEST_PROJECT_DIR = "/test/pnp-workspace/services/widget"
     const TEST_CONFIG_ABOVE_WORKSPACE = "/test/umbrella"
-    const entry = buildCursorMcpEntry(
-      "yarn",
-      TEST_CONFIG_ABOVE_WORKSPACE,
-      ENV_NONE,
-      { useGlobalScope: true, launchCwd: TEST_PROJECT_DIR },
-    )
+    const entry = buildCursorMcpEntry("yarn", TEST_CONFIG_ABOVE_WORKSPACE, ENV_NONE, {
+      useGlobalScope: true,
+      launchCwd: TEST_PROJECT_DIR,
+    })
     // cwd → launchCwd (inside PnP workspace).
     expect(entry.cwd).toBe(TEST_PROJECT_DIR)
     // LORE_CONFIG_ROOT → configRoot (the .lore.yaml directory,
@@ -3502,7 +3570,10 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
       // path into the always-emitted entry surface.
       const serialized = host.serialize(ENV_NONE)
       for (const probe of FORBIDDEN_SUBSTRINGS) {
-        expect(serialized, `${host.name}: empty-env serialized output leaked ${probe}`).not.toContain(probe)
+        expect(
+          serialized,
+          `${host.name}: empty-env serialized output leaked ${probe}`
+        ).not.toContain(probe)
       }
     })
 
@@ -3512,7 +3583,10 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
       // placeholders, never the raw values.
       const serialized = host.serialize(REAL_OPERATOR_ENV)
       for (const probe of FORBIDDEN_SUBSTRINGS) {
-        expect(serialized, `${host.name}: real-env serialized output leaked ${probe}`).not.toContain(probe)
+        expect(
+          serialized,
+          `${host.name}: real-env serialized output leaked ${probe}`
+        ).not.toContain(probe)
       }
     })
   }
@@ -3540,13 +3614,17 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
       // form lives implicitly there. Probe each name as a quoted
       // literal so a future formatting refactor can't accidentally
       // emit it as a bare token.
-      expect(codex, `codex PnP did not include "${key}" in env_vars`).toContain(`"${key}"`)
+      expect(codex, `codex PnP did not include "${key}" in env_vars`).toContain(
+        `"${key}"`
+      )
     }
 
     // Pin the full env_vars line shape to catch ordering regressions
     // — the per-key probe above would still pass if a refactor
     // shuffled the array.
-    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME", "LORE_MCP_WRITE_BUDGET", "LORE_MCP_BUDGET_STATE_FILE"]')
+    expect(codex).toContain(
+      'env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME", "LORE_MCP_WRITE_BUDGET", "LORE_MCP_BUDGET_STATE_FILE"]'
+    )
   })
 })
 
@@ -3744,7 +3822,7 @@ describe("Claude hook detection — recognizes prior-shape entries as stale", ()
     ]
     const newCommand = buildClaudeHookCommand("autosave")
     expect(detectClaudeHook(entries, "autosave.sh", "/no/legacy/path", newCommand)).toBe(
-      "stale",
+      "stale"
     )
   })
 
@@ -3754,7 +3832,7 @@ describe("Claude hook detection — recognizes prior-shape entries as stale", ()
     ]
     const newCommand = buildClaudeHookCommand("autosave", "yarn")
     expect(detectClaudeHook(entries, "autosave.sh", "/no/legacy/path", newCommand)).toBe(
-      "stale",
+      "stale"
     )
   })
 
@@ -3775,17 +3853,15 @@ describe("Claude hook detection — recognizes prior-shape entries as stale", ()
     ]
     const newCommand = buildClaudeHookCommand("autosave", "yarn")
     expect(detectClaudeHook(entries, "autosave.sh", "/no/legacy/path", newCommand)).toBe(
-      "stale",
+      "stale"
     )
   })
 
   it("classifies the canonical current shape as `current`", () => {
     const newCommand = buildClaudeHookCommand("autosave")
-    const entries = [
-      { matcher: "", hooks: [{ type: "command", command: newCommand }] },
-    ]
+    const entries = [{ matcher: "", hooks: [{ type: "command", command: newCommand }] }]
     expect(detectClaudeHook(entries, "autosave.sh", "/no/legacy/path", newCommand)).toBe(
-      "current",
+      "current"
     )
   })
 })
@@ -3809,17 +3885,15 @@ describe("Codex hook detection — recognizes prior-shape entries as stale", () 
     ]
     const newCommand = buildCodexHookCommand("autosave", "yarn")
     expect(detectCodexHook(entries, "autosave.sh", "/no/legacy", newCommand)).toBe(
-      "stale",
+      "stale"
     )
   })
 
   it("classifies the canonical current shape (`yarn run -T`) as current", () => {
     const newCommand = buildCodexHookCommand("autosave", "yarn")
-    const entries = [
-      { hooks: [{ type: "command" as const, command: newCommand }] },
-    ]
+    const entries = [{ hooks: [{ type: "command" as const, command: newCommand }] }]
     expect(detectCodexHook(entries, "autosave.sh", "/no/legacy", newCommand)).toBe(
-      "current",
+      "current"
     )
   })
 })
@@ -3863,7 +3937,7 @@ describe("dev-environment MCP entries", () => {
     const section = buildLegacyCodexMcpSection(
       "/opt/lore/dist/mcp.js",
       TEST_CONFIG_ROOT,
-      DEV_ENV,
+      DEV_ENV
     )
     expect(section).toContain('env_vars = ["NOTION_ENV", "NOTION_BASE_URL"]')
   })
@@ -3876,7 +3950,7 @@ describe("dev-environment MCP entries", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      DEV_ENV,
+      DEV_ENV
     )
     const parsed = JSON.parse(output) as {
       mcpServers: { lore: { env: Record<string, string> } }
@@ -3893,7 +3967,7 @@ describe("dev-environment MCP entries", () => {
       TEST_CONFIG_ROOT,
       false,
       "bare",
-      DEV_ENV,
+      DEV_ENV
     )
     expect(output).toContain('env_vars = ["NOTION_ENV", "NOTION_BASE_URL"]')
   })
@@ -3925,19 +3999,18 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
     // without it, ntn defaults to keychain mode on darwin and the
     // resulting token lands somewhere Lore can't read.
     expect(ntnLoginRecovery(undefined, {}).command).toMatch(/^NOTION_KEYRING=0 /)
+    expect(ntnLoginRecovery({ vault: { pageId: "x" } } as never, {}).command).toMatch(
+      /^NOTION_KEYRING=0 /
+    )
     expect(
-      ntnLoginRecovery({ vault: { pageId: "x" } } as never, {}).command,
-    ).toMatch(/^NOTION_KEYRING=0 /)
-    expect(
-      ntnLoginRecovery({ vault: { pageId: "x" } } as never, { NOTION_ENV: "dev" })
-        .command,
+      ntnLoginRecovery({ vault: { pageId: "x" } } as never, { NOTION_ENV: "dev" }).command
     ).toMatch(/^NOTION_KEYRING=0 /)
   })
 
   it("uses operator's NOTION_ENV verbatim when set (highest priority)", () => {
     const result = ntnLoginRecovery(
       { vault: { pageId: "x" }, auth: { baseUrl: "https://api.notion.so" } } as never,
-      { NOTION_ENV: "dev" },
+      { NOTION_ENV: "dev" }
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=dev ntn login")
     // Operator-explicit case has no manualEnvNote — they know their
@@ -3947,19 +4020,23 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
 
   it("infers env from .lore.yaml auth.baseUrl=https://api-dev.notion.com", () => {
     const result = ntnLoginRecovery(
-      { vault: { pageId: "x" }, auth: { baseUrl: "https://api-dev.notion.com" } } as never,
-      {},
+      {
+        vault: { pageId: "x" },
+        auth: { baseUrl: "https://api-dev.notion.com" },
+      } as never,
+      {}
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=dev ntn login")
-    expect(result.manualEnvNote).toBe(
-      "(dev env inferred from .lore.yaml auth.baseUrl)",
-    )
+    expect(result.manualEnvNote).toBe("(dev env inferred from .lore.yaml auth.baseUrl)")
   })
 
   it("infers env=stg from canonical staging URL", () => {
     const result = ntnLoginRecovery(
-      { vault: { pageId: "x" }, auth: { baseUrl: "https://api-stg.notion.com" } } as never,
-      {},
+      {
+        vault: { pageId: "x" },
+        auth: { baseUrl: "https://api-stg.notion.com" },
+      } as never,
+      {}
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=stg ntn login")
   })
@@ -3970,19 +4047,19 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
         vault: { pageId: "x" },
         auth: { baseUrl: "https://my-corporate-proxy.example" },
       } as never,
-      {},
+      {}
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=<env> ntn login")
     expect(result.manualEnvNote).toMatch(
-      /doesn't match a canonical ntn env[\s\S]*substitute <env>/,
+      /doesn't match a canonical ntn env[\s\S]*substitute <env>/
     )
   })
 
   it("falls through to bare prod-default when no signals are present", () => {
     expect(ntnLoginRecovery(undefined, {}).command).toBe("NOTION_KEYRING=0 ntn login")
-    expect(
-      ntnLoginRecovery({ vault: { pageId: "x" } } as never, {}).command,
-    ).toBe("NOTION_KEYRING=0 ntn login")
+    expect(ntnLoginRecovery({ vault: { pageId: "x" } } as never, {}).command).toBe(
+      "NOTION_KEYRING=0 ntn login"
+    )
   })
 
   it("operator NOTION_ENV beats config inference even when both signals exist", () => {
@@ -3990,8 +4067,11 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
     // wins. Matches `runNtnLogin` env-derivation semantics in
     // `ensurePrerequisites`.
     const result = ntnLoginRecovery(
-      { vault: { pageId: "x" }, auth: { baseUrl: "https://api-dev.notion.com" } } as never,
-      { NOTION_ENV: "stg" },
+      {
+        vault: { pageId: "x" },
+        auth: { baseUrl: "https://api-dev.notion.com" },
+      } as never,
+      { NOTION_ENV: "stg" }
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=stg ntn login")
   })

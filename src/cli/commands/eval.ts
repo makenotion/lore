@@ -131,16 +131,13 @@ export function parseEvalRunCliOptions(
 
 export function validateEvalRunRunnerCompatibility(
   runner: EvalRunner | undefined,
-  raw: Pick<
-    EvalRunRawCliOptions,
-    "baseline" | "minLift" | "maxHarm" | "project"
-  >
+  raw: Pick<EvalRunRawCliOptions, "baseline" | "minLift" | "maxHarm" | "project">
 ): CliParseResult<void> {
   if (runner === "notion" && (raw.project === undefined || raw.project.length === 0)) {
     return {
       ok: false,
       message:
-        '--project is required when --runner notion is set; the live vault has many projects.',
+        "--project is required when --runner notion is set; the live vault has many projects.",
     }
   }
 
@@ -441,7 +438,7 @@ evalCommand.addCommand(
           // reject the legitimate YAML-routed bench-with-limit case.
           if (parsed.value.limit !== undefined && parsed.value.runner !== "bench") {
             console.error(
-              "Eval failed: --limit is only supported with --runner bench (or a suite YAML with `runner: bench`); retrieval / task / notion runners consume the whole suite.",
+              "Eval failed: --limit is only supported with --runner bench (or a suite YAML with `runner: bench`); retrieval / task / notion runners consume the whole suite."
             )
             process.exit(1)
             return
@@ -462,9 +459,7 @@ evalCommand.addCommand(
                   fullLoop.trials > 0
                     ? `lore-full-loop ${fullLoop.passed}/${fullLoop.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
                     : `${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
-                console.log(
-                  `Longitudinal task eval ${status}: ${headline}.`
-                )
+                console.log(`Longitudinal task eval ${status}: ${headline}.`)
                 for (const [condition, summary] of Object.entries(
                   artifact.summary.conditions
                 )) {
@@ -536,14 +531,11 @@ evalCommand.addCommand(
           }
 
           if (parsed.value.runner === "bench") {
-            const { runBenchSuite, assertBenchEnvReady, restoreBenchEnv } = await import(
-              "../../eval/bench-runner.js"
-            )
+            const { runBenchSuite, assertBenchEnvReady, restoreBenchEnv } =
+              await import("../../eval/bench-runner.js")
             const { buildBenchSandbox } = await import("../../eval/bench-sandbox.js")
-            const {
-              compareBenchBaseline,
-              readBenchBaselineSnapshot,
-            } = await import("../../eval/bench-baseline.js")
+            const { compareBenchBaseline, readBenchBaselineSnapshot } =
+              await import("../../eval/bench-baseline.js")
             // Run the bench env preflight + LORE_BENCH_* → standard
             // Lore env remap BEFORE `buildBenchSandbox` calls
             // `initServices`, so the in-process service init sees
@@ -566,7 +558,7 @@ evalCommand.addCommand(
               let driftRegressed = false
               if (parsed.value.baselinePath) {
                 const baseline = await readBenchBaselineSnapshot(
-                  parsed.value.baselinePath,
+                  parsed.value.baselinePath
                 )
                 const drift = compareBenchBaseline({ artifact, baseline })
                 driftRegressed = drift.regressed
@@ -580,7 +572,7 @@ evalCommand.addCommand(
                       `  Regressed examples: ${drift.regressedExamples.slice(0, 10).join(", ")}` +
                         (drift.regressedExamples.length > 10
                           ? ` (+${drift.regressedExamples.length - 10} more)`
-                          : ""),
+                          : "")
                     )
                   }
                 }
@@ -590,7 +582,7 @@ evalCommand.addCommand(
               } else {
                 console.log(
                   `Bench finished: ${artifact.summary.overall.correct}/${artifact.summary.scoredExamples} correct ` +
-                    `(${(artifact.summary.overall.accuracy * 100).toFixed(2)}%).`,
+                    `(${(artifact.summary.overall.accuracy * 100).toFixed(2)}%).`
                 )
                 console.log(`Artifact: ${outPath}`)
                 if (artifact.summary.aborted) {
@@ -614,14 +606,12 @@ evalCommand.addCommand(
               parsed.value.projectName
             ) {
               console.error(
-                "Eval failed: --baseline, --min-lift, --max-harm, and --project are not supported with runner profile; profile suites declare thresholds in YAML.",
+                "Eval failed: --baseline, --min-lift, --max-harm, and --project are not supported with runner profile; profile suites declare thresholds in YAML."
               )
               process.exit(1)
               return
             }
-            const { runProfileEvalSuite } = await import(
-              "../../eval/profile-runner.js"
-            )
+            const { runProfileEvalSuite } = await import("../../eval/profile-runner.js")
             const { artifact, outPath } = await runProfileEvalSuite(suite, {
               outPath: parsed.value.outPath,
             })
@@ -670,9 +660,7 @@ evalCommand.addCommand(
           let driftReportText: string | null = null
           let driftRegressed = false
           if (parsed.value.baselinePath) {
-            const baseline = await readEvalBaselineSnapshot(
-              parsed.value.baselinePath
-            )
+            const baseline = await readEvalBaselineSnapshot(parsed.value.baselinePath)
             const drift = compareToEvalBaseline({
               artifact,
               baseline,
@@ -723,11 +711,7 @@ evalCommand.addCommand(
           if (driftReportText) {
             console.log(driftReportText)
           }
-          if (
-            failed > 0 ||
-            thresholdFailures.length > 0 ||
-            driftRegressed
-          ) {
+          if (failed > 0 || thresholdFailures.length > 0 || driftRegressed) {
             process.exit(1)
           }
         } catch (err) {
@@ -803,9 +787,8 @@ evalCommand.addCommand(
             notionServices: buildNotionServicesFactory(parsed.value.projectName),
           }
           if (parsed.value.runner === "bench") {
-            const { runBenchSuite, assertBenchEnvReady, restoreBenchEnv } = await import(
-              "../../eval/bench-runner.js"
-            )
+            const { runBenchSuite, assertBenchEnvReady, restoreBenchEnv } =
+              await import("../../eval/bench-runner.js")
             const { buildBenchBaselineSnapshot, writeBenchBaselineSnapshot } =
               await import("../../eval/bench-baseline.js")
             const { buildBenchSandbox } = await import("../../eval/bench-sandbox.js")
@@ -825,7 +808,7 @@ evalCommand.addCommand(
               })
               await writeBenchBaselineSnapshot(opts.out, snapshot)
               console.log(
-                `Bench baseline written: ${opts.out} (runner=bench, examples=${snapshot.summary.totalExamples})`,
+                `Bench baseline written: ${opts.out} (runner=bench, examples=${snapshot.summary.totalExamples})`
               )
               return
             } finally {
@@ -842,10 +825,7 @@ evalCommand.addCommand(
             `Captured ${snapshot.summary.totalResults} results across ${snapshot.summary.tasks} tasks.`
           )
         } catch (err) {
-          console.error(
-            "Eval baseline failed:",
-            err instanceof Error ? err.message : err
-          )
+          console.error("Eval baseline failed:", err instanceof Error ? err.message : err)
           process.exit(1)
         }
       }
@@ -875,10 +855,7 @@ vaultsCommand
         }
       }
     } catch (err) {
-      console.error(
-        "lore eval vaults failed:",
-        err instanceof Error ? err.message : err
-      )
+      console.error("lore eval vaults failed:", err instanceof Error ? err.message : err)
       process.exit(1)
     }
   })
@@ -967,77 +944,65 @@ evalCommand.addCommand(vaultsCommand)
 // ---------------------------------------------------------------------------
 
 const benchCommand = new Command("bench").description(
-  "LongMemEval bench-runner helpers (corpus fetch, orphan-cleanup)",
+  "LongMemEval bench-runner helpers (corpus fetch, orphan-cleanup)"
 )
 
 benchCommand.addCommand(
   new Command("fetch")
     .description(
-      "Download the LongMemEval corpus from the HF revision pinned by checksums.json. Idempotent — re-running does not overwrite a sha-matched file.",
+      "Download the LongMemEval corpus from the HF revision pinned by checksums.json. Idempotent — re-running does not overwrite a sha-matched file."
     )
     .argument("<benchmark>", "Bench name; currently only `longmemeval`")
     .option(
       "--out <path>",
-      "Override the corpus output path. Defaults to evals/bench-corpora/<benchmark>/<corpus-name>.json next to checksums.json.",
+      "Override the corpus output path. Defaults to evals/bench-corpora/<benchmark>/<corpus-name>.json next to checksums.json."
     )
-    .action(
-      async (benchmark: string, opts: { out?: string }) => {
-        if (benchmark !== "longmemeval") {
-          console.error(
-            `lore eval bench fetch: only "longmemeval" is supported (got "${benchmark}").`,
-          )
-          process.exit(1)
+    .action(async (benchmark: string, opts: { out?: string }) => {
+      if (benchmark !== "longmemeval") {
+        console.error(
+          `lore eval bench fetch: only "longmemeval" is supported (got "${benchmark}").`
+        )
+        process.exit(1)
+        return
+      }
+      try {
+        const { fetchLongMemEvalCorpus } = await import("../../eval/bench-fetch.js")
+        const report = await fetchLongMemEvalCorpus({ outPath: opts.out })
+        if (report.skipped) {
+          console.log(`Corpus already up to date (sha256 match): ${report.path}`)
           return
         }
-        try {
-          const { fetchLongMemEvalCorpus } = await import(
-            "../../eval/bench-fetch.js"
-          )
-          const report = await fetchLongMemEvalCorpus({ outPath: opts.out })
-          if (report.skipped) {
-            console.log(
-              `Corpus already up to date (sha256 match): ${report.path}`,
-            )
-            return
-          }
-          console.log(
-            `Corpus written: ${report.path}\n` +
-              `  HF revision: ${report.revision}\n` +
-              `  sha256: ${report.sha256}`,
-          )
-        } catch (err) {
-          console.error(
-            "lore eval bench fetch failed:",
-            err instanceof Error ? err.message : err,
-          )
-          process.exit(1)
-        }
-      },
-    ),
+        console.log(
+          `Corpus written: ${report.path}\n` +
+            `  HF revision: ${report.revision}\n` +
+            `  sha256: ${report.sha256}`
+        )
+      } catch (err) {
+        console.error(
+          "lore eval bench fetch failed:",
+          err instanceof Error ? err.message : err
+        )
+        process.exit(1)
+      }
+    })
 )
 
 benchCommand.addCommand(
   new Command("cleanup-orphans")
     .description(
-      "Archive bench sub-projects under the sandbox vault whose ULID-embedded timestamp is older than --older-than hours. Idempotent. Requires LORE_EVAL_BENCH_REAL=1.",
+      "Archive bench sub-projects under the sandbox vault whose ULID-embedded timestamp is older than --older-than hours. Idempotent. Requires LORE_EVAL_BENCH_REAL=1."
     )
     .option("--dry-run", "List matching projects without archiving")
-    .option(
-      "--older-than <hours>",
-      "Minimum age in hours; defaults to 24",
-      "24",
-    )
+    .option("--older-than <hours>", "Minimum age in hours; defaults to 24", "24")
     .action(async (opts: { dryRun?: boolean; olderThan?: string }) => {
       try {
-        const { runBenchCleanupOrphans } = await import(
-          "../../eval/bench-cleanup.js"
-        )
+        const { runBenchCleanupOrphans } = await import("../../eval/bench-cleanup.js")
         const result = await runBenchCleanupOrphans({
           olderThanHours: Number.parseInt(opts.olderThan ?? "24", 10),
           dryRun: opts.dryRun === true,
         })
         console.log(
-          `Cleanup-orphans: ${result.archivedCount} archived, ${result.skippedCount} skipped (already archived / too fresh).`,
+          `Cleanup-orphans: ${result.archivedCount} archived, ${result.skippedCount} skipped (already archived / too fresh).`
         )
         for (const orphan of result.archived) {
           console.log(`  - archived: ${orphan.name}`)
@@ -1045,11 +1010,11 @@ benchCommand.addCommand(
       } catch (err) {
         console.error(
           "lore eval bench cleanup-orphans failed:",
-          err instanceof Error ? err.message : err,
+          err instanceof Error ? err.message : err
         )
         process.exit(1)
       }
-    }),
+    })
 )
 
 evalCommand.addCommand(benchCommand)
