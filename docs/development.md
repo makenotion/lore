@@ -25,12 +25,12 @@ assistant hooks. `services.ts` is the shared initialization path for all three.
 
 Build output has four entry points:
 
-| Entry           | Source                 | Output                                  |
-| --------------- | ---------------------- | --------------------------------------- |
-| `index`         | `src/index.ts`         | `dist/index.js`                         |
-| `mcp`           | `src/mcp/server.ts`    | `dist/mcp.js`                           |
-| `cli`           | `src/cli/index.ts`     | `dist/cli.js` with shebang              |
-| `hooks/helpers` | `src/hooks/helpers.ts` | `dist/hooks/helpers.js`                 |
+| Entry           | Source                 | Output                     |
+| --------------- | ---------------------- | -------------------------- |
+| `index`         | `src/index.ts`         | `dist/index.js`            |
+| `mcp`           | `src/mcp/server.ts`    | `dist/mcp.js`              |
+| `cli`           | `src/cli/index.ts`     | `dist/cli.js` with shebang |
+| `hooks/helpers` | `src/hooks/helpers.ts` | `dist/hooks/helpers.js`    |
 
 ## Data Model
 
@@ -61,13 +61,13 @@ unbackfilled rows that need the SubjectKey substring fallback.
 
 This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 
-| Operation           | Correct v5                                                 | Wrong v4                                  |
-| ------------------- | ---------------------------------------------------------- | ----------------------------------------- |
-| Query a database    | `client.dataSources.query({ data_source_id })`             | `client.databases.query({ database_id })` |
-| Create a database   | `databases.create({ initial_data_source: { properties } })`| `databases.create({ properties })`        |
-| Read page content   | `client.pages.retrieveMarkdown({ page_id })`               | Block children iteration                  |
-| Write page content  | `client.pages.updateMarkdown({ page_id, ... })`            | Append block children                     |
-| Parent discriminant | `{ type: "page_id", page_id }`                             | `{ page_id }`                             |
+| Operation           | Correct v5                                                  | Wrong v4                                  |
+| ------------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| Query a database    | `client.dataSources.query({ data_source_id })`              | `client.databases.query({ database_id })` |
+| Create a database   | `databases.create({ initial_data_source: { properties } })` | `databases.create({ properties })`        |
+| Read page content   | `client.pages.retrieveMarkdown({ page_id })`                | Block children iteration                  |
+| Write page content  | `client.pages.updateMarkdown({ page_id, ... })`             | Append block children                     |
+| Parent discriminant | `{ type: "page_id", page_id }`                              | `{ page_id }`                             |
 
 ## Configuration
 
@@ -96,6 +96,15 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
   memory/fact/decision/task writes still target only `vault.pageId`. See
   [`topology.md`](topology.md) for the `lore status` topology section, every
   health state the surface emits, and the recovery workflow for each.
+- Runtime feature flags resolve once in `src/feature-flags.ts` from
+  `.lore.yaml` `features:` plus backward-compatible env vars. The feature
+  taxonomy is: duplicate/advisory gates (`nearDuplicateProbe`,
+  `autosaveLearningDedup`, `taskReuse`, `taskCrossref`), write/read behavior
+  gates (`autoMentions`, `learningExtraction`, `confidenceFactor`,
+  `forceSemanticSearch`), and the `runTool` family (`enabled`, `blockEdit`,
+  `filterSql`, `search`, `aggregate`, `batchCreates`). Env rollback switches
+  such as `LORE_DISABLE_AUTO_MENTIONS=1` and `LORE_USE_RUNTOOL=0` still win
+  over config values.
 
 ## Code Patterns
 
@@ -184,14 +193,14 @@ instructions.
 
 ## Troubleshooting
 
-| Symptom                                    | Cause                                             | Fix                                                                                                  |
-| ------------------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `dataSources is undefined`                 | Using v4 SDK patterns                             | Use `client.dataSources.query()`                                                                     |
-| `pages.retrieveMarkdown is not a function` | Notion SDK before v5                              | Ensure `@notionhq/client` is `^5.1.0`                                                                |
-| `initial_data_source` type error           | Missing cast or wrong create shape                | Use `createDbArgs()` from `setup.ts` as a reference                                                  |
-| Import without `.js` extension             | ESM requires explicit extensions                  | Add `.js` to relative imports                                                                        |
-| `No .lore.yaml found`                      | Config search failed                              | Ensure `.lore.yaml` exists in cwd or an ancestor                                                     |
-| `filter` type errors in queries            | Complex filter needs cast                         | Cast to `QueryDataSourceParameters["filter"]`                                                        |
-| `Vault already initialized`                | Running `lore init` twice                         | Use `lore status` to verify, or `VaultManager.load()`                                                |
-| Codex does not load Lore tools             | Project not trusted or hooks feature disabled     | Trust the project and ensure `.codex/config.toml` sets `features.hooks = true`                       |
-| `No Notion auth configured`                | Every auth source returned empty                  | Run `lore auth --login` or set `NOTION_API_TOKEN`; see [`docs/authentication.md`](authentication.md) |
+| Symptom                                    | Cause                                         | Fix                                                                                                  |
+| ------------------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `dataSources is undefined`                 | Using v4 SDK patterns                         | Use `client.dataSources.query()`                                                                     |
+| `pages.retrieveMarkdown is not a function` | Notion SDK before v5                          | Ensure `@notionhq/client` is `^5.1.0`                                                                |
+| `initial_data_source` type error           | Missing cast or wrong create shape            | Use `createDbArgs()` from `setup.ts` as a reference                                                  |
+| Import without `.js` extension             | ESM requires explicit extensions              | Add `.js` to relative imports                                                                        |
+| `No .lore.yaml found`                      | Config search failed                          | Ensure `.lore.yaml` exists in cwd or an ancestor                                                     |
+| `filter` type errors in queries            | Complex filter needs cast                     | Cast to `QueryDataSourceParameters["filter"]`                                                        |
+| `Vault already initialized`                | Running `lore init` twice                     | Use `lore status` to verify, or `VaultManager.load()`                                                |
+| Codex does not load Lore tools             | Project not trusted or hooks feature disabled | Trust the project and ensure `.codex/config.toml` sets `features.hooks = true`                       |
+| `No Notion auth configured`                | Every auth source returned empty              | Run `lore auth --login` or set `NOTION_API_TOKEN`; see [`docs/authentication.md`](authentication.md) |

@@ -41,6 +41,7 @@ import {
   type UpdateMemoryInput,
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
+import { defaultFeatureFlags } from "../feature-flags.js"
 
 /**
  * Build a synthetic `PageObjectResponse` with only the properties listed.
@@ -7429,11 +7430,12 @@ describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", ()
     expect(explain[0].confidenceFactor).toBeCloseTo(0.5, 10)
   })
 
-  it("LORE_DISABLE_CONFIDENCE_FACTOR=1 reverts ordering to pre-0.8.0", async () => {
-    // Operator escape hatch. With the kill switch set, every row's
-    // factor is forced to 1.0 and ordering matches pre-0.8.0 — even on
-    // a vault with populated scores. Verified end-to-end on the same
-    // contains-mode fixture as the "fresh-rank-3 wins" test above.
+  it("confidenceFactor=false reverts ordering to pre-0.8.0", async () => {
+    // Operator escape hatch. With the resolved feature gate off,
+    // every row's factor is forced to 1.0 and ordering matches
+    // pre-0.8.0 — even on a vault with populated scores. Verified
+    // end-to-end on the same contains-mode fixture as the
+    // "fresh-rank-3 wins" test above.
     const querySpy = vi.fn(async () => ({
       results: [
         buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
@@ -7449,30 +7451,22 @@ describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", ()
       search: vi.fn(async () => ({ results: [] })),
       pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
     } as unknown as Client
-    const service = new MemoryService(client, db)
+    const service = new MemoryService(client, db, undefined, {
+      features: { ...defaultFeatureFlags(), confidenceFactor: false },
+    })
 
-    const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
-    process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = "1"
-    try {
-      const results = await service.search({
-        query: "q",
-        mode: "contains",
-        includeContent: false,
-      })
-      // Without the factor, Notion's recency order is preserved.
-      expect(results.map((m) => m.id)).toEqual([
-        "decay-rank-0",
-        "decay-rank-1",
-        "decay-rank-2",
-        "fresh-rank-3",
-      ])
-    } finally {
-      if (original === undefined) {
-        delete process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
-      } else {
-        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
-      }
-    }
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+    // Without the factor, Notion's recency order is preserved.
+    expect(results.map((m) => m.id)).toEqual([
+      "decay-rank-0",
+      "decay-rank-1",
+      "decay-rank-2",
+      "fresh-rank-3",
+    ])
   })
 
   it("saturation cutoff is unchanged — vault with 3+ high-confidence contains hits skips the RRF merge", async () => {
@@ -8661,36 +8655,32 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
     expect(memories.map((m) => m.id)).toEqual(["c-only", "s-only"])
   })
 
-  it("LORE_FORCE_SEMANTIC_SEARCH=1 routes mode='hybrid' through 'semantic-only'", async () => {
+  it("forceSemanticSearch=true routes mode='hybrid' through 'semantic-only'", async () => {
     // Pin the kill-switch path: when the operator forces semantic, the
     // explain trace reports `semantic-only`, not `rrf` or
     // `contains-saturated`. The `mode` argument is ignored.
-    const prev = process.env["LORE_FORCE_SEMANTIC_SEARCH"]
-    process.env["LORE_FORCE_SEMANTIC_SEARCH"] = "1"
-    try {
-      const searchSpy = vi.fn(async () => ({
-        results: [buildPageInDb("a", "first")],
-      }))
-      const client = {
-        dataSources: { query: vi.fn() },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
+    const searchSpy = vi.fn(async () => ({
+      results: [buildPageInDb("a", "first")],
+    }))
+    const client = {
+      dataSources: { query: vi.fn() },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const features = defaultFeatureFlags()
+    features.forceSemanticSearch = true
+    features.runTool.search = false
+    const service = new MemoryService(client, db, undefined, { features })
 
-      const { explain } = await service.searchWithExplain({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-      })
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
 
-      expect(explain).toHaveLength(1)
-      expect(explain[0].branch).toBe("semantic-only")
-      expect(explain[0].containsRank).toBeNull()
-    } finally {
-      if (prev === undefined) delete process.env["LORE_FORCE_SEMANTIC_SEARCH"]
-      else process.env["LORE_FORCE_SEMANTIC_SEARCH"] = prev
-    }
+    expect(explain).toHaveLength(1)
+    expect(explain[0].branch).toBe("semantic-only")
+    expect(explain[0].containsRank).toBeNull()
   })
 
   it("SearchExplain field names are canonical to lore (containsRank, not lexRank)", async () => {
@@ -9513,11 +9503,11 @@ describe("MemoryService.search — hybrid abort on contains saturation (issue #4
 describe("MemoryService.search — kill switch", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
-  it("LORE_FORCE_SEMANTIC_SEARCH=1 routes every call through client.search regardless of caller mode", async () => {
+  it("forceSemanticSearch=true routes every call through client.search regardless of caller mode", async () => {
     // Operator escape hatch for the rollback story raised in review:
     // if contains under-recalls in a vault that hasn't run
-    // `lore migrate --fix-memory-encoding` yet, set this env var to
-    // force every search through the legacy workspace-wide path.
+    // `lore migrate --fix-memory-encoding` yet, this resolved flag
+    // forces every search through the legacy workspace-wide path.
     const querySpy = vi.fn(async () => ({
       results: [],
       has_more: false,
@@ -9529,20 +9519,13 @@ describe("MemoryService.search — kill switch", () => {
       search: searchSpy,
       pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
     } as unknown as Client
-    const service = new MemoryService(client, db)
+    const features = defaultFeatureFlags()
+    features.forceSemanticSearch = true
+    features.runTool.search = false
+    const service = new MemoryService(client, db, undefined, { features })
 
-    const original = process.env["LORE_FORCE_SEMANTIC_SEARCH"]
-    process.env["LORE_FORCE_SEMANTIC_SEARCH"] = "1"
-    try {
-      await service.search({ query: "q", mode: "contains" })
-      await service.search({ query: "q", mode: "hybrid" })
-    } finally {
-      if (original === undefined) {
-        delete process.env["LORE_FORCE_SEMANTIC_SEARCH"]
-      } else {
-        process.env["LORE_FORCE_SEMANTIC_SEARCH"] = original
-      }
-    }
+    await service.search({ query: "q", mode: "contains" })
+    await service.search({ query: "q", mode: "hybrid" })
 
     // Both calls routed through client.search, neither touched dataSources.query.
     expect(searchSpy).toHaveBeenCalledTimes(2)

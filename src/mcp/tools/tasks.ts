@@ -30,6 +30,7 @@ import {
   findExactReuseTarget,
 } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
+import { resolveFeatureFlags } from "../../feature-flags.js"
 import { renderTrustLine, truncateSynopsis } from "../render.js"
 import {
   reconcileActiveTasks,
@@ -223,6 +224,7 @@ async function handleCreate(
   args: CreateArgs
 ): Promise<ToolResult> {
   try {
+    const features = services.features ?? resolveFeatureFlags()
     // A `blocked` task with no `blockedBy` label is useless to
     // triage — the row says "I'm blocked" without naming the
     // blocker. Reject at the boundary rather than letting the empty
@@ -283,6 +285,7 @@ async function handleCreate(
     const duplicates = await findDuplicateActiveTasks(services.tasks, {
       entity: probeEntity,
       projectId: resolved.ids[0],
+      features,
       onError: (err) =>
         debugLogPartialFailures("lore-task", [{ rootId: "duplicate-probe", error: err }]),
     })
@@ -299,6 +302,7 @@ async function handleCreate(
       subject: args.subject,
       entity: probeEntity,
       projectIds: resolved.ids,
+      features,
     })
 
     if (reuseTarget !== null) {

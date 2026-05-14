@@ -51,6 +51,7 @@ import { buildVaultTopology, type UpstreamVaultTopologyRef } from "./topology.js
 import type { LoreConfig, VaultDatabases } from "../types.js"
 import { redactDebugError, redactDebugMessage } from "../debug-redact.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
+import type { LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * Read-only service bundle for one upstream vault. Today's only
@@ -115,15 +116,19 @@ export interface UpstreamVaultBundle {
  */
 export function buildUpstreamVaultBundles(
   client: Client,
-  config: LoreConfig
+  config: LoreConfig,
+  features?: LoreFeatureFlags
 ): UpstreamVaultBundle[] {
   const topology = buildVaultTopology(config)
-  return topology.upstreams.map((upstream) => createUpstreamVaultBundle(client, upstream))
+  return topology.upstreams.map((upstream) =>
+    createUpstreamVaultBundle(client, upstream, features)
+  )
 }
 
 function createUpstreamVaultBundle(
   client: Client,
-  upstream: UpstreamVaultTopologyRef
+  upstream: UpstreamVaultTopologyRef,
+  features?: LoreFeatureFlags
 ): UpstreamVaultBundle {
   // Three states:
   //   - `loaded === false`: never tried. First `loadReaders()`
@@ -226,7 +231,9 @@ function createUpstreamVaultBundle(
           // primary reads use against a legacy vault.
           const scopeCtxArg = scopeColumnsReady ? {} : undefined
           const readers: UpstreamReaders = {
-            memories: new MemoryService(client, vault.databases.memories, scopeCtxArg),
+            memories: new MemoryService(client, vault.databases.memories, scopeCtxArg, {
+              features,
+            }),
           }
           loaded = true
           cachedReaders = readers

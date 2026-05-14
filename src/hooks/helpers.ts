@@ -280,7 +280,13 @@ async function loadHookState(): Promise<HookState> {
       config.projects
     )
     return {
-      hookConfig: mergeHookDefaults(config.hooks, catchAllName, subProjects),
+      hookConfig: mergeHookDefaults(
+        config.hooks,
+        catchAllName,
+        subProjects,
+        process.env,
+        config.features
+      ),
       config,
       configRoot: found.root,
     }
@@ -580,8 +586,7 @@ export async function handleStop(
         // knobs above; an operator who set the env var and then forgot
         // can't be silently re-enabled by a config-default.
         const learningExtractionEnabled =
-          process.env["LORE_DISABLE_LEARNING_EXTRACTION"] !== "1" &&
-          config.learningExtraction
+          config.learningExtraction && config.features.learningExtraction
         // Proposed-by-default routing. The flag is false by default,
         // so existing installs see byte-identical autosave behavior.
         // Operators opt in via `hooks.proposeAutosaveLearnings: true`

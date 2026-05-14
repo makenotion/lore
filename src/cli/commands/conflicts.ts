@@ -34,12 +34,12 @@ import { MEMORY_PROPS } from "../../notion/schema.js"
 import {
   comparedPairKey,
   fetchAlreadyComparedPairKeys,
-  isRunToolFilterSqlEnabled,
 } from "../../notion/runtool/index.js"
 import {
   isSqlValidationError,
   logRunToolFallback,
 } from "../../notion/runtool/error-helpers.js"
+import { resolveFeatureFlags } from "../../feature-flags.js"
 import type { Memory } from "../../types.js"
 import { parsePositiveDecimalInteger } from "../parse.js"
 
@@ -216,6 +216,7 @@ export async function runScan(
   opts: ScanCliOptions,
   log: (msg: string) => void = (msg) => process.stderr.write(msg + "\n")
 ): Promise<ScanReport> {
+  const features = services.features ?? resolveFeatureFlags()
   if (opts.exhaustive && opts.rawLimit !== undefined) {
     log("--raw-limit is ignored when --exhaustive is set; using exhaustive scan.")
   }
@@ -325,7 +326,7 @@ export async function runScan(
   //    silently. `Compared With` data is loaded eagerly by
   //    `pageToMemory` via `listForScan` regardless, so the JS
   //    fallback always has the data it needs.
-  const sqlPairs = isRunToolFilterSqlEnabled() ? new Set<string>() : null
+  const sqlPairs = features.runTool.filterSql ? new Set<string>() : null
   if (sqlPairs) {
     for (const project of projects) {
       try {

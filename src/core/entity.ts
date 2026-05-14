@@ -50,12 +50,12 @@ import { LruCache } from "./cache.js"
 import {
   fetchEntitiesByAliasSubstring,
   fetchEntityByNormalizedName,
-  isRunToolFilterSqlEnabled,
 } from "../notion/runtool/index.js"
 import {
   isSqlValidationError,
   logRunToolFallback,
 } from "../notion/runtool/error-helpers.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * Cache TTL is short on purpose. Aliases are mutable (a `merge` or
@@ -286,6 +286,8 @@ function isActiveEntityPage(
 }
 
 export class EntityService {
+  private readonly features: LoreFeatureFlags
+
   /**
    * Name + alias → Entity. Keyed on `normalizeEntityKey(name)` so case
    * variants share a slot. Aliases use the same key — when the alias
@@ -299,8 +301,11 @@ export class EntityService {
 
   constructor(
     private client: Client,
-    private db: DatabaseRef
-  ) {}
+    private db: DatabaseRef,
+    options?: { features?: LoreFeatureFlags }
+  ) {
+    this.features = options?.features ?? resolveFeatureFlags()
+  }
 
   async create(input: CreateEntityInput): Promise<Entity> {
     const page = await this.client.pages.create({
@@ -402,7 +407,7 @@ export class EntityService {
       // 5xx, restricted, rate_limited, unauthorized, malformed)
       // failures fall back per call; validation propagates to the
       // operator.
-      if (isRunToolFilterSqlEnabled()) {
+      if (this.features.runTool.filterSql) {
         try {
           const candidates = await fetchEntityByNormalizedName(this.client, {
             dataSourceId: this.db.dataSourceId,
@@ -542,7 +547,7 @@ export class EntityService {
     //
     // Validation errors propagate to the operator (same posture
     // as `findByName`).
-    if (isRunToolFilterSqlEnabled()) {
+    if (this.features.runTool.filterSql) {
       try {
         const candidates = await fetchEntitiesByAliasSubstring(this.client, {
           dataSourceId: this.db.dataSourceId,

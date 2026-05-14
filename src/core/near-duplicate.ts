@@ -28,6 +28,7 @@ import { ACTIVE_TASK_STATES } from "../types.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { trigramJaccard, tagOverlap } from "./similarity.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * Sentinel keyword written into a memory's `Keywords` column at the same
@@ -206,6 +207,7 @@ export interface FindNearDuplicatesOpts {
    * instead of degrading silently.
    */
   onError?: (err: unknown) => void
+  features?: Pick<LoreFeatureFlags, "nearDuplicateProbe">
 }
 
 /**
@@ -221,13 +223,8 @@ export async function findNearDuplicates(
   memories: MemoryLister,
   opts: FindNearDuplicatesOpts
 ): Promise<NearDuplicateMatch[]> {
-  // Operator kill-switch. Bulk-import, autosave hooks firing every few
-  // messages, and test fixtures that spin up 50+ memories all pay a
-  // `dataSources.query` per save otherwise. Setting the env var to `1`
-  // short-circuits the probe entirely without touching the call sites.
-  // Bypass lives here (not per-tool) so both `lore-memory action='save'`
-  // and `lore-decision action='create'` honor it automatically.
-  if (process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1") return []
+  const features = opts.features ?? resolveFeatureFlags()
+  if (!features.nearDuplicateProbe) return []
   if (opts.title.trim() === "") return []
   if (!opts.projectId) return []
 
@@ -372,6 +369,7 @@ export interface FindAutosaveLearningDuplicateOpts {
   limit?: number
   /** Optional observer for list-query failures. */
   onError?: (err: unknown) => void
+  features?: Pick<LoreFeatureFlags, "autosaveLearningDedup" | "nearDuplicateProbe">
 }
 
 export class AutosaveLearningDuplicateProbeError extends LoreError<"autosave-learning-duplicate-probe"> {
@@ -502,10 +500,8 @@ export async function findAutosaveLearningDuplicate(
   memories: MemoryLister,
   opts: FindAutosaveLearningDuplicateOpts
 ): Promise<AutosaveLearningDuplicateMatch | null> {
-  if (
-    process.env["LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP"] === "1" ||
-    process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1"
-  ) {
+  const features = opts.features ?? resolveFeatureFlags()
+  if (!features.autosaveLearningDedup || !features.nearDuplicateProbe) {
     return null
   }
   const scope = opts.scope ?? "session"
@@ -682,6 +678,7 @@ export interface FindDuplicateActiveTasksOpts {
    * stderr stream — same convention the memory / decision probes use.
    */
   onError?: (err: unknown) => void
+  features?: Pick<LoreFeatureFlags, "nearDuplicateProbe">
 }
 
 /**
@@ -728,7 +725,8 @@ export async function findDuplicateActiveTasks(
   tasks: TaskLister,
   opts: FindDuplicateActiveTasksOpts
 ): Promise<TaskSummary[]> {
-  if (process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1") return []
+  const features = opts.features ?? resolveFeatureFlags()
+  if (!features.nearDuplicateProbe) return []
   if (!opts.entity || opts.entity.trim() === "") return []
 
   // Decode at the boundary so the server-side `Entity contains` filter
@@ -782,6 +780,7 @@ export interface FindExactReuseTargetInput {
    * create.
    */
   projectIds: string[]
+  features?: Pick<LoreFeatureFlags, "taskReuse">
 }
 
 /**
@@ -817,7 +816,8 @@ export function findExactReuseTarget(
   candidates: TaskSummary[],
   input: FindExactReuseTargetInput
 ): TaskSummary | null {
-  if (process.env["LORE_DISABLE_TASK_REUSE"] === "1") return null
+  const features = input.features ?? resolveFeatureFlags()
+  if (!features.taskReuse) return null
 
   const normalizedSubject = normalizeReuseKey(input.subject)
   if (normalizedSubject === "") return null
@@ -1243,6 +1243,7 @@ export interface FindRelatedActiveTasksOpts {
    * decision probes use.
    */
   onError?: (err: unknown) => void
+  features?: Pick<LoreFeatureFlags, "taskCrossref">
 }
 
 /**
@@ -1276,7 +1277,8 @@ export async function findRelatedActiveTasks(
   services: { tasks: TaskLister },
   opts: FindRelatedActiveTasksOpts
 ): Promise<TaskSummary[]> {
-  if (process.env["LORE_DISABLE_TASK_CROSSREF"] === "1") return []
+  const features = opts.features ?? resolveFeatureFlags()
+  if (!features.taskCrossref) return []
 
   // Outer try/catch covers BOTH the synchronous tokenizer
   // (`extractEntityCandidates` runs regex over user-controlled text;

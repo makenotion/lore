@@ -32,6 +32,7 @@ import {
 import { findNearDuplicates, type NearDuplicateMatch } from "../../core/near-duplicate.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { LoreError, errorCauseMessage } from "../../errors.js"
+import { resolveFeatureFlags } from "../../feature-flags.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -318,6 +319,7 @@ async function handleCreate(
   args: CreateArgs
 ): Promise<ToolResult> {
   try {
+    const features = services.features ?? resolveFeatureFlags()
     const authorPromise = resolveAuthorForWrite(args.author, services.identity)
     const resolved = await resolveProjectIds(
       services,
@@ -352,6 +354,7 @@ async function handleCreate(
           statuses: ACTIVE_DECISION_STATUSES,
           threshold: DECISION_NEAR_DUPLICATE_THRESHOLD,
           limit: DECISION_POOL_LIMIT,
+          features,
           onError: (err) =>
             debugLogPartialFailures("lore-decision", [
               { rootId: "near-duplicate-probe", error: err },

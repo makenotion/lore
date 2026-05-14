@@ -31,6 +31,31 @@ describe("mergeHookDefaults", () => {
     expect(config.autoDigest).toBe(true)
   })
 
+  it("threads runtime learning-extraction feature flags through hook defaults", () => {
+    const config = mergeHookDefaults(
+      undefined,
+      null,
+      [],
+      {},
+      {
+        learningExtraction: false,
+      }
+    )
+    expect(config.learningExtraction).toBe(true)
+    expect(config.features.learningExtraction).toBe(false)
+  })
+
+  it("lets LORE_DISABLE_LEARNING_EXTRACTION override config features", () => {
+    const config = mergeHookDefaults(
+      undefined,
+      null,
+      [],
+      { LORE_DISABLE_LEARNING_EXTRACTION: "1" },
+      { learningExtraction: true }
+    )
+    expect(config.features.learningExtraction).toBe(false)
+  })
+
   it("defaults proposeAutosaveLearnings to false (issue #281, AC #1)", () => {
     // Phase 3 of the proposed-memory inbox epic. Default-off so
     // existing installs see byte-identical autosave behavior — only

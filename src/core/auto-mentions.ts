@@ -71,7 +71,7 @@ export function buildAutoMentionEntities(input: {
 export async function emitAutoMentions(
   input: EmitAutoMentionsInput
 ): Promise<EmitAutoMentionsResult> {
-  if (input.disabled || process.env["LORE_DISABLE_AUTO_MENTIONS"] === "1") {
+  if (input.disabled) {
     return { ...EMPTY_RESULT }
   }
 

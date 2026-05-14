@@ -171,11 +171,13 @@ describe("initServicesFromConfig — required Entities database", () => {
     const services = await initServicesFromConfig(root, root, {
       vault: { pageId: "page-1" },
       profile: "sales@1.0.0",
+      features: { autoMentions: false },
       projects: [],
     } as LoreConfig)
 
     expect(services.profile.selector).toBe("sales@1.0.0")
     expect(services.profile.source).toBe("external")
     expect(services.profile.rootDir).toBe(profileDir)
+    expect(services.features.autoMentions).toBe(false)
   })
 })

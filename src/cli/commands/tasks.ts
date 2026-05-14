@@ -21,6 +21,7 @@ import {
 } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
 import { debugLogPartialFailures } from "../../mcp/helpers.js"
+import { resolveFeatureFlags } from "../../feature-flags.js"
 import {
   ACTIVE_TASK_STATES,
   TAG_VOCABULARY,
@@ -533,6 +534,7 @@ export async function runTaskCreate(
   services: LoreServices,
   opts: CreateCliOptions
 ): Promise<CreateCliResult> {
+  const features = services.features ?? resolveFeatureFlags()
   let projectId: string | undefined
   let projectLabel: string
 
@@ -583,6 +585,7 @@ export async function runTaskCreate(
   const duplicates = await findDuplicateActiveTasks(services.tasks, {
     entity: probeEntity,
     projectId,
+    features,
     onError: (err) =>
       debugLogPartialFailures("lore tasks create", [
         { rootId: "duplicate-probe", error: err },
@@ -592,6 +595,7 @@ export async function runTaskCreate(
     subject: opts.subject,
     entity: probeEntity,
     projectIds,
+    features,
   })
 
   if (reuseTarget !== null) {

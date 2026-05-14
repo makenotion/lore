@@ -79,12 +79,36 @@ const profilesConfigSchema = z
   })
   .optional()
 
+const featuresConfigSchema = z
+  .object({
+    nearDuplicateProbe: z.boolean().optional(),
+    autosaveLearningDedup: z.boolean().optional(),
+    autoMentions: z.boolean().optional(),
+    taskReuse: z.boolean().optional(),
+    taskCrossref: z.boolean().optional(),
+    learningExtraction: z.boolean().optional(),
+    confidenceFactor: z.boolean().optional(),
+    forceSemanticSearch: z.boolean().optional(),
+    runTool: z
+      .object({
+        enabled: z.boolean().optional(),
+        blockEdit: z.boolean().optional(),
+        filterSql: z.boolean().optional(),
+        search: z.boolean().optional(),
+        aggregate: z.boolean().optional(),
+        batchCreates: z.boolean().optional(),
+      })
+      .optional(),
+  })
+  .optional()
+
 const configSchema = z.object({
   vault: z.object({
     pageId: pageIdSchema("vault.pageId is required"),
   }),
   profile: profileSelectorSchema.optional(),
   profiles: profilesConfigSchema,
+  features: featuresConfigSchema,
   upstreamVaults: z
     .array(
       namedVaultRefSchema.extend({

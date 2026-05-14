@@ -9,6 +9,7 @@
  */
 
 import { initServices } from "../services.js"
+import { resolveFeatureFlags } from "../feature-flags.js"
 import { resolveProjectByName } from "../core/project-scope.js"
 import { emitAutoMentions } from "../core/auto-mentions.js"
 import type { BenchSandbox } from "./bench-runner.js"
@@ -78,6 +79,7 @@ export async function buildBenchSandbox(): Promise<BenchSandbox> {
         facts: services.facts,
         memory,
         extraEntities: input.mentionEntities,
+        disabled: !(services.features ?? resolveFeatureFlags()).autoMentions,
       })
       return {
         id: memory.id,

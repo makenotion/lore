@@ -4,6 +4,7 @@ import { Command } from "commander"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { initServices, type LoreServices } from "../../services.js"
+import { resolveFeatureFlags } from "../../feature-flags.js"
 import {
   PROJECT_SCOPE_MIGRATION_DOC,
   resolveProjectScopeName,
@@ -27,10 +28,7 @@ import {
   type EntityMigrationResult,
   type OrphanRateReport,
 } from "../../core/entity-migration.js"
-import {
-  isRunToolAggregateEnabled,
-  querySubjectGroupCountsViaRunTool,
-} from "../../notion/runtool/index.js"
+import { querySubjectGroupCountsViaRunTool } from "../../notion/runtool/index.js"
 import {
   isSqlValidationError,
   logRunToolFallback,
@@ -1809,7 +1807,7 @@ export async function runOrphanRateReport(
   services: LoreServices,
   options: { apply: boolean; projectId?: string; projectName?: string }
 ): Promise<void> {
-  const aggregateEnabled = isRunToolAggregateEnabled()
+  const aggregateEnabled = (services.features ?? resolveFeatureFlags()).runTool.aggregate
   let report: OrphanRateReport | null = null
   let path: "runtool-aggregate" | "js-enumeration" = "js-enumeration"
 

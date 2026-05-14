@@ -155,6 +155,7 @@ function defaultConfig(overrides: Partial<HookConfig> = {}): HookConfig {
       command: DEFAULT_BACKGROUND_COMMAND,
       args: [...DEFAULT_BACKGROUND_ARGS],
     },
+    features: { learningExtraction: true },
     catchAllName: null,
     subProjects: [],
     ...overrides,
@@ -869,9 +870,7 @@ describe("handleStop", () => {
     )
   })
 
-  it("passes extractLearnings: false when LORE_DISABLE_LEARNING_EXTRACTION=1", async () => {
-    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "1"
-
+  it("passes extractLearnings: false when the resolved learning-extraction feature is off", async () => {
     writeTranscript(transcriptPath, 3)
     await handleStop(
       {
@@ -879,7 +878,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig()
+      defaultConfig({ features: { learningExtraction: false } })
     )
 
     expect(lastExtractLearnings()).toBe(false)
@@ -899,9 +898,7 @@ describe("handleStop", () => {
     expect(lastExtractLearnings()).toBe(false)
   })
 
-  it("passes extractLearnings: false when both kill switches are set", async () => {
-    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "1"
-
+  it("passes extractLearnings: false when both config and the resolved feature are off", async () => {
     writeTranscript(transcriptPath, 3)
     await handleStop(
       {
@@ -909,20 +906,19 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig({ learningExtraction: false })
+      defaultConfig({
+        learningExtraction: false,
+        features: { learningExtraction: false },
+      })
     )
 
     expect(lastExtractLearnings()).toBe(false)
   })
 
-  it("ignores LORE_DISABLE_LEARNING_EXTRACTION values other than '1'", async () => {
-    // Anti-foot-gun: a future operator who sets the env var to "0",
-    // "false", or "no" must still get the default extract-learnings
-    // behavior. Only the literal "1" disables — same shape as
-    // `LORE_AUTOSAVE` ("false" disables, anything else is permissive)
-    // but in the opposite polarity ("1" disables, anything else is
-    // permissive). The helper's check is `!== "1"`, so any non-"1"
-    // value falls through to the permissive branch.
+  it("does not reread ambient LORE_DISABLE_LEARNING_EXTRACTION after hook features are resolved", async () => {
+    // The parser layer owns env interpretation. Once the hook config
+    // carries `features.learningExtraction: true`, Stop processing
+    // should not re-check process.env and change behavior mid-process.
     process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "true"
 
     writeTranscript(transcriptPath, 3)
@@ -938,9 +934,7 @@ describe("handleStop", () => {
     expect(lastExtractLearnings()).toBe(true)
   })
 
-  it("env override beats hooks.learningExtraction: true in config", async () => {
-    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "1"
-
+  it("resolved feature gate beats hooks.learningExtraction: true in config", async () => {
     writeTranscript(transcriptPath, 3)
     await handleStop(
       {
@@ -948,7 +942,10 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig({ learningExtraction: true })
+      defaultConfig({
+        learningExtraction: true,
+        features: { learningExtraction: false },
+      })
     )
 
     expect(lastExtractLearnings()).toBe(false)

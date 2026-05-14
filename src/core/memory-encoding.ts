@@ -39,12 +39,12 @@ import { extractTitle, isFullPage } from "../notion/extractors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
-  isRunToolBlockEditEnabled,
   RunToolBlockEditError,
   updatePageContentViaRunTool,
   type UpdatePageContentEdit,
 } from "../notion/runtool/index.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * 100 KB cap on body markdown we'll migrate in a single pass. `lore mine`
@@ -56,6 +56,10 @@ import { MEMORY_PROPS } from "../notion/schema.js"
  * entity canonicalization / DS-scoped search.
  */
 export const BODY_SIZE_CAP_BYTES = 100 * 1024
+
+type MemoryEncodingFeatureFlags = {
+  runTool: Pick<LoreFeatureFlags["runTool"], "blockEdit">
+}
 
 /** Per-row plan for the memory encoding fix. Title fix is always
  *  required when present; content fix is best-effort and routes
@@ -169,9 +173,14 @@ export interface MemoryEncodingReport {
 export async function findEncodedMemories(
   client: Client,
   memoriesDb: DatabaseRef,
-  options: { includeContent?: boolean; projectId?: string } = {}
+  options: {
+    includeContent?: boolean
+    projectId?: string
+    features?: MemoryEncodingFeatureFlags
+  } = {}
 ): Promise<EncodedMemoryRow[]> {
   const includeContent = options.includeContent ?? true
+  const features = options.features ?? resolveFeatureFlags()
   const rows: EncodedMemoryRow[] = []
 
   let cursor: string | undefined
@@ -250,7 +259,7 @@ export async function findEncodedMemories(
         // dry-run output would silently lie about which oversized
         // rows are about to be fixed.
         const anchoredPathPlanned =
-          isRunToolBlockEditEnabled() &&
+          features.runTool.blockEdit &&
           contentNeedsFix &&
           !contentFetchFailed &&
           rawContent !== null &&
@@ -328,11 +337,16 @@ export async function findEncodedMemories(
 export async function fixMemoryEncoding(
   client: Client,
   memoriesDb: DatabaseRef,
-  options: { dryRun?: boolean; projectId?: string } = {}
+  options: {
+    dryRun?: boolean
+    projectId?: string
+    features?: MemoryEncodingFeatureFlags
+  } = {}
 ): Promise<MemoryEncodingReport> {
   const encoded = await findEncodedMemories(client, memoriesDb, {
     includeContent: true,
     projectId: options.projectId,
+    features: options.features,
   })
   const contentFetchFailures = encoded.filter((r) => r.contentFetchFailed)
 

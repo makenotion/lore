@@ -51,9 +51,9 @@
  * error. Without that normalization, the rate-limit and auth-refresh
  * hooks would never engage on gateway-shaped errors.
  *
- * Same posture as the existing `LORE_DISABLE_*` switches — env-var
- * checked at the call site, not threaded through .lore.yaml, so
- * an operator can flip behavior without editing config.
+ * The parser remains the backward-compatible env input layer. Runtime
+ * services consume the resolved `LoreFeatureFlags` snapshot so config
+ * and env layering happens once at initialization.
  */
 
 const FLAG_TRUTHY = new Set(["1", "true", "yes", "on"])

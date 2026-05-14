@@ -75,7 +75,6 @@ describe("buildAutoMentionEntities", () => {
 describe("emitAutoMentions", () => {
   afterEach(() => {
     vi.restoreAllMocks()
-    delete process.env["LORE_DISABLE_AUTO_MENTIONS"]
   })
 
   it("reports attempted, fulfilled, fresh-created, and Notion mutation counts", async () => {
@@ -103,13 +102,13 @@ describe("emitAutoMentions", () => {
     expect(createBatchWithDedup).toHaveBeenCalledTimes(1)
   })
 
-  it("preserves the kill switch without calling FactService", async () => {
-    process.env["LORE_DISABLE_AUTO_MENTIONS"] = "1"
+  it("honors the resolved disabled flag without calling FactService", async () => {
     const createBatchWithDedup = vi.fn()
 
     const emitted = await emitAutoMentions({
       facts: { createBatchWithDedup },
       memory: memory(),
+      disabled: true,
     })
 
     expect(emitted.attempted).toBe(0)

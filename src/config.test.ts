@@ -176,6 +176,33 @@ profile: default@1.0.0
     expect(config.profile).toBe("default@1.0.0")
   })
 
+  it("parses runtime feature flags", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+features:
+  nearDuplicateProbe: false
+  autoMentions: false
+  forceSemanticSearch: true
+  runTool:
+    enabled: false
+    search: true
+    batchCreates: true
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.features).toEqual({
+      nearDuplicateProbe: false,
+      autoMentions: false,
+      forceSemanticSearch: true,
+      runTool: {
+        enabled: false,
+        search: true,
+        batchCreates: true,
+      },
+    })
+  })
+
   it("rejects malformed profile selectors", () => {
     expect(() =>
       parseConfigAllowingInvalidHooks(`

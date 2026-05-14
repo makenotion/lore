@@ -9,6 +9,7 @@
 import { basename, isAbsolute } from "node:path"
 import type { LoreConfig } from "../types.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /** Real user messages between structured AI-driven saves, when unset. */
 export const DEFAULT_SAVE_INTERVAL = 5
@@ -208,6 +209,12 @@ export interface HookConfig {
    */
   backgroundAgent: BackgroundAgentConfig
   /**
+   * Runtime feature flags needed by the hook layer. Resolved once from
+   * config plus env so Stop processing does not consult process.env at
+   * each decision point.
+   */
+  features: Pick<LoreFeatureFlags, "learningExtraction">
+  /**
    * Name of the catch-all project (path `"."` or `""`) in this workspace, if
    * configured. The save prompts name it explicitly and tell the AI to avoid
    * defaulting to it for sub-project-specific work.
@@ -238,7 +245,8 @@ export function mergeHookDefaults(
   hooks: LoreConfig["hooks"] | undefined,
   catchAllName: string | null = null,
   subProjects: string[] = [],
-  envSource: NodeJS.ProcessEnv = process.env
+  envSource: NodeJS.ProcessEnv = process.env,
+  featuresConfig: LoreConfig["features"] | undefined = undefined
 ): HookConfig {
   return {
     saveInterval: hooks?.saveInterval ?? DEFAULT_SAVE_INTERVAL,
@@ -248,6 +256,11 @@ export function mergeHookDefaults(
     learningExtraction: hooks?.learningExtraction ?? true,
     proposeAutosaveLearnings: hooks?.proposeAutosaveLearnings ?? false,
     backgroundAgent: resolveBackgroundAgent(hooks?.backgroundAgent, envSource),
+    features: {
+      learningExtraction: resolveFeatureFlags(envSource, {
+        features: featuresConfig,
+      }).learningExtraction,
+    },
     catchAllName,
     subProjects,
   }

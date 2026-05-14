@@ -12,6 +12,7 @@ import {
   withWakeUpCacheBump,
 } from "../helpers.js"
 import { confidenceFactor } from "../../core/decay.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../../feature-flags.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import {
@@ -263,7 +264,8 @@ const FACT_RRF_K = 4
  * pre-DEFERRED-02 recency ordering.
  */
 function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: Fact }>(
-  items: T[]
+  items: T[],
+  features: Pick<LoreFeatureFlags, "confidenceFactor">
 ): T[] {
   if (items.length <= 1) return items
   // Recency-sort first to assign deterministic ranks. This is the
@@ -272,7 +274,7 @@ function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: F
   const recencyRanked = [...items].sort(compareSortKeyDesc)
   type Scored = { item: T; score: number }
   const scored: Scored[] = recencyRanked.map((item, rank) => {
-    const factor = confidenceFactor(item.fact?.confidenceScore ?? null)
+    const factor = confidenceFactor(item.fact?.confidenceScore ?? null, features)
     const score = (1 / (FACT_RRF_K + rank + 1)) * factor
     return { item, score }
   })
@@ -717,6 +719,7 @@ export async function handleAsk(
   toolName: string
 ): Promise<ToolResult> {
   try {
+    const features = services.features ?? resolveFeatureFlags()
     // Matches `handleWakeUp`'s explicit-projectName rule: the framing
     // block describes the project the rest of the response is filtered
     // to. Explicit picks are strict and never catch-all fallbacks;
@@ -934,7 +937,7 @@ export async function handleAsk(
     // vaults (every score `null`) collapse to `factor === 1.0` and the
     // RRF pass becomes monotonic-by-rank == identical to the
     // recency-only sort.
-    const rankedGovernance = applyConfidenceWeightedRrf(governanceItems)
+    const rankedGovernance = applyConfidenceWeightedRrf(governanceItems, features)
 
     type Structured = { fact: Fact; line: string; sortKey: string | null }
     const structureItems: Structured[] = structure.map((fact) => ({
@@ -945,7 +948,7 @@ export async function handleAsk(
       }),
       sortKey: fact.validFrom,
     }))
-    const rankedStructure = applyConfidenceWeightedRrf(structureItems)
+    const rankedStructure = applyConfidenceWeightedRrf(structureItems, features)
 
     const sections: string[] = []
     let anyOverflow = false

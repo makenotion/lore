@@ -26,6 +26,7 @@ import {
   CONFIDENCE_FACTOR_MIN,
   type MemoryConfidence,
 } from "../types.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * Notion has no native range constraint on `number` columns; the clamp
@@ -155,8 +156,11 @@ export function decayConfidenceScore(
  * The check lives here (not at the RRF call sites) so single-branch
  * paths and the hybrid accumulator share one bypass.
  */
-export function confidenceFactor(score: number | null): number {
-  if (process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] === "1") return 1.0
+export function confidenceFactor(
+  score: number | null,
+  features: Pick<LoreFeatureFlags, "confidenceFactor"> = resolveFeatureFlags()
+): number {
+  if (!features.confidenceFactor) return 1.0
   if (score === null) return 1.0
   return CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * score
 }

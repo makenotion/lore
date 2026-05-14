@@ -688,7 +688,7 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     // Principal review #5 posture: the meaningful default-off test
     // pairs flag-on (which MUST exercise the anchored path on
     // oversized) with flag-off (which MUST skip oversized). A
-    // regression that lost the `isRunToolBlockEditEnabled()` check
+    // regression that lost the resolved block-edit feature flag check
     // in `memory-encoding.ts` would break the flag-off semantics
     // and a regression that lost the oversized fix would break the
     // flag-on semantics. Both phases are required.
@@ -722,6 +722,26 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     expect(offReport.oversizedSkipped).toHaveLength(1)
     expect(offReport.oversizedSkipped[0]!.id).toBe(ID)
     expect(offClient.pages.updateMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("uses resolved feature flags instead of rereading ambient env during the scan", async () => {
+    process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+    const filler = "x".repeat(BODY_SIZE_CAP_BYTES + 1024)
+    const body = `${filler} &amp; tail`
+    const client = createMockClient({
+      queryResponses: [{ results: [memoryPage({ id: ID, title: "clean title" })] }],
+      markdownByPageId: { [ID]: body },
+    })
+
+    const report = await fixMemoryEncoding(client, DB, {
+      dryRun: false,
+      features: { runTool: { blockEdit: false } },
+    })
+
+    expect(client.request).not.toHaveBeenCalled()
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    expect(report.oversizedSkipped).toHaveLength(1)
+    expect(report.oversizedSkipped[0]!.id).toBe(ID)
   })
 
   it("idempotent: a second run after a successful anchored fix finds nothing to fix", async () => {

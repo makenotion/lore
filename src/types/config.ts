@@ -70,6 +70,63 @@ export interface ProfilesConfig {
   allowedInstallSources?: ProfilesAllowedInstallSource[]
 }
 
+export interface LoreFeatureConfig {
+  /**
+   * Advisory near-duplicate probes for saves, decisions, autosave-learning
+   * dedup, and task duplicate/cross-reference helpers. Default: true.
+   * `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` forces this off.
+   */
+  nearDuplicateProbe?: boolean
+  /**
+   * Structural deduplication for background autosave atomic-learning notes.
+   * Default: true. `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` forces this off.
+   */
+  autosaveLearningDedup?: boolean
+  /**
+   * Automatic `mentions` fact emission from memory title/keywords/synopsis.
+   * Default: true. `LORE_DISABLE_AUTO_MENTIONS=1` forces this off.
+   */
+  autoMentions?: boolean
+  /**
+   * Exact active-task reuse instead of creating duplicate task rows.
+   * Default: true. `LORE_DISABLE_TASK_REUSE=1` forces this off.
+   */
+  taskReuse?: boolean
+  /**
+   * Related-task cross-reference footers on memory saves.
+   * Default: true. `LORE_DISABLE_TASK_CROSSREF=1` forces this off.
+   */
+  taskCrossref?: boolean
+  /**
+   * Stop-hook atomic-learning extraction. Default: true.
+   * `LORE_DISABLE_LEARNING_EXTRACTION=1` forces this off.
+   */
+  learningExtraction?: boolean
+  /**
+   * Confidence-score weighting in rank fusion. Default: true.
+   * `LORE_DISABLE_CONFIDENCE_FACTOR=1` forces this off.
+   */
+  confidenceFactor?: boolean
+  /**
+   * Force legacy workspace-wide semantic search instead of the newer
+   * contains/hybrid modes. Default: false.
+   * `LORE_FORCE_SEMANTIC_SEARCH=1` forces this on.
+   */
+  forceSemanticSearch?: boolean
+  /**
+   * RunTool feature family. `enabled` is the parent value; all sub-flags
+   * except `batchCreates` inherit from it unless explicitly set.
+   */
+  runTool?: {
+    enabled?: boolean
+    blockEdit?: boolean
+    filterSql?: boolean
+    search?: boolean
+    aggregate?: boolean
+    batchCreates?: boolean
+  }
+}
+
 export interface LoreConfig {
   vault: {
     pageId: string
@@ -87,6 +144,12 @@ export interface LoreConfig {
    * `<configRoot>/.lore/profiles/installed/`.
    */
   profiles?: ProfilesConfig
+  /**
+   * Runtime feature flags. Environment variables remain supported as the
+   * operator override layer; disabling env vars always win for rollback
+   * kill switches.
+   */
+  features?: LoreFeatureConfig
   /**
    * Read-only vaults whose memories can be inherited by topology-aware read
    * paths. The primary vault remains the only normal write target.

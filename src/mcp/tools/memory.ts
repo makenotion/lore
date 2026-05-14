@@ -69,6 +69,7 @@ import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { buildVaultTopology } from "../../core/topology.js"
 import { preparePromotion, promoteMemory } from "../../core/promote.js"
 import { notionPageUrl } from "../../notion/url.js"
+import { resolveFeatureFlags } from "../../feature-flags.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -376,6 +377,7 @@ interface SaveArgs {
 
 async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolResult> {
   try {
+    const features = services.features ?? resolveFeatureFlags()
     // Validate the topicKey + kind contract BEFORE any service call.
     //
     // Topic keys group recurring decision/runbook/policy/incident/
@@ -454,6 +456,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           excludeKinds: ["decision"],
           threshold: MEMORY_NEAR_DUPLICATE_THRESHOLD,
           limit: NEAR_DUPLICATE_POOL_LIMIT,
+          features,
           onError: (err) =>
             debugLogPartialFailures("lore-memory", [
               { rootId: "near-duplicate-probe", error: err },
@@ -503,6 +506,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         session: args.session,
         scope: autosaveLearningProbeScope,
         limit: AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT,
+        features,
         onError: (err) =>
           debugLogPartialFailures("lore-memory", [
             { rootId: "autosave-learning-dedup", error: err },
@@ -547,6 +551,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       memoryKeywords: args.keywords,
       memorySynopsis: args.synopsis,
       projectId: probeProjectId,
+      features,
       onError: (err) =>
         debugLogPartialFailures("lore-memory", [{ rootId: "task-crossref", error: err }]),
     })
@@ -736,6 +741,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     const autoMentions = await emitAutoMentions({
       facts: services.facts,
       memory,
+      disabled: !features.autoMentions,
       onError: (entity, error) =>
         debugLogAutoFactFailure("save", memory.id, entity, error),
     })
@@ -891,6 +897,7 @@ async function handleUpdate(
   args: UpdateArgs
 ): Promise<ToolResult> {
   try {
+    const features = services.features ?? resolveFeatureFlags()
     // Reject illegal combinations BEFORE any I/O. Re-keying preserves
     // identity (kind is part of identity); a combined `topicKey + kind`
     // update would smuggle a kind change through the residual update
@@ -1407,7 +1414,7 @@ async function handleUpdate(
     // to `Generic refactor notes`) must still invalidate the now-
     // stale facts, and we cannot know whether existing facts are
     // present without querying.
-    const autoMentionsDisabled = process.env["LORE_DISABLE_AUTO_MENTIONS"] === "1"
+    const autoMentionsDisabled = !features.autoMentions
     const extractionInputsTouched =
       args.title !== undefined ||
       args.keywords !== undefined ||

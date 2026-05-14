@@ -24,11 +24,6 @@ import {
   type RefreshClientAuth,
 } from "./notion/client.js"
 import { createLimitedClient, wrapWithWriteBudget } from "./notion/rate-limit.js"
-import {
-  isRunToolBlockEditEnabled,
-  isRunToolEnabled,
-  isRunToolFilterSqlEnabled,
-} from "./notion/runtool/index.js"
 import { warnRunToolIntegrationSecretOnce } from "./notion/runtool/error-helpers.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
@@ -55,6 +50,7 @@ import {
 } from "./hooks/drift-marker.js"
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
 import { resolveProfileFromConfigAtRoot, type ResolvedProfile } from "./profile/index.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "./feature-flags.js"
 import type {
   LoreConfig,
   MemoryScopeContext,
@@ -175,7 +171,7 @@ export async function probeScopeColumnsPresent(
 export function resolveRunToolBatchCreatesFlag(
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
-  return env["LORE_USE_RUNTOOL_BATCH_CREATES"] === "1"
+  return resolveFeatureFlags(env).runTool.batchCreates
 }
 
 /**
@@ -365,6 +361,13 @@ export interface InitServicesOptions {
 export interface LoreServices {
   profile: ResolvedProfile
   /**
+   * Per-process runtime feature flags resolved once from .lore.yaml and
+   * backward-compatible environment inputs. Services read this snapshot
+   * instead of consulting process.env at call sites so behavior cannot
+   * drift mid-process.
+   */
+  features: LoreFeatureFlags
+  /**
    * Shared Notion SDK client for this process. This is the same
    * auth-refreshing, rate-limited Proxy used by every service below; callers
    * that need vault-adjacent reads should reuse it instead of creating a
@@ -491,6 +494,7 @@ export async function initServicesFromConfig(
   options: InitServicesOptions = {}
 ): Promise<LoreServices> {
   const profile = resolveProfileFromConfigAtRoot(config, configRoot)
+  const features = resolveFeatureFlags(process.env, config)
   const auth = await resolveAuth(config, configRoot)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
   const authSnapshotRef = { current: toClientAuth(auth) }
@@ -557,7 +561,14 @@ export async function initServicesFromConfig(
   // source is a known integration-secret path that RunTool will
   // reject with 403. Without this, every flagged-on call silently
   // falls back to REST and the operator sees zero RunTool traffic.
-  if (isRunToolEnabled() || isRunToolBlockEditEnabled() || isRunToolFilterSqlEnabled()) {
+  if (
+    features.runTool.enabled ||
+    features.runTool.blockEdit ||
+    features.runTool.filterSql ||
+    features.runTool.search ||
+    features.runTool.aggregate ||
+    features.runTool.batchCreates
+  ) {
     warnRunToolIntegrationSecretOnce(auth.source)
   }
 
@@ -614,9 +625,11 @@ export async function initServicesFromConfig(
   // which is proxied by `createLimitedClient` and (when applicable)
   // `createAuthRefreshingClient`. No separate runtool object, no
   // parallel rate-limit gate.
-  const memories = new MemoryService(client, db.memories, effectiveScopeCtx)
+  const memories = new MemoryService(client, db.memories, effectiveScopeCtx, {
+    features,
+  })
   const facts = new FactService(client, db.facts, effectiveScopeCtx, {
-    useRunToolBatchCreates: resolveRunToolBatchCreatesFlag(),
+    useRunToolBatchCreates: features.runTool.batchCreates,
     relationUrlBase: deriveRelationUrlBase(auth.baseUrl),
   })
   // Decisions are backed by the Memories DB — same DatabaseRef, different
@@ -631,7 +644,7 @@ export async function initServicesFromConfig(
   // Scope context threads through so `lore-task action='list'`
   // applies the same default scope filter.
   const tasks = new TaskService(client, db.memories, effectiveScopeCtx)
-  const entities = new EntityService(client, db.entities)
+  const entities = new EntityService(client, db.entities, { features })
 
   const resolution = await resolveProject(cwd, configRoot, config, projects)
 
@@ -645,6 +658,7 @@ export async function initServicesFromConfig(
   return {
     client,
     profile,
+    features,
     vault,
     projects,
     topics,
@@ -666,7 +680,7 @@ export async function initServicesFromConfig(
     authSource: auth.source,
     wakeupCache: new WakeUpCache(),
     scopeContext: scopeCtx,
-    upstreams: Object.freeze(buildUpstreamVaultBundles(client, config)),
+    upstreams: Object.freeze(buildUpstreamVaultBundles(client, config, features)),
   }
 }
 

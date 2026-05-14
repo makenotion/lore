@@ -59,8 +59,6 @@ import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filte
 import { requireQueryResults } from "../notion/query-response.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
-  isRunToolBlockEditEnabled,
-  isRunToolSearchEnabled,
   RunToolBlockEditError,
   RunToolSearchRestrictedError,
   RUNTOOL_SEARCH_MAX_PAGE_SIZE,
@@ -108,15 +106,13 @@ import {
   hydrateRelationProperties,
   hydrateRelationPropertiesForPages,
 } from "../notion/relation-properties.js"
-import {
-  fetchNearDuplicateCandidatePageIds,
-  isRunToolFilterSqlEnabled,
-} from "../notion/runtool/index.js"
+import { fetchNearDuplicateCandidatePageIds } from "../notion/runtool/index.js"
 import {
   isSqlValidationError,
   logRunToolFallback,
 } from "../notion/runtool/error-helpers.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
+import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  * 30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -621,7 +617,8 @@ export function tieBreakingRrfCompare(a: RrfEntry, b: RrfEntry): number {
  */
 function rerankByConfidence(
   pages: PageObjectResponse[],
-  branchKind: "contains" | "semantic"
+  branchKind: "contains" | "semantic",
+  features: LoreFeatureFlags
 ): PageObjectResponse[] {
   if (pages.length === 0) return pages
   const allUnscored = pages.every(
@@ -631,7 +628,7 @@ function rerankByConfidence(
   return pages
     .map((page, rank): RrfEntry => {
       const score = extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE])
-      const factor = confidenceFactor(score)
+      const factor = confidenceFactor(score, features)
       return {
         page,
         score: (1 / (RRF_K + rank + 1)) * factor,
@@ -1938,6 +1935,8 @@ export function computePromotionAdvisory(input: {
 }
 
 export class MemoryService {
+  private readonly features: LoreFeatureFlags
+
   /**
    * `getTitleById` is the hot path for UUID→title resolution in
    * `render.ts:resolveTitles` and `lore-context action='wake-up'`. A 25-UUID wake-up without
@@ -2017,8 +2016,10 @@ export class MemoryService {
   constructor(
     private client: Client,
     private db: DatabaseRef,
-    scopeCtx?: MemoryScopeContext
+    scopeCtx?: MemoryScopeContext,
+    options?: { features?: LoreFeatureFlags }
   ) {
+    this.features = options?.features ?? resolveFeatureFlags()
     if (scopeCtx) {
       this.scopeCtx = scopeCtx
       this.scopeFilterEnabled = true
@@ -2093,6 +2094,7 @@ export class MemoryService {
           projectIds: duplicateConfig.projectIds,
           session: duplicateConfig.session,
           scope: duplicateConfig.scope,
+          features: this.features,
         })
         if (duplicate) {
           return {
@@ -2134,8 +2136,8 @@ export class MemoryService {
     | null {
     if (
       input.autosaveLearningDedupScope === "off" ||
-      process.env["LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP"] === "1" ||
-      process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1"
+      !this.features.autosaveLearningDedup ||
+      !this.features.nearDuplicateProbe
     ) {
       return null
     }
@@ -2187,6 +2189,7 @@ export class MemoryService {
           projectIds: duplicateConfig.projectIds,
           session: duplicateConfig.session,
           scope: duplicateConfig.scope,
+          features: this.features,
         })
         if (visible?.id === memory.id) return
       } catch {
@@ -2903,7 +2906,7 @@ export class MemoryService {
       existingBody.markdown,
       upsertAnalysis.latestRevision
     )
-    const useRunToolAnchor = isRunToolBlockEditEnabled() && anchor !== null
+    const useRunToolAnchor = this.features.runTool.blockEdit && anchor !== null
     let bodyEditApplied = false
     if (useRunToolAnchor && anchor) {
       try {
@@ -3250,7 +3253,7 @@ export class MemoryService {
     // repair the 403, but the REST/SDK path can — silently widening
     // the catch back to validation-only would re-introduce the
     // outage path the security review B1/B2 fixed.
-    const rekeyFlagOn = isRunToolBlockEditEnabled()
+    const rekeyFlagOn = this.features.runTool.blockEdit
     const rekeyAnchor = rekeyFlagOn ? pickRekeyAuditAnchor(memory.content) : null
     if (rekeyFlagOn && rekeyAnchor === null) {
       debugLogRekeyAnchorMiss(input.memoryId, memory.content.length)
@@ -3926,7 +3929,10 @@ export class MemoryService {
   async fixEncoding(
     options: { dryRun?: boolean; projectId?: string } = {}
   ): Promise<MemoryEncodingReport> {
-    return fixMemoryEncoding(this.client, this.db, options)
+    return fixMemoryEncoding(this.client, this.db, {
+      ...options,
+      features: this.features,
+    })
   }
 
   /**
@@ -5361,7 +5367,7 @@ export class MemoryService {
     includeProposed?: boolean
     limit: number
   }): Promise<Memory[]> {
-    if (isRunToolFilterSqlEnabled()) {
+    if (this.features.runTool.filterSql) {
       try {
         // Mirror `MemoryService.list`'s default: when the
         // caller has not opted into proposed rows AND has not
@@ -5783,8 +5789,7 @@ export class MemoryService {
     input: SearchMemoriesInput
   ): Promise<{ memories: Memory[]; explain: SearchExplain[]; capped: boolean }> {
     const requested: SearchMode = input.mode ?? "hybrid"
-    const mode: SearchMode =
-      process.env["LORE_FORCE_SEMANTIC_SEARCH"] === "1" ? "semantic" : requested
+    const mode: SearchMode = this.features.forceSemanticSearch ? "semantic" : requested
     const limit = input.limit ?? 10
 
     // Normalize intent once at the entry point. Both the saturation-bypass
@@ -5828,7 +5833,8 @@ export class MemoryService {
     const memories = await this.materializeMemories(selectedPages, input.includeContent)
     const explain = selectedPages.map((page, i): SearchExplain => {
       const factor = confidenceFactor(
-        extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE])
+        extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]),
+        this.features
       )
       if (explainBranch === "contains-only") {
         return {
@@ -6146,7 +6152,7 @@ export class MemoryService {
     // validation, 401, 429, 5xx, malformed) propagate verbatim — the
     // canonical error vocabulary pinned by the `update_page` wrapper.
     if (
-      isRunToolSearchEnabled() &&
+      this.features.runTool.search &&
       composedQuery.trim().length > 0 &&
       limit <= RUNTOOL_SEARCH_MAX_PAGE_SIZE
     ) {
@@ -6700,7 +6706,7 @@ export class MemoryService {
   ): Promise<SearchPagesResult> {
     const result = await this.fetchContainsPages(input)
     return {
-      pages: rerankByConfidence(result.pages, "contains"),
+      pages: rerankByConfidence(result.pages, "contains", this.features),
       capped: result.capped,
     }
   }
@@ -6716,7 +6722,10 @@ export class MemoryService {
     intent: string | null
   ): Promise<SearchPagesResult> {
     const pages = await this.fetchSemanticPages(input, intent)
-    return { pages: rerankByConfidence(pages, "semantic"), capped: false }
+    return {
+      pages: rerankByConfidence(pages, "semantic", this.features),
+      capped: false,
+    }
   }
 
   /**
@@ -6930,7 +6939,8 @@ export class MemoryService {
           semanticRank: null,
           rrfScore: null,
           confidenceFactor: confidenceFactor(
-            extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE])
+            extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]),
+            this.features
           ),
         })
       })
@@ -6967,7 +6977,10 @@ export class MemoryService {
         const prev = scored.get(page.id)
         const factor =
           prev?.confidenceFactor ??
-          confidenceFactor(extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]))
+          confidenceFactor(
+            extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]),
+            this.features
+          )
         const score = (1 / (RRF_K + rank + 1)) * weight * factor
         if (prev) {
           prev.score += score
