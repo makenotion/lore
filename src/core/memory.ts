@@ -6371,11 +6371,11 @@ export class MemoryService {
     // **N+1 cost.** Each hit spawns one `pages.retrieve` round-
     // trip, vs REST `client.search` which returns full
     // `PageObjectResponse[]` from one call. Worst case is 25
-    // retrieves paced by `DEFAULT_NOTION_REQUESTS_PER_SECOND` (plus
-    // the burst, minus the first cohort), vs REST's single round-
-    // trip. This is the cost of opting in to the RunTool search
-    // path; tests pin it but operators reading the rollout runbook
-    // should know.
+    // retrieves paced by the global outbound rate-limit bucket (or
+    // by the `pages.retrieve` endpoint override if one is
+    // configured), vs REST's single round-trip. This is the cost of
+    // opting in to the RunTool search path; tests pin it but
+    // operators reading the rollout runbook should know.
     //
     // **Hydrate via `hit.url`, not `hit.id`.** The pinned RunTool
     // schema documents "url is page id for Notion results" —

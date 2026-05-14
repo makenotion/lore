@@ -22,20 +22,26 @@ import { dirname, basename } from "node:path"
  *
  * 1. **Token bucket** (request-rate): each call awaits a token before
  *    it may proceed. Bucket capacity controls the burst tolerance;
- *    refill rate controls sustained throughput. Defaults to 20 rps
- *    refill with a 10-token burst, sized at 1.5× headroom below the
- *    measured server-side ceiling for `pages.retrieveMarkdown` (see
- *    `DEFAULT_NOTION_REQUESTS_PER_SECOND` for the probe citation).
+ *    refill rate controls sustained throughput. The global gate
+ *    defaults align with Notion's public-API ~3 rps guidance; a small
+ *    table of endpoint-specific overrides
+ *    ({@link DEFAULT_NOTION_ENDPOINT_OVERRIDES}) loosens the gate for
+ *    paths backed by operator-runnable probe evidence under `tools/`.
+ *    Each overridden endpoint runs on its own bucket, so a fast
+ *    endpoint does not consume the global gate's tokens.
  * 2. **`p-limit` slot** (concurrency): bounds simultaneous in-flight
  *    requests so a slow Notion call can't fan out memory under heavy
- *    load. Default of 10 keeps the bucket from idling under tail-
- *    latency spikes; at p50 the bucket (20 rps) binds first.
+ *    load. One slot pool per gate — the global pool covers every
+ *    non-overridden endpoint, and each endpoint override has its own
+ *    pool sized to its measured workload.
  * 3. **Shared 429 backoff**: when a 429 escapes the SDK's internal
  *    retry budget (the Notion v5 SDK retries 429s automatically with
  *    `Retry-After` parsing, so this is the surfacing-after-exhaustion
- *    path), the wrapper pauses the bucket for the surfaced
- *    `Retry-After` window so concurrent siblings on the same client
- *    don't continue hammering during the throttling event.
+ *    path), the wrapper pauses **every** bucket — global plus every
+ *    endpoint override — for the surfaced `Retry-After` window. The
+ *    Notion per-token server-side bucket is shared across endpoints,
+ *    so a throttling signal on one endpoint means siblings on the
+ *    same token are also in the throttling window.
  *
  * Tests that inject their own mock client are unaffected: the limiter
  * only wraps the real client inside `initServicesFromConfig` and `lore
@@ -46,54 +52,122 @@ import type { Client } from "@notionhq/client"
 import pLimit from "p-limit"
 
 /**
- * Maximum in-flight outbound Notion calls. Matches the bucket refill
- * rate at the observed p50 call latency (~270 ms) — ten slots keep
- * the token bucket from idling under tail-latency spikes (p95 > 1 s)
- * while still bounding fan-out memory. At p50, the bucket binds first
- * (10 slots could sustain ~37 rps; the 20 rps bucket caps before that).
+ * Maximum in-flight outbound Notion calls applied to endpoints with
+ * no per-endpoint override. Aligned with Notion's public-API guidance
+ * (~3 rps average per access token); endpoints that have been probed
+ * against a real vault opt into a higher value via
+ * {@link DEFAULT_NOTION_ENDPOINT_OVERRIDES}.
+ *
+ * Hot fan-outs over an opted-in endpoint (today: body fetches via
+ * `pages.retrieveMarkdown`) run under the endpoint's own gate; the
+ * global gate covers writes, RunTool dispatches, setup flows, and
+ * every endpoint without scoped probe evidence.
  */
-export const DEFAULT_NOTION_CONCURRENCY = 10
+export const DEFAULT_NOTION_CONCURRENCY = 3
 
 /**
- * Sustained refill rate for the token bucket. The "~3 rps" Notion
- * called out as public-API guidance is the serial-latency floor
- * (`1 / per-call-latency ≈ 3 rps`), not the server-side ceiling. A
- * direct-SDK probe of `pages.retrieveMarkdown` against a real vault
- * at concurrency 1 / 3 / 5 / 10 / 20 sustained ~28–30 rps at
- * concurrency 10 with zero 429s; the 20 rps default sits at ~1.5×
- * headroom below that conservative steady-state.
+ * Sustained refill rate for the global token bucket. Matches Notion's
+ * public-API ~3 rps average with bursts allowed; endpoints with their
+ * own scoped probe evidence loosen via
+ * {@link DEFAULT_NOTION_ENDPOINT_OVERRIDES} so a single fast endpoint
+ * does not force every other endpoint over the published average.
  *
- * Per-process budget — NOT multi-process. The 1.5× headroom claim
- * is single-process: one Lore process at 20 rps still sits below the
- * probed 28–30 rps. Multiple Lore processes on one Notion token
- * (MCP server + CLI + hooks running concurrently) compose
- * additively at the server-side bucket — two processes can offer
- * ~40 rps, three can offer ~60 rps, both of which exceed the probed
- * ceiling. The shared 429 backoff path inside this wrapper (see
- * `MAX_RATE_LIMIT_BACKOFF_MS`) is what self-throttles when that
- * happens; operators running heavy concurrent workloads should tune
- * `notion.rateLimit.requestsPerSecond` down per process or
- * coordinate so the union stays under the per-token ceiling.
- *
- * Scope caveat: the probe covered `pages.retrieveMarkdown` only.
- * Write endpoints, RunTool dispatches, and per-workspace caps
- * tighter than the probed vault were not measured. If a write-heavy
- * or non-markdown surface starts surfacing 429s under this default,
- * the shared backoff path absorbs the throttling and a per-vault
- * `notion.rateLimit.requestsPerSecond: 3` override restores the
- * pre-retune posture.
+ * Per-process budget. Multiple Lore processes on one Notion token
+ * (MCP server + CLI + hooks running concurrently) compose additively
+ * at the server-side bucket; the shared 429 backoff path inside this
+ * wrapper (see {@link MAX_RATE_LIMIT_BACKOFF_MS}) is what self-
+ * throttles when the union of process-local pacers exceeds the
+ * per-token ceiling. Operators running heavy concurrent workloads on
+ * one token can tighten further via `notion.rateLimit.requestsPerSecond`
+ * in `.lore.yaml`.
  */
-export const DEFAULT_NOTION_REQUESTS_PER_SECOND = 20
+export const DEFAULT_NOTION_REQUESTS_PER_SECOND = 3
 
 /**
- * Initial token-bucket capacity. A 10-token burst absorbs typical
- * hot-path fan-outs — the wake-up renderer's parallel `Promise.all`
- * over memories + facts + decisions + tasks + pinned blocks, a
- * decision-graph walk over a small ancestor set, the render-layer
- * batch resolution of titles for a recently-cited row set — without
- * waiting for the refill clock.
+ * Initial token-bucket capacity for the global gate. A 3-token burst
+ * matches the sustained rate; endpoints that need a wider burst for
+ * hot fan-outs (e.g., body-fetch fan-out on a list view) opt in via
+ * {@link DEFAULT_NOTION_ENDPOINT_OVERRIDES}.
  */
-export const DEFAULT_NOTION_BURST_SIZE = 10
+export const DEFAULT_NOTION_BURST_SIZE = 3
+
+/**
+ * Endpoint-scoped pacing override block. Each field, when set,
+ * replaces the global counterpart for the dotted method path keying
+ * this override (e.g., `pages.retrieveMarkdown`). Unset fields fall
+ * back to the global default for that knob — an override may loosen
+ * a single dimension (rps only) without re-stating the others.
+ *
+ * The path key is matched against the dot-joined SDK method path the
+ * wrapper walks at call time — `pages.retrieveMarkdown`, not the URL
+ * shape `/v1/pages/{id}/markdown`. Two top-level methods (`search`,
+ * `request`) match the bare method name.
+ */
+export interface NotionRateLimitEndpointOverride {
+  concurrency?: number
+  requestsPerSecond?: number
+  burstSize?: number
+}
+
+/**
+ * Built-in endpoint overrides loosening the global pace for endpoints
+ * with operator-runnable probe evidence. Adding an entry here implies
+ * the dotted path has been measured against a real vault with the
+ * probe under `tools/probe-notion-endpoint.mjs` (or its dedicated
+ * predecessor `tools/probe-retrieve-markdown.mjs`) and the chosen
+ * rate sits at conservative headroom below the observed server-side
+ * ceiling.
+ *
+ * Each entry carries its measurement in its docstring. The convention
+ * is ~2× headroom below the cell at concurrency=10, the cell that
+ * empirically dominates p50 throughput on the probed endpoints. The
+ * margin absorbs (a) multi-process composition on one operator token
+ * — two Lore processes at the override rate still sit at or below
+ * the measured ceiling — and (b) tighter per-workspace caps than the
+ * probed reference vault.
+ *
+ * Add new entries only with paired probe evidence. If an operator sets any
+ * global `notion.rateLimit.*` knob without an explicit `endpointOverrides`
+ * map, those effective global values cap this built-in table so existing
+ * process-wide throttles remain conservative. Operators who want a probed
+ * endpoint to exceed their global gate opt in with an explicit per-endpoint
+ * entry in `.lore.yaml`.
+ */
+export const DEFAULT_NOTION_ENDPOINT_OVERRIDES: Readonly<
+  Record<string, NotionRateLimitEndpointOverride>
+> = Object.freeze({
+  // Body-fetch hot path on list views. Probe matrix at concurrency
+  // 1 / 3 / 5 / 10 / 20 sustained ~28–30 rps with zero 429s on the
+  // probed vault. 15 rps with a 5-token burst leaves ~2× headroom
+  // below the conservative measured ceiling.
+  "pages.retrieveMarkdown": Object.freeze({
+    concurrency: 10,
+    requestsPerSecond: 15,
+    burstSize: 5,
+  }),
+  // Title-resolution hot path — render layer batch-resolves titles
+  // for cited rows, RunTool search hydration fans out one
+  // `pages.retrieve` per hit. Probe matrix sustained ~25 rps at
+  // concurrency=10 with zero 429s. 10 rps with a 5-token burst
+  // leaves ~2.5× headroom below the measured ceiling.
+  "pages.retrieve": Object.freeze({
+    concurrency: 10,
+    requestsPerSecond: 10,
+    burstSize: 5,
+  }),
+  // List / search hot path — `MemoryService.list`,
+  // `MemoryService.search` contains-mode, fact / decision / entity
+  // queries all dispatch `dataSources.query`. Probe matrix sustained
+  // ~13 rps at concurrency=10 with zero 429s. The endpoint is
+  // visibly heavier than `pages.retrieve` (p50 ~550ms vs ~280ms),
+  // so the override stays tighter: 5 rps with a 3-token burst is
+  // ~2.6× below the measured ceiling.
+  "dataSources.query": Object.freeze({
+    concurrency: 5,
+    requestsPerSecond: 5,
+    burstSize: 3,
+  }),
+})
 
 /**
  * Default fallback pause when a 429 surfaces without a parseable
@@ -146,6 +220,34 @@ export interface NotionRateLimitOptions {
    * quiet period. Defaults to {@link DEFAULT_NOTION_BURST_SIZE}.
    */
   burstSize?: number
+  /**
+   * Per-endpoint pacing overrides keyed by dot-joined SDK method path
+   * (e.g., `"pages.retrieveMarkdown"`, `"dataSources.query"`, or the
+   * bare top-level name `"search"` / `"request"`). Each override
+   * replaces the global pacing dimensions it specifies; unset
+   * dimensions fall back to the surrounding {@link concurrency} /
+   * {@link requestsPerSecond} / {@link burstSize}.
+   *
+   * Builds a separate token bucket and `p-limit` slot per overridden
+   * path, so a fast endpoint does not consume the global gate's
+   * tokens and a slow endpoint does not block the global gate's slots.
+   * Endpoints without an override route through the global gate.
+   *
+   * Built-in overrides are inherited when this field is omitted. If the caller
+   * also supplies any global rate-limit knob, the effective global values cap
+   * the built-in table so an existing process-wide throttle is not silently
+   * loosened on hot paths.
+   *
+   * Caller-supplied overrides REPLACE
+   * {@link DEFAULT_NOTION_ENDPOINT_OVERRIDES} for any path the caller
+   * names. A caller passing `{ "pages.retrieveMarkdown": { ... } }`
+   * does NOT silently merge with the built-in entry; the
+   * `requestsPerSecond` value the caller provides is the value that
+   * lands on the gate. Pass `endpointOverrides: {}` to opt out of
+   * the built-in overrides entirely (every endpoint routes through
+   * the global gate).
+   */
+  endpointOverrides?: Record<string, NotionRateLimitEndpointOverride>
 }
 
 /**
@@ -412,6 +514,30 @@ function validatePositiveNumber(name: string, value: number): void {
   }
 }
 
+function capBuiltInEndpointOverrides(
+  defaults: Readonly<Record<string, NotionRateLimitEndpointOverride>>,
+  caps: Required<NotionRateLimitEndpointOverride>,
+): Record<string, NotionRateLimitEndpointOverride> {
+  const capped: Record<string, NotionRateLimitEndpointOverride> = {}
+  for (const [path, override] of Object.entries(defaults)) {
+    capped[path] = {
+      concurrency:
+        override.concurrency === undefined
+          ? undefined
+          : Math.min(override.concurrency, caps.concurrency),
+      requestsPerSecond:
+        override.requestsPerSecond === undefined
+          ? undefined
+          : Math.min(override.requestsPerSecond, caps.requestsPerSecond),
+      burstSize:
+        override.burstSize === undefined
+          ? undefined
+          : Math.min(override.burstSize, caps.burstSize),
+    }
+  }
+  return capped
+}
+
 /**
  * Wrap a Notion client so every outbound method call is paced by a
  * shared token bucket and gated by a shared concurrency limit.
@@ -436,6 +562,15 @@ function validatePositiveNumber(name: string, value: number): void {
  * calls automatically share this gate. No separate gate factory
  * is needed.
  */
+/**
+ * Internal handle pairing a token bucket with a `p-limit` slot. One
+ * handle per gate — one global, one per endpoint override.
+ */
+interface RateGate {
+  bucket: TokenBucket
+  limit: ReturnType<typeof pLimit>
+}
+
 export function createLimitedClient(
   client: Client,
   options: number | NotionRateLimitOptions = {},
@@ -443,6 +578,11 @@ export function createLimitedClient(
 ): Client {
   const opts: NotionRateLimitOptions =
     typeof options === "number" ? { concurrency: options } : options
+  const hasCallerGlobalKnob =
+    typeof options === "number" ||
+    opts.concurrency !== undefined ||
+    opts.requestsPerSecond !== undefined ||
+    opts.burstSize !== undefined
 
   const concurrency = opts.concurrency ?? DEFAULT_NOTION_CONCURRENCY
   const requestsPerSecond =
@@ -453,13 +593,81 @@ export function createLimitedClient(
   validatePositiveNumber("requestsPerSecond", requestsPerSecond)
   validatePositiveInteger("burstSize", burstSize)
 
-  const limit = pLimit(concurrency)
-  const bucket = new TokenBucket(burstSize, requestsPerSecond, deps)
   const onBackoff = deps.onBackoff ?? defaultOnBackoff
 
+  const globalGate: RateGate = {
+    bucket: new TokenBucket(burstSize, requestsPerSecond, deps),
+    limit: pLimit(concurrency),
+  }
+
+  // Caller-supplied overrides replace the built-in entries — passing
+  // `endpointOverrides: {}` opts every endpoint back through the
+  // global gate. An omitted `endpointOverrides` inherits the built-in
+  // table so consumers that don't think about endpoint pacing still
+  // pick up the probe-justified defaults. If the caller supplied any
+  // global knob, cap the built-in table with those effective global
+  // values so an existing process-wide throttle is not silently
+  // loosened on the hot paths that now have defaults.
+  const overrideMap: Record<string, NotionRateLimitEndpointOverride> =
+    opts.endpointOverrides ??
+    (hasCallerGlobalKnob
+      ? capBuiltInEndpointOverrides(DEFAULT_NOTION_ENDPOINT_OVERRIDES, {
+          concurrency,
+          requestsPerSecond,
+          burstSize,
+        })
+      : DEFAULT_NOTION_ENDPOINT_OVERRIDES)
+
+  const endpointGates = new Map<string, RateGate>()
+  for (const [path, override] of Object.entries(overrideMap)) {
+    if (!path) {
+      throw new Error(
+        "Notion rate-limit endpointOverrides key must be a non-empty string",
+      )
+    }
+    const epConcurrency = override.concurrency ?? concurrency
+    const epRequestsPerSecond = override.requestsPerSecond ?? requestsPerSecond
+    const epBurstSize = override.burstSize ?? burstSize
+    validatePositiveInteger(
+      `endpointOverrides["${path}"].concurrency`,
+      epConcurrency,
+    )
+    validatePositiveNumber(
+      `endpointOverrides["${path}"].requestsPerSecond`,
+      epRequestsPerSecond,
+    )
+    validatePositiveInteger(
+      `endpointOverrides["${path}"].burstSize`,
+      epBurstSize,
+    )
+    endpointGates.set(path, {
+      bucket: new TokenBucket(epBurstSize, epRequestsPerSecond, deps),
+      limit: pLimit(epConcurrency),
+    })
+  }
+
+  // Materialize the list of all buckets once so the 429 path doesn't
+  // walk the override map on every backoff event. A 429 from any
+  // endpoint pauses every bucket — Notion's per-token server-side
+  // bucket is shared across endpoints, so a throttling signal on one
+  // endpoint means siblings on the same token are also in the
+  // throttling window.
+  const allBuckets: readonly TokenBucket[] = [
+    globalGate.bucket,
+    ...Array.from(endpointGates.values(), (g) => g.bucket),
+  ]
+
+  const gateFor = (path: string): RateGate =>
+    endpointGates.get(path) ?? globalGate
+
   const wrapMethod =
-    (fn: (...args: unknown[]) => unknown, thisArg: unknown) =>
-    async (...args: unknown[]) =>
+    (
+      fn: (...args: unknown[]) => unknown,
+      thisArg: unknown,
+      path: string,
+    ) =>
+    async (...args: unknown[]) => {
+      const gate = gateFor(path)
       // Claim the p-limit slot FIRST and acquire the bucket token
       // INSIDE the slot, immediately before the SDK call.
       //
@@ -481,8 +689,8 @@ export function createLimitedClient(
       // claim-slot-first ordering is correct for FIFO fairness
       // w.r.t. backoff — callers that arrived before a 429 land in
       // the same gate the pause governs.
-      limit(async () => {
-        await bucket.acquire()
+      return gate.limit(async () => {
+        await gate.bucket.acquire()
         try {
           return await (fn.apply(thisArg, args) as Promise<unknown>)
         } catch (err) {
@@ -496,13 +704,6 @@ export function createLimitedClient(
           // would burn its own SDK retry budget on the same
           // sustained rate-limit event.
           if (isRateLimitError(err)) {
-            // Pass `deps.now` directly rather than re-resolving the
-            // default at this layer — the bucket already encapsulates
-            // its own copy of the same dep, and a shadow copy here
-            // would be duplicate state per the post-update review's
-            // micro-nit. `extractRetryAfterMs` defaults `Date.now` at
-            // its own boundary, so passing `undefined` is equivalent
-            // to passing the default.
             const parsed = extractRetryAfterMs(err, deps.now)
             // Clamp before pausing: an unbounded `Retry-After` would
             // freeze the entire client for the value Notion (or a
@@ -519,7 +720,13 @@ export function createLimitedClient(
                 : requested > MAX_RATE_LIMIT_BACKOFF_MS
                   ? "header-clamped"
                   : "header"
-            bucket.pauseFor(clamped)
+            // Pause every bucket — Notion's per-token bucket is
+            // shared across endpoints, so a 429 on one endpoint
+            // means siblings on the same token are also in the
+            // throttling window. Pausing only the offending gate
+            // would let endpoints with their own gate continue
+            // hammering the same throttled server-side bucket.
+            for (const bucket of allBuckets) bucket.pauseFor(clamped)
             // Visibility is load-bearing — without it, a 429 storm
             // surfaces only as "lore is slow today." See
             // `defaultOnBackoff` for the default stderr emitter.
@@ -534,22 +741,31 @@ export function createLimitedClient(
           throw err
         }
       })
+    }
 
-  const wrapLevel = <T extends object>(obj: T): T =>
+  const wrapLevel = <T extends object>(obj: T, path: string): T =>
     new Proxy(obj, {
       get(target, prop, receiver) {
+        if (typeof prop === "symbol") {
+          return Reflect.get(target, prop, receiver)
+        }
         const value = Reflect.get(target, prop, receiver)
+        const nextPath = path === "" ? prop : `${path}.${prop}`
         if (typeof value === "function") {
-          return wrapMethod(value as (...args: unknown[]) => unknown, target)
+          return wrapMethod(
+            value as (...args: unknown[]) => unknown,
+            target,
+            nextPath,
+          )
         }
         if (typeof value === "object" && value !== null) {
-          return wrapLevel(value as object)
+          return wrapLevel(value as object, nextPath)
         }
         return value
       },
     })
 
-  return wrapLevel(client)
+  return wrapLevel(client, "")
 }
 
 // ---------------------------------------------------------------------------

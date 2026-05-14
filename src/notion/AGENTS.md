@@ -326,41 +326,43 @@ outside strict service initialization.
 `rate-limit.ts` exports `createLimitedClient(client, options)`. It returns
 a `Proxy` over the real client that routes every outbound method call
 through three composed gates so fan-out (decision-graph walks, batch
-fact fetches, render-layer title lookups) stays under the measured
-server-side ceiling for `pages.retrieveMarkdown`. Notion's original
-public "~3 rps" guidance is the serial-latency floor
-(`1 / per-call-latency ≈ 3 rps`), not the real server ceiling — the
-operator-rerunnable probe shipped alongside this module is the
-direct-SDK measurement of `retrieveMarkdown` against a real vault.
-That probe measured one endpoint only; broader endpoint coverage
-(writes, RunTool, tighter workspaces) is a follow-up; the per-vault
-`notion.rateLimit.*` config knobs are the operator-side override.
+fact fetches, render-layer title lookups) stays under Notion's per-token
+ceiling. The global gate aligns with Notion's published ~3 rps guidance;
+a small built-in table of endpoint-specific overrides
+(`DEFAULT_NOTION_ENDPOINT_OVERRIDES`) loosens individual endpoints whose
+server-side throughput has been measured against a real vault under
+`tools/`. Per-vault `notion.rateLimit.*` config knobs (including
+`endpointOverrides`) are the operator-side override.
 
-1. **Token bucket** (request rate) — paces sustained throughput.
-   Capacity = `burstSize` (`DEFAULT_NOTION_BURST_SIZE`); refill =
-   `requestsPerSecond` (`DEFAULT_NOTION_REQUESTS_PER_SECOND`). Short
+1. **Token bucket** (request rate) — paces sustained throughput. The
+   global gate's capacity is `burstSize` (`DEFAULT_NOTION_BURST_SIZE`)
+   and its refill is `requestsPerSecond`
+   (`DEFAULT_NOTION_REQUESTS_PER_SECOND`); each endpoint override
+   builds its own bucket sized to the operator-provided values. Short
    fan-outs that fit under the burst fire instantly; longer fan-outs
-   pace at the refill rate. The constant's own docstring carries the
-   probe-derived sizing rationale and the per-process vs
-   multi-process composition math.
+   pace at the refill rate. The endpoint-override table's docstring
+   carries the per-entry probe-derived sizing rationale.
 2. **`p-limit` slot** (concurrency) — bounds simultaneous in-flight
    requests so a slow Notion call can't fan out memory under heavy
-   load. Capacity = `concurrency` (`DEFAULT_NOTION_CONCURRENCY`). At
-   the probed p50 latency the bucket binds before the slot cap;
-   concurrency matters under tail-latency spikes.
+   load. One slot pool per gate — the global pool sized by
+   `concurrency` (`DEFAULT_NOTION_CONCURRENCY`), each override its
+   own pool. At probed p50 latency the bucket binds before the slot
+   cap; concurrency matters under tail-latency spikes.
 3. **Shared 429 backoff** — when a 429 escapes the SDK's internal
    retry budget (the v5 SDK retries 429s twice with `Retry-After`
-   parsing), the wrapper pauses the bucket for the surfaced
-   `Retry-After` (or `DEFAULT_RATE_LIMIT_BACKOFF_MS = 1000ms` when
-   absent), clamped at `MAX_RATE_LIMIT_BACKOFF_MS = 60_000ms` so a
-   runaway header doesn't freeze the entire client for hours. The
-   pause is observed by every subsequent dispatch on this client.
-   Siblings already past the in-slot `bucket.acquire()` (i.e.
-   already-dispatched SDK calls) are NOT affected — the pause
-   governs the next dispatch, not in-flight calls. Backoff events
-   emit a `[lore] notion-sdk warn: 429 backoff <ms> (source=...)`
-   stderr line by default; consumers wanting telemetry replace
-   `deps.onBackoff`.
+   parsing), the wrapper pauses **every** bucket — global plus every
+   endpoint override — for the surfaced `Retry-After` (or
+   `DEFAULT_RATE_LIMIT_BACKOFF_MS = 1000ms` when absent), clamped at
+   `MAX_RATE_LIMIT_BACKOFF_MS = 60_000ms` so a runaway header doesn't
+   freeze the entire client for hours. The Notion per-token
+   server-side bucket is shared across endpoints, so a throttling
+   signal on one endpoint means siblings on the same token are also
+   in the throttling window. Siblings already past the in-slot
+   `bucket.acquire()` (i.e. already-dispatched SDK calls) are NOT
+   affected — the pause governs the next dispatch, not in-flight
+   calls. Backoff events emit a `[lore] notion-sdk warn: 429 backoff
+   <ms> (source=...)` stderr line by default; consumers wanting
+   telemetry replace `deps.onBackoff`.
 
 The Proxy **recurses through sub-namespaces at arbitrary depth**, so
 three-level paths like `client.blocks.children.list`,
@@ -371,24 +373,44 @@ non-recursive wrapper would leak these three-level calls — an earlier
 revision of this module did, and `setup.ts`'s `blocks.children.list`
 verification sweep was ungoverned until the fix.
 
+The proxy tracks the dot-joined path of every method invocation so the
+gate routing for an endpoint override is the same string the operator
+writes in `endpointOverrides` (e.g., `pages.retrieveMarkdown`,
+`dataSources.query`). Top-level methods (`search`, `request`) match
+the bare method name.
+
 `initServicesFromConfig` and `lore init` both wrap the raw client
 before handing it to services. `initServicesFromConfig` reads
 `config.notion.rateLimit` (with `concurrency` / `requestsPerSecond` /
-`burstSize` knobs); `lore init` runs before `.lore.yaml` exists, so it
-uses defaults and picks up any custom values on subsequent commands.
+`burstSize` knobs plus `endpointOverrides`); `lore init` runs before
+`.lore.yaml` exists, so it uses defaults and picks up any custom
+values on subsequent commands.
+
+**Endpoint-override defaults are inherited unless the caller passes
+their own map.** Passing `endpointOverrides: {}` opts every endpoint
+back through the global gate — the operator escape hatch for a vault
+that throttles tighter than the probed reference. A caller-supplied
+map REPLACES the built-in table (no silent merge), so a single
+override entry doesn't quietly inherit unrelated built-in entries the
+operator didn't ask for. If the caller omits `endpointOverrides` but
+supplies any global `concurrency`, `requestsPerSecond`, or `burstSize`
+knob, the effective global values cap the inherited built-ins; this
+preserves existing process-wide throttles for operators who tuned the
+single-gate limiter.
 
 **Backwards-compatible signature**: a bare `number` second argument
-is interpreted as `{ concurrency: <n> }`. Legacy `createLimitedClient(client, 3)`
-call sites continue to work; they pick up the new rps + burst defaults
-transparently.
+is interpreted as `{ concurrency: <n> }`. Legacy
+`createLimitedClient(client, 3)` call sites continue to work; they
+pick up the new rps + burst defaults transparently.
 
-**One-time setup flows pay the rps tax too.** `lore init`,
-`lore install`, and `lore auth --status` previously had only the
-concurrency cap; under the current defaults they're paced at 20 rps
-with a 10-token burst. These flows run once-per-vault each and are
-not on the hot path. Operators who measure their workload and want
-to tune up or down should set `notion.rateLimit.requestsPerSecond`
-in `.lore.yaml`.
+**One-time setup flows share the same gate.** `lore init`,
+`lore install`, and `lore auth --status` route through
+`createLimitedClient` with the same defaults as long-running
+processes. These flows run once-per-vault and are not on the hot
+path. Operators who measure their workload and want to loosen the
+global or scope a specific endpoint set
+`notion.rateLimit.requestsPerSecond` or
+`notion.rateLimit.endpointOverrides` in `.lore.yaml`.
 
 **Bucket lifecycle.** The bucket only schedules a refill timer when
 its waiter queue is non-empty; the timer is NOT `unref`'d. An

@@ -4,6 +4,7 @@ import {
   createLimitedClient,
   DEFAULT_NOTION_BURST_SIZE,
   DEFAULT_NOTION_CONCURRENCY,
+  DEFAULT_NOTION_ENDPOINT_OVERRIDES,
   DEFAULT_NOTION_REQUESTS_PER_SECOND,
   DEFAULT_RATE_LIMIT_BACKOFF_MS,
   MAX_RATE_LIMIT_BACKOFF_MS,
@@ -87,6 +88,18 @@ function makeObservableClient(callDurationMs = 20): {
  * behavior would NOT use this constant.
  */
 const RATE_GATE_DISABLED = { requestsPerSecond: 1000, burstSize: 1000 } as const
+
+/**
+ * Disable the built-in `DEFAULT_NOTION_ENDPOINT_OVERRIDES` table so a
+ * test exercising `pages.retrieve` / `pages.retrieveMarkdown` /
+ * `dataSources.query` observes the global gate rather than the
+ * endpoint-scoped one. Tests that *assert* override behavior pass
+ * their own `endpointOverrides` map; tests that assert the global
+ * gate's behavior on endpoint paths happen to also overlap with the
+ * override surface use this constant to keep the gate routing
+ * unambiguous.
+ */
+const NO_ENDPOINT_OVERRIDES = { endpointOverrides: {} } as const
 
 /** Suppress the default `[lore] notion-sdk warn:` stderr line on tests
  * that intentionally trigger 429 backoff. Tests that want to *assert*
@@ -173,7 +186,11 @@ describe("createLimitedClient — concurrency gate", () => {
 
   it("shares the same gate across every namespace", async () => {
     const { client, maxInFlight, callCount } = makeObservableClient()
-    const limited = createLimitedClient(client, { concurrency: 2, ...RATE_GATE_DISABLED })
+    const limited = createLimitedClient(client, {
+      concurrency: 2,
+      ...RATE_GATE_DISABLED,
+      ...NO_ENDPOINT_OVERRIDES,
+    })
 
     await Promise.all([
       limited.pages.retrieve({} as never),
@@ -280,10 +297,37 @@ describe("createLimitedClient — concurrency gate", () => {
     // public surface for future call sites that want to override on a
     // per-flow basis. The literal-pin below is the guard that catches
     // an accidental drift away from the values the rate-limit
-    // docstring is justifying — the rationale lives there.
-    expect(DEFAULT_NOTION_CONCURRENCY).toBe(10)
-    expect(DEFAULT_NOTION_REQUESTS_PER_SECOND).toBe(20)
-    expect(DEFAULT_NOTION_BURST_SIZE).toBe(10)
+    // docstring is justifying — the rationale lives there. Global gate
+    // aligns with Notion's public-API ~3 rps guidance; endpoints with
+    // probe evidence opt into higher rates via the override table.
+    expect(DEFAULT_NOTION_CONCURRENCY).toBe(3)
+    expect(DEFAULT_NOTION_REQUESTS_PER_SECOND).toBe(3)
+    expect(DEFAULT_NOTION_BURST_SIZE).toBe(3)
+  })
+
+  it("ships probe-justified overrides for the measured hot-path endpoints", () => {
+    // Each entry runs under its own gate so the relevant fan-out
+    // (body fetches on list views, title resolution after search,
+    // bulk DS queries) can pace at the rate the probed server-side
+    // ceiling tolerates without dragging every other endpoint over
+    // the published ~3 rps Notion guidance.
+    expect(
+      DEFAULT_NOTION_ENDPOINT_OVERRIDES["pages.retrieveMarkdown"],
+    ).toEqual({
+      concurrency: 10,
+      requestsPerSecond: 15,
+      burstSize: 5,
+    })
+    expect(DEFAULT_NOTION_ENDPOINT_OVERRIDES["pages.retrieve"]).toEqual({
+      concurrency: 10,
+      requestsPerSecond: 10,
+      burstSize: 5,
+    })
+    expect(DEFAULT_NOTION_ENDPOINT_OVERRIDES["dataSources.query"]).toEqual({
+      concurrency: 5,
+      requestsPerSecond: 5,
+      burstSize: 3,
+    })
   })
 })
 
@@ -298,12 +342,15 @@ describe("createLimitedClient — token bucket pacing", () => {
   it("paces a burst of calls beyond the bucket capacity", async () => {
     // 10 calls, burst=3, 10 rps → first 3 fire instantly, then one
     // every 100ms. p-limit cap of 10 means concurrency isn't the
-    // bottleneck — the rate limiter is.
+    // bottleneck — the rate limiter is. Opts out of the built-in
+    // overrides so this test pins the global gate's behavior
+    // without `dataSources.query` routing through its own bucket.
     const { client, callCount } = makeObservableClient(0)
     const limited = createLimitedClient(client, {
       concurrency: 10,
       requestsPerSecond: 10,
       burstSize: 3,
+      ...NO_ENDPOINT_OVERRIDES,
     })
 
     const promises = Array.from({ length: 10 }, () =>
@@ -371,11 +418,16 @@ describe("createLimitedClient — token bucket pacing", () => {
     // dispatch. The hydration loop is sequential under the
     // implementation, but a concurrent caller (or a future
     // parallelization) would also see the gate applied.
+    //
+    // Opts out of the built-in overrides so the pacing assertion
+    // observes the caller-configured bucket, not the default
+    // `pages.retrieve` override gate.
     const { client, callCount } = makeObservableClient(0)
     const limited = createLimitedClient(client, {
       concurrency: 25,
       requestsPerSecond: 10,
       burstSize: 3,
+      ...NO_ENDPOINT_OVERRIDES,
     })
 
     const promises = Array.from({ length: 10 }, () =>
@@ -573,6 +625,7 @@ describe("createLimitedClient — 429 shared backoff", () => {
         concurrency: 1, // tight slot contention so siblings serialize
         requestsPerSecond: 1000,
         burstSize: 5, // > concurrency: would mask the bug under old order
+        ...NO_ENDPOINT_OVERRIDES,
       },
       SILENT_BACKOFF,
     )
@@ -1056,5 +1109,414 @@ describe("TokenBucket", () => {
     await advance(100)
     await Promise.all([p0, p1, p2])
     expect(acquired).toEqual([0, 1, 2])
+  })
+})
+
+describe("createLimitedClient — endpoint overrides", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * Build an observable stub that tags every call by its dotted path
+   * so a test can assert that the override gate is what's pacing a
+   * given endpoint without coupling to the SDK's internal shape.
+   */
+  function makePathAwareClient(callDurationMs = 0): {
+    client: Client
+    callsAt: () => Array<{ path: string; at: number }>
+  } {
+    const calls: Array<{ path: string; at: number }> = []
+    const track = async (path: string) => {
+      calls.push({ path, at: Date.now() })
+      if (callDurationMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, callDurationMs))
+      }
+    }
+    const stub = {
+      pages: {
+        retrieve: () => track("pages.retrieve"),
+        retrieveMarkdown: () => track("pages.retrieveMarkdown"),
+        update: () => track("pages.update"),
+        updateMarkdown: () => track("pages.updateMarkdown"),
+      },
+      dataSources: {
+        query: () => track("dataSources.query"),
+      },
+      blocks: {
+        children: { list: () => track("blocks.children.list") },
+      },
+      search: () => track("search"),
+      request: () => track("request"),
+    } as unknown as Client
+    return { client: stub, callsAt: () => calls }
+  }
+
+  it("routes an overridden endpoint through its own bucket independent of the global gate", async () => {
+    // Global: 1 rps, burst 1. Override: 10 rps, burst 5.
+    // Five concurrent `pages.retrieveMarkdown` calls under the
+    // override fire as a burst; under the global gate they would
+    // serialize at 1/s.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {
+        "pages.retrieveMarkdown": {
+          concurrency: 5,
+          requestsPerSecond: 10,
+          burstSize: 5,
+        },
+      },
+    })
+
+    const promises = Array.from({ length: 5 }, () =>
+      limited.pages.retrieveMarkdown({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(5)
+    await Promise.all(promises)
+  })
+
+  it("falls back to the global gate for endpoints with no override", async () => {
+    // Global: burst 1, rps 10. Override only `pages.retrieveMarkdown`.
+    // Three concurrent `pages.retrieve` calls (no override) pace
+    // through the global bucket: 1 fires instantly, then one every
+    // 100ms.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 10,
+      burstSize: 1,
+      endpointOverrides: {
+        "pages.retrieveMarkdown": {
+          requestsPerSecond: 100,
+          burstSize: 100,
+        },
+      },
+    })
+
+    const promises = Array.from({ length: 3 }, () =>
+      limited.pages.retrieve({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(callsAt().length).toBe(2)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(callsAt().length).toBe(3)
+    await Promise.all(promises)
+  })
+
+  it("isolates the override's bucket from concurrent global-gate traffic", async () => {
+    // Global: burst 1, rps 1. Override: burst 3, rps 3.
+    // A simultaneous burst on the overridden endpoint and the global
+    // endpoint should NOT see the global-gate caller block the
+    // overridden caller. The override's bucket has its own tokens.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {
+        "pages.retrieveMarkdown": {
+          concurrency: 5,
+          requestsPerSecond: 3,
+          burstSize: 3,
+        },
+      },
+    })
+
+    // Dispatch one global-gate call (consumes the single global token)
+    // and three override calls (consume the three override tokens) in
+    // the same tick. All four should fire instantly.
+    const globalCall = limited.pages.retrieve({} as never)
+    const overrideCalls = Array.from({ length: 3 }, () =>
+      limited.pages.retrieveMarkdown({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(4)
+    await Promise.all([globalCall, ...overrideCalls])
+  })
+
+  it("pauses every bucket when a 429 surfaces from any endpoint", async () => {
+    // A 429 from the override gate must pause the global gate too —
+    // Notion's per-token server-side bucket is shared across endpoints.
+    // Without this rule, a 429 on `pages.retrieveMarkdown` would leave
+    // a concurrent `pages.update` caller free to hammer the same
+    // throttled server-side bucket.
+    let firstFailed = false
+    const stub = {
+      pages: {
+        retrieveMarkdown: async () => {
+          if (!firstFailed) {
+            firstFailed = true
+            const err = Object.assign(new Error("rate_limited"), {
+              code: "rate_limited",
+              status: 429,
+              headers: new Headers({ "retry-after": "2" }),
+            })
+            throw err
+          }
+          return { id: "ok" }
+        },
+        update: async () => "ok",
+      },
+    } as unknown as Client
+    const limited = createLimitedClient(
+      stub,
+      {
+        concurrency: 5,
+        requestsPerSecond: 1000,
+        burstSize: 5,
+        endpointOverrides: {
+          "pages.retrieveMarkdown": {
+            concurrency: 5,
+            requestsPerSecond: 1000,
+            burstSize: 5,
+          },
+        },
+      },
+      SILENT_BACKOFF,
+    )
+
+    await expect(limited.pages.retrieveMarkdown({} as never)).rejects.toThrow(
+      "rate_limited",
+    )
+
+    // A subsequent global-gate call must observe the pause set by the
+    // override gate's 429. If only the override bucket was paused, the
+    // global-gate call would settle immediately.
+    let siblingSettled = false
+    const sibling = limited.pages.update({} as never).then((value) => {
+      siblingSettled = true
+      return value
+    })
+
+    await vi.advanceTimersByTimeAsync(500)
+    expect(siblingSettled).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await sibling
+    expect(siblingSettled).toBe(true)
+  })
+
+  it("uses caller-supplied override map verbatim (no merge with built-ins)", async () => {
+    // Passing `endpointOverrides: { "pages.retrieve": { ... } }`
+    // replaces the built-in `pages.retrieveMarkdown` override — the
+    // caller's map is the source of truth. A built-in `retrieveMarkdown`
+    // entry quietly composed with the caller's `pages.retrieve` would
+    // make `endpointOverrides: {}` ambiguous and surprise operators
+    // tightening a vault by clearing every override.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {
+        "pages.retrieve": {
+          concurrency: 5,
+          requestsPerSecond: 100,
+          burstSize: 100,
+        },
+      },
+    })
+
+    // pages.retrieveMarkdown should now route through the GLOBAL gate
+    // (no built-in override is silently merged), so a burst of three
+    // serializes at 1/s — NOT a 5-token burst.
+    const promises = Array.from({ length: 3 }, () =>
+      limited.pages.retrieveMarkdown({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(1)
+    await Promise.all(promises.map(() => vi.advanceTimersByTimeAsync(1000)))
+    await Promise.all(promises)
+  })
+
+  it("inherits the built-in override table when endpointOverrides is omitted", async () => {
+    // Bare `createLimitedClient(client)` picks up the
+    // DEFAULT_NOTION_ENDPOINT_OVERRIDES table. The probe-justified
+    // `pages.retrieveMarkdown` override sits at burst=5, so five
+    // concurrent calls fire instantly even with the global gate
+    // pinned at burst=3 (the default).
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client)
+
+    const promises = Array.from({ length: 5 }, () =>
+      limited.pages.retrieveMarkdown({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(5)
+    await Promise.all(promises)
+  })
+
+  it("caps inherited built-in overrides with caller-supplied global throttles", async () => {
+    // Existing operators may already have process-wide throttles in
+    // `.lore.yaml`. Omitting `endpointOverrides` should not silently
+    // loosen the hot endpoints above those global values; the built-in
+    // table is inherited, but capped by the effective global knobs.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 1,
+      requestsPerSecond: 1,
+      burstSize: 1,
+    })
+
+    const promises = [
+      ...Array.from({ length: 2 }, () =>
+        limited.pages.retrieveMarkdown({} as never),
+      ),
+      ...Array.from({ length: 2 }, () => limited.pages.retrieve({} as never)),
+      ...Array.from({ length: 2 }, () =>
+        limited.dataSources.query({} as never),
+      ),
+    ]
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().map((call) => call.path).sort()).toEqual([
+      "dataSources.query",
+      "pages.retrieve",
+      "pages.retrieveMarkdown",
+    ])
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(callsAt().length).toBe(6)
+    await Promise.all(promises)
+  })
+
+  it("opts out of built-in overrides when endpointOverrides is an empty object", async () => {
+    // Passing `endpointOverrides: {}` is the operator escape hatch for
+    // a tighter vault: every endpoint routes through the global gate,
+    // even the probe-justified `pages.retrieveMarkdown`. With global
+    // burst=1, five concurrent calls serialize.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {},
+    })
+
+    const promises = Array.from({ length: 5 }, () =>
+      limited.pages.retrieveMarkdown({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(1)
+    await Promise.all(promises.map(() => vi.advanceTimersByTimeAsync(1000)))
+    await Promise.all(promises)
+  })
+
+  it("validates override dimensions and names the failing path", () => {
+    const { client } = makePathAwareClient(0)
+    expect(() =>
+      createLimitedClient(client, {
+        endpointOverrides: {
+          "pages.retrieveMarkdown": { concurrency: 0 },
+        },
+      }),
+    ).toThrow(/pages.retrieveMarkdown.*concurrency/)
+    expect(() =>
+      createLimitedClient(client, {
+        endpointOverrides: {
+          "dataSources.query": { requestsPerSecond: -1 },
+        },
+      }),
+    ).toThrow(/dataSources.query.*requestsPerSecond/)
+    expect(() =>
+      createLimitedClient(client, {
+        endpointOverrides: {
+          "pages.retrieve": { burstSize: 2.5 },
+        },
+      }),
+    ).toThrow(/pages.retrieve.*burstSize/)
+  })
+
+  it("rejects an empty-string override path at construction", () => {
+    const { client } = makePathAwareClient(0)
+    expect(() =>
+      createLimitedClient(client, {
+        endpointOverrides: { "": { requestsPerSecond: 5 } },
+      }),
+    ).toThrow(/non-empty string/)
+  })
+
+  it("matches three-level paths like `blocks.children.list`", async () => {
+    // The override key is the dot-joined path from the client root, so
+    // a three-level method's override looks up under the joined name.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {
+        "blocks.children.list": {
+          concurrency: 5,
+          requestsPerSecond: 100,
+          burstSize: 5,
+        },
+      },
+    })
+
+    const promises = Array.from({ length: 5 }, () =>
+      limited.blocks.children.list({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(5)
+    await Promise.all(promises)
+  })
+
+  it("matches a top-level method like `search` under the bare name", async () => {
+    // `search` and `request` are top-level methods; their dotted path
+    // is the bare name, so the override key matches the same string.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {
+        search: { concurrency: 5, requestsPerSecond: 100, burstSize: 5 },
+      },
+    })
+
+    const promises = Array.from({ length: 5 }, () =>
+      limited.search({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(5)
+    await Promise.all(promises)
+  })
+
+  it("inherits unspecified dimensions from the global gate", async () => {
+    // An override that sets only `requestsPerSecond` should inherit
+    // `concurrency` and `burstSize` from the surrounding globals. A
+    // burst of three with global burst=1 and override rps=10 should
+    // see one call fire and the next pace at 1/(10/s) = 100ms.
+    const { client, callsAt } = makePathAwareClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 5,
+      requestsPerSecond: 1,
+      burstSize: 1,
+      endpointOverrides: {
+        "pages.retrieveMarkdown": {
+          requestsPerSecond: 10,
+        },
+      },
+    })
+
+    const promises = Array.from({ length: 3 }, () =>
+      limited.pages.retrieveMarkdown({} as never),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsAt().length).toBe(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(callsAt().length).toBe(2)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(callsAt().length).toBe(3)
+    await Promise.all(promises)
   })
 })

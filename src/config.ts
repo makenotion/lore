@@ -94,6 +94,16 @@ const configSchema = z.object({
           concurrency: z.number().int().positive().optional(),
           requestsPerSecond: z.number().positive().optional(),
           burstSize: z.number().int().positive().optional(),
+          endpointOverrides: z
+            .record(
+              z.string().min(1),
+              z.object({
+                concurrency: z.number().int().positive().optional(),
+                requestsPerSecond: z.number().positive().optional(),
+                burstSize: z.number().int().positive().optional(),
+              })
+            )
+            .optional(),
         })
         .optional(),
     })

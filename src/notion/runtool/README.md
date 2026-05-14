@@ -427,13 +427,16 @@ RunTool calls go through **two rate-limit checks**:
 
 ### How this composes with the existing REST/SDK bucket
 
-The existing `src/notion/rate-limit.ts` token bucket targets the
-measured `pages.retrieveMarkdown` ceiling for the standard REST API
-(`DEFAULT_NOTION_REQUESTS_PER_SECOND` and `DEFAULT_NOTION_BURST_SIZE`
-control the refill and burst respectively). RunTool's bucket is
-separate — but **both buckets count requests that traverse the same
-`Authorization` header**. The cleanest approach is to keep RunTool
-calls under the same token bucket as REST calls so:
+The existing `src/notion/rate-limit.ts` runs a global token bucket
+aligned with Notion's published ~3 rps per-token guidance plus a
+small table of endpoint-specific gates loosened by probe evidence
+(`DEFAULT_NOTION_REQUESTS_PER_SECOND` / `DEFAULT_NOTION_BURST_SIZE`
+set the global; `DEFAULT_NOTION_ENDPOINT_OVERRIDES` carries the
+opt-in entries). RunTool's server-side per-tool, per-actor bucket
+is separate — but **every bucket Lore writes through counts
+requests that traverse the same `Authorization` header**. The
+cleanest approach is to keep RunTool calls under the same client-
+side gate as REST calls so:
 
 - A single Lore process never exceeds the lower of the two ceilings.
 - Cross-tool fan-out (a memory search that issues a RunTool `search`
@@ -520,9 +523,9 @@ Confirmed shapes (from `@notionhq/server/helpers/publicApiError`):
 
 ### Open questions — runtime verification needed
 
-1. Is the per-tool RunTool quota looser, tighter, or equal to the 3 rps
-   REST guidance? Phase 1 should measure with a trivial 25-call burst
-   against a dev vault and record the answer here.
+1. Is the per-tool RunTool quota looser, tighter, or equal to the
+   ~3 rps REST guidance? Phase 1 should measure with a trivial
+   25-call burst against a dev vault and record the answer here.
 2. Does the surfaced `Retry-After` for a RunTool 429 differ in units or
    shape from the REST-bucket 429? The existing 429 path in
    `src/notion/rate-limit.ts` (`extractRetryAfterMs`, module-private

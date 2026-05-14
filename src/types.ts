@@ -1969,30 +1969,56 @@ export interface LoreConfig {
   notion?: {
     rateLimit?: {
       /**
-       * Max outbound Notion API calls in flight at once. Shared across
-       * every tool call and hook spawned by this process. Defaults to
-       * `DEFAULT_NOTION_CONCURRENCY`; the constant carries the rationale.
+       * Max outbound Notion API calls in flight at once on the global
+       * gate. Endpoints with a `endpointOverrides` entry run their own
+       * concurrency slot pool independent of this value. Defaults to
+       * `DEFAULT_NOTION_CONCURRENCY` (aligned with Notion's public-API
+       * ~3 rps guidance).
        */
       concurrency?: number
       /**
-       * Sustained outbound request rate, in calls/second. Token-bucket
-       * refill rate enforced by `createLimitedClient`. Defaults to
-       * `DEFAULT_NOTION_REQUESTS_PER_SECOND`. Distinct from
+       * Sustained outbound request rate, in calls/second, on the global
+       * gate. Token-bucket refill rate enforced by `createLimitedClient`.
+       * Defaults to `DEFAULT_NOTION_REQUESTS_PER_SECOND`. Distinct from
        * `concurrency`: the latter caps fan-out memory; this caps
-       * throughput. The default is sized per-process; operators running
-       * multiple concurrent Lore processes on one Notion token (MCP
-       * server + CLI + hooks) compose additively and may need to tune
-       * down here to stay under the per-token server-side ceiling.
+       * throughput. Per-process budget; multiple concurrent Lore
+       * processes on one Notion token (MCP server + CLI + hooks)
+       * compose additively at the server-side bucket and may need
+       * tighter tuning to stay under the per-token ceiling.
        */
       requestsPerSecond?: number
       /**
-       * Token-bucket capacity — how many calls may fire instantly after
-       * a quiet period. Defaults to `DEFAULT_NOTION_BURST_SIZE`. A larger
-       * burst lets short fan-outs (decision-graph walks, render-layer
-       * title lookups) run without paying refill latency; the sustained
-       * ceiling is still `requestsPerSecond`.
+       * Token-bucket capacity for the global gate — how many calls may
+       * fire instantly after a quiet period. Defaults to
+       * `DEFAULT_NOTION_BURST_SIZE`. Endpoints with their own
+       * `endpointOverrides` entry have their own burst.
        */
       burstSize?: number
+      /**
+       * Per-endpoint pacing overrides keyed by dot-joined SDK method
+       * path (e.g., `"pages.retrieveMarkdown"`, `"dataSources.query"`,
+       * or a top-level method name like `"search"`). Each override may
+       * loosen one or more pacing dimensions for a single endpoint
+       * without raising the global cap.
+       *
+       * Built-in defaults loosen endpoints with operator-runnable probe
+       * evidence under `tools/`. When this field is omitted but any
+       * global rate-limit knob is set, the effective global values cap
+       * the inherited built-ins so existing process-wide throttles stay
+       * conservative. Setting this field REPLACES the built-in table —
+       * pass `{}` to opt every endpoint back through the global gate, or
+       * include any path the caller wants to customize. Endpoints absent
+       * from this map fall through to the global concurrency /
+       * requestsPerSecond / burstSize values.
+       */
+      endpointOverrides?: Record<
+        string,
+        {
+          concurrency?: number
+          requestsPerSecond?: number
+          burstSize?: number
+        }
+      >
     }
   }
   projects?: ProjectConfig[]

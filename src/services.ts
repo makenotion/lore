@@ -499,10 +499,14 @@ export async function initServicesFromConfig(
   // Every downstream service shares the same rate-limited Proxy so fan-out
   // stays under Notion's per-token rps ceiling without per-call-site work.
   // The wrapper governs concurrency (fan-out memory), request rate (token
-  // bucket), and 429 shared backoff; defaults live on the `DEFAULT_NOTION_*`
-  // constants and are tunable via the `notion.rateLimit` config block.
-  // The RunTool wrapper dispatches through `client.request()`, which IS
-  // proxied here, so RunTool calls automatically share this gate.
+  // bucket), and 429 shared backoff. The global gate aligns with Notion's
+  // public-API ~3 rps guidance; endpoints with operator-runnable probe
+  // evidence under `tools/` run their own gates via
+  // `DEFAULT_NOTION_ENDPOINT_OVERRIDES`. All defaults are tunable via the
+  // `notion.rateLimit` config block (per-vault overrides via
+  // `endpointOverrides`). The RunTool wrapper dispatches through
+  // `client.request()`, which IS proxied here, so RunTool calls
+  // automatically share this gate.
   const writeBudgetEnv = readWriteBudgetEnv()
   // The wrapped instance carries a `flushBudgetCount` callback the
   // shutdown hook below invokes to persist the final counter even
