@@ -85,14 +85,25 @@ export function buildProjectSelectionGuidance(
  * the hook surface already shares. UUID-shaped real session ids round-
  * trip unchanged because alphanumeric + hyphens are in the allowed set.
  *
- * `agentName` and `authorName` deliberately do NOT pass through the
- * sanitizer: `agentName` is already constrained by
- * `canonicalizeAgentName`'s explicit allowlist, and `authorName` is a
- * human display string where collapsing `Test User` to
- * `Test_User` would break the prompt's "Author: <name>" contract
- * without buying a meaningful threat reduction (both come from
- * operator env vars under a distinct trust model).
+ * `agentName` and `authorName` receive the narrower prompt-boundary
+ * scrub that matches their display contract: spaces and punctuation
+ * survive, while Unicode line separators and control characters
+ * collapse to spaces.
+ * This keeps human-readable labels such as `Test User` intact while
+ * preventing env-sourced identity values from forging additional
+ * instruction-shaped prompt lines. The machine-readable pass-through
+ * clause renders every value as a JSON string literal so quotes and
+ * backslashes cannot terminate the identity assignment they belong to.
  */
+function scrubIdentityValue(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1F\x7F-\x9F\u2028\u2029]+/g, " ").trim()
+}
+
+function renderIdentityAssignment(name: string, value: string): string {
+  return `${name}: ${JSON.stringify(value)}`
+}
+
 function buildIdentityBlock(
   sessionId?: string,
   agentName?: string,
@@ -101,16 +112,19 @@ function buildIdentityBlock(
   if (!sessionId && !agentName && !authorName) return ""
 
   const safeSessionId = sessionId ? safeFilenameSegment(sessionId) : undefined
+  const safeAgentName = agentName ? scrubIdentityValue(agentName) : undefined
+  const safeAuthorName = authorName ? scrubIdentityValue(authorName) : undefined
+  if (!safeSessionId && !safeAgentName && !safeAuthorName) return ""
 
   const lines: string[] = [""]
   if (safeSessionId) lines.push(`Session ID: ${safeSessionId}`)
-  if (agentName) lines.push(`Agent: ${agentName}`)
-  if (authorName) lines.push(`Author: ${authorName}`)
+  if (safeAgentName) lines.push(`Agent: ${safeAgentName}`)
+  if (safeAuthorName) lines.push(`Author: ${safeAuthorName}`)
 
   const parts: string[] = []
-  if (safeSessionId) parts.push(`session: "${safeSessionId}"`)
-  if (agentName) parts.push(`agent: "${agentName}"`)
-  if (authorName) parts.push(`author: "${authorName}"`)
+  if (safeSessionId) parts.push(renderIdentityAssignment("session", safeSessionId))
+  if (safeAgentName) parts.push(renderIdentityAssignment("agent", safeAgentName))
+  if (safeAuthorName) parts.push(renderIdentityAssignment("author", safeAuthorName))
   lines.push(
     `Pass ${parts.join(" and ")} verbatim on every lore-* tool call so saves are grouped correctly.`
   )
