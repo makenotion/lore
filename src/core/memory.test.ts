@@ -15338,6 +15338,41 @@ describe("MemoryService.listPinnedBlocks (issue #282)", () => {
     expect(blocks).toEqual([])
   })
 
+  it("returns empty array when an unmigrated pinned query resolves to an error payload", async () => {
+    const querySpy = vi.fn(async () => ({
+      object: "error",
+      code: APIErrorCode.ValidationError,
+      status: 400,
+      message: "Could not find property: Pinned",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const blocks = await service.listPinnedBlocks({ limit: 10 })
+
+    expect(blocks).toEqual([])
+    expect(querySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("propagates non-missing-property payloads instead of masking them", async () => {
+    const querySpy = vi.fn(async () => ({
+      object: "error",
+      code: "rate_limited",
+      status: 429,
+      message: "rate_limited",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.listPinnedBlocks({ limit: 10 })).rejects.toThrow(
+      'Invalid Notion data source query response from MemoryService.listPinnedBlocks: expected results array (code=rate_limited, message="rate_limited").'
+    )
+  })
+
   it("short-circuits when limit is zero — no Notion call", async () => {
     const querySpy = vi.fn()
     const client = {
@@ -15512,6 +15547,39 @@ describe("MemoryService.countPinnedBlocks (issue #282)", () => {
     const service = new MemoryService(client, db)
 
     expect(await service.countPinnedBlocks()).toBe(0)
+  })
+
+  it("returns 0 when an unmigrated pinned count resolves to an error payload", async () => {
+    const querySpy = vi.fn(async () => ({
+      object: "error",
+      code: APIErrorCode.ValidationError,
+      status: 400,
+      message: "Could not find property: Pinned",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.countPinnedBlocks()).toBe(0)
+    expect(querySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("propagates malformed non-missing-property count payloads", async () => {
+    const querySpy = vi.fn(async () => ({
+      object: "error",
+      code: "rate_limited",
+      status: 429,
+      message: "rate_limited",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.countPinnedBlocks()).rejects.toThrow(
+      'Invalid Notion data source query response from MemoryService.countPinnedBlocks: expected results array (code=rate_limited, message="rate_limited").'
+    )
   })
 })
 

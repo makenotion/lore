@@ -56,6 +56,7 @@ import {
 } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
+import { requireQueryResults } from "../notion/query-response.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   isRunToolBlockEditEnabled,
@@ -5108,7 +5109,9 @@ export class MemoryService {
         })
         // Mirror the live-page filter so soft-deleted pins don't
         // inflate the count.
-        total += response.results.filter(isLiveFullPage).length
+        total += requireQueryResults(response, "MemoryService.countPinnedBlocks").filter(
+          isLiveFullPage
+        ).length
         if (!response.has_more) break
         cursor = response.next_cursor ?? undefined
         if (!cursor) break

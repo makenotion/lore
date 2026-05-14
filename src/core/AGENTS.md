@@ -717,7 +717,10 @@ growth at 200.
 yet) and return `[]` / `0` respectively — same posture as
 `queryStaleConfidence` for pre-#283 vaults. Operators run
 `lore migrate` to add the columns and pin blocks surface on the
-next wake-up.
+next wake-up. The Notion query response guard also converts
+non-throwing missing-property validation payloads with no `results`
+array into the same typed error path; malformed payloads that are not
+missing-property errors still fail loudly.
 
 **Audit-line append uses `PinnedAuditError` for partial-state
 recovery.** The MCP handlers in `src/mcp/tools/pinned.ts` perform

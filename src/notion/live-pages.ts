@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer"
 import type { PageObjectResponse, QueryDataSourceResponse } from "@notionhq/client"
 import { isLiveFullPage } from "./extractors.js"
+import { requireQueryResults } from "./query-response.js"
 
 const LIVE_PAGE_CURSOR_PREFIX = "lore-live-page:"
 const LIVE_PAGE_QUERY_SIZE = 100
@@ -75,7 +76,7 @@ export async function collectLivePages(input: {
     })
     pageCount++
 
-    const livePages = response.results.filter(isLiveFullPage)
+    const livePages = requireQueryResults(response, input.source).filter(isLiveFullPage)
     let visiblePages =
       skipIds.size > 0 ? livePages.filter((page) => !skipIds.has(page.id)) : livePages
     if (input.extraFilter) {

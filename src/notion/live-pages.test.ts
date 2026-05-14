@@ -73,6 +73,41 @@ describe("collectLivePages", () => {
     ).rejects.toThrow("Invalid Lore live-page cursor.")
   })
 
+  it("rethrows non-throwing missing-property payloads with Notion's validation shape", async () => {
+    await expect(
+      collectLivePages({
+        limit: 1,
+        source: "test-source",
+        query: vi.fn(async () => ({
+          object: "error",
+          code: "validation_error",
+          status: 400,
+          message: "Could not find property: Pinned",
+        })) as never,
+      })
+    ).rejects.toMatchObject({
+      code: "validation_error",
+      message: "Could not find property: Pinned",
+    })
+  })
+
+  it("rejects malformed non-validation query payloads instead of returning empty", async () => {
+    await expect(
+      collectLivePages({
+        limit: 1,
+        source: "test-source",
+        query: vi.fn(async () => ({
+          object: "error",
+          code: "rate_limited",
+          status: 429,
+          message: "rate_limited",
+        })) as never,
+      })
+    ).rejects.toThrow(
+      'Invalid Notion data source query response from test-source: expected results array (code=rate_limited, message="rate_limited").'
+    )
+  })
+
   it("rejects opaque cursors whose skip list exceeds one Notion page", async () => {
     const oversized =
       "lore-live-page:" +

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
+import type { Client } from "@notionhq/client"
+import { APIErrorCode } from "@notionhq/client"
 import {
   DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
@@ -15,6 +17,7 @@ import {
   loadWakeUpData,
   type WakeUpServices,
 } from "./wakeup.js"
+import { MemoryService } from "./memory.js"
 import type {
   DecisionSummary,
   Fact,
@@ -635,6 +638,42 @@ describe("loadWakeUpData", () => {
     const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
     expect(data.coverage).toBeNull()
+  })
+
+  it("keeps wake-up and status probes healthy when pinned schema is absent", async () => {
+    const querySpy = vi.fn(async () => ({
+      object: "error",
+      code: APIErrorCode.ValidationError,
+      status: 400,
+      message: "Could not find property: Pinned",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const memoryService = new MemoryService(client, {
+      databaseId: "memories-db",
+      dataSourceId: "memories-ds",
+    })
+    const base = stubServices()
+    const services: WakeUpServices = {
+      ...base,
+      memories: {
+        ...base.memories,
+        listPinnedBlocks: memoryService.listPinnedBlocks.bind(memoryService),
+        countPinnedBlocks: memoryService.countPinnedBlocks.bind(memoryService),
+      },
+    }
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      includeCoverage: true,
+      now: NOW,
+    })
+
+    expect(data.pinnedBlocks).toEqual([])
+    expect(data.pinnedBlocksTotal).toBe(0)
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(data.coverage).not.toBeNull()
   })
 
   it("returns coverage counters for the loaded wake-up sections when requested", async () => {
