@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+.sem
 
 # Environment
 .env
