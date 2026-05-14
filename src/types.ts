@@ -989,6 +989,28 @@ export interface Memory {
   pinned?: MemoryPinned | null
 }
 
+/**
+ * `Memory` shape returned by list paths that do NOT fetch the markdown
+ * body. The runtime invariant: rows returned with body fetching
+ * disabled carry `content: ""`. The literal `""` type encodes that
+ * statically — a caller reading `.content` on a `MemoryWithoutContent`
+ * sees the empty-string literal type, surfacing the absent-body state
+ * as a clear "did I mean to opt in?" signal rather than the unspecific
+ * `string` type.
+ *
+ * `MemoryWithoutContent` is structurally assignable to `Memory`
+ * (since `"" extends string`), so existing call sites that destructure
+ * list results into `Memory[]` continue to type-check; the narrower
+ * default-path type only differs at the inferred call-site type.
+ *
+ * Callers that need the body either pass `includeContent: true` to
+ * `MemoryService.list` (when the body is small or the count is
+ * bounded), or fetch the bodies separately via
+ * `lore-memory action='expand'` / `MemoryService.getById` after
+ * triaging the title tier.
+ */
+export type MemoryWithoutContent = Omit<Memory, "content"> & { content: "" }
+
 export interface CreateMemoryInput {
   title: string
   content: string

@@ -20,6 +20,7 @@ import type {
 } from "@notionhq/client"
 import type {
   Memory,
+  MemoryWithoutContent,
   CreateMemoryInput,
   UpdateMemoryInput,
   SearchMemoriesInput,
@@ -1263,6 +1264,124 @@ export interface MemoryCreateResult {
   memory: Memory
   autosaveLearningDuplicate: AutosaveLearningDuplicateMatch | null
   freshCreatePreparation: FreshCreatePreparation | null
+}
+
+/**
+ * Filter / pagination / sort options accepted by `MemoryService.list`.
+ * Extracted to a named type so the method's overload signatures can
+ * intersect it with literal `includeContent` narrowings — see the
+ * three overloads on `list()` and the `MemoryWithoutContent` shape
+ * in `src/types.ts` for the absent-body type contract.
+ */
+export interface ListMemoriesOptions {
+  projectId?: string
+  topicId?: string
+  source?: MemorySource
+  kind?: MemoryKind
+  /**
+   * Negative `Kind` filter. Each entry is excluded server-side via
+   * a `select.does_not_equal` clause on the `Kind` column. Mirrors
+   * the existing `excludeKinds` parameter on the memory
+   * near-duplicate probe; use the
+   * same `excludeKinds: ["decision"]` posture when surfacing
+   * "memories that need triage" without conflating with governance
+   * decisions.
+   *
+   * Mutually exclusive with `kind` semantically (a server-side
+   * `equals` already narrows to one kind). The two compose
+   * literally — `kind: "note"` AND `excludeKinds: ["decision"]`
+   * is well-formed but redundant — but no caller passes both.
+   *
+   * Notion's `does_not_equal` is permissive on null, so a row
+   * with no `Kind` column set passes the filter unless it
+   * happens to match a listed exclusion (it can't, since null is
+   * not equal to any literal). Matches the inbox-status filter
+   * posture.
+   */
+  excludeKinds?: MemoryKind[]
+  confidence?: MemoryConfidence
+  status?: MemoryStatus
+  reviewBefore?: string
+  tags?: string[]
+  session?: string
+  limit?: number
+  since?: string
+  until?: string
+  /**
+   * Opt in to fetching each page's markdown body. Default behavior
+   * (omitted or `false`) returns rows with `content: ""` and issues
+   * zero `pages.retrieveMarkdown` calls. Setting `true` fans out
+   * one `pages.retrieveMarkdown` per row, paced by the shared
+   * outbound rate-limit bucket — list views that render only title /
+   * project / date / tags should leave the flag unset and pay
+   * nothing. Callers that genuinely need bodies (the digest
+   * synthesizer's recent-memory preview, the wake-up renderer's
+   * stored-digest body, the autosave-learning duplicate probe)
+   * pass `true` explicitly.
+   *
+   * The return type narrows on the literal value: `includeContent:
+   * true` resolves to `Memory[]`; omitted or `includeContent: false`
+   * resolves to `MemoryWithoutContent[]` whose `content` field is
+   * the empty-string literal type `""`. A caller-controlled
+   * `boolean` value cannot be statically narrowed and falls back to
+   * `Memory[]` (the safe widening for the runtime fan-out).
+   */
+  includeContent?: boolean
+  /**
+   * When false, scope project queries to memories explicitly linked to the
+   * given project, excluding repo-wide/unscoped entries.
+   */
+  includeUnscoped?: boolean
+  /**
+   * When `true`, do NOT exclude `Status = proposed` rows from the
+   * result set. The default (`false`) adds a server-side
+   * `does_not_equal: "proposed"` filter on the Status column so
+   * proposed-memory inbox rows do not pollute default recall paths.
+   *
+   * Explicit `status` wins: when the caller passes `status:
+   * "proposed"` (the inbox-review path), `includeProposed` is
+   * irrelevant — the row passes via the explicit `equals` filter
+   * regardless of the default exclusion.
+   *
+   * Set `true` for code paths that need to see every memory
+   * regardless of review state — e.g. `lore mine`'s upsert
+   * idempotency lookup (a re-mine must match a prior proposed
+   * row), the conflict scanner (operates on every live row), or
+   * the inbox-review CLI / MCP flows.
+   */
+  includeProposed?: boolean
+  /**
+   * Notion timestamp field to sort by. Defaults to `last_edited_time`
+   * (general-purpose "most recently touched"). Pass `created_time` for
+   * "most recently created" ordering — e.g. latest-digest lookup.
+   */
+  sortBy?: "created_time" | "last_edited_time"
+  /**
+   * Sort direction. Defaults to `"descending"` (newest first) —
+   * matches Notion's recency-default. Pass `"ascending"` for
+   * oldest-first ordering, e.g. the proposed-memory inbox surface
+   * where stale review debt should surface ahead of recent
+   * additions.
+   */
+  direction?: "ascending" | "descending"
+  /**
+   * Opaque cursor from a previous page's `nextCursor`. When provided,
+   * continues enumeration from where that page ended. The filter/sort
+   * must match the originating query — Notion returns the cursor's
+   * contents under the assumption the query shape is unchanged.
+   */
+  startCursor?: string
+  /**
+   * When `true`, skip the default scope filter — every
+   * scope kind surfaces, expired rows surface, and the resolved
+   * `MemoryScopeContext` is ignored. Defaults to `false`.
+   *
+   * Operator-facing audit paths (`lore status` expiring-rows
+   * surface, conflict scan, near-duplicate probe pool) opt in.
+   * Agent-facing recall paths leave it unset so a session-scoped
+   * row from another session never leaks into default retrieval.
+   */
+  includeOutOfScope?: boolean
 }
 
 /**
@@ -5283,109 +5402,35 @@ export class MemoryService {
     return items
   }
 
-  async list(opts?: {
-    projectId?: string
-    topicId?: string
-    source?: MemorySource
-    kind?: MemoryKind
-    /**
-     * Negative `Kind` filter. Each entry is excluded server-side via
-     * a `select.does_not_equal` clause on the `Kind` column. Mirrors
-     * the existing `excludeKinds` parameter on the memory
-     * near-duplicate probe; use the
-     * same `excludeKinds: ["decision"]` posture when surfacing
-     * "memories that need triage" without conflating with governance
-     * decisions.
-     *
-     * Mutually exclusive with `kind` semantically (a server-side
-     * `equals` already narrows to one kind). The two compose
-     * literally — `kind: "note"` AND `excludeKinds: ["decision"]`
-     * is well-formed but redundant — but no caller passes both.
-     *
-     * Notion's `does_not_equal` is permissive on null, so a row
-     * with no `Kind` column set passes the filter unless it
-     * happens to match a listed exclusion (it can't, since null is
-     * not equal to any literal). Matches the inbox-status filter
-     * posture.
-     */
-    excludeKinds?: MemoryKind[]
-    confidence?: MemoryConfidence
-    status?: MemoryStatus
-    reviewBefore?: string
-    tags?: string[]
-    session?: string
-    limit?: number
-    since?: string
-    until?: string
-    /**
-     * Opt in to fetching each page's markdown body. Default behavior
-     * (omitted or `false`) returns rows with `content: ""` and issues
-     * zero `pages.retrieveMarkdown` calls. Setting `true` fans out
-     * one `pages.retrieveMarkdown` per row, paced by the shared
-     * outbound rate-limit bucket — list views that render only title /
-     * project / date / tags should leave the flag unset and pay
-     * nothing. Callers that genuinely need bodies (the digest
-     * synthesizer's recent-memory preview, the wake-up renderer's
-     * stored-digest body, the autosave-learning duplicate probe)
-     * pass `true` explicitly.
-     */
-    includeContent?: boolean
-    /**
-     * When false, scope project queries to memories explicitly linked to the
-     * given project, excluding repo-wide/unscoped entries.
-     */
-    includeUnscoped?: boolean
-    /**
-     * When `true`, do NOT exclude `Status = proposed` rows from the
-     * result set. The default (`false`) adds a server-side
-     * `does_not_equal: "proposed"` filter on the Status column so
-     * proposed-memory inbox rows do not pollute default recall paths.
-     *
-     * Explicit `status` wins: when the caller passes `status:
-     * "proposed"` (the inbox-review path), `includeProposed` is
-     * irrelevant — the row passes via the explicit `equals` filter
-     * regardless of the default exclusion.
-     *
-     * Set `true` for code paths that need to see every memory
-     * regardless of review state — e.g. `lore mine`'s upsert
-     * idempotency lookup (a re-mine must match a prior proposed
-     * row), the conflict scanner (operates on every live row), or
-     * the inbox-review CLI / MCP flows.
-     */
-    includeProposed?: boolean
-    /**
-     * Notion timestamp field to sort by. Defaults to `last_edited_time`
-     * (general-purpose "most recently touched"). Pass `created_time` for
-     * "most recently created" ordering — e.g. latest-digest lookup.
-     */
-    sortBy?: "created_time" | "last_edited_time"
-    /**
-     * Sort direction. Defaults to `"descending"` (newest first) —
-     * matches Notion's recency-default. Pass `"ascending"` for
-     * oldest-first ordering, e.g. the proposed-memory inbox surface
-     * where stale review debt should surface ahead of recent
-     * additions.
-     */
-    direction?: "ascending" | "descending"
-    /**
-     * Opaque cursor from a previous page's `nextCursor`. When provided,
-     * continues enumeration from where that page ended. The filter/sort
-     * must match the originating query — Notion returns the cursor's
-     * contents under the assumption the query shape is unchanged.
-     */
-    startCursor?: string
-    /**
-     * When `true`, skip the default scope filter — every
-     * scope kind surfaces, expired rows surface, and the resolved
-     * `MemoryScopeContext` is ignored. Defaults to `false`.
-     *
-     * Operator-facing audit paths (`lore status` expiring-rows
-     * surface, conflict scan, near-duplicate probe pool) opt in.
-     * Agent-facing recall paths leave it unset so a session-scoped
-     * row from another session never leaks into default retrieval.
-     */
-    includeOutOfScope?: boolean
-  }): Promise<{ items: Memory[]; nextCursor?: string; capped: boolean }> {
+  async list(opts: ListMemoriesOptions & { includeContent: true }): Promise<{
+    items: Memory[]
+    nextCursor?: string
+    capped: boolean
+  }>
+  async list(
+    opts?: ListMemoriesOptions & { includeContent?: false | undefined }
+  ): Promise<{
+    items: MemoryWithoutContent[]
+    nextCursor?: string
+    capped: boolean
+  }>
+  // Catch-all overload. Accepts the optional broad options shape
+  // (`opts?: ListMemoriesOptions`) so wrapper helpers can forward a
+  // normalized `ListMemoriesOptions | undefined` filter variable
+  // verbatim. Returns the conservative `Memory[]` widening — when
+  // `includeContent` is a caller-controlled runtime `boolean`, TS
+  // cannot prove the body was skipped, so the literal `""` signal
+  // would be unsound.
+  async list(opts?: ListMemoriesOptions): Promise<{
+    items: Memory[]
+    nextCursor?: string
+    capped: boolean
+  }>
+  async list(opts?: ListMemoriesOptions): Promise<{
+    items: Memory[] | MemoryWithoutContent[]
+    nextCursor?: string
+    capped: boolean
+  }> {
     const filters: Array<Record<string, unknown>> = []
 
     if (opts?.projectId) {
@@ -5559,8 +5604,18 @@ export class MemoryService {
       // when `has_more: true`), not a body fetch. The N-way
       // `pages.retrieveMarkdown` fan-out lives in the explicit-true
       // branch below.
+      //
+      // Passing `""` to `pageToMemory` produces rows whose `content`
+      // field is the empty string. The runtime invariant matches the
+      // `MemoryWithoutContent` (`content: ""`) literal-typed shape that
+      // the omitted-or-false overload advertises; TypeScript cannot
+      // infer the literal from the empty-string argument alone, so the
+      // cast bridges the runtime guarantee to the type-level signal.
+      const items = (await Promise.all(
+        result.pages.map((page) => this.pageToMemory(page, ""))
+      )) as MemoryWithoutContent[]
       return {
-        items: await Promise.all(result.pages.map((page) => this.pageToMemory(page, ""))),
+        items,
         nextCursor: result.nextCursor,
         capped: result.capped,
       }

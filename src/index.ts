@@ -10,6 +10,7 @@ export type {
   Topic,
   CreateTopicInput,
   Memory,
+  MemoryWithoutContent,
   CreateMemoryInput,
   UpdateMemoryInput,
   SearchMemoriesInput,
@@ -77,6 +78,7 @@ export {
   RekeyAuditError,
   PartialUpdateError,
 } from "./core/memory.js"
+export type { ListMemoriesOptions } from "./core/memory.js"
 export {
   TaskCreatePartialFailureError,
   TaskUpdatePartialFailureError,

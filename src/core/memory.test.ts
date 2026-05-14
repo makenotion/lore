@@ -26,6 +26,7 @@ import {
   PROMOTE_BODY_LENGTH_THRESHOLD,
   PROMOTE_REVISION_THRESHOLD,
   SEMANTIC_SEARCH_MAX_PAGES,
+  type ListMemoriesOptions,
   type RrfEntry,
 } from "./memory.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
@@ -36,6 +37,7 @@ import {
   SYNOPSIS_MAX,
   type CreateMemoryInput,
   type DatabaseRef,
+  type Memory,
   type UpdateMemoryInput,
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
@@ -10354,6 +10356,148 @@ describe("MemoryService.list — includeContent default", () => {
     const { items } = await service.list()
 
     expect(items.map((m) => m.content)).toEqual(["", "", ""])
+  })
+
+  it("type-level: omitted / false / true narrow `content` shape on the inferred return", async () => {
+    // The runtime contract sets every body-skipped row's `content` to
+    // `""`. This test pins the type-level encoding: `list()` is
+    // overloaded so that the omitted-or-false path returns
+    // `MemoryWithoutContent[]` (`content: ""` literal) and the
+    // `includeContent: true` path returns `Memory[]` (`content:
+    // string`). The contract is observable from inferred types alone —
+    // without it, a future caller reading `.content` under the new
+    // default sees `string` and silently gets `""`. With it, the type
+    // is `""`.
+    //
+    // The expectations below run as compile-time checks via
+    // `@ts-expect-error` directives plus structural fixture
+    // assertions; the surrounding tests pin the runtime invariant.
+    const { client } = createClient(2)
+    const service = new MemoryService(client, db)
+
+    // Omitted → `MemoryWithoutContent[]`. `.content` is `""` literal.
+    const omitted = await service.list({ limit: 2 })
+    const omittedFirstContent: "" = omitted.items[0]!.content
+    expect(omittedFirstContent).toBe("")
+    // @ts-expect-error MemoryWithoutContent.content is `""`, not the broader `string`.
+    const _omittedContentAsString: "non-empty" = omitted.items[0]!.content
+    void _omittedContentAsString
+
+    // Explicit `false` → `MemoryWithoutContent[]`. Same shape.
+    const off = await service.list({ limit: 2, includeContent: false })
+    const offFirstContent: "" = off.items[0]!.content
+    expect(offFirstContent).toBe("")
+
+    // Explicit `true` → `Memory[]`. `.content` is `string`.
+    const on = await service.list({ limit: 2, includeContent: true })
+    const onFirstContent: string = on.items[0]!.content
+    expect(typeof onFirstContent).toBe("string")
+    // The literal `""` slot is NOT inferred on the body-fetched path —
+    // bodies can be any string, including the empty one when the
+    // markdown is genuinely empty, so widening to `string` is correct.
+    // @ts-expect-error includeContent:true returns Memory[] whose content is `string`, not `""`.
+    const _onContentAsLiteral: "" = on.items[0]!.content
+    void _onContentAsLiteral
+
+    // Caller-controlled `boolean` (the wake-up / MCP recall sites
+    // that thread the flag through a configurable arg) falls to the
+    // safe-widening overload — `items` is `Memory[]`, content is
+    // `string`. The dynamic case cannot be statically narrowed; the
+    // overload preserves the runtime safety by NOT claiming the
+    // literal `""` when the body might actually have been fetched.
+    //
+    // **The function-parameter shape is load-bearing.** An initialized
+    // `const dynamicFlag: boolean = false` is flow-narrowed by TS to
+    // literal `false` before overload resolution, so a `const`-based
+    // test resolves through the omitted/false overload and the
+    // inferred content type is the absent-body literal `""` — which
+    // means the test would PASS even if the catch-all widening branch
+    // regressed. Routing through `forwardIncludeContent(includeContent:
+    // boolean)` preserves the broad `boolean` at the call site so the
+    // overload resolver actually exercises the widening branch.
+    async function forwardIncludeContent(includeContent: boolean) {
+      const dynamic = await service.list({ limit: 2, includeContent })
+      const dynamicContent: string = dynamic.items[0]!.content
+      expect(typeof dynamicContent).toBe("string")
+      // `.content` is the broad `string` here, NOT the absent-body
+      // literal `""`. If a future contributor reroutes the boolean
+      // branch through the omitted/false overload, the inferred type
+      // would narrow to `""` and this directive would stop firing.
+      // @ts-expect-error caller-controlled booleans widen to `string`, not the absent-body `""` literal.
+      const _dynamicContentAsLiteral: "" = dynamic.items[0]!.content
+      void _dynamicContentAsLiteral
+    }
+    await forwardIncludeContent(false)
+    await forwardIncludeContent(true)
+  })
+
+  it("type-level: optional broad-options variable (`ListMemoriesOptions | undefined`) matches the catch-all overload", async () => {
+    // Wrapper-helper shape: an external caller normalizes its own
+    // filter args into a single `ListMemoriesOptions | undefined`
+    // variable, then forwards it verbatim to `service.list(opts)`.
+    // The catch-all overload's `opts?: ListMemoriesOptions` parameter
+    // accepts this shape; without that optional, the call would fail
+    // to resolve any overload (literal-true requires non-undefined,
+    // the omitted/false overload narrows on `includeContent`, and a
+    // non-optional broad overload rejects `undefined`). The pin keeps
+    // the wrapper-helper pattern compiling.
+    //
+    // **The function-parameter shape is load-bearing.** An initialized
+    // `const broadOpts: ListMemoriesOptions | undefined = undefined`
+    // is flow-narrowed to literal `undefined` by TS before overload
+    // resolution runs, and `const broadOptsSet = { limit: 1 }` is
+    // narrowed to `{ limit: 1 }`. Both narrowed shapes are accepted
+    // by the omitted/false overload, so a test built on those `const`
+    // declarations would PASS even if the catch-all overload
+    // regressed back to non-optional `opts: ListMemoriesOptions`.
+    // Routing through `forwardBroadOptions(opts: ListMemoriesOptions
+    // | undefined)` preserves the union at the call site so the
+    // regression is actually pinned.
+    const { client } = createClient(2)
+    const service = new MemoryService(client, db)
+
+    async function forwardBroadOptions(opts: ListMemoriesOptions | undefined) {
+      const result = await service.list(opts)
+      // Catch-all branch returns the conservative `Memory[]` widening.
+      const items: Memory[] = result.items
+      // `.content` is the broad `string` — NOT the absent-body literal
+      // `""`. The catch-all cannot prove the body was skipped (the
+      // caller's options may set `includeContent: true` through the
+      // optional `ListMemoriesOptions`), so claiming the literal would
+      // be unsound. The `@ts-expect-error` directive pins this — if a
+      // future change reroutes the optional broad shape to the
+      // omitted/false overload, the literal `""` would be inferred and
+      // this directive would stop firing.
+      // @ts-expect-error broad optional options widen to `string`, not the absent-body `""` literal.
+      const _contentAsLiteral: "" = result.items[0]!.content
+      void items
+      void _contentAsLiteral
+      return result
+    }
+
+    const broadResult = await forwardBroadOptions(undefined)
+    expect(broadResult.items).toHaveLength(2)
+
+    const broadResultSet = await forwardBroadOptions({ limit: 1 })
+    expect(broadResultSet.items).toHaveLength(1)
+  })
+
+  it("type-level: MemoryWithoutContent[] is assignable to Memory[] so destructured tuple consumers compile unchanged", async () => {
+    // The wake-up data layer destructures `Promise.all` into an
+    // explicit tuple type annotated as `{ items: Memory[] }` per slot.
+    // The proposed-memory list query returns
+    // `{ items: MemoryWithoutContent[] }` structurally; that must
+    // remain assignable to the declared `Memory[]` tuple slot or the
+    // wake-up call site stops compiling. Pin the structural-subtype
+    // relationship here so a future contributor flipping
+    // `MemoryWithoutContent`'s shape to a narrower brand (e.g.
+    // `content: never`) sees the regression immediately rather than
+    // chasing it through wake-up tests.
+    const { client } = createClient(1)
+    const service = new MemoryService(client, db)
+    const { items } = await service.list({ limit: 1 })
+    const widened: Memory[] = items
+    expect(widened).toBe(items)
   })
 })
 

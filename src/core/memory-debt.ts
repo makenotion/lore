@@ -31,6 +31,7 @@ import type {
   Fact,
   Memory,
   MemoryKind,
+  MemoryWithoutContent,
   TaskSummary,
 } from "../types.js"
 import {
@@ -646,7 +647,19 @@ export async function scanDebt(
         break
       }
       const remaining = perCategoryLimit - ownerlessInspected
-      const page = await services.memories.list({
+      // Explicit type annotation breaks a flow-sensitive inference
+      // cycle: `page.nextCursor` is reassigned to `ownerlessCursor` at
+      // the bottom of the loop, and the next iteration's call passes
+      // `ownerlessCursor` back into `list({ startCursor: ... })`.
+      // `MemoryService.list`'s overload-resolved return type depends on
+      // the input shape, so TS detects an input → output → input
+      // dependency and falls back to `any` unless the receiving
+      // variable carries a non-inferred type.
+      const page: {
+        items: MemoryWithoutContent[]
+        nextCursor?: string
+        capped: boolean
+      } = await services.memories.list({
         ...(opts.projectId ? { projectId: opts.projectId } : {}),
         limit: Math.min(100, remaining),
         includeContent: false,
