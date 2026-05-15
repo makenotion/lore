@@ -1,11 +1,10 @@
 # Memory Debt Audit
 
 `lore debt` is the recurring maintenance workflow for a shared Lore vault.
-Phase 1 — the `scan` subcommand — is a read-only inventory of hygiene
-problems across the vault, ranked by likely impact on retrieval and
-governance. Phase 2 — `create-tasks` — folds the highest-priority debt
-items into normal `lore-task` triage so memory hygiene becomes regular work
-rather than a one-off cleanup.
+`scan` is a read-only inventory of hygiene problems across the vault,
+ranked by likely impact on retrieval and governance. `create-tasks`
+folds the highest-priority debt items into normal `lore-task` triage so
+memory hygiene becomes regular work rather than a one-off cleanup.
 
 The scanner does not mutate any Notion row by default. Every remediation
 is recommended through suggested commands; the operator (or the agent
@@ -56,7 +55,7 @@ orchestrator, not a re-implementation of vault walking.
 - **`overdue_governance` fuses three signals**: overdue facts /
   decisions / tasks past their `Review By`, AND active tasks untouched
   ≥ `STALE_TASK_DAYS` (the "stale-task" signal). All items in this
-  category carry one of five **stable id prefixes** so JSON consumers
+  category carry one of four **stable id prefixes** so JSON consumers
   can split them client-side without re-deriving the classification:
 
   | Prefix                  | What it signals                                   |
@@ -69,9 +68,7 @@ orchestrator, not a re-implementation of vault walking.
   The id prefix is part of the schema contract — a consumer can write
   `if (item.id.startsWith("stale_task::"))` to triage stale rows
   separately. The markdown renderer groups them under the same
-  priority bucket as overdue rows. A future patch may promote
-  `stale_task` to its own category if operator feedback shows the
-  fusion conflates two distinct triage flows.
+  priority bucket as overdue rows.
 
 - **Overdue tasks are warning-only.** `Review By` is the task review /
   due date; it does not cancel, archive, expire, or otherwise mutate
@@ -126,7 +123,7 @@ item carries:
 - A `Suggested:` list of short verbs (`attach_source`, `archive`,
   `compare_memories`, ...) the operator can map to specific commands.
 
-Pass `--json` for a stable schema suitable for future automation:
+Pass `--json` for a stable schema suitable for automation:
 
 ```json
 {
@@ -152,14 +149,16 @@ Pass `--json` for a stable schema suitable for future automation:
 }
 ```
 
-`safeToAutoFix` is always `false` in Phase 1 / Phase 2. The field is part of the stable JSON schema for Phase 3 forward-compatibility — when targeted autofix lands, selected categories will flip to `true` (e.g., archive empty `rejected` rows older than N days). Consumers MUST NOT key behavior off `safeToAutoFix: true` today; until Phase 3 ships, the flag is a no-op signal.
+`safeToAutoFix` is always `false`. The field is part of the stable JSON schema,
+but no shipped command treats it as actionable. Consumers MUST NOT key behavior
+off `safeToAutoFix: true`; the flag is currently a no-op signal.
 
 `stats.scopeAnomalies` semantics:
 - A **non-null number** means the scope-anomaly probe ran successfully and observed that many anomalies (including `0`).
 - `null` means the probe was attempted but the underlying data source lacks the issue-#283 columns (pre-#283 vault). Operators run `lore migrate` to enable.
 - `0` paired with `stats.scopeAnomalyProbeSkipped: true` means the scope category was filtered out by `--category`; the probe never ran. Consumers check `scopeAnomalyProbeSkipped` before treating `null` as a degraded-probe signal.
 
-The `stats` block reports per-category counters AND four diagnostic flags:
+The `stats` block reports per-category counters and these diagnostic fields:
 
 - `truncated` — output exceeded `--limit`; raise `--limit` for more.
 - `orphanFactsCapped` — `queryOrphans` hit `perCategoryLimit + 1` and
@@ -170,6 +169,9 @@ The `stats` block reports per-category counters AND four diagnostic flags:
 - `scopeAnomalies` is `null` on pre-#283 vaults (probe degraded) so
   consumers can distinguish "no debt detected" from "scanner couldn't
   probe that category."
+- `scopeAnomalyProbeSkipped` is `true` when category filtering excludes
+  the scope-anomaly probe; consumers check it before interpreting
+  `scopeAnomalies`.
 
 When any of the three `*Capped` flags fires, the markdown report
 appends a `_Per-category scan window hit …_` footer naming the
@@ -215,7 +217,7 @@ lore debt create-tasks --project Mail --priority-floor P1   # P1 only
 lore debt scan --project Mail
 ```
 
-## Phase 2: `lore debt create-tasks`
+## `lore debt create-tasks`
 
 `create-tasks` lets a team fold memory maintenance into the same `lore-task`
 triage loop they use for normal work. The command:
@@ -261,18 +263,6 @@ code `1`. Automation wrapping `lore debt create-tasks` can therefore
 distinguish a clean maintenance pass from an incomplete one without
 parsing the trailing count line.
 
-## Phase 3 (deferred)
-
-Targeted safe-autofix lands after the read-only scanner is trusted by
-operators in real vaults. Examples called out in the spec:
-
-- Archive `Status = rejected` / `Status = proposed` rows older than N days.
-- Extend review dates only with explicit operator input.
-- Apply existing merge dry-runs but require confirmation before mutation.
-
-Phase 3 will print the exact planned changes before applying and will
-remain opt-in per category. The scanner stays read-only by default.
-
 ## Cost on a vault-wide scan
 
 A vault-wide scan (`--all-projects`, or `--project` omitted) walks the
@@ -292,33 +282,27 @@ state (the `items` list and `stats` block). On a 10-project /
 For ad-hoc operator triage, `--project <name>` is the recommended
 shape — it avoids the per-project walk in `duplicate_cluster` and
 fits comfortably in a single terminal window. The vault-wide form
-is intended for periodic automation runs, not interactive use. A
-future Phase 2.1 may fan out the independent category branches via
-`Promise.all` once the shared-state mutation is refactored into
-per-branch result returns.
+is intended for periodic automation runs, not interactive use.
 
 `lore debt create-tasks` adds a preflight cost on top of the scan: up
 to `--limit` items × 3 status-coverage passes (default
 `25 × 3 = 75`) sequential `MemoryService.search` round-trips before
 any write. Each preflight call is bounded (`limit: 5`) and reads only
 properties (no body fetch), so wall-clock is dominated by Notion's
-per-call latency. The same Phase 2.1 fan-out window applies here —
-the preflight calls are independent and would parallelize cleanly
-once the action loop is refactored.
+per-call latency.
 
 ## Limitations
 
 - Project scoping happens via `--project`; vault-wide scans aggregate across
   every active project. Archived projects are excluded — the scanner does
-  not support `--include-archived` in Phase 1.
+  not support `--include-archived`.
 - The scoring formula is empirical and should be re-tuned if a real
   vault shows the priority bands distributing oddly. Tune via
   `SEVERITY_WEIGHT` in `src/core/memory-debt.ts`; the existing tests pin
   ordering but allow the absolute numbers to move.
 - Topic sprawl and entity sprawl signals depend on the existing
-  `findSimilarTopicGroups` helper. Future expansion (entity alias
-  ambiguity, low-row-count topics with name overlap) lands as additional
-  detectors that produce `topic_sprawl` items.
+  `findSimilarTopicGroups` helper. Entity alias ambiguity and
+  low-row-count topic overlap are not reported by this category.
 - The scope-anomaly category surfaces aggregate counters, not per-row
   ids. The `lore status` expiring-rows surface remains the canonical
   per-row view; `lore debt scan` adds it to a single triage view alongside

@@ -26,13 +26,13 @@ banner across the same window and came out in the same purge. See
 | `help.ts`              | `lore://help` and `lore://help/<tool>/<action>` resource recipes for polymorphic tool payload examples                                                                                                                     |
 | `helpers.ts`           | `toolError()`, `paginationFooter()`, `debugLogPartialFailures()`, `formatDispatchError()`                                                                                                                                  |
 | `tools/context.ts`     | `lore-context` polymorphic dispatcher (`status` / `wake-up` / `digest`)                                                                                                                                                    |
-| `tools/memory.ts`      | `lore-memory` polymorphic dispatcher (`save` / `update` / `archive` / `expand` / `suggest-topic-key` / `compare`)                                                                                                          |
+| `tools/memory.ts`      | `lore-memory` polymorphic dispatcher (`save` / `update` / `archive` / `expand` / `suggest-topic-key` / `compare` / `approve` / `reject` / `promote`)                                                                       |
 | `tools/pinned.ts`      | `lore-pinned` polymorphic dispatcher (`pin` / `unpin` / `update` / `list`) for pinned context blocks (issue #282); hosts the audit-line append helper and `PinnedAuditError` partial-state error type                      |
 | `tools/query.ts`       | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts)                                                                                                                           |
 | `tools/project.ts`     | `lore-project` polymorphic dispatcher (`list` / `get`)                                                                                                                                                                     |
 | `tools/knowledge.ts`   | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `audit` handlers exported for `lore-query`                                                                                      |
 | `tools/decisions.ts`   | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`)                                                                                                                    |
-| `tools/tasks.ts`       | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list` / `reconcile`) (P3-02 + PF3-06)                                                                                                                 |
+| `tools/tasks.ts`       | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `close-many` / `list` / `reconcile`) (P3-02 + PF3-06)                                                                                                  |
 | `tools/procedures.ts`  | `lore-procedure` polymorphic dispatcher (`scan-candidates` / `propose` / `deprecate`) — procedural memory promotion. Approval routes through `lore-memory action='approve'` so the audit contract stays on one entrypoint. |
 | `tools/date-schema.ts` | Shared `YYYY-MM-DD` and clearable date Zod schemas for MCP tool boundaries                                                                                                                                                 |
 | `tools/text-schema.ts` | Shared `nonBlankString` Zod schema for create-required user-facing text fields (rejects empty / whitespace-only)                                                                                                           |
@@ -379,6 +379,9 @@ coverage output.
 | `expand`            | Batch-fetch full markdown bodies for up to 20 IDs (parallelized)             | Yes              |
 | `suggest-topic-key` | Suggest a stable topic key for recurring memory topics                       | Yes              |
 | `compare`           | Record a conflict/compatibility verdict on a pair of memories                | No               |
+| `approve`           | Promote a proposed memory to accepted and append a review audit block        | No               |
+| `reject`            | Mark a proposed memory rejected and append a review audit block              | No               |
+| `promote`           | Copy a memory into a configured promotion target with origin audit metadata  | No               |
 
 Read-side `recall` and `search` live on `lore-query` since they share
 structural overlap with the rest of the read-path surface.
@@ -630,13 +633,14 @@ inline with the rest of the entity's facts.
 
 ### `lore-task` — task lifecycle (PF3-06)
 
-| Action      | Purpose                                                                                                                                                 | Read-only                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `create`    | Create a `Kind = task` memory with description in the page body                                                                                         | No                                                                                                                                 |
-| `update`    | Change state, blocker, due date, subject, or description                                                                                                | No                                                                                                                                 |
-| `close`     | Mark done (or cancelled — distinguished for metrics)                                                                                                    | No (destructive)                                                                                                                   |
-| `list`      | List tasks with Overdue/Active sections; filters by state, entity, due                                                                                  | Yes                                                                                                                                |
-| `reconcile` | Operator-pulled batch pass: scan active tasks for resolution-shaped memory matches and surface ranked candidate closures with inline close incantations | Yes (read-only by handler implementation; tool-level `readOnlyHint` cannot be set because the same tool also serves write actions) |
+| Action       | Purpose                                                                                                                                                 | Read-only                                                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `create`     | Create a `Kind = task` memory with description in the page body                                                                                         | No                                                                                                                                 |
+| `update`     | Change state, blocker, due date, subject, or description                                                                                                | No                                                                                                                                 |
+| `close`      | Mark done (or cancelled — distinguished for metrics)                                                                                                    | No (destructive)                                                                                                                   |
+| `close-many` | Close an explicit task-id batch with close semantics; already-terminal rows are reported as no-ops and partial failures are reported per id             | No (destructive)                                                                                                                   |
+| `list`       | List tasks with Overdue/Active sections; filters by state, entity, due                                                                                  | Yes                                                                                                                                |
+| `reconcile`  | Operator-pulled batch pass: scan active tasks for resolution-shaped memory matches and surface ranked candidate closures with inline close incantations | Yes (read-only by handler implementation; tool-level `readOnlyHint` cannot be set because the same tool also serves write actions) |
 
 PF3-06 brought the P3-02 standalone task family under the same
 polymorphic dispatcher pattern as the rest of P3-01. The four standalone

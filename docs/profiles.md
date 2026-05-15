@@ -34,7 +34,7 @@ The active profile owns:
 
 Core enums remain code-owned. Memory kind/status/confidence, task state,
 review state, scope/lifetime values, and internal fact predicates are not
-profile-extensible in Phase 1.
+profile-extensible.
 
 Read filters for tags intentionally accept arbitrary non-empty strings so
 operators can find legacy or out-of-profile rows. Write paths validate against
@@ -52,12 +52,13 @@ A profile root contains:
 - optional eval-suite YAML files referenced by `evals`
 
 `profile.yaml extends` is reserved for profile composition and is rejected
-with an explicit error until that later phase lands.
+with an explicit error.
 
 Profile names are kebab-case and selectors are exact `<name>@<semver>` values.
 Ranges and floating versions are intentionally unsupported. Built-in,
-project-local, and installed external profiles resolve through the Phase 3
-priority order below; registry-backed profiles remain out of scope.
+project-local, and installed external profiles resolve through the
+profile-distribution priority order below; registry-backed profiles remain out
+of scope.
 
 Fresh vaults can select a built-in profile during bootstrap:
 
@@ -74,8 +75,7 @@ profile waits for the explicit profile-management workflow.
 schema, taxonomy, prompt, and declared eval-suite file that participates in the
 effective profile.
 Relative paths and normalized content are included in stable sorted order.
-Docs, READMEs, and undeclared fixtures do not participate unless a later phase
-makes them part of resolution.
+Docs, READMEs, and undeclared fixtures do not participate in resolution.
 
 ## Schema Contract
 
@@ -87,11 +87,11 @@ topology.
 
 Supported additive property types are `rich_text`, `number`, `select`,
 `multi_select`, `date`, `checkbox`, `url`, `email`, and `phone_number`.
-`number` supports Notion's plain `number` format only in Phase 1. `select` and
-`multi_select` options declare `name` and may declare a Notion color from the
-standard color vocabulary. Relation, rollup, formula, title, status, people,
-file, created/edited metadata, unique id, and any unlisted property type are
-rejected.
+`number` supports Notion's plain `number` format only. `select` and
+`multi_select` options declare `name` and may declare a Notion color from
+the standard color vocabulary. Relation, rollup, formula, title, status,
+people, file, created/edited metadata, unique id, and any unlisted
+property type are rejected.
 
 ## Prompt Contract
 
@@ -139,7 +139,7 @@ need a non-default taxonomy, schema, or prompt fixture.
 | Pilot team | Support Escalations, with the Lore maintainers owning the code rollout. |
 | Data policy | Fixtures are synthetic/redacted only. Do not commit real customer content, PHI, regulated data, production workspace ids, or live ticket payloads. Live-vault evals are operator-dispatched only against sandbox vaults. |
 | Profile name | `support` |
-| Target use case | Help support engineers preserve escalation symptoms, owners, mitigations, product areas, and root-cause findings for future triage. |
+| Target use case | Help support engineers preserve escalation symptoms, owners, mitigations, product areas, and root-cause findings for later triage. |
 | Additive schema | Memories: `Support Severity` select, `Customer Impact` rich_text. Entities: `Support Entity Role` select. Facts: `Evidence Link` url. |
 | Tag vocabulary | `admin`, `api`, `billing`, `customer-report`, `data-loss`, `desktop`, `docs-gap`, `escalation`, `integration`, `latency`, `mobile`, `outage`, `permissions`, `product-area`, `root-cause`, `workaround`. |
 | Entity kind vocabulary | `account`, `customer`, `feature`, `integration`, `person`, `plan`, `product-area`, `support-ticket`, `system`, `team`, `workspace`. |
@@ -157,8 +157,8 @@ The tag vocabulary is intentionally centered on routing, customer impact, and
 triage outcome rather than ticket status. Ticket status remains task state;
 support tags should answer what kind of support knowledge was preserved. Entity
 kinds split customers, workspaces, product areas, plans, internal teams, and
-support tickets so future retrieval can connect symptoms to accountable product
-surfaces without adding profile-specific memory kinds.
+support tickets so retrieval can connect symptoms to accountable product surfaces
+without adding profile-specific memory kinds.
 
 The support prompt overrides narrow extraction toward support-safe incidents:
 autosave filtering prefers escalations, customer-impact notes, mitigations, and
@@ -173,10 +173,10 @@ The support profile is deliberately a profile-bundle exercise, not a profile
 distribution exercise. It does not add profile memory kinds, registry install,
 profile migration, `profile.yaml extends`, or a broad profile-management CLI.
 
-## Distribution (Phase 3)
+## Profile Distribution
 
-Phase 3 adds the `lore profile` CLI surface for distributing, validating,
-selecting, and migrating profiles without expanding the contract matrix.
+The `lore profile` CLI surface distributes, validates, selects, and migrates
+profiles without expanding the contract matrix.
 The five-database semantic core stays code-owned; nothing here lets an
 external profile redefine memory kinds, claim reserved predicates, or
 edit profile files via migration.
@@ -196,7 +196,7 @@ override shadows a built-in or installed bundle.
 
 ### Install sources
 
-`lore profile install` accepts two source forms in Phase 3:
+`lore profile install` accepts two source forms:
 
 - **Local filesystem path** pointing directly at a profile bundle root
   containing `profile.yaml`. No subdirectory discovery, no repo-root
@@ -220,7 +220,7 @@ never writes to the project-authored local path.
 | --- | --- |
 | Target directory does not exist | install proceeds after validation + confirmation |
 | Target exists, same `manifestDigest` | no-op; only the lock entry is refreshed |
-| Target exists, different `manifestDigest` | install fails with `Refusing to install … already exists with a different manifest digest`. Phase 3 has no `--force`; pick a new version or remove the directory manually |
+| Target exists, different `manifestDigest` | install fails with `Refusing to install … already exists with a different manifest digest`. There is no `--force`; pick a new version or remove the directory manually |
 | Target exists but is not a valid profile bundle | install fails closed; the installer never writes into an ambiguous existing directory |
 | Local profile at same selector with different digest | install fails because the local override would shadow the install |
 | Built-in profile at same selector with different digest | install fails because built-in resolution wins over installed external |
@@ -276,7 +276,7 @@ Rules:
   resolve against `configRoot` before comparison.
 - Interactive installs (without `--yes`) print the digest so operators
   can pre-populate the allow-list. Adding an entry without first running
-  the interactive preview is rejected because the digest will not match.
+  the interactive preview is rejected because the digest does not match.
 
 ### Migration DSL
 
@@ -289,9 +289,9 @@ Profile migrations live inside the source bundle:
 `lore profile migrate <name@version>` discovers the file via the source
 selector (the currently pinned profile, unless `--from` overrides it),
 parses every step, and prints a step table. The dry-run output names
-every step's id, kind, planned status, optional reason, and estimated
-Notion writes. `--apply` re-checks live state per step before committing
-and writes an audit ledger to:
+every step's id, kind, status, optional reason, and estimated Notion
+writes. `--apply` re-checks live state per step before committing and
+writes an audit ledger to:
 
 ```text
 <configRoot>/.lore/profile-migrations/<safe-profile-name>/<from>__<to>.<vault-page-sha12>.json
@@ -303,7 +303,7 @@ skip. The migration lock infrastructure (the same lock that gates
 `lore migrate`) prevents concurrent profile-migration apply runs against
 the same config root.
 
-The supported Phase 3 step kinds:
+The supported migration step kinds:
 
 - `add_property` — append an additive Notion property to one of the
   five core data sources. Cannot redefine core columns; the property
@@ -312,7 +312,7 @@ The supported Phase 3 step kinds:
 - `add_select_options` / `add_multi_select_options` — append options
   to an existing select / multi_select column. Live option ids are
   preserved on apply so Notion does not duplicate. For core columns,
-  Phase 3 allows appends only to profile-owned taxonomy surfaces:
+  profile migrations allow appends only to profile-owned taxonomy surfaces:
   Memories `Tags`, Entities `Kind`, and Facts `Predicate`; reserved
   fact predicates stay rejected.
 - `write_config_profile_pin` — rewrite `.lore.yaml profile:` to the

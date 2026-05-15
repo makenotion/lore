@@ -10,30 +10,33 @@ debugging, manual search).
 
 ## Files
 
-| File                     | Responsibility                                                                                                                                                                                                                                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `index.ts`               | CLI entry point: creates the `lore` program, registers commands                                                                                                                                                                                                                                        |
-| `commands/init.ts`       | `lore init [page-id]` -- create a workspace-level vault or initialize databases under an existing Notion page                                                                                                                                                                                          |
-| `commands/auth.ts`       | `lore auth` -- check/display authentication status                                                                                                                                                                                                                                                     |
-| `commands/search.ts`     | `lore search <query>` -- semantic search across memories                                                                                                                                                                                                                                               |
-| `commands/mine.ts`       | `lore mine [path]` -- index project files as memories                                                                                                                                                                                                                                                  |
-| `commands/inbox.ts`      | `lore inbox` -- proposed-memory review inbox (issue #281): `list` / `approve` / `reject` / `archive`                                                                                                                                                                                                   |
-| `commands/pinned.ts`     | `lore pinned` -- operator inspection of pinned context blocks (issue #282): `list` (read-only; mutating ops live on the `lore-pinned` MCP tool surface)                                                                                                                                                |
-| `commands/status.ts`     | `lore status` -- vault status + subcommands (projects, topics)                                                                                                                                                                                                                                         |
-| `commands/install.ts`    | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`)                                                                                                                            |
-| `commands/migrate.ts`    | `lore migrate` -- add missing schema properties to vault data sources                                                                                                                                                                                                                                  |
-| `commands/digest.ts`     | `lore digest` -- gather digest data + spawn background synthesizer                                                                                                                                                                                                                                     |
-| `commands/tasks.ts`      | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`)                                                                                                                                                                                                                                    |
-| `commands/conflicts.ts`  | `lore conflicts` -- conflict-detection workflow (currently: `scan`)                                                                                                                                                                                                                                    |
-| `commands/debt.ts`       | `lore debt` -- memory-debt audit and maintenance workflow (currently: `scan`, `create-tasks`); see [`docs/memory-debt.md`](../../docs/memory-debt.md)                                                                                                                                                  |
-| `commands/procedures.ts` | `lore procedures` -- procedural memory promotion: `scan`, `propose`, `deprecate`. Approval routes through `lore inbox approve <id>` so the audit contract stays on one entrypoint.                                                                                                                     |
-| `commands/entities.ts`   | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                                                                                                                                                    |
-| `commands/vault.ts`      | `lore vault` -- vault maintenance subcommands (currently: `ensure-entities`)                                                                                                                                                                                                                           |
-| `commands/eval.ts`       | `lore eval` -- local evaluation harness commands (currently: `run`)                                                                                                                                                                                                                                    |
-| `commands/promote.ts`    | `lore promote <memoryId> --to <name>` -- copy a primary-vault memory into a configured `promotionTargets` entry, with origin audit block (issue #286)                                                                                                                                                  |
-| `commands/mcp.ts`        | `lore mcp` -- start the MCP stdio server for host assistant integrations                                                                                                                                                                                                                               |
-| `commands/hooks.ts`      | `lore hooks` -- dispatch host-assistant hook events (`wakeup`, `autosave`, `session-end`)                                                                                                                                                                                                              |
-| `commands/profile.ts`    | `lore profile` -- Phase 3 profile distribution surface: `list` / `show` / `validate` / `preview` / `install` / `set` / `migrate`. See [`docs/profiles.md`](../../docs/profiles.md#distribution-phase-3) for the resolution priority, install collision matrix, allow-list contract, and migration DSL. |
+| File                     | Responsibility                                                                                                                                                                                                                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`               | CLI entry point: creates the `lore` program, registers commands                                                                                                                                                                                                                                |
+| `commands/init.ts`       | `lore init [page-id]` -- create a workspace-level vault or initialize databases under an existing Notion page                                                                                                                                                                                  |
+| `commands/auth.ts`       | `lore auth` -- check/display authentication status                                                                                                                                                                                                                                             |
+| `commands/search.ts`     | `lore search <query>` -- semantic search across memories                                                                                                                                                                                                                                       |
+| `commands/memory.ts`     | `lore memory` -- manual memory operations: `save`                                                                                                                                                                                                                                              |
+| `commands/decision.ts`   | `lore decision` -- manual decision operations: `create`                                                                                                                                                                                                                                        |
+| `commands/ask.ts`        | `lore ask <entity>` -- shell query for facts and tasks about an entity                                                                                                                                                                                                                         |
+| `commands/mine.ts`       | `lore mine [path]` -- index project files as memories                                                                                                                                                                                                                                          |
+| `commands/inbox.ts`      | `lore inbox` -- proposed-memory review inbox (issue #281): `list` / `approve` / `reject` / `archive`                                                                                                                                                                                           |
+| `commands/pinned.ts`     | `lore pinned` -- operator inspection of pinned context blocks (issue #282): `list` (read-only; mutating ops live on the `lore-pinned` MCP tool surface)                                                                                                                                        |
+| `commands/status.ts`     | `lore status` -- vault status + subcommands (projects, topics)                                                                                                                                                                                                                                 |
+| `commands/install.ts`    | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`)                                                                                                                    |
+| `commands/migrate.ts`    | `lore migrate` -- add missing schema properties to vault data sources                                                                                                                                                                                                                          |
+| `commands/digest.ts`     | `lore digest` -- gather digest data + spawn background synthesizer                                                                                                                                                                                                                             |
+| `commands/tasks.ts`      | `lore tasks` -- task lifecycle subcommands: `create` / `update` / `close` / `close-many` / `list` / `reconcile`                                                                                                                                                                                |
+| `commands/conflicts.ts`  | `lore conflicts` -- conflict-detection workflow (currently: `scan`)                                                                                                                                                                                                                            |
+| `commands/debt.ts`       | `lore debt` -- memory-debt audit and maintenance workflow (currently: `scan`, `create-tasks`); see [`docs/memory-debt.md`](../../docs/memory-debt.md)                                                                                                                                          |
+| `commands/procedures.ts` | `lore procedures` -- procedural memory promotion: `scan`, `propose`, `deprecate`. Approval routes through `lore inbox approve <id>` so the audit contract stays on one entrypoint.                                                                                                             |
+| `commands/entities.ts`   | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                                                                                                                                            |
+| `commands/vault.ts`      | `lore vault` -- vault maintenance subcommands (currently: `ensure-entities`)                                                                                                                                                                                                                   |
+| `commands/eval.ts`       | `lore eval` -- local evaluation harness commands: `run` / `baseline` / `vaults` / `bench`                                                                                                                                                                                                      |
+| `commands/promote.ts`    | `lore promote <memoryId> --to <name>` -- copy a primary-vault memory into a configured `promotionTargets` entry, with origin audit block (issue #286)                                                                                                                                          |
+| `commands/mcp.ts`        | `lore mcp` -- start the MCP stdio server for host assistant integrations                                                                                                                                                                                                                       |
+| `commands/hooks.ts`      | `lore hooks` -- dispatch host-assistant hook events (`wakeup`, `autosave`, `session-end`)                                                                                                                                                                                                      |
+| `commands/profile.ts`    | `lore profile` -- profile distribution surface: `list` / `show` / `validate` / `preview` / `install` / `set` / `migrate`. See [`docs/profiles.md`](../../docs/profiles.md#profile-distribution) for the resolution priority, install collision matrix, allow-list contract, and migration DSL. |
 
 ## Commander Patterns
 
@@ -75,8 +78,7 @@ only checks whether the token is available, without connecting to Notion.
 connect to Notion (for vault preflight and identity lookup), but they
 construct their own client directly rather than going through `initServices`.
 `--status` runs `verifyVaultAccess` by default — operators run it rarely
-and the round-trip is acceptable for the diagnostic value; a future
-`--no-verify` opt-out is plausible if telemetry shows real friction.
+and the round-trip is acceptable for the diagnostic value.
 
 **Exception**: The `init` command creates its own client and `VaultManager`
 directly because it runs before a `.lore.yaml` exists.
@@ -167,7 +169,7 @@ codes. Pin three things:
    change shell-grep contracts.
 2. `exitTrap.exitCodes` via `toEqual([1])`, NOT `toContain(1)`. The
    tight assertion catches doubled-emission bugs introduced when a
-   future refactor drops the defensive `return` after `process.exit(1)`
+   refactor drops the defensive `return` after `process.exit(1)`
    — execution would fall through to the outer try/catch, which would
    call `console.error` and `process.exit(1)` again, leaving
    `exitCodes === [1, 1]`. `toContain(1)` would silently accept the
@@ -191,7 +193,7 @@ Spy cleanup is the project convention via `vi.restoreAllMocks()` in
 The defensive `return` after `process.exit(1)` is the standing pattern
 in this codebase — see `commands/mine.ts` and `commands/search.ts` for
 reference. New early-exit branches in command actions must follow it
-or the no-throw spy's `exitTrap.exitCodes` assertion will fail loudly.
+or the no-throw spy's `exitTrap.exitCodes` assertion fails loudly.
 
 For malformed `--limit` / `--n` parse-failure tests, use the shared
 `INVALID_LIMIT_STRINGS` fuzz set from `test-helpers.ts` so changes to
@@ -250,8 +252,8 @@ the same patch.
 
 `lore auth --login` is the recommended entry point for authentication
 under 0.10.0. It auto-installs ntn (if missing), shells out to `ntn
-login` with `NOTION_KEYRING=0` forced inside the spawn (so the token
-lands in `~/.config/notion/auth.json` where Lore can read it), and
+login` with `NOTION_KEYRING=0` forced inside the spawn (so the token is
+written to `~/.config/notion/auth.json` where Lore can read it), and
 runs `verifyVaultAccess` post-flow. Operators who want to re-auth
 without re-installing run `lore auth --login` directly; new operators
 typically hit it via `lore install`'s prerequisites flow rather than
@@ -263,9 +265,7 @@ The other subcommands:
   source (`NOTION_API_TOKEN` / ntn-resolved), and runs
   `verifyVaultAccess` against the configured vault page. The
   preflight is a Notion round-trip — that's why `--status`
-  bypasses `initServices` and constructs its own client. A future
-  `--no-verify` opt-out is plausible if operators report friction;
-  not in 0.10.0.
+  bypasses `initServices` and constructs its own client.
 - `--whoami` resolves the token, calls `users.me`, and prints the
   bot identity. Useful for confirming the engineer is authenticated
   against the expected workspace.
@@ -352,10 +352,9 @@ Two backends, selected by `--synopsis-backend`:
   content. Intended primarily for test infrastructure (CI, fixtures);
   also usable by operators who want to flag every legacy row on a large
   vault before committing to LLM cost. **One-way state**: once the
-  sentinel lands, the `Synopsis is_empty` discovery filter excludes the
+  sentinel is written, the `Synopsis is_empty` discovery filter excludes the
   row on every subsequent run. Re-clear via `lore-memory action='update'`
-  with `synopsis: ""` to re-target a row, or wait on a future
-  `--backfill-only-placeholders` flag (out of scope for 0.7.0).
+  with `synopsis: ""` to re-target a row.
 
 The fetch-time counters (`bodyOversizeSkipped`, `emptyBodySkipped`)
 stay at typed numeric `0` on the placeholder apply path because the
@@ -379,15 +378,15 @@ from the categorical `Confidence` column (`certain → 0.9`, `likely →
 0.6`, `speculative → 0.3` — the `CONFIDENCE_SEED` table in
 `src/types.ts`), writes `Last Referenced At = created_time`, and
 realizes any neglect-decay accrued since creation via
-`decayConfidenceScore` so a 200-day-old `certain` row lands at
+`decayConfidenceScore` so a 200-day-old `certain` row computes to
 `0.9 * 0.99^140 ≈ 0.220` rather than the bare seed value. Plan-only by
 default; `--yes` flips to apply mode. `--dry-run` always wins.
 
 **Why operators run this on upgrade.** Without the migration, every
-pre-0.8.0 row's `Confidence Score` is null until a Phase 2 read path
-touches it. RRF (#08) treats null as `confidenceFactor === 1.0`, so
-the new ordering signal effectively no-ops; the trust indicator (#09)
-never fires; the wake-up Stale Confidence section (#10) is empty.
+pre-0.8.0 row's `Confidence Score` is null until a read path touches it.
+RRF (#08) treats null as `confidenceFactor === 1.0`, so the ordering
+signal effectively no-ops; the trust indicator (#09) never fires; the
+wake-up Stale Confidence section (#10) is empty.
 Running the backfill once after upgrade populates every row so day-one
 behavior matches steady-state.
 
@@ -415,8 +414,8 @@ unwritten rows finish.
 actually "referenced" at creation; the assignment exists so decay
 algebra has an anchor. Harmless: the operator who finds it confusing
 can re-run the migration after a few weeks of real read-traffic — the
-rows whose `Last Referenced At` got bumped by a Phase 2 read-touch
-keep that newer date (the migration skips them).
+rows whose `Last Referenced At` got bumped by a read-touch keep that
+newer date (the migration skips them).
 
 The plan output surfaces top-N most-decayed titles so an operator can
 sanity-check before approving with `--yes`. Per-100-rows progress lines
@@ -462,14 +461,14 @@ Mechanics:
   `src/hooks/background.ts` with `logLabel: "digest"` so stderr
   attributions stay distinct.
 - `--dry-run` prints the gathered markdown and skips the spawn. Use this to
-  preview what the synthesizer will see before burning an API call.
+  preview what the synthesizer receives before burning an API call.
 - When no memories fall in the window, the command exits early without
   spawning (nothing to digest).
 - `--since YYYY-MM-DD` (paired with optional `--until`) widens the window
   past the auto-scheduler's `period: "week"` default. Use this for
   projects that hover below the digest-worthy bar week-over-week — the
   Stop-triggered scheduler's quiet-week branch keeps touching the marker
-  for those, so no `source: "digest"` memory ever lands and
+  for those, so no `source: "digest"` memory is written and
   `lore-context action='wake-up'` has no digest memory to surface in its fast
   path. The CLI re-touches the same marker after spawning, so a manual run
   debounces the next Stop hook's auto-path correctly.
@@ -508,8 +507,7 @@ The pure renderer (`formatTaskSummary`) and the orchestrator
 status` (CLI) and `lore-context action='status'` (MCP) — emit the
 same line shape for the same vault state.
 
-A **Memory confidence** line follows the Tasks summary
-(DEFERRED-04). Shape:
+A **Memory confidence** line follows the Tasks summary. Shape:
 
 ```
 Memory confidence: 1247 total, 1023 scored (avg 0.51, 412 below threshold)
@@ -545,13 +543,12 @@ load-bearing: `proposed` is a normal in-flight `decision` lifecycle
 state per `ACTIVE_DECISION_STATUSES` (`src/types.ts`), so counting
 proposed-state decisions as inbox memories would conflate governance
 with auto-extracted learnings. The shared filter literal lives in
-`proposedMemoryFilter()` (`src/core/memory.ts`); subsequent phases of
-this epic (default-recall exclusion, wake-up section) compose the
-same helper rather than re-deriving the predicate. The CLI fans the
-call out via `Promise.all` alongside `taskStats`, `confidenceStats`,
-and `loadWakeUpData` — same posture as the other status probes, so
-wall-clock at the orchestration level is `max(...)` rather than the
-sum.
+`proposedMemoryFilter()` (`src/core/memory.ts`); default-recall
+exclusion and the wake-up section compose the same helper rather than
+re-deriving the predicate. The CLI fans the call out via `Promise.all`
+alongside `taskStats`, `confidenceStats`, and `loadWakeUpData` — same
+posture as the other status probes, so wall-clock at the orchestration
+level is `max(...)` rather than the sum.
 
 The renderer (`formatProposedInboxStatus`) and loader
 (`loadProposedInboxStatus`) live in `src/core/proposed-inbox.ts` so
@@ -578,19 +575,15 @@ empty"; mirrors the Agent `"unknown"` fallback for empty
 rich_text values.
 
 This line is the **read-side count surface** of the proposed-memory
-review inbox (issue #281). The full epic ships in four phases:
-
-- Phase 1 — this line + `MemoryService.countProposed`.
-- Phase 2 — default-recall exclusion (`includeProposed?: boolean` on
-  `list` / `search` / `queryStaleConfidence`) plus the wake-up
-  `Proposed Memories` section.
-- Phase 3 — `hooks.proposeAutosaveLearnings` config flag that routes
-  every auto-extracted learning through the inbox instead of
-  writing it directly to accepted recall.
-- Phase 4 — `lore inbox` CLI (`list` / `approve` / `reject` /
-  `archive`) and `lore-memory action='approve' / 'reject'` MCP
-  actions, with reviewer + timestamp recorded in a `## Reviewed`
-  audit block on the page body.
+review inbox (issue #281). The shipped inbox surface includes
+`MemoryService.countProposed`, default-recall exclusion
+(`includeProposed?: boolean` on `list` / `search` /
+`queryStaleConfidence`), the wake-up `Proposed Memories` section,
+the `hooks.proposeAutosaveLearnings` config flag, the `lore inbox`
+CLI (`list` / `approve` / `reject` / `archive`), and
+`lore-memory action='approve' / 'reject'` MCP actions. Approval and
+rejection record reviewer + timestamp in a `## Reviewed` audit block
+on the page body.
 
 Same operator-facing pattern as the Memory confidence line: shared
 between CLI and MCP via the core renderer + loader in
@@ -609,11 +602,10 @@ the same vault under the same scope through the same rate-limited client, so
 a 5xx that takes down one likely takes down the others; `allSettled`'s
 partial-recovery posture would help only on the narrow case of a transient
 single-call failure that the rate-limit middleware doesn't retry through.
-`taskStats`'s pre-DEFERRED-04
-posture was the same `Promise.all` shape, and the
-`searchByHybridPages` design rule already pins "fully-broken
-subsystem must not masquerade as no-results" — `lore status` should
-fail loudly, not paper over an outage with half a status line.
+`taskStats`, `confidenceStats`, and wake-up coverage share this fail-loud
+posture, and the `searchByHybridPages` design rule already pins
+"fully-broken subsystem must not masquerade as no-results" — `lore status`
+should fail loudly, not paper over an outage with half a status line.
 
 The renderer (`formatConfidenceSummary`) is exported from
 `commands/status.ts` and follows the established `formatTaskSummary`
@@ -623,15 +615,15 @@ suppresses the line. CLI-only — no MCP parallel exists; the line is
 operator-facing vault-health surface, distinct from the agent-facing
 `lore-context action='status'`.
 
-The prefix is deliberately `Memory confidence:` rather than the
-deferred-spec's illustrative `Memories:` — the bare `Memories:`
-prefix would visually collide with the `Database counts →
+The prefix is deliberately `Memory confidence:` rather than `Memories:`
+because the bare `Memories:` prefix would visually collide with the
+`Database counts →
 Memories: N` line two rows above. The two surfaces also count
 different sets: `Database counts → Memories: N` is a vault-wide
 `countDatabase` walk that includes archived rows; the confidence
 line is project-scoped (when applicable) and excludes archived rows
 (inherited from `listAllForBackfill`). On a vault with archived
-memories the two numbers will differ legitimately — operators
+memories the two numbers can differ legitimately — operators
 reading `Memories: 1247` and `Memory confidence: 1245 total …`
 should not interpret that as a bug.
 
@@ -668,14 +660,13 @@ obvious from the rendered output:
   server, hook runner, digest scheduler) — not just Stop.
 - `lore status` itself runs with `driftCheck: true`, so
   `resolveDriftCheck` touches the marker _before_ the loader reads it.
-  The section therefore reflects what debounced callers will see on
+  The section therefore reflects what debounced callers see on
   their next fire — not what `lore status` itself triggered. Looks
   like a bug if you don't know to expect it.
 - Section-suppression contract: loader returns `configured: false`
   (no `.lore.yaml` config root) → renderer returns `[]` → caller's
   length-check drops the entire section. Mirrors how Digests
-  suppresses on no-sub-projects vaults. Single row today, but the
-  data shape leaves a `padEnd` seam free for a future multi-vault row.
+  suppresses on no-sub-projects vaults.
 
 ## Adding a New Command
 
@@ -755,7 +746,7 @@ state.
 
 - Default `lore install` updates Claude Code, Codex, and Cursor for the
   current project (`--client all`), so rerunning it after an older
-  single-assistant install will fill in the missing sides.
+  single-assistant install fills in the missing sides.
 - `--client claude` updates only Claude Code's `settings.json` hooks and the
   project's `.mcp.json`.
 - `--client codex` updates only the project's `.codex/config.toml` and
@@ -812,7 +803,7 @@ config snippet to stdout. Pure stdout-emitter — no files written. `--client`
 is accepted as a no-op; `--project` selects the config root embedded as
 `LORE_CONFIG_ROOT` for bare/legacy printed snippets. Yarn/PnP printed snippets
 omit that static env and rely on launch from the workspace root, so pass
-`--yarn-pnp` only when the unsupported host will run the snippet from the repo
+`--yarn-pnp` only when the unsupported host runs the snippet from the repo
 root. `--yarn-pnp` / `--no-yarn-pnp` select the printed command shape.
 
 - `--print-config json` calls `buildClaudeMcpEntry` and wraps the result in
@@ -872,7 +863,7 @@ VAR=VALUE [VAR=VALUE ...] /path/to/script.sh
 ```
 
 Rules the detector enforces (and that reinstall depends on — a hook that
-doesn't match the pattern will be classified `stale` and replaced):
+doesn't match the pattern is classified `stale` and replaced):
 
 - **Uppercase keys only**: `LORE_AGENT_NAME=Codex` ✓,
   `lore_agent_name=codex` ✗. Matches the POSIX env-var spelling
@@ -885,8 +876,8 @@ doesn't match the pattern will be classified `stale` and replaced):
   works — each `VAR=VALUE ` pair is stripped in turn.
 - **Do not wrap the command in an outer shell** (`sh -c "…"`). The
   detector strips leading assignments but does not unwrap wrapper
-  shells; a wrapped command will not match its script name and
-  `lore install` will replace it on every run.
+  shells; a wrapped command does not match its script name and
+  `lore install` replaces it on every run.
 
 Integrators writing to `.codex/hooks.json` directly should build the
 command via the same shape `buildCodexHookCommand` produces: prefix,
@@ -1041,8 +1032,6 @@ review inbox (issue #281). Four subcommands:
 The CLI is intentionally narrow — no `bulk-approve`, no
 `--filter`, no audit-only inspection mode. Operators triage
 visually via `lore inbox list`, then act on individual IDs.
-A future `bulk-approve` is plausible follow-up if the inbox
-depth grows; not needed for the initial Phase 4 ship.
 
 The `## Reviewed (YYYY-MM-DD)` audit block format is the
 canonical record of reviewer + timestamp for AC #4. The block

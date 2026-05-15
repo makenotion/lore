@@ -253,7 +253,7 @@ export const HELP_RECIPES = [
     action: "list",
     summary: "List active pinned context blocks in the current project/audience scope.",
     whenToUse:
-      "Use this to audit what will render before wake-up sections, or pass includeAllAudiences when reviewing pinned blocks across audience tokens.",
+      "Use this to audit what renders before wake-up sections, or pass includeAllAudiences when reviewing pinned blocks across audience tokens.",
     example: {
       action: "list",
       projectName: "Lore",
@@ -544,7 +544,7 @@ export const HELP_RECIPES = [
     action: "close-many",
     summary: "Close an explicit batch of task IDs.",
     whenToUse:
-      "Use this after a reconcile or maintenance pass when you have already reviewed a specific list of task IDs to close.",
+      "Use this after a reconcile, review, or maintenance pass produces a specific list of task IDs to mark done or cancelled. Partial failures are reported per ID.",
     example: {
       action: "close-many",
       ids: [
@@ -552,10 +552,11 @@ export const HELP_RECIPES = [
         "77777777-7777-7777-7777-777777777777",
       ],
       state: "done",
-      reason: "Resolved by the merged task-close maintenance PR.",
+      reason: "The referenced work has shipped and validation passed.",
     },
     cautions: [
-      "Only pass IDs you have explicitly reviewed; already-closed tasks are reported as no-ops.",
+      "Only pass task IDs you have explicitly reviewed; use lore-task action='list' or action='reconcile' first when you need candidates.",
+      "Already-closed tasks are reported as no-ops, and the result is an error when any ID fails.",
     ],
   },
   {
