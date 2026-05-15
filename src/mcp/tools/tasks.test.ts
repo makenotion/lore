@@ -105,6 +105,85 @@ function services(overrides: Record<string, unknown> = {}) {
 }
 
 describe("lore-task-create", () => {
+  it("rejects pointer-only subjects before duplicate probing or writes", async () => {
+    const svc = services()
+    svc.tasks.list = vi.fn()
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "services/router2/graph.json",
+      topicName: "Routing",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain("looks like a code pointer rather than a task")
+    expect(text).toContain("lore-fact action='create'")
+    expect(text).toContain("allowPointerSubject/--allow-pointer-subject")
+    expect(svc.tasks.list).not.toHaveBeenCalled()
+    expect(svc.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+  })
+
+  it("allows pointer-only subjects when allowPointerSubject is true", async () => {
+    const created: Task = {
+      ...makeTask("t-pointer", {
+        title: "services/router2/graph.json",
+        entity: "services/router2/graph.json",
+      }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "services/router2/graph.json",
+      allowPointerSubject: true,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBeUndefined()
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "services/router2/graph.json" })
+    )
+    expect(text).toContain('Created task: "services/router2/graph.json"')
+  })
+
+  it("accepts pointer-containing subjects when the subject names work", async () => {
+    const created: Task = {
+      ...makeTask("t-work", {
+        title: "Audit services/router2/graph.json for stale routes",
+      }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Audit services/router2/graph.json for stale routes",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBeUndefined()
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "Audit services/router2/graph.json for stale routes",
+      })
+    )
+  })
+
   it("rejects an unresolved explicit projectName before creating a task", async () => {
     const svc = services({
       context: {
@@ -443,7 +522,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
 
   it("falls back to subject when entity is omitted (probe scopes to the same default the row uses)", async () => {
     const created: Task = {
-      ...makeTask("t1", { entity: "AuthService" }),
+      ...makeTask("t1", { entity: "Rotate keys" }),
       content: "",
     } as Task
     const svc = services()
@@ -453,13 +532,13 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    await handler({ action: "create", subject: "AuthService" } as never)
+    await handler({ action: "create", subject: "Rotate keys" } as never)
 
     // The row's `Entity` defaults to subject when entity is omitted
     // (`TaskService.create`); the probe must use the same default so
     // a future create on the same subject collides with this row.
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ entities: ["AuthService"] })
+      expect.objectContaining({ entities: ["Rotate keys"] })
     )
   })
 })

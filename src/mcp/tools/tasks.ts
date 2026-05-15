@@ -39,6 +39,7 @@ import {
   DEFAULT_RECONCILE_MIN_SCORE,
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
+import { validateTaskSubjectForCreate } from "../../core/task-subject-validation.js"
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
@@ -184,6 +185,7 @@ interface CreateArgs {
   agent?: string
   session?: string
   scope?: import("../../types.js").MemoryScopeInput
+  allowPointerSubject?: boolean
 }
 
 /**
@@ -239,6 +241,10 @@ async function handleCreate(
           "(PR number, person, external service). A blocked task with no blocker is " +
           'unactionable. Pass `blockedBy` or use state: "open" if no specific blocker exists.'
       )
+    }
+    const subjectValidation = validateTaskSubjectForCreate(args)
+    if (!subjectValidation.ok) {
+      throw new Error(subjectValidation.message)
     }
     const authorPromise = resolveAuthorForWrite(args.author, services.identity)
     const resolved = await resolveProjectIds(
@@ -861,6 +867,7 @@ function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema
       agent: z.string().optional(),
       session: z.string().optional(),
       scope: scopeInputSchema,
+      allowPointerSubject: z.boolean().optional(),
     }),
     z.object({
       action: z.literal("update"),
@@ -1070,6 +1077,12 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .string()
           .optional()
           .describe("(action='create') Session ID to group related saves."),
+        allowPointerSubject: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='create') Bypass the pointer-only subject guard for false positives."
+          ),
         // list
         dueBefore: ymdDateSchema
           .optional()

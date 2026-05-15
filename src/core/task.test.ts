@@ -12,6 +12,7 @@ import {
   todayUtc,
   type TaskStats,
 } from "./task.js"
+import { validateTaskSubjectForCreate } from "./task-subject-validation.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import { STALE_TASK_DAYS, SYNOPSIS_MAX } from "../types.js"
 import type {
@@ -132,6 +133,66 @@ const DB: DatabaseRef = {
   databaseId: "memories-db-id",
   dataSourceId: "memories-ds-id",
 }
+
+describe("validateTaskSubjectForCreate", () => {
+  it.each([
+    "services/router2/graph.json",
+    "services/fix/graph.json",
+    "subscribeNotification.ts:32-96",
+    "countColumnValuesForThreadAttributeID caller (ColumnValuesDataAccess.ts:929)",
+    "outlookDeltaPullWorkflow",
+    "idx_mail_workflow_status_dispatch",
+    "mail-gmail-sync-worker dataset",
+  ])("rejects pointer-only task subject %j", (subject) => {
+    const result = validateTaskSubjectForCreate({ subject })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("looks like a code pointer rather than a task")
+      expect(result.message).toContain("lore-fact action='create'")
+      expect(result.message).toContain("predicate=<writable predicate for this vault>")
+      expect(result.message).not.toContain("has_concern")
+      expect(result.message).not.toContain("needs_review")
+      expect(result.message).toContain(
+        "Audit countColumnValuesForThreadAttributeID for missing index"
+      )
+      expect(result.message).toContain("allowPointerSubject/--allow-pointer-subject")
+    }
+  })
+
+  it.each([
+    "Audit services/router2/graph.json for stale routes",
+    "Fix subscribeNotification.ts line range handling",
+    "Missing index for outlook delta pull workflow",
+    "Track PR-1234 review",
+  ])("accepts clear work subject %j", (subject) => {
+    expect(validateTaskSubjectForCreate({ subject })).toEqual({ ok: true })
+  })
+
+  it.each([
+    { description: "Audit the workflow for missing retry handling." },
+    { synopsis: "Done when the workflow has an owner and close criterion." },
+    { dueDate: "2026-05-20" },
+    { blockedBy: "PR #1234" },
+    { affectsIds: ["mem-1"] },
+  ])("accepts identifier subjects when another field gives a done criterion", (rest) => {
+    expect(
+      validateTaskSubjectForCreate({
+        subject: "outlookDeltaPullWorkflow",
+        ...rest,
+      })
+    ).toEqual({ ok: true })
+  })
+
+  it("allows an explicit pointer-subject override", () => {
+    expect(
+      validateTaskSubjectForCreate({
+        subject: "services/router2/graph.json",
+        allowPointerSubject: true,
+      })
+    ).toEqual({ ok: true })
+  })
+})
 
 describe("TaskService.create", () => {
   type RichTextFieldCase = readonly [string, (value: string) => Partial<CreateTaskInput>]

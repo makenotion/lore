@@ -659,9 +659,65 @@ describe("parseCreateCliOptions", () => {
       expect(rejected.message).not.toContain("ios")
     }
   })
+
+  it("rejects pointer-only subjects and points at the override", () => {
+    const result = parseCreateCliOptions("subscribeNotification.ts:32-96", {})
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("looks like a code pointer rather than a task")
+      expect(result.message).toContain("lore-fact action='create'")
+      expect(result.message).toContain("allowPointerSubject/--allow-pointer-subject")
+    }
+  })
+
+  it("accepts pointer-only subjects when --allow-pointer-subject is supplied", () => {
+    const result = parseCreateCliOptions("subscribeNotification.ts:32-96", {
+      allowPointerSubject: true,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.allowPointerSubject).toBe(true)
+  })
+
+  it("accepts pointer-containing subjects when the subject names work", () => {
+    const result = parseCreateCliOptions(
+      "Audit services/router2/graph.json for stale routes",
+      {}
+    )
+
+    expect(result.ok).toBe(true)
+  })
 })
 
 describe("runTaskCreate", () => {
+  it("rejects pointer-only subjects before duplicate probing or writes", async () => {
+    const tasksCreate = vi.fn()
+    const services = makeServices({
+      contextProject: null,
+      tasksCreate,
+    })
+
+    await expect(
+      runTaskCreate(services, {
+        subject: "services/router2/graph.json",
+        description: undefined,
+        entity: undefined,
+        state: undefined,
+        blockedBy: undefined,
+        dueDate: undefined,
+        projectName: undefined,
+        topicName: undefined,
+        tags: undefined,
+        keywords: undefined,
+        synopsis: undefined,
+      })
+    ).rejects.toThrow("looks like a code pointer rather than a task")
+
+    expect(services.tasks.list).not.toHaveBeenCalled()
+    expect(tasksCreate).not.toHaveBeenCalled()
+  })
+
   it("rejects when --project resolves nothing", async () => {
     const findByName = vi.fn().mockResolvedValue(null)
     const services = makeServices({ findByName, contextProject: null })
@@ -1702,6 +1758,20 @@ describe("tasksCommand create/update/close/list actions", () => {
     expect(vi.mocked(initServices)).not.toHaveBeenCalled()
   })
 
+  it("create exits 1 before initServices on a pointer-only subject", async () => {
+    await tasksCommand.parseAsync(["create", "services/router2/graph.json"], {
+      from: "user",
+    })
+
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Task create failed:")
+    expect(errorText).toContain("looks like a code pointer rather than a task")
+    expect(errorText).toContain("lore-fact action='create'")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+  })
+
   it("create exits 1 via the catch-all when initServices throws", async () => {
     vi.mocked(initServices).mockRejectedValue(new Error("notion 503: gateway"))
 
@@ -1733,6 +1803,32 @@ describe("tasksCommand create/update/close/list actions", () => {
     expect(logSpy).toHaveBeenCalledTimes(1)
     const logged = logSpy.mock.calls[0]!.join("\n")
     expect(logged).toContain('Created task: "Track PR-1" (t-new)')
+  })
+
+  it("create honors --allow-pointer-subject", async () => {
+    const tasksCreate = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-pointer",
+        title: "services/router2/graph.json",
+        taskState: "open",
+        entity: "services/router2/graph.json",
+      }) as unknown as Task
+    )
+    const services = makeServices({ contextProject: null, tasksCreate })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    await tasksCommand.parseAsync(
+      ["create", "services/router2/graph.json", "--allow-pointer-subject"],
+      { from: "user" }
+    )
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(exitTrap.exitCodes).toEqual([])
+    expect(tasksCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "services/router2/graph.json" })
+    )
+    const logged = logSpy.mock.calls[0]!.join("\n")
+    expect(logged).toContain('Created task: "services/router2/graph.json"')
   })
 
   it("create validates --tags against the active profile vocabulary", async () => {
