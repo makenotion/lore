@@ -190,6 +190,8 @@ instructions.
 - Propose structural rule changes to the human lead first.
 - Never remove or weaken existing rules without approval.
 - Every change should leave the document shorter, more useful, or both.
+- Use [`documentation-maintenance.md`](documentation-maintenance.md) when
+  splitting oversized docs or agent guides.
 
 ## Troubleshooting
 
