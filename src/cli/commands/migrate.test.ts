@@ -5,26 +5,27 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Fact, Memory } from "../../types.js"
 import type { TopicAliasMergeResult } from "../../core/topic-merge.js"
+import { migrateCommand } from "./migrate.js"
+import { runAgentNormalization } from "./migrate/agent-normalization.js"
 import {
-  backfillFactSources,
+  runBuildConfidenceScores,
+  summarizeConfidenceScorePlan,
+} from "./migrate/confidence.js"
+import { runBuildEntitiesMigration } from "./migrate/entities.js"
+import { runFactEncodingFix, runMemoryEncodingFix } from "./migrate/encoding.js"
+import { backfillFactSources, proposeSourceMemory } from "./migrate/fact-sources.js"
+import { runOrphanRateReport } from "./migrate/orphan-rate.js"
+import {
+  printDiscoveryBreadcrumb,
+  resolveMigrationProjectScope,
+} from "./migrate/shared.js"
+import {
   formatBackfillBucket,
-  loadTopicAliasMerges,
-  migrateCommand,
   parseSynopsisBackend,
   parseSynopsisBatchSize,
-  printAliasMergeResults,
-  printDiscoveryBreadcrumb,
-  proposeSourceMemory,
-  resolveMigrationProjectScope,
-  runAgentNormalization,
-  runBuildConfidenceScores,
-  runBuildEntitiesMigration,
-  runFactEncodingFix,
-  runMemoryEncodingFix,
-  runOrphanRateReport,
   runSynopsisBackfill,
-  summarizeConfidenceScorePlan,
-} from "./migrate.js"
+} from "./migrate/synopsis.js"
+import { loadTopicAliasMerges, printAliasMergeResults } from "./migrate/topic-merge.js"
 import { migrationLockPath } from "../migration-lock.js"
 import type { BuildConfidenceScoresPlan } from "../../core/confidence-migration.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"

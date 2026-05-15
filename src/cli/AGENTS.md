@@ -64,6 +64,9 @@ in [`../../docs/cli.md`](../../docs/cli.md) must stay in sync.
 - CLI and hooks import from [`../services.ts`](../services.ts), not from
   [`../mcp/server.ts`](../mcp/server.ts).
 - Keep internal relative imports ESM-shaped with `.js` extensions.
+- Keep `commands/migrate.ts` as the `lore migrate` Commander router; focused
+  migration implementations and CLI-only renderers live under
+  `commands/migrate/`.
 - Parse raw CLI flags before service initialization when a parse failure should
   exit without touching Notion.
 - Treat explicit scope misses as fatal. A miss for `--project <name>` exits

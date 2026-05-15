@@ -1351,7 +1351,7 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
  * against real data.
  */
 
-import { runOrphanRateReport } from "../../cli/commands/migrate.js"
+import { runOrphanRateReport } from "../../cli/commands/migrate/orphan-rate.js"
 import type { Fact } from "../../types.js"
 
 type RunOrphanRateReportFn = typeof runOrphanRateReport
