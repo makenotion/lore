@@ -223,7 +223,8 @@ const reconcileCommand = new Command("reconcile")
  */
 async function resolveProjectIdForRead(
   services: LoreServices,
-  projectName: string | undefined
+  projectName: string | undefined,
+  opts: { useContextProject?: boolean } = {}
 ): Promise<string | undefined> {
   const explicit = validateExplicitProjectScopeName(projectName, "--project", {
     listHint: PROJECT_LIST_HINT,
@@ -239,7 +240,7 @@ async function resolveProjectIdForRead(
     )
     return found.id
   }
-  return services.context.project?.id
+  return opts.useContextProject === false ? undefined : services.context.project?.id
 }
 
 /**
@@ -1061,6 +1062,7 @@ const closeCommand = new Command("close")
 
 export interface ListCliOptions {
   projectName: string | undefined
+  allProjects: boolean
   entity: string | undefined
   state: TaskState | undefined
   dueBefore: string | undefined
@@ -1070,6 +1072,8 @@ export interface ListCliOptions {
 export interface ListCliRow {
   id: string
   title: string
+  projectIds: string[]
+  projects: string[]
   state: TaskState
   reviewBy: string | null
   blockedBy: string | null
@@ -1098,6 +1102,8 @@ type ListSaturationReason = "user-limit" | "safety-cap" | null
 
 export interface ListCliResultData {
   total: number
+  distinctTaskIds: number
+  multiProjectTaskCount: number
   saturated: boolean
   /**
    * Why the walk stopped short of exhausting Notion's result set.
@@ -1116,6 +1122,7 @@ export interface ListCliResultData {
   active: ListCliRow[]
   filter: {
     projectId: string | null
+    allProjects: boolean
     entity: string | null
     state: TaskState | null
     dueBefore: string | null
@@ -1130,11 +1137,19 @@ export interface ListCliResult {
 
 export function parseListCliOptions(raw: {
   project?: string
+  allProjects?: boolean
   entity?: string
   state?: string
   dueBefore?: string
   limit: string
 }): CliParseResult<ListCliOptions> {
+  if (raw.project !== undefined && raw.allProjects === true) {
+    return {
+      ok: false,
+      message:
+        "--project and --all-projects are mutually exclusive; pass one or the other",
+    }
+  }
   const state = validateState(raw.state, "--state", TASK_STATES)
   if (!state.ok) return state
   const dueBefore = validateYmd(raw.dueBefore, "--due-before")
@@ -1151,6 +1166,7 @@ export function parseListCliOptions(raw: {
     ok: true,
     value: {
       projectName: raw.project,
+      allProjects: raw.allProjects === true,
       entity: raw.entity,
       state: state.value,
       dueBefore: dueBefore.value,
@@ -1159,10 +1175,41 @@ export function parseListCliOptions(raw: {
   }
 }
 
-function rowFromTask(task: TaskSummary, today: string): ListCliRow {
+async function projectNameMapForRows(
+  services: LoreServices,
+  tasks: readonly TaskSummary[]
+): Promise<Map<string, string>> {
+  const ids = new Set(tasks.flatMap((task) => task.projectIds))
+  if (ids.size === 0) return new Map()
+  let projects
+  try {
+    projects = await services.projects.list("any")
+  } catch (err) {
+    debugLogPartialFailures("lore tasks list", [
+      { rootId: "project-name-enrichment", error: err },
+    ])
+    return new Map()
+  }
+  return new Map(
+    projects
+      .filter((project) => ids.has(project.id))
+      .map((project) => [project.id, project.name])
+  )
+}
+
+function rowFromTask(
+  task: TaskSummary,
+  today: string,
+  projectNameById: ReadonlyMap<string, string>
+): ListCliRow {
+  const projects = task.projectIds
+    .map((id) => projectNameById.get(id))
+    .filter((name): name is string => name !== undefined)
   return {
     id: task.id,
     title: task.title,
+    projectIds: [...task.projectIds],
+    projects,
     state: (task.taskState ?? "open") as TaskState,
     reviewBy: task.reviewBy ?? null,
     blockedBy: task.blockedBy || null,
@@ -1175,7 +1222,9 @@ export async function runTaskList(
   services: LoreServices,
   opts: ListCliOptions
 ): Promise<ListCliResult> {
-  const projectId = await resolveProjectIdForRead(services, opts.projectName)
+  const projectId = await resolveProjectIdForRead(services, opts.projectName, {
+    useContextProject: !opts.allProjects,
+  })
   // Default state set matches the MCP `lore-task action='list'` default —
   // active states only. An explicit `--state done` (or `cancelled`) widens
   // to closed work, same posture as the MCP filter.
@@ -1236,6 +1285,7 @@ export async function runTaskList(
 
   const filter = {
     projectId: projectId ?? null,
+    allProjects: opts.allProjects,
     entity: opts.entity ?? null,
     state: opts.state ?? null,
     dueBefore: opts.dueBefore ?? null,
@@ -1259,6 +1309,8 @@ export async function runTaskList(
       text,
       data: {
         total: 0,
+        distinctTaskIds: 0,
+        multiProjectTaskCount: 0,
         saturated,
         saturationReason,
         maxFetched,
@@ -1275,6 +1327,9 @@ export async function runTaskList(
     if (taskDaysOverdue(task, today) !== null) overdueTasks.push(task)
     else activeTasks.push(task)
   }
+  const projectNameById = await projectNameMapForRows(services, tasks)
+  const distinctTaskIds = new Set(tasks.map((task) => task.id)).size
+  const multiProjectTaskCount = tasks.filter((task) => task.projectIds.length > 1).length
 
   // Bound prefix matches the MCP shape: `≥` when totals are
   // lower-bound (saturated), bare otherwise. The user-limit and
@@ -1329,11 +1384,13 @@ export async function runTaskList(
     text: `${headerLine}\n\n${sections.join("\n\n")}${footer}`,
     data: {
       total: tasks.length,
+      distinctTaskIds,
+      multiProjectTaskCount,
       saturated,
       saturationReason,
       maxFetched,
-      overdue: overdueTasks.map((t) => rowFromTask(t, today)),
-      active: activeTasks.map((t) => rowFromTask(t, today)),
+      overdue: overdueTasks.map((t) => rowFromTask(t, today, projectNameById)),
+      active: activeTasks.map((t) => rowFromTask(t, today, projectNameById)),
       filter,
     },
   }
@@ -1342,6 +1399,7 @@ export async function runTaskList(
 const listCommand = new Command("list")
   .description("List tasks with Overdue/Active sections")
   .option("-p, --project <name>", "Project to scope the listing to")
+  .option("--all-projects", "Bypass cwd project fallback and list vault-wide")
   .option("-e, --entity <name>", "Substring filter against the Entity column")
   .option("-s, --state <state>", `Filter to one state: ${TASK_STATES.join(" | ")}`)
   .option(
@@ -1358,6 +1416,7 @@ const listCommand = new Command("list")
   .action(
     async (opts: {
       project?: string
+      allProjects?: boolean
       entity?: string
       state?: string
       dueBefore?: string

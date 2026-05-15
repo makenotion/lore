@@ -117,11 +117,13 @@ function makeServices(opts: {
   tasksUpdate?: ReturnType<typeof vi.fn>
   tasksClose?: ReturnType<typeof vi.fn>
   tasksGetById?: ReturnType<typeof vi.fn>
+  projectsList?: ReturnType<typeof vi.fn>
   topicsGetOrCreate?: ReturnType<typeof vi.fn>
 }): LoreServices {
   return {
     projects: {
       findByName: opts.findByName ?? vi.fn().mockResolvedValue(null),
+      list: opts.projectsList ?? vi.fn().mockResolvedValue([]),
     },
     tasks: {
       list: vi.fn().mockResolvedValue({ items: opts.tasksItems ?? [] }),
@@ -1267,11 +1269,35 @@ describe("parseListCliOptions", () => {
     if (result.ok) {
       expect(result.value).toEqual({
         projectName: "Widget",
+        allProjects: false,
         entity: "PR-1234",
         state: "open",
         dueBefore: "2026-06-01",
         limit: 50,
       })
+    }
+  })
+
+  it("accepts --all-projects when --project is absent", () => {
+    const result = parseListCliOptions({ allProjects: true, limit: "50" })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.projectName).toBeUndefined()
+      expect(result.value.allProjects).toBe(true)
+    }
+  })
+
+  it("rejects --project and --all-projects together", () => {
+    const result = parseListCliOptions({
+      project: "Widget",
+      allProjects: true,
+      limit: "50",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain(
+        "--project and --all-projects are mutually exclusive"
+      )
     }
   })
 
@@ -1303,6 +1329,7 @@ describe("runTaskList", () => {
     const services = makeServices({ contextProject: null, tasksItems: [] })
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1311,6 +1338,8 @@ describe("runTaskList", () => {
     expect(result.text).toBe("No tasks found.")
     expect(result.data).toEqual({
       total: 0,
+      distinctTaskIds: 0,
+      multiProjectTaskCount: 0,
       saturated: false,
       saturationReason: null,
       maxFetched: 500,
@@ -1318,6 +1347,7 @@ describe("runTaskList", () => {
       active: [],
       filter: {
         projectId: null,
+        allProjects: false,
         entity: null,
         state: null,
         dueBefore: null,
@@ -1346,6 +1376,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1360,6 +1391,8 @@ describe("runTaskList", () => {
     expect(result.text).toContain("ID: t-late")
     expect(result.text).toContain("ID: t-now")
     expect(result.data.total).toBe(2)
+    expect(result.data.distinctTaskIds).toBe(2)
+    expect(result.data.multiProjectTaskCount).toBe(0)
     expect(result.data.overdue).toHaveLength(1)
     expect(result.data.active).toHaveLength(1)
   })
@@ -1378,6 +1411,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: "done",
       dueBefore: undefined,
@@ -1400,6 +1434,7 @@ describe("runTaskList", () => {
 
     await runTaskList(services, {
       projectName: "Widget",
+      allProjects: false,
       entity: "PR-1234",
       state: undefined,
       dueBefore: "2026-06-01",
@@ -1414,6 +1449,158 @@ describe("runTaskList", () => {
         limit: 25,
       })
     )
+  })
+
+  it("falls back to the cwd context project when --all-projects is absent", async () => {
+    const tasksList = vi.fn().mockResolvedValue({ items: [], nextCursor: undefined })
+    const services = {
+      ...makeServices({
+        contextProject: { id: "ctx-widget", name: "Widget", path: "apps/widget" },
+      }),
+      tasks: { list: tasksList },
+    } as unknown as LoreServices
+
+    await runTaskList(services, {
+      projectName: undefined,
+      allProjects: false,
+      entity: undefined,
+      state: undefined,
+      dueBefore: undefined,
+      limit: 25,
+    })
+
+    expect(tasksList).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "ctx-widget" })
+    )
+  })
+
+  it("bypasses the cwd context project when --all-projects is present", async () => {
+    const tasksList = vi.fn().mockResolvedValue({ items: [], nextCursor: undefined })
+    const services = {
+      ...makeServices({
+        contextProject: { id: "ctx-widget", name: "Widget", path: "apps/widget" },
+      }),
+      tasks: { list: tasksList },
+    } as unknown as LoreServices
+
+    await runTaskList(services, {
+      projectName: undefined,
+      allProjects: true,
+      entity: undefined,
+      state: undefined,
+      dueBefore: undefined,
+      limit: 25,
+    })
+
+    expect(tasksList).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: undefined })
+    )
+  })
+
+  it("adds project ids and resolved project names to JSON rows", async () => {
+    const row = makeTask({
+      id: "t-projects",
+      title: "Coordinate multi-project task",
+      projectIds: ["p-a", "p-missing", "p-b"],
+    })
+    const projectsList = vi.fn().mockResolvedValue([
+      {
+        id: "p-a",
+        name: "Alpha",
+        path: "alpha",
+        type: "project",
+        status: "active",
+        description: "",
+      },
+      {
+        id: "p-b",
+        name: "Beta",
+        path: "beta",
+        type: "project",
+        status: "archived",
+        description: "",
+      },
+    ])
+    const services = makeServices({
+      contextProject: null,
+      tasksItems: [row],
+      projectsList,
+    })
+
+    const result = await runTaskList(services, {
+      projectName: undefined,
+      allProjects: true,
+      entity: undefined,
+      state: undefined,
+      dueBefore: undefined,
+      limit: 25,
+    })
+
+    expect(projectsList).toHaveBeenCalledTimes(1)
+    expect(projectsList).toHaveBeenCalledWith("any")
+    expect(result.data.active).toEqual([
+      expect.objectContaining({
+        id: "t-projects",
+        projectIds: ["p-a", "p-missing", "p-b"],
+        projects: ["Alpha", "Beta"],
+      }),
+    ])
+  })
+
+  it("keeps task listing usable when project-name enrichment fails", async () => {
+    const row = makeTask({
+      id: "t-projects",
+      title: "Coordinate multi-project task",
+      projectIds: ["p-a", "p-b"],
+    })
+    const projectsList = vi.fn().mockRejectedValue(new Error("notion 503"))
+    const services = makeServices({
+      contextProject: null,
+      tasksItems: [row],
+      projectsList,
+    })
+
+    const result = await runTaskList(services, {
+      projectName: undefined,
+      allProjects: true,
+      entity: undefined,
+      state: undefined,
+      dueBefore: undefined,
+      limit: 25,
+    })
+
+    expect(projectsList).toHaveBeenCalledWith("any")
+    expect(result.data.active).toEqual([
+      expect.objectContaining({
+        id: "t-projects",
+        projectIds: ["p-a", "p-b"],
+        projects: [],
+      }),
+    ])
+    expect(result.text).toContain("Coordinate multi-project task")
+  })
+
+  it("computes distinct task ids and multi-project counts defensively", async () => {
+    const services = makeServices({
+      contextProject: null,
+      tasksItems: [
+        makeTask({ id: "t-dup", title: "First copy", projectIds: ["p-a", "p-b"] }),
+        makeTask({ id: "t-dup", title: "Second copy", projectIds: ["p-a"] }),
+      ],
+    })
+
+    const result = await runTaskList(services, {
+      projectName: undefined,
+      allProjects: true,
+      entity: undefined,
+      state: undefined,
+      dueBefore: undefined,
+      limit: 25,
+    })
+
+    expect(result.data.total).toBe(2)
+    expect(result.data.distinctTaskIds).toBe(1)
+    expect(result.data.multiProjectTaskCount).toBe(1)
   })
 
   it("cursor-walks across multiple pages until --limit is satisfied", async () => {
@@ -1440,6 +1627,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1472,6 +1660,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1510,6 +1699,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1561,6 +1751,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1613,6 +1804,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1649,6 +1841,7 @@ describe("runTaskList", () => {
 
     const result = await runTaskList(services, {
       projectName: undefined,
+      allProjects: false,
       entity: undefined,
       state: undefined,
       dueBefore: undefined,
@@ -1958,6 +2151,19 @@ describe("tasksCommand create/update/close/list actions", () => {
     expect(vi.mocked(initServices)).not.toHaveBeenCalled()
   })
 
+  it("list exits 1 once before initServices when --project and --all-projects are combined", async () => {
+    await tasksCommand.parseAsync(["list", "--project", "Mail", "--all-projects"], {
+      from: "user",
+    })
+
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Task list failed:")
+    expect(errorText).toContain("--project and --all-projects are mutually exclusive")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+  })
+
   it("list prints runTaskList output on the happy path", async () => {
     const services = makeServices({ contextProject: null, tasksItems: [] })
     vi.mocked(initServices).mockResolvedValue(services)
@@ -2012,11 +2218,15 @@ describe("tasksCommand create/update/close/list actions", () => {
     const logged = logSpy.mock.calls[0]!.join("\n")
     const parsed = JSON.parse(logged) as {
       total: number
+      distinctTaskIds: number
+      multiProjectTaskCount: number
       saturated: boolean
       overdue: unknown[]
       active: unknown[]
     }
     expect(parsed.total).toBe(0)
+    expect(parsed.distinctTaskIds).toBe(0)
+    expect(parsed.multiProjectTaskCount).toBe(0)
     expect(parsed.saturated).toBe(false)
     expect(parsed.overdue).toEqual([])
     expect(parsed.active).toEqual([])
