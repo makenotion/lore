@@ -73,6 +73,11 @@ orchestrator, not a re-implementation of vault walking.
   `stale_task` to its own category if operator feedback shows the
   fusion conflates two distinct triage flows.
 
+- **Overdue tasks are warning-only.** `Review By` is the task review /
+  due date; it does not cancel, archive, expire, or otherwise mutate
+  a task by itself. Operators close or extend overdue tasks explicitly
+  after reading the task and any supporting evidence.
+
 ## Scoring and priority
 
 Each detected item gets a numeric score blending five inputs (the

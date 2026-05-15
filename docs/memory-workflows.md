@@ -226,6 +226,54 @@ activation entity matches the user's current query.
 - When saving a memory that resolves tracked work, check wake-up context for
   related active tasks and close any resolved ones.
 
+### Task Review And Expiry Policy
+
+Task review is an operator triage signal, not an automatic lifecycle transition.
+`Review By` remains the task's review/due date and is the only field used to
+classify active tasks as overdue. The shared `Lifetime` / `Expires At` columns
+continue to govern retrieval scope only: use `expires` + `Expires At` for
+temporary memories or facts whose knowledge should disappear from default
+recall after a date, and use `until-task-closed` as a declarative label for
+task-scoped rows whose useful reach ends when the task is closed. Do not treat
+`Expires At` as a task due date, and do not add a task-specific expiry field.
+
+Existing tasks keep their current `Review By`, `Lifetime`, and `Expires At`
+values. New tasks default to no `Review By` unless the caller passes a due date;
+callers may still pass the usual scope bundle, including
+`lifetime: "until-task-closed"` for per-session tracked work. Reuse/update
+paths may extend `Review By` when the incoming request carries a later due date,
+but a routine task edit does not automatically push the date forward.
+
+Phase 1 behavior is warning-only:
+
+- `lore tasks list` / `lore-task action='list'` continue to group active tasks
+  into Overdue and Active sections from `Review By`.
+- `lore status` / `lore-context action='status'` continue to count overdue
+  active tasks and stale untouched active tasks.
+- `lore debt scan` continues to report overdue tasks under
+  `overdue_governance`.
+- `lore tasks reconcile` / `lore-task action='reconcile'` continue to surface
+  evidence-backed candidate closures, but they do not close overdue tasks just
+  because the review date has passed.
+
+There is no phase-1 auto-cancel, triage-bucket escalation, bulk close, or
+extend-on-touch behavior. A deliberate overdue-expiry sweep can be added only
+after the close-reason and explicit-ID bulk-close surfaces exist. That future
+sweep should be opt-in, should operate on task rows rather than per-project
+membership state, and should call the same task close path a human would use so
+`Done At`, terminal state, closure reason, partial-failure reporting, and
+idempotency stay consistent across CLI and MCP. A second run over the same
+vault must skip tasks already in `done` or `cancelled` and must not append a
+second closure note.
+
+If a future deliberate sweep auto-cancels an overdue task, the closure reason
+must be written through the task close-reason surface in this shape:
+
+```md
+Cancelled by task expiry sweep: Review By <YYYY-MM-DD> was <N> days overdue.
+No operator extended or closed the task before the sweep.
+```
+
 ## Migrating From Unscoped Writes
 
 Older vaults may contain memories or facts whose `Project` relation is empty.
