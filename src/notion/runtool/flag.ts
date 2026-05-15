@@ -68,9 +68,9 @@ const warnedUnrecognizedValues = new Set<string>()
 
 /**
  * Names the documented default for a given flag so the warning
- * line is self-contained — an incident operator at 3 AM doesn't
- * need to consult the README to know whether their typo'd disable
- * landed on the safe path.
+ * line is self-contained — an incident operator at 3 AM can tell
+ * whether their typo'd disable landed on the safe path from the
+ * warning alone.
  *
  * Every flag in `RUNTOOL_FLAGS` (the test-side hermetic list)
  * defaults ON, EXCEPT `LORE_USE_RUNTOOL_BATCH_CREATES`
@@ -201,8 +201,7 @@ export function isRunToolSearchEnabled(env: NodeJS.ProcessEnv = process.env): bo
  * see this flag silently fall back per-call. Operators rolling out
  * RunTool need to be able to flip filter-SQL on while leaving
  * aggregate off (and vice-versa) until both paths are independently
- * verified on their target workspace tier — the capability-gate
- * subsection of the runtool README covers the operator runbook.
+ * verified on their target workspace tier.
  */
 export function isRunToolAggregateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_AGGREGATE")

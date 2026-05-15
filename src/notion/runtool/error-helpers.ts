@@ -138,8 +138,8 @@ export class SqlPartialResultError extends Error {
  * Auth sources that carry an integration-secret token (Notion
  * "internal integration" tokens, not user-actor tokens). These
  * auth paths are explicitly rejected by RunTool with 403
- * `RestrictedResource` per the README's "Auth And Capability
- * Requirements" section.
+ * `RestrictedResource` because RunTool requires a user-actor or
+ * workflow-bot token shape.
  *
  * The set is currently empty: `env-notion-api-token` is ambiguous
  * (could be either an integration secret or a personal token,
@@ -166,8 +166,8 @@ let warnedRestrictedResourceFallback = false
  * client, the search latch on the runtool search wrapper) so an
  * integration-secret operator
  * dogfooding multiple flagged-on surfaces sees one warning instead
- * of N. The README's "silently degrade … but loud enough" mandate
- * is a per-process posture, not per-tool.
+ * of N. The `restricted_resource` recovery contract is a
+ * per-process posture, not per-tool.
  *
  * Routes through the shared redactor for defense-in-depth — auth-
  * shaped error messages can surface workspace ids / paths under
@@ -184,7 +184,7 @@ export function warnRunToolRestrictedResourceOnce(
   process.stderr.write(
     `[lore] runtool: 403 RestrictedResource on ${source}; falling back to ` +
       `REST/SDK path. RunTool requires an ntn-issued user-actor token; ` +
-      `see src/notion/runtool/README.md` +
+      `integration-secret auth cannot use RunTool` +
       detail +
       `\n`
   )

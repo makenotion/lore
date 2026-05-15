@@ -1346,11 +1346,9 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
  * fixture, one stub services factory per path, log-line scraping
  * for the metric, set/numeric equivalence asserted across paths.
  *
- * The dev/manual-run leg of the AC is recorded in
- * `src/notion/runtool/README.md`'s "Issue #543 Phase 4 evidence
- * log" — fixture coverage is pinned here; live-vault evidence
- * accumulates in the README as operators run the report against
- * real data.
+ * Fixture coverage is pinned here. Manual live-vault evidence is
+ * historical audit material for operators running the report
+ * against real data.
  */
 
 import { runOrphanRateReport } from "../../cli/commands/migrate.js"

@@ -372,8 +372,8 @@ describe("createLimitedClient — token bucket pacing", () => {
     // `Authorization` header on the wire — composing through this
     // gate keeps Lore's outbound rate under the lower of the two
     // ceilings without standing up a parallel pacer. Pinning the gate
-    // explicitly on `request` is the test contract from the
-    // src/notion/runtool/README.md "Rate-Limit Accounting" section.
+    // explicitly on `request` proves RunTool uses the shared
+    // client-side pacing path.
     const { client, callCount } = makeObservableClient(0)
     const limited = createLimitedClient(client, {
       concurrency: 10,

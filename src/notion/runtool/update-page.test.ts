@@ -81,9 +81,8 @@ describe("isRunToolBlockEditEnabled", () => {
       expect(firstLine).toContain("[lore] notion-runtool warn:")
       expect(firstLine).toContain("LORE_USE_RUNTOOL")
       expect(firstLine).toContain('"fasle"')
-      // Per PR #549 review iteration 2 nit: warning names the
-      // documented default so an incident operator doesn't need to
-      // chase the README to know which way the typo resolved.
+      // Warning names the documented default so an incident operator
+      // can tell which way the typo resolved from the warning alone.
       expect(firstLine).toContain("default ON post-#543")
       expect(firstLine).toContain("use =0 to disable")
 
@@ -307,8 +306,8 @@ describe("updatePageContentViaRunTool", () => {
     // flag flip into a hard outage. Classifying as fall-back-able
     // lets the call site drop into the canonical REST/SDK path,
     // which has a different capability surface and is already known
-    // to work for that operator. README's "silently degrade … but
-    // loud enough" rule pins this posture.
+    // to work for that operator. The shared `restricted_resource`
+    // recovery contract pins this posture.
     __resetRunToolWarningsForTest()
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     try {
@@ -523,10 +522,9 @@ describe("updatePageContentViaRunTool", () => {
 
 describe("runUpdatePageContent", () => {
   it("returns the bare resource response without an outer envelope", async () => {
-    // The README's "asymmetric envelope" rule pinned: response is the
-    // per-tool resource, not `{ type, [tool]: ... }`. A wrapper that
-    // typed the response mirroring the request would trip on first
-    // call.
+    // RunTool responses are bare per-tool resources, not
+    // `{ type, [tool]: ... }` envelopes. A wrapper that typed the
+    // response mirroring the request would trip on first call.
     const requestSpy = vi.fn(async () => ({
       page_id: "11111111111111111111111111111111",
       results: ["something"],

@@ -670,8 +670,8 @@ export async function fetchNearDuplicateCandidatePageIds(
  * **Counts both live AND invalidated facts.** Notion's SQL gateway
  * does not expose date columns: production-vault verification
  * confirmed `"Valid Until"`, `validUntil`, `valid_until`, and
- * `ValidUntil` all fail with `no such column` (same shape as the
- * README's `last_edited_time` / `lastEditedTime` finding). With no
+ * `ValidUntil` all fail with `no such column`, as do
+ * `last_edited_time` and `lastEditedTime`. With no
  * way to filter invalidated facts server-side, the SQL aggregate
  * counts EVERY fact in scope. The migrate-time call site
  * (`runOrphanRateReport`) keeps the two paths semantically

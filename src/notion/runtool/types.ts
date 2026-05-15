@@ -2,8 +2,7 @@
  * Pinned subset of `RunToolParams` request and response shapes for
  * Lore's RunTool wrapper.
  *
- * Schema source — vendored from the pinned commit documented in
- * the runtool README:
+ * Schema source — vendored from the pinned upstream snapshot:
  *
  * | Item   | Value                                                          |
  * | ------ | -------------------------------------------------------------- |
@@ -18,7 +17,7 @@
  * out of scope until an explicit follow-up extends this file with
  * their request and response shapes.
  *
- * Two structural facts the README pins that this file encodes:
+ * Two structural facts this file encodes:
  *
  * 1. **Discriminated request envelope.** `{ type: <tool>, [tool]:
  *    params }`. Every consumer must build the body via
@@ -119,9 +118,9 @@ export interface RunToolCreatePagesOutputPage {
 }
 
 /**
- * Bare response of `runTool("create_pages", ...)`. Per the README's
- * "asymmetric envelope" rule, the response is NOT wrapped in `{ type,
- * create_pages: ... }`; it is the per-tool resource directly.
+ * Bare response of `runTool("create_pages", ...)`. The response is NOT
+ * wrapped in `{ type, create_pages: ... }`; it is the per-tool resource
+ * directly.
  */
 export interface RunToolCreatePagesResponse {
   pages: RunToolCreatePagesOutputPage[]
@@ -170,8 +169,8 @@ export interface RunToolDeletionWarning {
 
 /**
  * Response shape for an `update_page` / `update_content` call. The
- * bare resource (no outer envelope) per the README. Typed loosely
- * because the contract was documented from source without runtime
+ * bare resource (no outer envelope). Typed loosely because the contract was
+ * documented from source without runtime
  * verification of every success body — narrow to a stricter shape
  * only after a real-call sample lands in the wrapper's tests.
  */
@@ -292,8 +291,7 @@ export function isQueryDataSourcesResponse(
 /**
  * Build the `collection://<data_source_id>` URL used by
  * `query_data_sources` as both the `data_source_urls` entry AND
- * the SQL table name (fully quoted in the query). The wrapper README
- * documents this as the public contract.
+ * the SQL table name (fully quoted in the query).
  */
 export function dataSourceUrl(dataSourceId: string): string {
   return `collection://${dataSourceId}`

@@ -61,8 +61,8 @@ export { RUNTOOL_SEARCH_MAX_PAGE_SIZE }
  * a way the caller should fall back from rather than surface as a
  * hard error. Mirrors the `restricted_resource` arm of
  * {@link import("./client.js").RunToolBlockEditError} for the search
- * surface — the canonical vocabulary across consumers per the README's
- * "Canonical Error-Classification Vocabulary" section.
+ * surface. All RunTool consumers use `restricted_resource` for
+ * fall-back-able 403 capability or actor-shape rejections.
  *
  * The caller (`MemoryService`) treats this as "use the REST
  * `client.search` path for this call" — same posture as the
@@ -210,8 +210,7 @@ export async function searchViaRunTool(
         "RunTool search rejected this token (RestrictedResource). " +
           "Falling back to REST. RunTool requires an ntn-issued " +
           "user-actor token; a public OAuth integration secret " +
-          "cannot pass the actor-type check (see " +
-          "src/notion/runtool/README.md).",
+          "cannot pass the actor-type check.",
         err
       )
     }
@@ -223,8 +222,7 @@ export async function searchViaRunTool(
       "searchViaRunTool: malformed response — expected " +
         "InternalSearchResource shape with type ∈ " +
         "{ai_search, workspace_search, none} and results array. " +
-        "The upstream schema may have drifted underneath the pin; " +
-        "see src/notion/runtool/README.md."
+        "The upstream schema may have drifted underneath the pinned contract."
     )
   }
 

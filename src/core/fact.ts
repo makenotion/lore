@@ -584,8 +584,7 @@ export function classifyTailFallback(err: unknown): TailFallback {
 /**
  * Once-per-process stderr nudge when a flag-on RunTool batch-create
  * call surfaces a 403 RestrictedResource (or any auth-class denial),
- * implementing the README's "loud enough" mandate from the
- * security follow-up. The runtool README explicitly pins:
+ * implementing the RunTool restricted-resource recovery contract:
  *
  * > silently degrading every legacy-auth caller to "RunTool
  * > unavailable" is the correct behavior, but it must be loud
@@ -625,8 +624,8 @@ function logRunToolBatchCreatesAuthFallbackOnce(err: unknown): void {
     "[lore] runtool batch_create: " +
       `${status ?? "?"} ${code ?? "auth"} on token; falling back ` +
       "to per-input pages.create. RunTool requires an ntn-issued " +
-      "user-actor token. See src/notion/runtool/README.md for the " +
-      "auth-source matrix. Set LORE_USE_RUNTOOL_BATCH_CREATES=0 to " +
+      "user-actor token; integration-secret auth cannot use RunTool. " +
+      "Set LORE_USE_RUNTOOL_BATCH_CREATES=0 to " +
       "silence this and skip the wasted RunTool round-trip per save.\n"
   )
 }

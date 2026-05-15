@@ -1,7 +1,7 @@
 /**
- * Public surface for the quarantined RunTool integration. The
- * README pins the contract; the shared `runTool<T>(client, tool, params)`
- * dispatcher lands alongside the `create_pages`, `update_page` /
+ * Public surface for the quarantined RunTool integration. The shared
+ * `runTool<T>(client, tool, params)` dispatcher lands alongside the
+ * `create_pages`, `update_page` /
  * `update_content` (anchored markdown edits), `query_data_sources`
  * (SQL filter helpers for entity / near-duplicate / conflict-scan
  * predicate pushdowns), and `search` (semantic lane) consumers.

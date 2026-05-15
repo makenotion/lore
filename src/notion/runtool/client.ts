@@ -77,9 +77,8 @@ import type {
  * builds, so a future regression that re-introduces the leading
  * `/v1/` (or any other path-prefix mistake) fails loudly.
  *
- * The runtool README documents the HTTP endpoint as
- * `POST /v1/tools/run` because that's the operator-facing wire form;
- * the SDK constant is necessarily relative.
+ * The operator-facing wire form is `POST /v1/tools/run`; the SDK
+ * constant is necessarily relative.
  */
 export const RUNTOOL_PATH = "tools/run"
 
@@ -97,9 +96,8 @@ export const RUN_TOOL_PATH = RUNTOOL_PATH
  *
  * The body envelope is built here (`{ type, [type]: params }`) so
  * callers cannot mis-spell the discriminator or the inner key. The
- * response is returned bare — per the README's "asymmetric
- * envelope" rule, the response is the per-tool resource directly,
- * NOT wrapped in `{ type, [type]: ... }`.
+ * response is returned bare: RunTool responses are per-tool
+ * resources directly, NOT wrapped in `{ type, [type]: ... }`.
  *
  * Errors propagate verbatim from the SDK so the caller can branch on
  * the surfaced status / code (a 403 actor-type rejection vs a 429
@@ -183,9 +181,7 @@ export async function runTool<T extends RunToolName>(
  *   path is the correct response: the existing SDK call site has a
  *   different capability surface and is already known to work for the
  *   operator. The wrapper emits a single once-per-process warning so the
- *   operator sees why the flagged-on call is silently downgrading; the
- *   runtool README's "silently degrade … but loud enough" mandate
- *   pins this posture.
+ *   operator sees why the flagged-on call is silently downgrading.
  */
 export type RunToolBlockEditFailureKind =
   | "no_match"
@@ -231,9 +227,8 @@ export async function runUpdatePageContent(
     // 403 RestrictedResource — actor-type / MCP-client allowlist /
     // workflow-bot capability gate. The auth-refresh proxy cannot
     // repair this, but the REST/SDK path the caller already has on
-    // hand can, so classify as fall-back-able. The README pins the
-    // "silently degrade … but loud enough" rule; the once-per-process
-    // warning is what makes the degrade observable.
+    // hand can, so classify as fall-back-able. The once-per-process
+    // warning makes the degrade observable.
     if (isRestrictedResourceError(err)) {
       warnRunToolRestrictedResourceOnce("update_page", err)
       throw new RunToolBlockEditError(
@@ -241,7 +236,7 @@ export async function runUpdatePageContent(
         "RunTool rejected this token (RestrictedResource). Falling back " +
           "to the REST/SDK path. RunTool requires an ntn-issued user-actor " +
           "token; a public OAuth integration secret cannot pass the " +
-          "actor-type check (see src/notion/runtool/README.md).",
+          "actor-type check.",
         err
       )
     }
