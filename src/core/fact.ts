@@ -23,7 +23,6 @@ import type {
   MemoryLifetime,
   DatabaseRef,
 } from "../types.js"
-import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
 import { buildFactProps, FACT_PROPS } from "../notion/schema.js"
 import { extractMissingPropertyName, isMissingPropertyError } from "../notion/errors.js"
 import {
@@ -40,18 +39,14 @@ import {
   isBatchCreateError,
 } from "../notion/runtool/create-pages.js"
 import type { RunToolCreatePagesInputPage } from "../notion/runtool/types.js"
+import { FactInvalidation, type FactInvalidateOptions } from "./fact-invalidation.js"
+import { FactMaintenance } from "./fact-maintenance.js"
 import {
   runFactDedupBackfill,
   type FactDedupBackfillResult,
   type FactDedupOptions,
 } from "./fact-dedup.js"
 import { fixFactEncoding, type FactEncodingReport } from "./fact-encoding.js"
-import {
-  bumpConfidenceScore,
-  decayConfidenceScore,
-  decrementConfidenceScore,
-  seedConfidenceScore,
-} from "./decay.js"
 import { todayUtc } from "./task.js"
 import {
   isFullPage,
@@ -142,51 +137,6 @@ type ListRecentOpts = {
 const NOTION_MAX_PAGE_SIZE = 100
 
 /**
- * Warning emitted once per process when the
- * scope-constrained dedup probe finds more than one live row for
- * the same `(dedupKey, scope bundle)`. Structurally that's a
- * duplicate state Notion permits (no unique constraint on the
- * combined key) and that `--dedup-keys --merge` collapses on its
- * next pass. The probe still picks the deterministic-first row
- * (`created_time ASC`) and proceeds; this warning surfaces the
- * gap to operators so they know to run the migration.
- */
-/**
- * Once-per-process stderr warning when
- * `FactService.invalidate` drops a missing column on retry. Operators
- * triaging a partially-migrated vault see WHICH column the schema
- * lacks instead of a silent degrade. Sticky across the process so a
- * batch invalidate doesn't spam stderr.
- */
-const invalidateMissingColumnWarned = new Set<string>()
-function warnInvalidateMissingColumnOnce(propertyName: string | null): void {
-  const key = propertyName ?? "<unparsed>"
-  if (invalidateMissingColumnWarned.has(key)) return
-  invalidateMissingColumnWarned.add(key)
-  if (propertyName === null) {
-    process.stderr.write(
-      "[lore] fact-invalidate: vault schema lacks at least one of the " +
-        "Issue #284 transaction-time columns (Invalidated At / Invalidated " +
-        "By) or DEFERRED-02 columns (Confidence Score / Last Referenced " +
-        "At); falling back to a bare `Valid Until` write. Run `lore migrate" +
-        " --backfill-fact-observed-at` and `lore migrate --build-fact-" +
-        "confidence-scores` to seed the missing columns.\n"
-    )
-    return
-  }
-  const hint =
-    propertyName === "Invalidated At" || propertyName === "Invalidated By"
-      ? "Run `lore migrate --backfill-fact-observed-at` to seed transaction-time columns."
-      : propertyName === "Confidence Score" || propertyName === "Last Referenced At"
-        ? "Run `lore migrate --build-fact-confidence-scores` to seed DEFERRED-02 columns."
-        : "Run `lore migrate` to add the missing column."
-  process.stderr.write(
-    `[lore] fact-invalidate: vault schema lacks \`${propertyName}\`; ` +
-      `dropping that column from the invalidate write. ${hint}\n`
-  )
-}
-
-/**
  * Once-per-process stderr warning when
  * `freshCreateAfterDedupMiss` drops a missing column on retry.
  * Symmetric with `warnInvalidateMissingColumnOnce` for the
@@ -210,6 +160,12 @@ function warnFactCreateMissingColumnOnce(propertyName: string): void {
   )
 }
 
+/**
+ * Warn once when the scope-constrained dedup probe finds more than
+ * one live row for the same `(dedupKey, scope bundle)`. Notion permits
+ * that duplicate state, and `--dedup-keys --merge` collapses it on its
+ * next pass. The probe still picks the deterministic-first row and proceeds.
+ */
 let dedupDuplicateScopeMatchWarned = false
 function logDedupDuplicateScopeMatchOnce(dedupKey: string): void {
   if (dedupDuplicateScopeMatchWarned) return
@@ -508,9 +464,7 @@ export function __resetProbeFailureLogForTests(): void {
 }
 
 /** Reset between tests. Not exported on the public API surface. */
-export function __resetInvalidateMissingColumnWarningForTests(): void {
-  invalidateMissingColumnWarned.clear()
-}
+export { __resetInvalidateMissingColumnWarningForTests } from "./fact-invalidation.js"
 
 /** Reset between tests. Not exported on the public API surface. */
 export function __resetFactCreateMissingColumnWarningForTests(): void {
@@ -635,42 +589,6 @@ export function __resetRunToolBatchCreatesAuthFallbackLogForTests(): void {
   runtoolBatchCreatesAuthFallbackLogged = false
 }
 
-/**
- * Read `Fact.createdAt` with an explicit invariant check (DEFERRED-02).
- *
- * `Fact.createdAt` is typed as optional on the public boundary so
- * adding the field doesn't break external consumers building
- * `Fact`-shaped object literals (the public type is exported from
- * the package's main entry). At runtime, every `Fact` produced by
- * `pageToFact`
- * carries `createdAt` because the field comes from Notion's built-in
- * `created_time` page property — present on every page since the
- * vault was created. So internal helpers (`invalidate`,
- * `touchOnRead`, the build-fact-confidence-scores migration) can
- * rely on the runtime guarantee.
- *
- * The helper exists to give a meaningful error if the invariant is
- * violated (a partial `Fact` reaches an internal helper without
- * `createdAt`) instead of letting `.slice(0, 10)` throw a generic
- * `Cannot read properties of undefined`. The error names the
- * affected method so debugging starts at the right call site.
- */
-function readFactCreatedAt(
-  fact: { id: string; createdAt?: string },
-  callsite: string
-): string {
-  if (fact.createdAt === undefined) {
-    throw new Error(
-      `FactService.${callsite}: Fact.createdAt is unexpectedly undefined ` +
-        `(fact id=${fact.id}). pageToFact always populates createdAt from ` +
-        `Notion's built-in created_time; a missing value indicates a ` +
-        `partial Fact constructed outside pageToFact reached an internal ` +
-        `helper.`
-    )
-  }
-  return fact.createdAt
-}
-
 export class FactService {
   /**
    * Resolved scope context. Same posture as
@@ -708,6 +626,9 @@ export class FactService {
    */
   private relationUrlBase: string | undefined
 
+  private readonly invalidation: FactInvalidation
+  private readonly maintenance: FactMaintenance
+
   constructor(
     private client: Client,
     private db: DatabaseRef,
@@ -722,6 +643,13 @@ export class FactService {
       this.useRunToolBatchCreates = true
     }
     this.relationUrlBase = options?.relationUrlBase
+    this.invalidation = new FactInvalidation(this.client, (page) => this.pageToFact(page))
+    this.maintenance = new FactMaintenance(
+      this.client,
+      this.db,
+      (page) => this.pageToFact(page),
+      () => this.scopeCtx
+    )
   }
 
   /**
@@ -2720,13 +2648,7 @@ export class FactService {
   }
 
   async extendReview(id: string, reviewBy: string | null): Promise<void> {
-    await this.client.pages.update({
-      page_id: id,
-      properties: {
-        [FACT_PROPS.REVIEW_BY]:
-          reviewBy === null ? { date: null } : { date: { start: reviewBy } },
-      },
-    })
+    return this.maintenance.extendReview(id, reviewBy)
   }
 
   /**
@@ -2741,12 +2663,7 @@ export class FactService {
    * we don't re-read before the write.
    */
   async setSource(id: string, sourceMemoryId: string): Promise<void> {
-    await this.client.pages.update({
-      page_id: id,
-      properties: {
-        [FACT_PROPS.SOURCE]: { relation: [{ id: sourceMemoryId }] },
-      },
-    })
+    return this.maintenance.setSource(id, sourceMemoryId)
   }
 
   /**
@@ -2833,183 +2750,8 @@ export class FactService {
    *   path as a never-scored row, the decrement still runs against the
    *   seeded categorical.
    */
-  async invalidate(
-    id: string,
-    opts: {
-      /**
-       * Memory id that prompted the invalidation. Written to
-       * the `Invalidated By` relation column alongside `Invalidated At`.
-       * Optional — operators may invalidate without structured provenance,
-       * in which case only `Invalidated At` is set. Caller is responsible
-       * for resolving the memory id; this helper does NOT validate that
-       * the row exists or is accessible (consistent with how `setSource`
-       * treats `sourceMemoryId`).
-       */
-      sourceMemoryId?: string
-    } = {}
-  ): Promise<void> {
-    return withEntityRelationLocks([id], () => this.invalidateLocked(id, opts))
-  }
-
-  private async invalidateLocked(
-    id: string,
-    opts: {
-      sourceMemoryId?: string
-    } = {}
-  ): Promise<void> {
-    const today = todayUtc()
-    let page: PageObjectResponse | null = null
-    try {
-      const retrieved = await this.client.pages.retrieve({ page_id: id })
-      if (isFullPage(retrieved)) {
-        page = retrieved
-      }
-    } catch {
-      // Fall through: the read failed but the invalidate write must
-      // still happen. The decrement is best-effort. A read failure
-      // CANNOT trigger the archived short-circuit; the contract favors
-      // landing the invalidate over silently dropping a write because
-      // we couldn't confirm the row's state.
-    }
-
-    // Archived row: the page is already excluded from active queries.
-    // Writing `Valid Until = today` would leave a contradictory
-    // `archived: true` + `Valid Until: <date>` combination visible to
-    // any audit walking every fact row. Skip both the invalidate write
-    // and the confidence decrement.
-    if (page !== null && page.archived) {
-      return
-    }
-
-    let fact: Fact | null = null
-    if (page !== null) {
-      try {
-        fact = await this.pageToFact(page)
-      } catch {
-        // pageToFact failed (e.g. relation hydration 5xx); fall through
-        // to a `Valid Until`-only write.
-        fact = null
-      }
-    }
-
-    const properties: Record<string, unknown> = {
-      [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
-      // Transaction-time invalidation timestamp lands in the
-      // same atomic update as `Valid Until` so the bitemporal axis stays
-      // consistent. `Invalidated By` is optional; only populated when the
-      // caller threads an explicit `sourceMemoryId`.
-      [FACT_PROPS.INVALIDATED_AT]: { date: { start: today } },
-    }
-    if (opts.sourceMemoryId) {
-      properties[FACT_PROPS.INVALIDATED_BY] = {
-        relation: [{ id: opts.sourceMemoryId }],
-      }
-    }
-
-    if (fact !== null) {
-      // Seed-decay-then-decrement. Mirror MemoryService.decrementConfidence
-      // — the same convergence guarantee: a contradiction landed before
-      // the migration produces the same effective score as one landed
-      // after.
-      let current: number
-      if (fact.confidenceScore == null) {
-        const seeded = seedConfidenceScore(fact.confidence)
-        current = decayConfidenceScore(
-          seeded,
-          readFactCreatedAt(fact, "invalidate").slice(0, 10),
-          today
-        )
-      } else {
-        current = decayConfidenceScore(
-          fact.confidenceScore,
-          fact.lastReferencedAt ?? null,
-          today
-        )
-      }
-      const next = decrementConfidenceScore(current)
-      properties[FACT_PROPS.CONFIDENCE_SCORE] = { number: next }
-      properties[FACT_PROPS.LAST_REFERENCED_AT] = { date: { start: today } }
-    }
-
-    // Surgical retry on partially-migrated vaults. A coarser
-    // "any validation_error → drop everything and bare-Valid-Until
-    // write" shape silently drops `Invalidated At` / `Invalidated By`
-    // AND `Confidence Score` / `Last Referenced At` even when the
-    // schema only lacks ONE of them. Parsing the failing property
-    // name lets the retry drop ONLY the missing column, so a vault
-    // that has `Invalidated At` but is still missing `Confidence
-    // Score` (or vice versa) keeps the transaction-time write that
-    // its schema DOES support.
-    //
-    // **Loop budget.** `MAX_OPTIONAL_DROPS = 4` is the count of
-    // optional columns this method might be writing on top of the
-    // load-bearing `Valid Until` (`Invalidated At` + `Invalidated By`
-    // + `Confidence Score` + `Last Referenced At`). The loop runs at
-    // most `MAX_OPTIONAL_DROPS + 1` iterations: up to MAX
-    // missing-column drops followed by a single final retry with the
-    // trimmed payload. The +1 is load-bearing for the invalidate
-    // contract — without it, four sequential missing-property errors
-    // exhaust the iteration count BEFORE the final retry fires, the
-    // loop falls through, and the function returns without ever
-    // issuing a `Valid Until` write. An earlier `<` bound silently
-    // dropped the trailing retry, so a maximally-stale vault saw zero
-    // visible state change after a "successful" invalidate call.
-    const MAX_OPTIONAL_DROPS = 4
-    for (let attempt = 0; attempt <= MAX_OPTIONAL_DROPS; attempt += 1) {
-      try {
-        await this.client.pages.update({
-          page_id: id,
-          properties: properties as UpdatePageParameters["properties"],
-        })
-        return
-      } catch (err) {
-        if (!isMissingPropertyError(err)) throw err
-        const missing = extractMissingPropertyName(err)
-        if (missing && missing in properties) {
-          warnInvalidateMissingColumnOnce(missing)
-          delete properties[missing]
-          // Re-attempt with the failing column removed. If a sibling
-          // column is ALSO missing, the next attempt parses that one
-          // and drops it too. Valid Until is load-bearing for the
-          // invalidate contract — under normal usage Notion will not
-          // surface it as missing because the column ships with the
-          // base schema; this guard is defense-in-depth for a
-          // pathologically corrupted vault where even the legacy
-          // columns are gone.
-          if (Object.keys(properties).length === 0) throw err
-          continue
-        }
-        // Couldn't parse the property name OR the parsed name isn't
-        // in our payload. Fall back to the pre-PR behavior so the
-        // invalidate contract (`Valid Until = today`) still lands;
-        // legacy vaults without ANY of the new columns convert to
-        // the bare-Valid-Until write in one shot.
-        warnInvalidateMissingColumnOnce(null)
-        await this.client.pages.update({
-          page_id: id,
-          properties: {
-            [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
-          },
-        })
-        return
-      }
-    }
-    // Defense in depth: every loop iteration ends in `return`, `throw`,
-    // or `continue`, and the `MAX_OPTIONAL_DROPS + 1` budget covers
-    // every optional column we might write. Falling off the loop means
-    // either the loop budget was too small for this vault's schema
-    // drift, or a future contributor added an optional column without
-    // bumping MAX_OPTIONAL_DROPS. Either way, the invalidate contract
-    // (`Valid Until = today` must land) is non-negotiable; degrade to
-    // the bare-Valid-Until write so the call doesn't silently return
-    // without changing visible state.
-    warnInvalidateMissingColumnOnce(null)
-    await this.client.pages.update({
-      page_id: id,
-      properties: {
-        [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
-      },
-    })
+  async invalidate(id: string, opts: FactInvalidateOptions = {}): Promise<void> {
+    return this.invalidation.invalidate(id, opts)
   }
 
   /**
@@ -3043,54 +2785,25 @@ export class FactService {
       onError?: (factId: string, error: unknown) => void
     }
   ): Promise<void> {
-    const today = opts?.today ?? todayUtc()
-    await Promise.all(
-      facts.map(async (fact) => {
-        if (fact.lastReferencedAt === today && fact.confidenceScore != null) {
-          return
-        }
-        try {
-          let nextScore: number
-          if (fact.confidenceScore == null) {
-            const seeded = seedConfidenceScore(fact.confidence)
-            const decayed = decayConfidenceScore(
-              seeded,
-              readFactCreatedAt(fact, "touchOnRead").slice(0, 10),
-              today
-            )
-            nextScore = bumpConfidenceScore(decayed)
-          } else {
-            const decayed = decayConfidenceScore(
-              fact.confidenceScore,
-              fact.lastReferencedAt ?? null,
-              today
-            )
-            nextScore = bumpConfidenceScore(decayed)
-          }
-          await this.client.pages.update({
-            page_id: fact.id,
-            properties: {
-              [FACT_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
-              [FACT_PROPS.CONFIDENCE_SCORE]: { number: nextScore },
-            },
-          })
-          // Mirror the post-write state onto the caller's `Fact`
-          // reference. `loadWakeUpData`'s wake-up cache hands the same
-          // `Fact[]` reference back on subsequent hits within the 30s
-          // TTL; without this mutation, the once-per-day gate above
-          // keys on the cached row's stale `lastReferencedAt` and
-          // `pages.update` re-fires for every Active Fact on every
-          // cache hit. Same posture as `MemoryService.touchOnRead` —
-          // the picked fields are mutable on `Fact` and
-          // `ReadonlyArray<Pick<...>>` only freezes the array shape,
-          // not element properties.
-          fact.lastReferencedAt = today
-          fact.confidenceScore = nextScore
-        } catch (error) {
-          opts?.onError?.(fact.id, error)
-        }
-      })
-    )
+    return this.maintenance.touchOnRead(facts, opts)
+  }
+
+  /**
+   * Operator-facing counters for the `lore status` expiring/expired
+   * scoped-facts surface. Matches
+   * `MemoryService.expiringScopedStats` exactly — single paginated
+   * walk over live (non-invalidated) facts, classifying each by
+   * `Expires At` and by narrow-scope context match.
+   *
+   * Counts only live facts (`Valid Until is_empty`) — invalidated
+   * facts are already historical and don't need an expiry surface.
+   */
+  async expiringScopedStats(opts: { projectId?: string } = {}): Promise<{
+    expired: number
+    expiringSoon: number
+    narrowScopeOutOfContext: number
+  }> {
+    return this.maintenance.expiringScopedStats(opts)
   }
 
   /**
@@ -3107,63 +2820,6 @@ export class FactService {
    * the migration doesn't try to seed scores onto historical rows whose
    * domain shape is not part of the current `FactPredicate` union.
    */
-  /**
-   * Operator-facing counters for the `lore status` expiring/expired
-   * scoped-facts surface. Matches
-   * `MemoryService.expiringScopedStats` exactly — single paginated
-   * walk over live (non-invalidated) facts, classifying each by
-   * `Expires At` and by narrow-scope context match.
-   *
-   * Counts only live facts (`Valid Until is_empty`) — invalidated
-   * facts are already historical and don't need an expiry surface.
-   */
-  async expiringScopedStats(opts: { projectId?: string } = {}): Promise<{
-    expired: number
-    expiringSoon: number
-    narrowScopeOutOfContext: number
-  }> {
-    const today = todayUtc()
-    const horizonMs = Date.parse(today) + EXPIRING_SOON_DAYS * MS_PER_DAY
-    const horizon = new Date(horizonMs).toISOString().slice(0, 10)
-    let expired = 0
-    let expiringSoon = 0
-    let narrowScopeOutOfContext = 0
-    const ctx = this.scopeCtx
-    for await (const fact of this.listAllForBackfill(opts)) {
-      const scope = fact.scope ?? null
-      if (scope === null) continue
-      const expiresAt = scope.expiresAt
-      if (expiresAt !== null) {
-        if (expiresAt < today) {
-          expired += 1
-        } else if (expiresAt <= horizon) {
-          expiringSoon += 1
-        }
-      }
-      const kind = scope.kind
-      if (kind === null) continue
-      if (kind === "team" || kind === "project" || kind === "global") continue
-      const expected =
-        kind === "user"
-          ? ctx.userId
-          : kind === "agent"
-            ? ctx.agent
-            : kind === "role"
-              ? ctx.role
-              : kind === "session"
-                ? ctx.session
-                : kind === "run"
-                  ? ctx.run
-                  : kind === "environment"
-                    ? ctx.environment
-                    : undefined
-      if (expected === undefined || scope.key !== expected) {
-        narrowScopeOutOfContext += 1
-      }
-    }
-    return { expired, expiringSoon, narrowScopeOutOfContext }
-  }
-
   async *listAllForBackfill(
     opts: {
       projectId?: string
@@ -3178,35 +2834,7 @@ export class FactService {
       includeInvalidated?: boolean
     } = {}
   ): AsyncGenerator<Fact, void, void> {
-    const filters: Array<Record<string, unknown>> = []
-    if (!opts.includeInvalidated) {
-      filters.push({ property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } })
-    }
-    if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-    const filter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
-          : undefined
-    let cursor: string | undefined
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "ascending" }],
-        page_size: 100,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        const fact = await this.pageToFact(page)
-        if (fact === null) continue
-        yield fact
-      }
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
+    yield* this.maintenance.listAllForBackfill(opts)
   }
 
   /**
@@ -3227,13 +2855,7 @@ export class FactService {
     score: number,
     lastReferencedAt: string
   ): Promise<void> {
-    await this.client.pages.update({
-      page_id: factId,
-      properties: {
-        [FACT_PROPS.CONFIDENCE_SCORE]: { number: score },
-        [FACT_PROPS.LAST_REFERENCED_AT]: { date: { start: lastReferencedAt } },
-      },
-    })
+    return this.maintenance.applyBackfillScore(factId, score, lastReferencedAt)
   }
 
   /**
@@ -3253,20 +2875,7 @@ export class FactService {
     factId: string,
     values: { observedAt: string | null; invalidatedAt: string | null }
   ): Promise<void> {
-    const properties: Record<string, unknown> = {}
-    if (values.observedAt !== null) {
-      properties[FACT_PROPS.OBSERVED_AT] = { date: { start: values.observedAt } }
-    }
-    if (values.invalidatedAt !== null) {
-      properties[FACT_PROPS.INVALIDATED_AT] = {
-        date: { start: values.invalidatedAt },
-      }
-    }
-    if (Object.keys(properties).length === 0) return
-    await this.client.pages.update({
-      page_id: factId,
-      properties: properties as UpdatePageParameters["properties"],
-    })
+    return this.maintenance.applyObservedAtBackfill(factId, values)
   }
 
   /**
