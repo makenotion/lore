@@ -160,6 +160,7 @@ interface StubOpts {
   tasksCreate?: ReturnType<typeof vi.fn>
   tasksUpdate?: ReturnType<typeof vi.fn>
   tasksClose?: ReturnType<typeof vi.fn>
+  tasksCloseMany?: ReturnType<typeof vi.fn>
   tasksList?: ReturnType<typeof vi.fn>
 }
 
@@ -272,6 +273,15 @@ function makeServices(opts: StubOpts = {}): unknown {
       create: opts.tasksCreate ?? vi.fn(),
       update: opts.tasksUpdate ?? vi.fn(),
       close: opts.tasksClose ?? vi.fn(async () => undefined),
+      closeMany:
+        opts.tasksCloseMany ??
+        vi.fn(async () => ({
+          attempted: 0,
+          closed: 0,
+          noop: 0,
+          failed: [],
+          outcomes: [],
+        })),
       list: opts.tasksList ?? vi.fn(async () => ({ items: [] })),
       queryOverdue: vi.fn(async () => []),
       countActive: vi.fn(async () => ({
@@ -1365,6 +1375,44 @@ describe("lore-task polymorphic dispatcher", () => {
     expect(extractText(result)).toContain("Closed task t-1")
   })
 
+  it("dispatches action='close-many' to tasks.closeMany", async () => {
+    const tasksCloseMany = vi.fn(async () => ({
+      attempted: 2,
+      closed: 2,
+      noop: 0,
+      failed: [],
+      outcomes: [
+        {
+          id: "t-1",
+          status: "closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+        {
+          id: "t-2",
+          status: "closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+      ],
+    }))
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksCloseMany }) as never)
+    const result = await mock.get("lore-task")({
+      action: "close-many",
+      ids: ["t-1", "t-2"],
+      reason: "Parent PR merged",
+    } as never)
+    expect(tasksCloseMany).toHaveBeenCalledWith({
+      ids: ["t-1", "t-2"],
+      state: "done",
+      reason: "Parent PR merged",
+    })
+    expect(extractText(result)).toContain("2 attempted, 2 closed")
+  })
+
   it("dispatches action='list' to tasks.list", async () => {
     const tasksList = vi.fn(async () => ({ items: [] }))
     const mock = createMockServer()
@@ -1548,7 +1596,7 @@ describe("lore-task polymorphic dispatcher", () => {
     expect(extractText(result)).toContain("limit")
   })
 
-  it("the registered action enum lists 'reconcile'", () => {
+  it("the registered action enum lists task actions", () => {
     const mock = createMockServer()
     registerTaskTools(mock.server, makeServices() as never)
     const cfg = mock.config("lore-task")
@@ -1561,6 +1609,7 @@ describe("lore-task polymorphic dispatcher", () => {
       | undefined
     expect(actionField).toBeDefined()
     expect(actionField?._def?.values).toContain("reconcile")
+    expect(actionField?._def?.values).toContain("close-many")
   })
 
   it("describes the reconcile action in the top-level description", () => {

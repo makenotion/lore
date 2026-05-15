@@ -24,7 +24,11 @@ import {
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { createTagsSchema, keywordsSchema } from "./tag-schema.js"
 import { scopeInputSchema } from "./scope-schema.js"
-import { taskDaysOverdue } from "../../core/task.js"
+import {
+  TASK_CLOSE_MANY_MAX_IDS,
+  normalizeCloseManyTaskIds,
+  taskDaysOverdue,
+} from "../../core/task.js"
 import {
   findDuplicateActiveTasks,
   findExactReuseTarget,
@@ -43,7 +47,7 @@ import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
-import { nonBlankString } from "./text-schema.js"
+import { nonBlankBody, nonBlankString } from "./text-schema.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -584,12 +588,17 @@ async function handleUpdate(
 interface CloseArgs {
   taskId: string
   state?: (typeof CLOSE_STATES)[number]
+  reason?: string
 }
 
 async function handleClose(services: LoreServices, args: CloseArgs): Promise<ToolResult> {
   try {
     const closingState: "done" | "cancelled" = args.state ?? "done"
-    await services.tasks.close(args.taskId, closingState)
+    const closeResult =
+      args.reason !== undefined
+        ? await services.tasks.close(args.taskId, closingState, { reason: args.reason })
+        : await services.tasks.close(args.taskId, closingState)
+    const closureNote = closeResult?.closureNote ?? null
 
     // Re-read the post-close row so the response can echo the stamped
     // `Done At`. On a vault that hasn't migrated the
@@ -607,10 +616,50 @@ async function handleClose(services: LoreServices, args: CloseArgs): Promise<Too
 
     const text =
       `Closed task ${args.taskId} (state: ${closingState})` +
-      (doneAt ? `\nDone at: ${doneAt}` : "")
+      (doneAt ? `\nDone at: ${doneAt}` : "") +
+      (closureNote
+        ? `\nClosure note appended.`
+        : args.reason
+          ? `\nClosure note skipped: task was already closed.`
+          : "")
 
     return {
       content: [{ type: "text", text }],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+interface CloseManyArgs {
+  ids: string[]
+  state?: (typeof CLOSE_STATES)[number]
+  reason?: string
+}
+
+async function handleCloseMany(
+  services: LoreServices,
+  args: CloseManyArgs
+): Promise<ToolResult> {
+  try {
+    const result = await services.tasks.closeMany({
+      ids: args.ids,
+      state: args.state ?? "done",
+      reason: args.reason,
+    })
+    const lines = [
+      `Closed task batch: ${result.attempted} attempted, ${result.closed} closed, ` +
+        `${result.noop} already closed, ${result.failed.length} failed.`,
+    ]
+    if (result.failed.length > 0) {
+      lines.push("", "Failed:")
+      for (const failure of result.failed) {
+        lines.push(`- ${failure.id}: ${failure.error}`)
+      }
+    }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      isError: result.failed.length > 0 ? true : undefined,
     }
   } catch (err) {
     return toolError(err)
@@ -838,6 +887,17 @@ async function handleReconcile(
  * handler so unsupported action+param combinations surface as clean
  * errors via `formatDispatchError`.
  */
+const closeManyIdsSchema = z.array(z.string()).superRefine((ids, ctx) => {
+  try {
+    normalizeCloseManyTaskIds(ids)
+  } catch (err) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
+})
+
 function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema>) {
   return z.discriminatedUnion("action", [
     z.object({
@@ -880,6 +940,13 @@ function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema
       action: z.literal("close"),
       taskId: z.string(),
       state: z.enum(CLOSE_STATES).optional(),
+      reason: nonBlankBody.optional(),
+    }),
+    z.object({
+      action: z.literal("close-many"),
+      ids: closeManyIdsSchema,
+      state: z.enum(CLOSE_STATES).optional(),
+      reason: nonBlankBody.optional(),
     }),
     z.object({
       action: z.literal("list"),
@@ -912,7 +979,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
     {
       title: "Task operations",
       description:
-        "Create, update, close, or list tasks. Tasks are the canonical " +
+        "Create, update, close, bulk-close, or list tasks. Tasks are the canonical " +
         "surface for tracked work; the description lives in the page body " +
         "(no 2000-char rich_text limit) and the subject is structurally " +
         "indexed.\n\n" +
@@ -936,6 +1003,8 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "description, or scoping. Any field omitted is left untouched. Pass " +
         '`dueDate: null` or `dueDate: ""` to clear the due date.\n' +
         "- `action: 'close'` — mark done (or cancelled — distinguished for metrics).\n" +
+        "- `action: 'close-many'` — close an explicit ID list with the same " +
+        "semantics as `close`; partial failures are reported per ID.\n" +
         "- `action: 'list'` — list task memories with Overdue and Active " +
         "sections. Labels totals as exact or lower-bound; " +
         `small limits fetch ${TASK_LIST_FETCH_MULTIPLIER}×limit, while ` +
@@ -946,10 +1015,10 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "incantations. Read-only; never auto-closes.",
       inputSchema: {
         action: z
-          .enum(["create", "update", "close", "list", "reconcile"])
+          .enum(["create", "update", "close", "close-many", "list", "reconcile"])
           .describe(
             "Operation: create (open a task), update (mutate fields), " +
-              "close (mark done/cancelled), list (triage view), or reconcile " +
+              "close (mark one done/cancelled), close-many (close an explicit ID list), list (triage view), or reconcile " +
               "(scan active tasks for resolution-shaped memory matches and " +
               "surface candidate closures)."
           ),
@@ -971,6 +1040,13 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .string()
           .optional()
           .describe("(action='update' | 'close') The task ID to mutate."),
+        ids: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `(action='close-many') Explicit task IDs to close. Blank IDs are ignored, ` +
+              `duplicates are de-duplicated in first-seen order, capped at ${TASK_CLOSE_MANY_MAX_IDS}.`
+          ),
         // create | update | list
         entity: z
           .string()
@@ -988,8 +1064,13 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .describe(
             "(action='create') Initial state (default `open`). Pair `blocked` with `blockedBy`. " +
               "(action='update') New state. Use action='close' if you only need to mark a task done. " +
-              "(action='close') Closing state — `done` (default) or `cancelled`. " +
+              "(action='close' | 'close-many') Closing state — `done` (default) or `cancelled`. " +
               "(action='list') Filter to a single state. Omit on list to see all active states (open, in-progress, blocked)."
+          ),
+        reason: nonBlankBody
+          .optional()
+          .describe(
+            "(action='close' | 'close-many') Optional non-blank closure rationale appended as a structured note."
           ),
         blockedBy: z
           .string()
@@ -1135,6 +1216,10 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         case "close":
           return withWakeUpCacheBump(services.wakeupCache, () =>
             handleClose(services, data)
+          )
+        case "close-many":
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleCloseMany(services, data)
           )
         case "list":
           return handleList(services, data)

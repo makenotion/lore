@@ -1,5 +1,5 @@
 import { Command } from "commander"
-import { access } from "node:fs/promises"
+import { access, readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { findConfigFile, loadConfig } from "../../config.js"
 import { initServices, type LoreServices } from "../../services.js"
@@ -14,7 +14,7 @@ import {
   resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
-import { taskDaysOverdue } from "../../core/task.js"
+import { normalizeCloseManyTaskIds, taskDaysOverdue } from "../../core/task.js"
 import {
   findDuplicateActiveTasks,
   findExactReuseTarget,
@@ -319,6 +319,18 @@ function validateState(
     }
   }
   return { ok: true, value: raw as TaskState }
+}
+
+function validateOptionalReason(
+  raw: string | undefined,
+  flag: string
+): CliParseResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return { ok: false, message: `${flag} must not be blank or whitespace-only` }
+  }
+  return { ok: true, value: trimmed }
 }
 
 function validateYmd(
@@ -971,12 +983,14 @@ const updateCommand = new Command("update")
 export interface CloseCliOptions {
   taskId: string
   state: "done" | "cancelled"
+  reason?: string
 }
 
 export interface CloseCliResultData {
   id: string
   state: "done" | "cancelled"
   doneAt: string | null
+  closureNote: string | null
 }
 
 export interface CloseCliResult {
@@ -986,18 +1000,21 @@ export interface CloseCliResult {
 
 export function parseCloseCliOptions(
   taskId: string,
-  raw: { state?: string }
+  raw: { state?: string; reason?: string }
 ): CliParseResult<CloseCliOptions> {
   if (!taskId.trim()) {
     return { ok: false, message: "<task-id> must be a non-empty string" }
   }
   const state = validateState(raw.state, "--state", CLOSE_STATES)
   if (!state.ok) return state
+  const reason = validateOptionalReason(raw.reason, "--reason")
+  if (!reason.ok) return reason
   return {
     ok: true,
     value: {
       taskId,
       state: (state.value ?? "done") as "done" | "cancelled",
+      reason: reason.value,
     },
   }
 }
@@ -1006,7 +1023,11 @@ export async function runTaskClose(
   services: LoreServices,
   opts: CloseCliOptions
 ): Promise<CloseCliResult> {
-  await services.tasks.close(opts.taskId, opts.state)
+  const closeResult =
+    opts.reason !== undefined
+      ? await services.tasks.close(opts.taskId, opts.state, { reason: opts.reason })
+      : await services.tasks.close(opts.taskId, opts.state)
+  const closureNote = closeResult?.closureNote ?? null
 
   let doneAt: string | null = null
   try {
@@ -1023,10 +1044,20 @@ export async function runTaskClose(
 
   const text =
     `Closed task ${opts.taskId} (state: ${opts.state})` +
-    (doneAt ? `\nDone at: ${doneAt}` : "")
+    (doneAt ? `\nDone at: ${doneAt}` : "") +
+    (closureNote
+      ? `\nClosure note appended.`
+      : opts.reason
+        ? `\nClosure note skipped: task was already closed.`
+        : "")
   return {
     text,
-    data: { id: opts.taskId, state: opts.state, doneAt },
+    data: {
+      id: opts.taskId,
+      state: opts.state,
+      doneAt,
+      closureNote,
+    },
   }
 }
 
@@ -1037,23 +1068,191 @@ const closeCommand = new Command("close")
     "-s, --state <state>",
     `Closing state: ${CLOSE_STATES.join(" | ")} (default done)`
   )
+  .option("-r, --reason <text>", "Optional closure rationale appended to the task body")
   .option("--json", "Emit the result as a JSON object instead of human text")
-  .action(async (taskId: string, opts: { state?: string; json?: boolean }) => {
-    try {
-      const parsed = parseCloseCliOptions(taskId, opts)
-      if (!parsed.ok) {
-        console.error(`Task close failed: ${parsed.message}`)
+  .action(
+    async (taskId: string, opts: { state?: string; reason?: string; json?: boolean }) => {
+      try {
+        const parsed = parseCloseCliOptions(taskId, opts)
+        if (!parsed.ok) {
+          console.error(`Task close failed: ${parsed.message}`)
+          process.exit(1)
+          return
+        }
+        const services = await initServices()
+        const result = await runTaskClose(services, parsed.value)
+        console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text)
+      } catch (err) {
+        console.error("Task close failed:", err instanceof Error ? err.message : err)
         process.exit(1)
-        return
       }
-      const services = await initServices()
-      const result = await runTaskClose(services, parsed.value)
-      console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text)
-    } catch (err) {
-      console.error("Task close failed:", err instanceof Error ? err.message : err)
-      process.exit(1)
     }
+  )
+
+// ---------------------------------------------------------------------------
+// close-many
+// ---------------------------------------------------------------------------
+
+export interface CloseManyCliOptions {
+  idsFrom: string
+  state: "done" | "cancelled"
+  reason?: string
+}
+
+export interface CloseManyCliRunOptions {
+  ids: string[]
+  state: "done" | "cancelled"
+  reason?: string
+}
+
+export interface CloseManyCliResultData {
+  attempted: number
+  closed: number
+  noop: number
+  failed: Array<{ id: string; error: string }>
+  results: Array<{
+    id: string
+    status: "closed" | "already-closed" | "failed"
+    state?: "done" | "cancelled"
+    doneAt?: string | null
+    closureNote?: string | null
+    error?: string
+  }>
+}
+
+export interface CloseManyCliResult {
+  text: string
+  data: CloseManyCliResultData
+}
+
+export function parseCloseManyCliOptions(raw: {
+  idsFrom?: string
+  state?: string
+  reason?: string
+}): CliParseResult<CloseManyCliOptions> {
+  const idsFrom = raw.idsFrom?.trim()
+  if (!idsFrom) {
+    return { ok: false, message: "--ids-from <path|-> is required" }
+  }
+  const state = validateState(raw.state, "--state", CLOSE_STATES)
+  if (!state.ok) return state
+  const reason = validateOptionalReason(raw.reason, "--reason")
+  if (!reason.ok) return reason
+  return {
+    ok: true,
+    value: {
+      idsFrom,
+      state: (state.value ?? "done") as "done" | "cancelled",
+      reason: reason.value,
+    },
+  }
+}
+
+export function parseCloseManyIds(raw: string): CliParseResult<string[]> {
+  try {
+    return { ok: true, value: normalizeCloseManyTaskIds(raw.split(/\r?\n/)) }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+async function readStdinText(): Promise<string> {
+  process.stdin.setEncoding("utf8")
+  let data = ""
+  for await (const chunk of process.stdin) {
+    data += typeof chunk === "string" ? chunk : chunk.toString("utf8")
+  }
+  return data
+}
+
+async function readIdsFromSource(idsFrom: string): Promise<string> {
+  if (idsFrom === "-") return readStdinText()
+  try {
+    return await readFile(idsFrom, "utf8")
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`Unable to read --ids-from ${idsFrom}: ${message}`, {
+      cause: err,
+    })
+  }
+}
+
+export async function runTaskCloseMany(
+  services: LoreServices,
+  opts: CloseManyCliRunOptions
+): Promise<CloseManyCliResult> {
+  const result = await services.tasks.closeMany({
+    ids: opts.ids,
+    state: opts.state,
+    reason: opts.reason,
   })
+  const data: CloseManyCliResultData = {
+    attempted: result.attempted,
+    closed: result.closed,
+    noop: result.noop,
+    failed: result.failed,
+    results: result.outcomes,
+  }
+  const lines = [
+    `Closed task batch: ${result.attempted} attempted, ${result.closed} closed, ` +
+      `${result.noop} already closed, ${result.failed.length} failed.`,
+  ]
+  if (result.failed.length > 0) {
+    lines.push("", "Failed:")
+    for (const failure of result.failed) {
+      lines.push(`- ${failure.id}: ${failure.error}`)
+    }
+  }
+  return { text: lines.join("\n"), data }
+}
+
+const closeManyCommand = new Command("close-many")
+  .description("Close a newline-delimited list of task IDs")
+  .option("--ids-from <path|->", "Read task IDs from a newline-delimited file or stdin")
+  .option(
+    "-s, --state <state>",
+    `Closing state: ${CLOSE_STATES.join(" | ")} (default done)`
+  )
+  .option("-r, --reason <text>", "Optional closure rationale appended to each task body")
+  .option("--json", "Emit the result as a JSON object instead of human text")
+  .action(
+    async (opts: {
+      idsFrom?: string
+      state?: string
+      reason?: string
+      json?: boolean
+    }) => {
+      try {
+        const parsed = parseCloseManyCliOptions(opts)
+        if (!parsed.ok) {
+          console.error(`Task close-many failed: ${parsed.message}`)
+          process.exit(1)
+          return
+        }
+        const rawIds = await readIdsFromSource(parsed.value.idsFrom)
+        const ids = parseCloseManyIds(rawIds)
+        if (!ids.ok) {
+          console.error(`Task close-many failed: ${ids.message}`)
+          process.exit(1)
+          return
+        }
+        const services = await initServices()
+        const result = await runTaskCloseMany(services, {
+          ids: ids.value,
+          state: parsed.value.state,
+          reason: parsed.value.reason,
+        })
+        console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text)
+        if (result.data.failed.length > 0) {
+          process.exit(1)
+          return
+        }
+      } catch (err) {
+        console.error("Task close-many failed:", err instanceof Error ? err.message : err)
+        process.exit(1)
+      }
+    }
+  )
 
 // ---------------------------------------------------------------------------
 // list
@@ -1386,5 +1585,6 @@ export const tasksCommand = new Command("tasks")
   .addCommand(createCommand)
   .addCommand(updateCommand)
   .addCommand(closeCommand)
+  .addCommand(closeManyCommand)
   .addCommand(listCommand)
   .addCommand(reconcileCommand)

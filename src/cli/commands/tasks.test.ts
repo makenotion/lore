@@ -4,12 +4,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   parseCloseCliOptions,
+  parseCloseManyCliOptions,
+  parseCloseManyIds,
   parseCreateCliOptions,
   parseListCliOptions,
   parseReconcileCliOptions,
   parseUpdateCliOptions,
   runReconcile,
   runTaskClose,
+  runTaskCloseMany,
   runTaskCreate,
   runTaskList,
   runTaskUpdate,
@@ -116,6 +119,7 @@ function makeServices(opts: {
   tasksCreate?: ReturnType<typeof vi.fn>
   tasksUpdate?: ReturnType<typeof vi.fn>
   tasksClose?: ReturnType<typeof vi.fn>
+  tasksCloseMany?: ReturnType<typeof vi.fn>
   tasksGetById?: ReturnType<typeof vi.fn>
   topicsGetOrCreate?: ReturnType<typeof vi.fn>
 }): LoreServices {
@@ -132,6 +136,15 @@ function makeServices(opts: {
         opts.tasksUpdate ??
         vi.fn().mockResolvedValue(makeTask({ id: "t-upd", title: "stubbed" })),
       close: opts.tasksClose ?? vi.fn().mockResolvedValue(undefined),
+      closeMany:
+        opts.tasksCloseMany ??
+        vi.fn().mockResolvedValue({
+          attempted: 0,
+          closed: 0,
+          noop: 0,
+          failed: [],
+          outcomes: [],
+        }),
       getById:
         opts.tasksGetById ??
         vi.fn().mockResolvedValue(
@@ -1191,6 +1204,18 @@ describe("parseCloseCliOptions", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.message).toContain("<task-id>")
   })
+
+  it("accepts a non-blank --reason", () => {
+    const result = parseCloseCliOptions("task-id", { reason: " Parent PR merged " })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.reason).toBe("Parent PR merged")
+  })
+
+  it("rejects a blank --reason", () => {
+    const result = parseCloseCliOptions("task-id", { reason: "   " })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("--reason")
+  })
 })
 
 describe("runTaskClose", () => {
@@ -1223,6 +1248,7 @@ describe("runTaskClose", () => {
       id: "t-close",
       state: "done",
       doneAt: "2026-05-03",
+      closureNote: null,
     })
   })
 
@@ -1246,7 +1272,140 @@ describe("runTaskClose", () => {
       id: "t-close",
       state: "cancelled",
       doneAt: null,
+      closureNote: null,
     })
+  })
+
+  it("threads a closure reason through TaskService.close and reports the appended note", async () => {
+    const tasksClose = vi.fn().mockResolvedValue({
+      id: "t-close",
+      state: "done",
+      doneAt: "2026-05-03",
+      previousState: "open",
+      alreadyClosed: false,
+      closureNote: "## Closed (2026-05-03) - done\n\nParent PR merged",
+    })
+    const tasksGetById = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-close",
+        title: "closed",
+        taskState: "done",
+        doneAt: "2026-05-03",
+      }) as unknown as Task
+    )
+    const services = makeServices({
+      contextProject: null,
+      tasksClose,
+      tasksGetById,
+    })
+
+    const result = await runTaskClose(services, {
+      taskId: "t-close",
+      state: "done",
+      reason: "Parent PR merged",
+    })
+
+    expect(tasksClose).toHaveBeenCalledWith("t-close", "done", {
+      reason: "Parent PR merged",
+    })
+    expect(result.text).toContain("Closure note appended.")
+    expect(result.data.closureNote).toBe(
+      "## Closed (2026-05-03) - done\n\nParent PR merged"
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// close-many
+// ---------------------------------------------------------------------------
+
+describe("parseCloseManyCliOptions", () => {
+  it("requires --ids-from", () => {
+    const result = parseCloseManyCliOptions({})
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("--ids-from")
+  })
+
+  it("defaults --state to done and trims --reason", () => {
+    const result = parseCloseManyCliOptions({
+      idsFrom: " ids.txt ",
+      reason: " stale rows ",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toEqual({
+        idsFrom: "ids.txt",
+        state: "done",
+        reason: "stale rows",
+      })
+    }
+  })
+
+  it("rejects non-close states", () => {
+    const result = parseCloseManyCliOptions({
+      idsFrom: "-",
+      state: "in-progress",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("--state")
+  })
+})
+
+describe("parseCloseManyIds", () => {
+  it("ignores blanks and de-duplicates IDs in first-seen order", () => {
+    const result = parseCloseManyIds(" a\n\nb\na \n")
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toEqual(["a", "b"])
+  })
+
+  it("rejects an all-blank ID stream", () => {
+    const result = parseCloseManyIds("\n  \n")
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("non-blank")
+  })
+})
+
+describe("runTaskCloseMany", () => {
+  it("calls TaskService.closeMany and renders partial failures", async () => {
+    const tasksCloseMany = vi.fn().mockResolvedValue({
+      attempted: 3,
+      closed: 1,
+      noop: 1,
+      failed: [{ id: "t3", error: "notion 503" }],
+      outcomes: [
+        {
+          id: "t1",
+          status: "closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+        {
+          id: "t2",
+          status: "already-closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+        { id: "t3", status: "failed", error: "notion 503" },
+      ],
+    })
+    const services = makeServices({ contextProject: null, tasksCloseMany })
+
+    const result = await runTaskCloseMany(services, {
+      ids: ["t1", "t2", "t3"],
+      state: "done",
+      reason: "Parent PR merged",
+    })
+
+    expect(tasksCloseMany).toHaveBeenCalledWith({
+      ids: ["t1", "t2", "t3"],
+      state: "done",
+      reason: "Parent PR merged",
+    })
+    expect(result.text).toContain("3 attempted, 1 closed, 1 already closed, 1 failed")
+    expect(result.text).toContain("t3: notion 503")
+    expect(result.data.failed).toEqual([{ id: "t3", error: "notion 503" }])
   })
 })
 
@@ -2046,12 +2205,76 @@ describe("tasksCommand create/update/close/list actions", () => {
       id: string
       state: string
       doneAt: string | null
+      closureNote: string | null
     }
     expect(parsed).toEqual({
       id: "t-close",
       state: "done",
       doneAt: "2026-05-03",
+      closureNote: null,
     })
+  })
+
+  it("close-many exits 1 before initServices when --ids-from is missing", async () => {
+    await tasksCommand.parseAsync(["close-many"], { from: "user" })
+
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Task close-many failed:")
+    expect(errorText).toContain("--ids-from")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+  })
+
+  it("close-many prints JSON and exits 1 when any ID fails", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lore-close-many-"))
+    const idsPath = join(cwd, "ids.txt")
+    writeFileSync(idsPath, "t1\n\nt2\nt1\n")
+    const tasksCloseMany = vi.fn().mockResolvedValue({
+      attempted: 2,
+      closed: 1,
+      noop: 0,
+      failed: [{ id: "t2", error: "notion 503" }],
+      outcomes: [
+        {
+          id: "t1",
+          status: "closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+        { id: "t2", status: "failed", error: "notion 503" },
+      ],
+    })
+    const services = makeServices({ contextProject: null, tasksCloseMany })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    try {
+      await tasksCommand.parseAsync(
+        ["close-many", "--ids-from", idsPath, "--reason", "Parent PR merged", "--json"],
+        { from: "user" }
+      )
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(tasksCloseMany).toHaveBeenCalledWith({
+      ids: ["t1", "t2"],
+      state: "done",
+      reason: "Parent PR merged",
+    })
+    expect(exitTrap.exitCodes).toEqual([1])
+    const parsed = JSON.parse(logSpy.mock.calls[0]!.join("\n")) as {
+      attempted: number
+      closed: number
+      noop: number
+      failed: Array<{ id: string; error: string }>
+    }
+    expect(parsed.attempted).toBe(2)
+    expect(parsed.closed).toBe(1)
+    expect(parsed.noop).toBe(0)
+    expect(parsed.failed).toEqual([{ id: "t2", error: "notion 503" }])
   })
 
   it("create exits 1 once before initServices on out-of-vocab --tags", async () => {

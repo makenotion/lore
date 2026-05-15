@@ -24,6 +24,7 @@
  */
 
 import type { Client } from "@notionhq/client"
+import pLimit from "p-limit"
 import type {
   PageObjectResponse,
   CreatePageParameters,
@@ -54,6 +55,78 @@ import {
 import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
+
+export const TASK_CLOSE_MANY_MAX_IDS = 100
+export const TASK_CLOSE_MANY_CONCURRENCY = 4
+
+export type CloseTaskState = "done" | "cancelled"
+
+export interface CloseTaskOptions {
+  reason?: string
+  detectAlreadyClosed?: boolean
+  noopAlreadyClosed?: boolean
+}
+
+export interface CloseTaskResult {
+  id: string
+  state: CloseTaskState
+  doneAt: string | null
+  previousState: TaskState | null
+  alreadyClosed: boolean | null
+  closureNote: string | null
+}
+
+export type CloseManyTaskOutcome =
+  | {
+      id: string
+      status: "closed" | "already-closed"
+      state: CloseTaskState
+      doneAt: string | null
+      closureNote: string | null
+    }
+  | {
+      id: string
+      status: "failed"
+      error: string
+    }
+
+export interface CloseManyTasksInput {
+  ids: readonly string[]
+  state?: CloseTaskState
+  reason?: string
+  concurrency?: number
+}
+
+export interface CloseManyTasksResult {
+  attempted: number
+  closed: number
+  noop: number
+  failed: Array<{ id: string; error: string }>
+  outcomes: CloseManyTaskOutcome[]
+}
+
+export function normalizeCloseManyTaskIds(
+  ids: readonly string[],
+  maxIds = TASK_CLOSE_MANY_MAX_IDS
+): string[] {
+  const seen = new Set<string>()
+  const normalized: string[] = []
+  for (const raw of ids) {
+    const id = raw.trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    normalized.push(id)
+  }
+  if (normalized.length === 0) {
+    throw new Error("close-many requires at least one non-blank task ID")
+  }
+  if (normalized.length > maxIds) {
+    throw new Error(
+      `close-many accepts at most ${maxIds} task IDs, got ${normalized.length}`
+    )
+  }
+  return normalized
+}
 
 /**
  * Single rule for every empty-able optional task field: **empty string
@@ -171,6 +244,52 @@ export class TaskUpdatePartialFailureError extends LoreError<"task-update-partia
     this.persisted = { properties: true, body: false }
     this.bodyWriteError = details.bodyWriteError
   }
+}
+
+export class TaskClosePartialFailureError extends LoreError<"task-close-partial"> {
+  readonly taskId: string
+  readonly state: CloseTaskState
+  readonly closureNote: string
+  readonly noteWriteError: unknown
+
+  constructor(
+    message: string,
+    details: {
+      taskId: string
+      state: CloseTaskState
+      closureNote: string
+      noteWriteError: unknown
+    }
+  ) {
+    const prefixedMessage = message.startsWith("TaskClosePartialFailureError: ")
+      ? message
+      : `TaskClosePartialFailureError: ${message}`
+    super(
+      "task-close-partial",
+      prefixedMessage,
+      {
+        taskId: details.taskId,
+        state: details.state,
+        closureNote: details.closureNote,
+        persisted: { properties: true, closureNote: false },
+        noteWriteCauseMessage: errorCauseMessage(details.noteWriteError),
+      },
+      { cause: details.noteWriteError }
+    )
+    this.name = "TaskClosePartialFailureError"
+    this.taskId = details.taskId
+    this.state = details.state
+    this.closureNote = details.closureNote
+    this.noteWriteError = details.noteWriteError
+  }
+}
+
+export function buildTaskClosureNote(input: {
+  today: string
+  state: CloseTaskState
+  reason: string
+}): string {
+  return `## Closed (${input.today}) - ${input.state}\n\n${input.reason}`
 }
 
 export interface OverdueTaskWindow {
@@ -356,6 +475,21 @@ export class TaskService {
       )
     }
     return memory as Task
+  }
+
+  private async getSummaryById(id: string): Promise<TaskSummary> {
+    const page = await this.client.pages.retrieve({ page_id: id })
+    const memory = pageToMemory(
+      await hydrateMemoryRelationProperties(this.client, page as PageObjectResponse),
+      ""
+    )
+    if (memory.kind !== "task") {
+      throw new Error(
+        `Memory ${id} is not a task (kind: ${memory.kind}). ` +
+          "Use MemoryService for non-task memories."
+      )
+    }
+    return toTaskSummary(memory as Task)
   }
 
   /**
@@ -681,7 +815,38 @@ export class TaskService {
    * be `expectedCurrentState` à la decision supersession's read-then-write
    * discipline.
    */
-  async close(id: string, state: "done" | "cancelled" = "done"): Promise<void> {
+  async close(
+    id: string,
+    state: CloseTaskState = "done",
+    options: CloseTaskOptions = {}
+  ): Promise<CloseTaskResult> {
+    const trimmedReason = options.reason?.trim()
+    if (options.reason !== undefined && !trimmedReason) {
+      throw new Error("TaskService.close: reason must be non-blank when provided")
+    }
+
+    const shouldReadBeforeClose =
+      options.detectAlreadyClosed === true || trimmedReason !== undefined
+    let existing: TaskSummary | null = null
+    let previousState: TaskState | null = null
+    let alreadyClosed: boolean | null = null
+    if (shouldReadBeforeClose) {
+      existing = await this.getSummaryById(id)
+      previousState = existing.taskState
+      alreadyClosed = previousState === "done" || previousState === "cancelled"
+    }
+
+    if (alreadyClosed === true && options.noopAlreadyClosed === true && existing) {
+      return {
+        id,
+        state: existing.taskState as CloseTaskState,
+        doneAt: existing.doneAt,
+        previousState,
+        alreadyClosed,
+        closureNote: null,
+      }
+    }
+
     // Stamp `Done At` in the same atom as the state write. Notion's
     // per-request atomicity guarantees both columns either land or
     // neither does — no two-phase write that could leave a closed task
@@ -696,6 +861,97 @@ export class TaskService {
         [MEMORY_PROPS.DONE_AT]: { date: { start: today } },
       } as CreatePageParameters["properties"],
     })
+
+    let closureNote: string | null = null
+    if (trimmedReason !== undefined && alreadyClosed === false) {
+      closureNote = buildTaskClosureNote({
+        today,
+        state,
+        reason: decodeTextEntities(trimmedReason),
+      })
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: id,
+          type: "insert_content",
+          insert_content: { content: closureNote },
+        })
+      } catch (noteWriteError) {
+        const cause =
+          noteWriteError instanceof Error
+            ? noteWriteError.message
+            : String(noteWriteError)
+        throw new TaskClosePartialFailureError(
+          `Task close partial failure: state for task ${id} persisted as ` +
+            `"${state}", but the closure note write failed: ${cause}. ` +
+            `The task is already closed in Notion; the body audit trail is missing.`,
+          { taskId: id, state, closureNote, noteWriteError }
+        )
+      }
+    }
+
+    return {
+      id,
+      state,
+      doneAt: today,
+      previousState,
+      alreadyClosed,
+      closureNote,
+    }
+  }
+
+  async closeMany(input: CloseManyTasksInput): Promise<CloseManyTasksResult> {
+    const ids = normalizeCloseManyTaskIds(input.ids)
+    const state = input.state ?? "done"
+    const trimmedReason = input.reason?.trim()
+    if (input.reason !== undefined && !trimmedReason) {
+      throw new Error("TaskService.closeMany: reason must be non-blank when provided")
+    }
+    const concurrency = Math.max(
+      1,
+      Math.min(input.concurrency ?? TASK_CLOSE_MANY_CONCURRENCY, TASK_CLOSE_MANY_MAX_IDS)
+    )
+    const limit = pLimit(concurrency)
+
+    const outcomes = await Promise.all(
+      ids.map((id) =>
+        limit(async (): Promise<CloseManyTaskOutcome> => {
+          try {
+            const result = await this.close(id, state, {
+              reason: trimmedReason,
+              detectAlreadyClosed: true,
+              noopAlreadyClosed: true,
+            })
+            return {
+              id,
+              status: result.alreadyClosed ? "already-closed" : "closed",
+              state: result.state,
+              doneAt: result.doneAt,
+              closureNote: result.closureNote,
+            }
+          } catch (err) {
+            return {
+              id,
+              status: "failed",
+              error: errorCauseMessage(err),
+            }
+          }
+        })
+      )
+    )
+
+    const failed = outcomes
+      .filter(
+        (outcome): outcome is Extract<CloseManyTaskOutcome, { status: "failed" }> =>
+          outcome.status === "failed"
+      )
+      .map(({ id, error }) => ({ id, error }))
+    return {
+      attempted: outcomes.length,
+      closed: outcomes.filter((outcome) => outcome.status === "closed").length,
+      noop: outcomes.filter((outcome) => outcome.status === "already-closed").length,
+      failed,
+      outcomes,
+    }
   }
 
   /**

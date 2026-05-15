@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
+  TASK_CLOSE_MANY_CONCURRENCY,
   TaskCreatePartialFailureError,
+  TaskClosePartialFailureError,
   TaskUpdatePartialFailureError,
   TaskService,
   formatTaskSummary,
   isCleared,
+  normalizeCloseManyTaskIds,
   taskDaysOverdue,
   taskDaysStale,
   taskStats,
@@ -60,6 +63,14 @@ function taskPage(
         type: "select",
         select: { name: overrides?.state ?? "open" },
       } as unknown,
+      ...(overrides?.state === "done" || overrides?.state === "cancelled"
+        ? {
+            "Done At": {
+              type: "date",
+              date: { start: "2026-05-01" },
+            } as unknown,
+          }
+        : {}),
       "Blocked By": {
         type: "rich_text",
         rich_text: overrides?.blockedBy ? [{ plain_text: overrides.blockedBy }] : [],
@@ -656,6 +667,161 @@ describe("TaskService.close", () => {
     const first = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     const second = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[1][0]
     expect(first.properties["Done At"]).toEqual(second.properties["Done At"])
+  })
+
+  it("appends a structured closure note when a non-terminal task is closed with a reason", async () => {
+    const client = createMockClient({
+      retrievedPages: { "task-id": taskPage("task-id", { state: "open" }) },
+    })
+    const service = new TaskService(client, DB)
+
+    const result = await service.close("task-id", "done", {
+      reason: "Parent PR merged",
+    })
+
+    expect(result.alreadyClosed).toBe(false)
+    expect(result.closureNote).toBe(
+      `## Closed (${result.doneAt}) - done\n\nParent PR merged`
+    )
+    const markdownArgs = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    expect(markdownArgs).toEqual({
+      page_id: "task-id",
+      type: "insert_content",
+      insert_content: { content: result.closureNote },
+    })
+  })
+
+  it("does not append a duplicate closure note when the task was already terminal", async () => {
+    const client = createMockClient({
+      retrievedPages: { "task-id": taskPage("task-id", { state: "done" }) },
+    })
+    const service = new TaskService(client, DB)
+
+    const result = await service.close("task-id", "done", {
+      reason: "Already handled elsewhere",
+    })
+
+    expect(result.alreadyClosed).toBe(true)
+    expect(result.closureNote).toBeNull()
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("throws a structured partial-failure error when the closure note write fails after the close", async () => {
+    const noteWriteError = new Error("notion 503")
+    const client = createMockClient({
+      retrievedPages: { "task-id": taskPage("task-id", { state: "open" }) },
+      updateMarkdownError: noteWriteError,
+    })
+    const service = new TaskService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.close("task-id", "cancelled", {
+        reason: "Stale audit row",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(caught).toBeInstanceOf(TaskClosePartialFailureError)
+    const partial = caught as TaskClosePartialFailureError
+    expect(partial.taskId).toBe("task-id")
+    expect(partial.state).toBe("cancelled")
+    expect(partial.closureNote).toContain("## Closed")
+    expect(partial.noteWriteError).toBe(noteWriteError)
+  })
+
+  it("closeMany trims, de-duplicates, preserves order, and reports per-ID outcomes", async () => {
+    const client = createMockClient({
+      retrievedPages: {
+        t1: taskPage("t1", { state: "open" }),
+        t2: taskPage("t2", { state: "done" }),
+      },
+    })
+    const service = new TaskService(client, DB)
+
+    const result = await service.closeMany({
+      ids: [" t1 ", "", "t1", "t2", "missing"],
+      state: "done",
+      reason: "Batch cleanup",
+    })
+
+    expect(result.attempted).toBe(3)
+    expect(result.closed).toBe(1)
+    expect(result.noop).toBe(1)
+    expect(result.failed).toEqual([
+      { id: "missing", error: "Mock: no page registered for missing" },
+    ])
+    expect(result.outcomes.map((outcome) => outcome.id)).toEqual(["t1", "t2", "missing"])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
+  })
+
+  it("closeMany treats already-cancelled tasks as true no-ops instead of rewriting them to done", async () => {
+    const client = createMockClient({
+      retrievedPages: {
+        t1: taskPage("t1", { state: "cancelled" }),
+      },
+    })
+    const service = new TaskService(client, DB)
+
+    const result = await service.closeMany({
+      ids: ["t1"],
+    })
+
+    expect(result).toMatchObject({
+      attempted: 1,
+      closed: 0,
+      noop: 1,
+      failed: [],
+    })
+    expect(result.outcomes).toEqual([
+      {
+        id: "t1",
+        status: "already-closed",
+        state: "cancelled",
+        doneAt: "2026-05-01",
+        closureNote: null,
+      },
+    ])
+    expect(client.pages.update).not.toHaveBeenCalled()
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("closeMany limits concurrent close writes", async () => {
+    const retrievedPages = Object.fromEntries(
+      Array.from({ length: TASK_CLOSE_MANY_CONCURRENCY + 2 }, (_, index) => {
+        const id = `t${index + 1}`
+        return [id, taskPage(id, { state: "open" })]
+      })
+    )
+    const client = createMockClient({ retrievedPages })
+    let active = 0
+    let maxActive = 0
+    client.pages.update = vi.fn(async () => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise<void>((resolve) => setTimeout(resolve, 5))
+      active -= 1
+      return makePage({ id: "updated-task" })
+    }) as typeof client.pages.update
+    const service = new TaskService(client, DB)
+
+    const result = await service.closeMany({
+      ids: Object.keys(retrievedPages),
+      state: "done",
+    })
+
+    expect(result.failed).toEqual([])
+    expect(maxActive).toBeLessThanOrEqual(TASK_CLOSE_MANY_CONCURRENCY)
+  })
+
+  it("normalizes closeMany IDs before writes", () => {
+    expect(normalizeCloseManyTaskIds([" a ", "", "b", "a"])).toEqual(["a", "b"])
+    expect(() => normalizeCloseManyTaskIds([" ", "\t"])).toThrow(/at least one non-blank/)
   })
 })
 

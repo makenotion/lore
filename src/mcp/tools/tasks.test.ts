@@ -92,6 +92,13 @@ function services(overrides: Record<string, unknown> = {}) {
       create: vi.fn(),
       update: vi.fn(),
       close: vi.fn(),
+      closeMany: vi.fn().mockResolvedValue({
+        attempted: 0,
+        closed: 0,
+        noop: 0,
+        failed: [],
+        outcomes: [],
+      }),
       list: vi.fn().mockResolvedValue({ items: [] }),
       // Default `getById` resolves to a doneAt-less task so close-path
       // tests that don't override it see no Done At echo line.
@@ -1216,6 +1223,99 @@ describe("lore-task-close", () => {
     await handler({ action: "close", taskId: "task-id", state: "cancelled" } as never)
 
     expect(svc.tasks.close).toHaveBeenCalledWith("task-id", "cancelled")
+  })
+
+  it("threads a closure reason into TaskService.close", async () => {
+    const svc = services()
+    svc.tasks.close = vi.fn().mockResolvedValue({
+      id: "task-id",
+      state: "done",
+      doneAt: "2026-05-03",
+      previousState: "open",
+      alreadyClosed: false,
+      closureNote: "## Closed (2026-05-03) - done\n\nParent PR merged",
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "close",
+      taskId: "task-id",
+      reason: "Parent PR merged",
+    } as never)
+
+    expect(svc.tasks.close).toHaveBeenCalledWith("task-id", "done", {
+      reason: "Parent PR merged",
+    })
+    expect((result as { content: Array<{ text: string }> }).content[0].text).toContain(
+      "Closure note appended"
+    )
+  })
+
+  it("supports close-many with explicit IDs and reports partial failures", async () => {
+    const svc = services()
+    svc.tasks.closeMany = vi.fn().mockResolvedValue({
+      attempted: 3,
+      closed: 1,
+      noop: 1,
+      failed: [{ id: "t3", error: "notion 503" }],
+      outcomes: [
+        {
+          id: "t1",
+          status: "closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+        {
+          id: "t2",
+          status: "already-closed",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote: null,
+        },
+        { id: "t3", status: "failed", error: "notion 503" },
+      ],
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "close-many",
+      ids: ["t1", "t2", "t3"],
+      reason: "Parent PR merged",
+    } as never)
+
+    expect(svc.tasks.closeMany).toHaveBeenCalledWith({
+      ids: ["t1", "t2", "t3"],
+      state: "done",
+      reason: "Parent PR merged",
+    })
+    const text = (result as { content: Array<{ text: string }>; isError?: boolean })
+      .content[0].text
+    expect(text).toContain("3 attempted, 1 closed, 1 already closed, 1 failed")
+    expect(text).toContain("t3: notion 503")
+    expect((result as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it("rejects close-many when IDs are blank after trimming", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "close-many",
+      ids: [" ", "\t"],
+    } as never)
+
+    expect(svc.tasks.closeMany).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0].text).toContain(
+      "non-blank"
+    )
   })
 })
 
