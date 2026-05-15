@@ -1,8 +1,11 @@
-# Lore — ntn-First Auth Team Rollout Runbook
+# Lore Team Onboarding Runbook
 
 > Audience: Team leads rolling Lore out to their teams.
-> Status: Living. Owners: _TBD — fill in before kickoff_.
-> Last updated: 2026-05-01.
+> Status: Current operator guidance. Historical 0.10.0 dogfood rollout
+> criteria are archived at the end of this file.
+
+This runbook covers the current team onboarding path for Lore's ntn-first
+auth flow, shared vault setup, and fallback auth options.
 
 ## Prerequisites
 
@@ -15,9 +18,10 @@ the install command will write a useful config:
   (`MIN_NTN_VERSION` in `src/auth/ntn.ts`) and prints a non-blocking warning
   below that tested minimum. When the ntn path is selected with
   `lore install --ntn`, `lore auth --login`, or no-arg `lore init`, Lore
-  offers to install ntn automatically from a pinned release archive with
-  Lore-shipped sha256 verification when missing — see the Auto-install
-  section below.
+  offers to install ntn automatically from a Lore-pinned release archive
+  whose sha256 is embedded in Lore. The upstream `curl -fsSL
+  https://ntn.dev | bash` command is printed only as a manual fallback
+  when the operator declines Lore's installer.
 - **`NOTION_API_TOKEN`** environment variable. External operators put a
   Notion Personal Access Token (PAT) from `notion.so/developers/tokens`
   here. PATs inherit the operator's personal Notion permissions and keep an
@@ -80,20 +84,20 @@ the install command. Lore detects missing ntn during
 and offers to install it:
 
 ```text
-ntn is not installed.
+ntn is required for the --ntn install path.
 Lore can install it using a verified release archive:
   ntn v0.13.2 from https://ntn.dev/releases/v0.13.2 (sha256 pinned by Lore)
 
 Install ntn now? [Y/n]
 ```
 
-Lore downloads the pinned release archive for the operator's platform,
-verifies the archive against a sha256 embedded in the Lore package,
-and installs the extracted `ntn` binary. Engineers who answer "n" get
-manual install instructions (`curl -fsSL https://ntn.dev | bash`) and
-can re-run after installing. `--yes` (on `lore install --ntn`,
-`lore auth --login`, `lore init`) auto-confirms for non-interactive
-automation.
+Lore runs its bundled installer script, downloads the pinned release archive,
+verifies the archive sha256 against the value embedded in Lore, extracts the
+`ntn` binary, and waits for installation to complete. Engineers who answer
+"n" get the upstream manual fallback and can re-run after installing:
+`curl -fsSL https://ntn.dev | bash`. `--yes` auto-confirms for
+non-interactive automation on `lore install --ntn`, `lore auth --login`, and
+`lore init`.
 
 ### Version policy
 
@@ -105,8 +109,10 @@ Lore's tested-against minimum ntn version is **0.12.0**. The policy:
   (`! 0.11.5 (below tested minimum 0.12.0)`) and proceeds.
   Operators who hit auth resolution issues run `ntn update` to
   upgrade.
-- **If ntn is missing**, Lore offers to install the pinned
-  `NTN_INSTALL_VERSION` release archive with sha256 verification.
+- **If ntn is missing**, Lore offers to install `NTN_INSTALL_VERSION` from
+  the Lore-pinned release archive whose sha256 is embedded in Lore. The
+  upstream `curl -fsSL https://ntn.dev | bash` command is printed only as a
+  manual fallback.
 
 This policy lets engineers who pin specific ntn versions for
 other tooling continue with that version; Lore degrades
@@ -188,11 +194,11 @@ npm install -g @makenotion/lore
 # 2. From the team repo, select the internal ntn path:
 lore install --ntn
 # Lore probes prerequisites:
-#   - ntn installed? If no, offers to install via
-#       `ntn v0.13.2 from https://ntn.dev/releases/v0.13.2
-#        (sha256 pinned by Lore)`
-#     (engineer confirms with [Y/n], or pass --yes for
-#      automation). Lore proceeds after install.
+#   - ntn installed? If no, offers to install the Lore-pinned
+#     release archive (sha256 verified). If the engineer declines,
+#     Lore prints the manual fallback:
+#       `curl -fsSL https://ntn.dev | bash`
+#     Pass --yes for automation. Lore proceeds after install.
 #   - ntn version OK? Warns if below 0.12.0; proceeds.
 #   - Auth resolved? If not, offers to run `ntn login` directly
 #     (interactive — workspace picker, browser flow). Lore
@@ -304,18 +310,18 @@ and confirm the workspace selector during the ntn flow it spawns.
 `lore install --ntn` detects missing ntn and offers to install it:
 
 ```text
-ntn is not installed.
+ntn is required for the --ntn install path.
 Lore can install it using a verified release archive:
   ntn v0.13.2 from https://ntn.dev/releases/v0.13.2 (sha256 pinned by Lore)
 
 Install ntn now? [Y/n]
 ```
 
-If the engineer answers "n", Lore exits with manual-install
-instructions and a `lore install --ntn` re-run pointer. If "y" (or
-`--yes` was passed), Lore runs the install command, waits for it
-to complete, then continues with the rest of the prerequisites
-flow.
+If the engineer answers "n", Lore prints the manual fallback
+`curl -fsSL https://ntn.dev | bash` and exits with a `lore install --ntn`
+re-run pointer. If "y" (or `--yes` was passed), Lore runs its verified
+installer, waits for it to complete, then continues with the rest of the
+prerequisites flow.
 
 `lore auth --login` and `lore init` (no-arg) offer the same
 auto-install path. Operators have three ntn-selected entry points to the
@@ -374,12 +380,10 @@ Engineers who use ntn for other purposes (workers, page
 management, etc.) and want bidirectional consistency should adopt
 path 2 as a one-time setup.
 
-## Rollback during the rollout window
+## Fallback to PAT auth
 
-If ntn-first surfaces real issues for your team — `auth.json` shape
-mismatches break Lore's reader or frequent mid-session token expiry —
-you can use per-operator PATs in `NOTION_API_TOKEN` with no Lore-side
-changes.
+If ntn-first auth is blocked for an engineer or team, use
+per-operator PATs in `NOTION_API_TOKEN` with no Lore-side changes.
 
 ### Recommended path: `NOTION_API_TOKEN` (highest-priority source, no ntn mutation)
 
@@ -389,7 +393,7 @@ precedence over the ntn `auth.json` without touching ntn's private
 state, which keeps any other ntn-using tooling on the operator's
 machine working unchanged. Create one PAT per operator at
 `notion.so/developers/tokens`; do not use one shared `secret_` integration
-token as the rollback path:
+token as the fallback path:
 
 ```bash
 # 1. Set the operator's PAT in shell rc:
@@ -436,39 +440,6 @@ ask:
 
 ## Shared-vault hook configuration
 
-The release coordinator (#10) checks these off before promoting
-0.10.0 from "internal dogfood" to "ready for general internal
-adoption":
-
-- [ ] At least 2 internal teams have rolled out and have been on
-      ntn-first auth for at least 1 week.
-- [ ] No `[lore] partial-failure` lines tied to authentication in
-      the rollout teams' stderr logs over the rollout window.
-- [ ] At least 1 engineer has confirmed the multi-workspace flow
-      (`NOTION_WORKSPACE_ID` env or `auth.workspaceId` config) works
-      as documented.
-- [ ] At least 1 engineer has hit a mid-session token expiry and
-      the documented `lore auth --login` + bounded in-process retry has
-      worked. If the refreshed auth is unchanged or still rejected, the
-      fallback restart recovery also works.
-- [ ] No regressions in the existing test surface.
-- [ ] No regressions in the existing `lore status` output.
-
-## Telemetry
-
-For the rollout window, optionally instrument:
-
-- [ ] One stderr line per `resolveAuth` resolution, recording
-      which source produced the token (`source: env-notion-api-token`
-      / `ntn-auth-json`). Gated by `LORE_DEBUG=1`. Helps the
-      release coordinator see how many engineers are actually on ntn
-      vs. explicit PAT auth.
-
-This is optional and can ship as part of #01 / #06 if the team
-wants per-mode visibility during the rollout. Not a blocker.
-
-## Shared-vault hook configuration (issue #281)
-
 For shared-vault deployments where many engineers share a single Lore
 workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml`.
 This routes every auto-extracted learning through the proposed-memory
@@ -498,3 +469,35 @@ saves go straight into recall.
 
 See [`hooks.md`](hooks.md) for the reference of the underlying
 `learningExtraction` / `proposeAutosaveLearnings` knobs.
+
+## Historical rollout archive
+
+The following criteria are retained as historical context for the completed
+0.10.0 internal dogfood rollout. They are not current release gates.
+
+### 0.10.0 dogfood promotion criteria
+
+The release coordinator used these criteria before promoting 0.10.0 from
+"internal dogfood" to "ready for general internal adoption":
+
+- At least 2 internal teams had rolled out and had been on ntn-first auth
+  for at least 1 week.
+- No `[lore] partial-failure` lines tied to authentication appeared in the
+  rollout teams' stderr logs over the rollout window.
+- At least 1 engineer confirmed the multi-workspace flow
+  (`NOTION_WORKSPACE_ID` env or `auth.workspaceId` config) worked as
+  documented.
+- At least 1 engineer hit a mid-session token expiry and the documented
+  `lore auth --login` + bounded in-process retry worked. If the refreshed
+  auth was unchanged or still rejected, the fallback restart recovery also
+  worked.
+- No regressions appeared in the existing test surface.
+- No regressions appeared in the existing `lore status` output.
+
+### Historical telemetry note
+
+The 0.10.0 rollout optionally considered one stderr line per
+`resolveAuth` resolution, recording which source produced the token
+(`source: env-notion-api-token` / `ntn-auth-json`) behind `LORE_DEBUG=1`.
+That note was for release-coordinator visibility during the dogfood window
+and is not a current onboarding requirement.
