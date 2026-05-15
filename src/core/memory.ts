@@ -12,11 +12,7 @@
 
 import type { Client } from "@notionhq/client"
 import { APIErrorCode, isNotionClientError } from "@notionhq/client"
-import type {
-  PageObjectResponse,
-  CreatePageParameters,
-  QueryDataSourceParameters,
-} from "@notionhq/client"
+import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
 import type {
   Memory,
   MemoryWithoutContent,
@@ -24,15 +20,10 @@ import type {
   UpdateMemoryInput,
   SearchMemoriesInput,
   SearchExplain,
-  MemorySource,
   MemoryKind,
   MemoryStatus,
-  MemoryConfidence as MemoryConfidenceLevel,
   MemoryScopeContext,
-  MemoryScopeInput,
-  TaskState,
   DatabaseRef,
-  FreshCreatePreparation,
 } from "../types.js"
 import {
   CONFIDENCE_DISPLAY_THRESHOLD,
@@ -40,56 +31,27 @@ import {
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
 } from "../types.js"
-import { buildMemoryProps, MEMORY_PROPS } from "../notion/schema.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
-import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
-import { decodeTextEntities } from "../notion/html-entities.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
 import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
-import {
-  findAutosaveLearningDuplicate,
-  MEMORY_CLEANUP_ORPHAN_SENTINEL,
-  type AutosaveLearningDuplicateMatch,
-} from "./near-duplicate.js"
-import { withAutosaveLearningLock } from "./autosave-learning-lock.js"
 import {
   backfillSynopses,
   type BackfillOptions,
   type BackfillReport,
 } from "./synopsis-backfill.js"
 import { LruCache } from "./cache.js"
-import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 import { todayUtc } from "./task.js"
 import {
   isFullPage,
   isLiveFullPage,
   extractTitle,
   extractRichText,
-  extractSelect,
-  extractMultiSelect,
-  extractRelationIds,
-  extractDate,
-  extractNumber,
 } from "../notion/extractors.js"
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
-import {
-  hydrateRelationProperties,
-  hydrateRelationPropertiesForPages,
-} from "../notion/relation-properties.js"
-import { fetchNearDuplicateCandidatePageIds } from "../notion/runtool/index.js"
-import {
-  isSqlValidationError,
-  logRunToolFallback,
-} from "../notion/runtool/error-helpers.js"
-import { LoreError, errorCauseMessage } from "../errors.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
-import { matchesDefaultScope } from "./memory-scope.js"
-import {
-  MemoryPinned,
-  clampPinnedPriority,
-  extractMemoryPinned,
-  pinnedInputToBuilderProps,
-} from "./memory-pinned.js"
+import { MemoryPinned } from "./memory-pinned.js"
 import { MemoryConfidence } from "./memory-confidence.js"
 import {
   cleanupOrphanExclusionFilter,
@@ -111,6 +73,11 @@ import {
 } from "./memory-compare.js"
 import { MemorySearch, type SearchPagesResult } from "./memory-search.js"
 import { reviewTerminalStatusExclusionFilters } from "./memory-review-state.js"
+import { MemoryMapper } from "./memory-mapper.js"
+import { MemoryCreate, type MemoryCreateResult } from "./memory-create.js"
+import { MemoryList, type ListMemoriesOptions } from "./memory-list.js"
+import { MemoryReview } from "./memory-review.js"
+import { MemoryUpdate } from "./memory-update.js"
 
 export { matchesDefaultScope } from "./memory-scope.js"
 export {
@@ -159,6 +126,17 @@ export {
   isNotReviewTerminalStatus,
   reviewTerminalStatusExclusionFilters,
 } from "./memory-review-state.js"
+export {
+  extractMemoryScope,
+  hydrateMemoryRelationProperties,
+  hydrateMemoryRelationPropertiesForPages,
+  pageToMemory,
+} from "./memory-mapper.js"
+export { MemoryCreatePartialFailureError } from "./memory-create.js"
+export type { MemoryCreateResult } from "./memory-create.js"
+export type { ListMemoriesOptions } from "./memory-list.js"
+export { MemoryReviewAuditError, MemoryReviewStateError } from "./memory-review.js"
+export { MemoryUpdatePartialFailureError, PartialUpdateError } from "./memory-update.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  * 30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -167,55 +145,6 @@ export {
  * governance. Titles and `Kind=decision` pages share this pool. */
 const TITLE_CACHE_MAX = 500
 const TITLE_CACHE_TTL_MS = 60_000
-const AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS = 500
-const AUTOSAVE_LEARNING_POST_CREATE_POLL_MS = 50
-
-function parseNonNegativeIntegerEnv(name: string, fallback: number): number {
-  const raw = process.env[name]
-  if (raw === undefined) return fallback
-  if (!/^[0-9]+$/.test(raw)) return fallback
-  const value = Number(raw)
-  return Number.isSafeInteger(value) ? value : fallback
-}
-
-function autosaveLearningPostCreateStabilizeMs(): number {
-  return parseNonNegativeIntegerEnv(
-    "LORE_AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS",
-    AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS
-  )
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * Translate the agent-facing `MemoryScopeInput` bundle into the flat
- * primitive shape `buildMemoryProps` / `buildFactProps` consume. The
- * builders themselves stay one-primitive-per-Notion-column so the
- * write path is identical regardless of which surface produced the
- * scope (CLI, MCP, or internal migration).
- *
- * `undefined` input → `undefined` outputs across the board (no
- * column writes). Spread the result into the builder call so omitted
- * scopes leave the caller's surface untouched.
- */
-function scopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
-  scopeKind?: string | null
-  scopeKey?: string
-  audience?: string
-  lifetime?: string | null
-  expiresAt?: string | null
-} {
-  if (scope === undefined) return {}
-  const out: ReturnType<typeof scopeInputToBuilderProps> = {}
-  if (scope.kind !== undefined) out.scopeKind = scope.kind
-  if (scope.key !== undefined) out.scopeKey = scope.key
-  if (scope.audience !== undefined) out.audience = scope.audience
-  if (scope.lifetime !== undefined) out.lifetime = scope.lifetime
-  if (scope.expiresAt !== undefined) out.expiresAt = scope.expiresAt
-  return out
-}
 
 /**
  * Server-side filter clause defining the proposed-memory review inbox.
@@ -246,510 +175,6 @@ export function proposedMemoryFilter(): { and: Array<Record<string, unknown>> } 
       { property: MEMORY_PROPS.KIND, select: { does_not_equal: "decision" } },
     ],
   }
-}
-
-const MEMORY_RELATION_PROPERTIES = [
-  MEMORY_PROPS.PROJECT,
-  MEMORY_PROPS.TOPIC,
-  MEMORY_PROPS.SUPERSEDES,
-  MEMORY_PROPS.AFFECTS,
-  MEMORY_PROPS.COMPARED_WITH,
-] as const
-
-export async function hydrateMemoryRelationProperties(
-  client: Client,
-  page: PageObjectResponse
-): Promise<PageObjectResponse> {
-  return hydrateRelationProperties(client, page, MEMORY_RELATION_PROPERTIES)
-}
-
-export async function hydrateMemoryRelationPropertiesForPages(
-  client: Client,
-  pages: readonly PageObjectResponse[]
-): Promise<PageObjectResponse[]> {
-  return hydrateRelationPropertiesForPages(client, pages, MEMORY_RELATION_PROPERTIES)
-}
-
-/**
- * Every plain-text field that flows through the agent boundary and lands
- * in a Memory page. Run them through `decodeTextEntities` before writing
- * so doubly-encoded autosave input (`&amp;amp;`) resolves to plain text
- * and future similarity / embedding surfaces see consistent values.
- * Sibling: `decodeDecisionTextFields` — keep shared field coverage
- * in lockstep.
- *
- * Coverage is deliberately explicit rather than derived from
- * `CreateMemoryInput` so a future plain-text field addition fails the
- * type-check here and forces a decision about whether to decode. If the
- * coverage ever diverges from `CreateMemoryInput`'s rich_text shape, the
- * drift stays visible in the compiler rather than in a downstream
- * similarity regression.
- */
-function decodeMemoryTextFields(input: CreateMemoryInput): {
-  title: string
-  content: string
-  alternatives: string | undefined
-  consequences: string | undefined
-  author: string | undefined
-  agent: string | undefined
-  keywords: string | undefined
-  synopsis: string | undefined
-  session: string | undefined
-  blockedBy: string | undefined
-  entity: string | undefined
-} {
-  return {
-    title: decodeTextEntities(input.title),
-    content: input.content ? decodeTextEntities(input.content) : "",
-    alternatives:
-      input.alternatives !== undefined
-        ? decodeTextEntities(input.alternatives)
-        : undefined,
-    consequences:
-      input.consequences !== undefined
-        ? decodeTextEntities(input.consequences)
-        : undefined,
-    author: input.author !== undefined ? decodeTextEntities(input.author) : undefined,
-    agent: input.agent !== undefined ? decodeTextEntities(input.agent) : undefined,
-    keywords:
-      input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
-    synopsis:
-      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
-    session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
-    blockedBy:
-      input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
-    entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
-  }
-}
-
-/**
- * Partial-update variant. Every field that might be passed gets the
- * decoder; `undefined` propagates so the update path can distinguish
- * "leave untouched" from "explicitly set to empty string".
- *
- * `UpdateMemoryInput` currently omits `author`, `agent`, and `session`
- * because those fields aren't exposed on the update path. If a future
- * change adds them, also extend this helper's return shape and the
- * corresponding `if (decoded.X !== undefined)` branches in `update()`.
- * The structural-literal typing keeps that coupling visible to the
- * type-checker rather than silent.
- */
-function decodeUpdateTextFields(input: UpdateMemoryInput): {
-  title: string | undefined
-  content: string | undefined
-  alternatives: string | undefined
-  consequences: string | undefined
-  keywords: string | undefined
-  synopsis: string | undefined
-  blockedBy: string | undefined
-  entity: string | undefined
-} {
-  return {
-    title: input.title !== undefined ? decodeTextEntities(input.title) : undefined,
-    content: input.content !== undefined ? decodeTextEntities(input.content) : undefined,
-    alternatives:
-      input.alternatives !== undefined
-        ? decodeTextEntities(input.alternatives)
-        : undefined,
-    consequences:
-      input.consequences !== undefined
-        ? decodeTextEntities(input.consequences)
-        : undefined,
-    keywords:
-      input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
-    synopsis:
-      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
-    blockedBy:
-      input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
-    entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
-  }
-}
-
-/**
- * Thrown by `MemoryService.recordReview` when the target row's
- * current `Status` is not `"proposed"`. The
- * approve / reject actions are inbox-only — applying them to an
- * already-accepted, rejected, or otherwise non-proposed row would
- * be a state error that masquerades as a no-op. Callers route
- * through this distinct subclass so the MCP / CLI surfaces can
- * render an actionable error pointing at `lore-memory
- * action='update' status='<value>'` for direct status flips.
- */
-export class MemoryReviewStateError extends LoreError<"memory-review-state"> {
-  readonly memoryId: string
-  readonly currentStatus: MemoryStatus
-
-  constructor(
-    message: string,
-    details: { memoryId: string; currentStatus: MemoryStatus }
-  ) {
-    super("memory-review-state", message, {
-      memoryId: details.memoryId,
-      currentStatus: details.currentStatus,
-    })
-    this.name = "MemoryReviewStateError"
-    this.memoryId = details.memoryId
-    this.currentStatus = details.currentStatus
-  }
-}
-
-/**
- * Thrown by `MemoryService.recordReview` when the `Status` property
- * write succeeded but the body audit-block append failed. Same
- * partial-state shape as `RekeyAuditError`: the load-bearing
- * status flip is durable; the cosmetic audit trail is what's
- * missing. A retry rejects with `MemoryReviewStateError` because
- * the row's `Status` has already moved off `"proposed"`. See
- * `recordReview`'s docstring for the full failure-mode rationale.
- */
-export class MemoryReviewAuditError extends LoreError<"memory-review-audit-failed"> {
-  readonly memoryId: string
-  readonly previousStatus: MemoryStatus
-  readonly newStatus: MemoryStatus
-  readonly cause: unknown
-
-  constructor(
-    message: string,
-    details: {
-      memoryId: string
-      previousStatus: MemoryStatus
-      newStatus: MemoryStatus
-      cause: unknown
-    }
-  ) {
-    super(
-      "memory-review-audit-failed",
-      message,
-      {
-        memoryId: details.memoryId,
-        previousStatus: details.previousStatus,
-        newStatus: details.newStatus,
-        causeMessage: errorCauseMessage(details.cause),
-      },
-      { cause: details.cause }
-    )
-    this.name = "MemoryReviewAuditError"
-    this.memoryId = details.memoryId
-    this.previousStatus = details.previousStatus
-    this.newStatus = details.newStatus
-    this.cause = details.cause
-  }
-}
-
-/**
- * Structured partial-state error raised by the MCP-layer
- * `lore-memory action='update'` handler when a combined
- * `topicKey + content` update has the content delta land
- * successfully but the subsequent re-key reject. The content
- * mutation is durable on Notion; the re-key did not occur.
- *
- * Distinct from `RekeyAuditError`, which signals "re-key persisted
- * but audit trail missing." A `PartialUpdateError` is the inverse:
- * "content delta persisted, re-key did NOT happen." Callers that
- * need to distinguish the two cases use `instanceof`.
- *
- * Common causes: a transient Notion property-write failure during
- * `rekeyTopicKey`'s `pages.update`, a race where another agent
- * grabbed the topic-key slot between preflight and the mutation,
- * or a content-update that changed `projectIds` and exposed a new
- * collision under the post-update set. The preflight in
- * `handleUpdate` catches the most common validation failures
- * (collision against pre-update state, empty-projectIds) before
- * the content update runs; this error covers the residual cases
- * where the preflight passed but the mutation still rejected.
- */
-export class PartialUpdateError extends LoreError<"memory-update-partial"> {
-  readonly memoryId: string
-  readonly contentApplied: true
-  readonly rekeyError: unknown
-
-  constructor(message: string, details: { memoryId: string; rekeyError: unknown }) {
-    super(
-      "memory-update-partial",
-      message,
-      {
-        memoryId: details.memoryId,
-        contentApplied: true,
-        rekeyCauseMessage: errorCauseMessage(details.rekeyError),
-      },
-      { cause: details.rekeyError }
-    )
-    this.name = "PartialUpdateError"
-    this.memoryId = details.memoryId
-    this.contentApplied = true
-    this.rekeyError = details.rekeyError
-  }
-}
-
-/**
- * Structured partial-state error raised by `MemoryService.update`
- * when the Notion property update lands but the body markdown write
- * fails afterward. The durable hazard is asymmetry: title/tags/status
- * or other state-like properties may now reflect the attempted update
- * while the body remains at its prior value, so a caller should inspect
- * before repeating non-idempotent property transitions.
- *
- * The literal `failedPhase` / `persisted` fields intentionally mirror
- * the class name so structured in-process callers do not need to parse
- * the message. The message is prefixed with the class name because MCP
- * transports flatten errors to text.
- */
-export class MemoryUpdatePartialFailureError extends LoreError<"memory-update-body-partial"> {
-  readonly memoryId: string
-  readonly failedPhase: "body"
-  readonly persisted: { readonly properties: true; readonly body: false }
-  readonly bodyWriteError: unknown
-
-  constructor(message: string, details: { memoryId: string; bodyWriteError: unknown }) {
-    const prefixedMessage = message.startsWith("MemoryUpdatePartialFailureError: ")
-      ? message
-      : `MemoryUpdatePartialFailureError: ${message}`
-    super(
-      "memory-update-body-partial",
-      prefixedMessage,
-      {
-        memoryId: details.memoryId,
-        failedPhase: "body",
-        persisted: { properties: true, body: false },
-        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
-      },
-      { cause: details.bodyWriteError }
-    )
-    this.name = "MemoryUpdatePartialFailureError"
-    this.memoryId = details.memoryId
-    this.failedPhase = "body"
-    this.persisted = { properties: true, body: false }
-    this.bodyWriteError = details.bodyWriteError
-  }
-}
-
-/**
- * Structured partial-state error raised by `MemoryService.create`
- * when the `pages.create` call landed (a Memories DB row exists) but
- * the follow-up `pages.updateMarkdown` body-write rejected. Notion's
- * SDK splits memory creation across two calls — properties first, body
- * second — and a failure between them would otherwise leave a
- * properties-only orphan in the vault that a naive retry would
- * duplicate rather than reuse.
- *
- * **Strategy: best-effort archive, then structured error.** Three
- * options were on the table when this surface was added:
- *
- * 1. *Archive/delete the orphan and throw a structured error.* The
- * chosen path. Matches `MemoryService.archive`'s soft-delete
- * posture — the row is removed from queries but remains
- * inspectable in Notion's trash, preserving audit signal for
- * operators triaging a partial-failure burst. Idempotent on the
- * hot path (a successful retry creates a fresh row, no
- * duplicate-resolution needed).
- * 2. *Throw a structured error without cleanup.* Rejected because the
- * issue's acceptance criterion is "no silently-unrecoverable
- * orphan." Naive callers retrying the same `lore-memory
- * action='save'` would land a duplicate row alongside the orphan
- * until an operator manually archived the original.
- * 3. *Idempotency key / session-aware retry path.* Rejected because
- * it would extend the schema with a new column (or co-opt an
- * existing one) for a defensive guardrail that fires on a rare
- * transient failure mode. Heavyweight relative to the bug.
- *
- * The cleanup is best-effort: a second failure leaves the orphan
- * live and surfaces as `cleanedUp: false` so the operator finishes
- * what the system couldn't.
- *
- * The `cleanedUp` flag distinguishes the two surviving partial-state
- * shapes:
- *
- * - **`cleanedUp: true`** — the orphan row is soft-deleted on Notion.
- * The vault is consistent with "create never happened" from a query
- * perspective; a retry of the original operation will create a fresh
- * row without any operator action. The error still surfaces so the
- * caller can decide whether to retry or surface the body-write
- * failure to the user.
- * - **`cleanedUp: false`** — both the body-write AND the cleanup
- * archive failed. The properties-only row remains live in the vault.
- * A retry without operator intervention would create a duplicate
- * row. The `pageId` field names the orphan; `cleanupError` carries
- * the archive failure so an operator can act on it directly.
- *
- * The `bodyWriteError` field is always populated and carries the
- * underlying `updateMarkdown` failure that triggered the partial
- * state. Distinct from `cleanupError`, which is `undefined` on
- * `cleanedUp: true`.
- *
- * **Auto-mentions / decided_by fact emission is correctly skipped on
- * partial failure.** Fact emission for `mentions` and `decided_by`
- * (decision auto-edges) is a sibling-of-create concern at the MCP
- * handler layer — those handlers fire fact creates AFTER
- * `services.memories.create` resolves so the `Source` relation can
- * point at the just-created row. A `MemoryCreatePartialFailureError`
- * thrown inside `create()` escapes the handler's `await` before fact
- * emission runs, so no orphan facts pointing at an archived (or
- * partially-archived) source land. Confirmed correct by inspection;
- * not load-bearing on any test in this file.
- *
- * Distinct from `RekeyAuditError` ("re-key persisted, audit missing")
- * and `PartialUpdateError` ("content delta persisted, re-key did not
- * happen"). Callers branch on `instanceof` to distinguish the three
- * shapes.
- */
-export class MemoryCreatePartialFailureError extends LoreError<"memory-create-partial"> {
-  readonly pageId: string
-  readonly cleanedUp: boolean
-  readonly bodyWriteError: unknown
-  readonly cleanupError: unknown
-
-  constructor(
-    message: string,
-    details: {
-      pageId: string
-      cleanedUp: boolean
-      bodyWriteError: unknown
-      cleanupError?: unknown
-    }
-  ) {
-    super(
-      "memory-create-partial",
-      message,
-      {
-        pageId: details.pageId,
-        cleanedUp: details.cleanedUp,
-        bodyWriteCauseMessage: errorCauseMessage(details.bodyWriteError),
-        ...(details.cleanupError !== undefined
-          ? { cleanupCauseMessage: errorCauseMessage(details.cleanupError) }
-          : {}),
-      },
-      { cause: details.bodyWriteError }
-    )
-    this.name = "MemoryCreatePartialFailureError"
-    this.pageId = details.pageId
-    this.cleanedUp = details.cleanedUp
-    this.bodyWriteError = details.bodyWriteError
-    this.cleanupError = details.cleanupError
-  }
-}
-
-export interface MemoryCreateResult {
-  memory: Memory
-  autosaveLearningDuplicate: AutosaveLearningDuplicateMatch | null
-  freshCreatePreparation: FreshCreatePreparation | null
-}
-
-/**
- * Filter / pagination / sort options accepted by `MemoryService.list`.
- * Extracted to a named type so the method's overload signatures can
- * intersect it with literal `includeContent` narrowings — see the
- * three overloads on `list()` and the `MemoryWithoutContent` shape
- * in `src/types.ts` for the absent-body type contract.
- */
-export interface ListMemoriesOptions {
-  projectId?: string
-  topicId?: string
-  source?: MemorySource
-  kind?: MemoryKind
-  /**
-   * Negative `Kind` filter. Each entry is excluded server-side via
-   * a `select.does_not_equal` clause on the `Kind` column. Mirrors
-   * the existing `excludeKinds` parameter on the memory
-   * near-duplicate probe; use the
-   * same `excludeKinds: ["decision"]` posture when surfacing
-   * "memories that need triage" without conflating with governance
-   * decisions.
-   *
-   * Mutually exclusive with `kind` semantically (a server-side
-   * `equals` already narrows to one kind). The two compose
-   * literally — `kind: "note"` AND `excludeKinds: ["decision"]`
-   * is well-formed but redundant — but no caller passes both.
-   *
-   * Notion's `does_not_equal` is permissive on null, so a row
-   * with no `Kind` column set passes the filter unless it
-   * happens to match a listed exclusion (it can't, since null is
-   * not equal to any literal). Matches the inbox-status filter
-   * posture.
-   */
-  excludeKinds?: MemoryKind[]
-  confidence?: MemoryConfidenceLevel
-  status?: MemoryStatus
-  reviewBefore?: string
-  tags?: string[]
-  session?: string
-  limit?: number
-  since?: string
-  until?: string
-  /**
-   * Opt in to fetching each page's markdown body. Default behavior
-   * (omitted or `false`) returns rows with `content: ""` and issues
-   * zero `pages.retrieveMarkdown` calls. Setting `true` fans out
-   * one `pages.retrieveMarkdown` per row, paced by the shared
-   * outbound rate-limit bucket — list views that render only title /
-   * project / date / tags should leave the flag unset and pay
-   * nothing. Callers that genuinely need bodies (the digest
-   * synthesizer's recent-memory preview, the wake-up renderer's
-   * stored-digest body, the autosave-learning duplicate probe)
-   * pass `true` explicitly.
-   *
-   * The return type narrows on the literal value: `includeContent:
-   * true` resolves to `Memory[]`; omitted or `includeContent: false`
-   * resolves to `MemoryWithoutContent[]` whose `content` field is
-   * the empty-string literal type `""`. A caller-controlled
-   * `boolean` value cannot be statically narrowed and falls back to
-   * `Memory[]` (the safe widening for the runtime fan-out).
-   */
-  includeContent?: boolean
-  /**
-   * When false, scope project queries to memories explicitly linked to the
-   * given project, excluding repo-wide/unscoped entries.
-   */
-  includeUnscoped?: boolean
-  /**
-   * When `true`, do NOT exclude `Status = proposed` rows from the
-   * result set. The default (`false`) adds a server-side
-   * `does_not_equal: "proposed"` filter on the Status column so
-   * proposed-memory inbox rows do not pollute default recall paths.
-   *
-   * Explicit `status` wins: when the caller passes `status:
-   * "proposed"` (the inbox-review path), `includeProposed` is
-   * irrelevant — the row passes via the explicit `equals` filter
-   * regardless of the default exclusion.
-   *
-   * Set `true` for code paths that need to see every memory
-   * regardless of review state — e.g. `lore mine`'s upsert
-   * idempotency lookup (a re-mine must match a prior proposed
-   * row), the conflict scanner (operates on every live row), or
-   * the inbox-review CLI / MCP flows.
-   */
-  includeProposed?: boolean
-  /**
-   * Notion timestamp field to sort by. Defaults to `last_edited_time`
-   * (general-purpose "most recently touched"). Pass `created_time` for
-   * "most recently created" ordering — e.g. latest-digest lookup.
-   */
-  sortBy?: "created_time" | "last_edited_time"
-  /**
-   * Sort direction. Defaults to `"descending"` (newest first) —
-   * matches Notion's recency-default. Pass `"ascending"` for
-   * oldest-first ordering, e.g. the proposed-memory inbox surface
-   * where stale review debt should surface ahead of recent
-   * additions.
-   */
-  direction?: "ascending" | "descending"
-  /**
-   * Opaque cursor from a previous page's `nextCursor`. When provided,
-   * continues enumeration from where that page ended. The filter/sort
-   * must match the originating query — Notion returns the cursor's
-   * contents under the assumption the query shape is unchanged.
-   */
-  startCursor?: string
-  /**
-   * When `true`, skip the default scope filter — every
-   * scope kind surfaces, expired rows surface, and the resolved
-   * `MemoryScopeContext` is ignored. Defaults to `false`.
-   *
-   * Operator-facing audit paths (`lore status` expiring-rows
-   * surface, conflict scan, near-duplicate probe pool) opt in.
-   * Agent-facing recall paths leave it unset so a session-scoped
-   * row from another session never leaks into default retrieval.
-   */
-  includeOutOfScope?: boolean
 }
 
 export class MemoryService {
@@ -785,10 +210,9 @@ export class MemoryService {
    * `getOrLoad` commit is suppressed by the identity guard at
    * `cache.ts:` — closing both the dispatched-before-write and
    * dispatched-during-write races without a per-service epoch counter.
-   * Pre-PF1-09 this race protection lived here as a `writeEpoch`
-   * monotonic counter with sandwich-bump discipline; folding the
-   * invariant into `LruCache.set` collapsed ~30 lines of bespoke code
-   * onto the shared primitive.
+   * The race-protection invariant lives in `LruCache.set`, so this
+   * service does not need a parallel write epoch to suppress stale
+   * loader commits.
    *
    * **One-shot staleness per concurrent reader.** A reader whose
    * loader's `pages.retrieve` straddles the writer's `delete → update →
@@ -817,11 +241,16 @@ export class MemoryService {
    * and the auth identity; tests default to empty.
    */
   private scopeCtx: MemoryScopeContext = {}
+  private readonly mapper: MemoryMapper
   private readonly pinned: MemoryPinned
   private readonly confidence: MemoryConfidence
   private readonly topicKey: MemoryTopicKey
   private readonly compare: MemoryCompare
   private readonly searcher: MemorySearch
+  private readonly lister: MemoryList
+  private readonly reviewer: MemoryReview
+  private readonly updater: MemoryUpdate
+  private readonly creator: MemoryCreate
 
   /**
    * Whether default-retrieval paths should apply the scope filter.
@@ -843,6 +272,7 @@ export class MemoryService {
     options?: { features?: LoreFeatureFlags }
   ) {
     this.features = options?.features ?? resolveFeatureFlags()
+    this.mapper = new MemoryMapper(client)
     this.pinned = new MemoryPinned(
       client,
       db,
@@ -860,6 +290,15 @@ export class MemoryService {
       titleCache: this.titleCache,
     })
     this.compare = new MemoryCompare(client)
+    this.lister = new MemoryList(
+      client,
+      db,
+      this.features,
+      () => this.scopeCtx,
+      () => this.scopeFilterEnabled,
+      (page, content) => this.pageToMemory(page, content),
+      (id) => this.getPropertiesById(id)
+    )
     this.searcher = new MemorySearch(
       client,
       db,
@@ -868,6 +307,20 @@ export class MemoryService {
       () => this.scopeFilterEnabled,
       (pages, includeContent) => this.materializeMemories(pages, includeContent)
     )
+    this.reviewer = new MemoryReview(client, (id) => this.getPropertiesById(id))
+    this.updater = new MemoryUpdate(client, {
+      preflightPinnedUpdate: (id, input) => this.pinned.preflightUpdate(id, input),
+      invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
+      deleteTitleCache: (id) => this.titleCache.delete(id),
+      setTitleCache: (id, title) => this.titleCache.set(id, title),
+      getById: (id) => this.getById(id),
+    })
+    this.creator = new MemoryCreate(client, db, this.features, {
+      duplicateLister: this.lister,
+      preflightPinnedCreate: (input) => this.pinned.preflightCreate(input),
+      invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
+      pageToMemory: (page, content) => this.pageToMemory(page, content),
+    })
     if (scopeCtx) {
       this.scopeCtx = scopeCtx
       this.scopeFilterEnabled = true
@@ -922,308 +375,7 @@ export class MemoryService {
   }
 
   async createWithResult(input: CreateMemoryInput): Promise<MemoryCreateResult> {
-    validateRichTextMetadataFields(input, "MemoryService.create")
-
-    const duplicateConfig = this.autosaveLearningDuplicateConfig(input)
-    const lockKey = duplicateConfig
-      ? `autosave-learning:${duplicateConfig.scope}:` +
-        (duplicateConfig.scope === "project"
-          ? duplicateConfig.projectIds.join(",")
-          : `${duplicateConfig.scopeId ?? "global"}\0${duplicateConfig.session}`)
-      : null
-
-    return await withAutosaveLearningLock(lockKey, async () => {
-      if (duplicateConfig) {
-        const decoded = decodeMemoryTextFields(input)
-        const duplicate = await findAutosaveLearningDuplicate(this, {
-          title: decoded.title,
-          content: decoded.content,
-          projectId: duplicateConfig.projectIds[0],
-          projectIds: duplicateConfig.projectIds,
-          session: duplicateConfig.session,
-          scope: duplicateConfig.scope,
-          features: this.features,
-        })
-        if (duplicate) {
-          return {
-            memory: duplicate.memory,
-            autosaveLearningDuplicate: duplicate,
-            freshCreatePreparation: null,
-          }
-        }
-      }
-
-      const freshCreatePreparation = input.prepareFreshCreate
-        ? await input.prepareFreshCreate()
-        : null
-      const freshInput = freshCreatePreparation
-        ? { ...input, ...freshCreatePreparation.input }
-        : input
-      const memory = await this.createFresh(freshInput)
-      if (duplicateConfig) {
-        await this.waitForAutosaveLearningIndexStability(
-          duplicateConfig,
-          memory,
-          freshInput
-        )
-      }
-
-      return {
-        memory,
-        autosaveLearningDuplicate: null,
-        freshCreatePreparation,
-      }
-    })
-  }
-
-  private autosaveLearningDuplicateConfig(
-    input: CreateMemoryInput
-  ):
-    | { scope: "session"; session: string; projectIds: string[]; scopeId: string | null }
-    | { scope: "project"; session: string; projectIds: string[]; scopeId: string | null }
-    | null {
-    if (
-      input.autosaveLearningDedupScope === "off" ||
-      !this.features.autosaveLearningDedup ||
-      !this.features.nearDuplicateProbe
-    ) {
-      return null
-    }
-    if ((input.source ?? "manual") !== "conversation") return null
-    if ((input.kind ?? "note") !== "note") return null
-    if (input.confidence !== "likely") return null
-
-    const session = input.session?.trim()
-    if (!session) return null
-
-    const projectIds = [...new Set(input.projectIds ?? [])].sort()
-    const requestedScope =
-      input.autosaveLearningDedupScope ?? (projectIds.length > 0 ? "project" : "session")
-    const scope =
-      requestedScope === "project" && projectIds.length > 0 ? "project" : "session"
-    const scopeId = input.autosaveLearningScopeId?.trim() || null
-
-    return { scope, session, projectIds, scopeId }
-  }
-
-  private async waitForAutosaveLearningIndexStability(
-    duplicateConfig:
-      | {
-          scope: "session"
-          session: string
-          projectIds: string[]
-          scopeId: string | null
-        }
-      | {
-          scope: "project"
-          session: string
-          projectIds: string[]
-          scopeId: string | null
-        },
-    memory: Memory,
-    input: CreateMemoryInput
-  ): Promise<void> {
-    const timeoutMs = autosaveLearningPostCreateStabilizeMs()
-    if (timeoutMs <= 0) return
-
-    const decoded = decodeMemoryTextFields(input)
-    const deadline = Date.now() + timeoutMs
-    while (true) {
-      try {
-        const visible = await findAutosaveLearningDuplicate(this, {
-          title: decoded.title,
-          content: decoded.content,
-          projectId: duplicateConfig.projectIds[0],
-          projectIds: duplicateConfig.projectIds,
-          session: duplicateConfig.session,
-          scope: duplicateConfig.scope,
-          features: this.features,
-        })
-        if (visible?.id === memory.id) return
-      } catch {
-        // The memory already landed. A transient read-side failure should not
-        // convert the successful create into a partial failure; future writers
-        // still fail closed on their own duplicate probe while Notion recovers.
-      }
-
-      const remainingMs = deadline - Date.now()
-      if (remainingMs <= 0) return
-      await sleep(Math.min(AUTOSAVE_LEARNING_POST_CREATE_POLL_MS, remainingMs))
-    }
-  }
-
-  private async createFresh(input: CreateMemoryInput): Promise<Memory> {
-    // Decode at the write boundary so doubly-encoded values from the
-    // autosave/markdown path land in Notion as plain text. Idempotent: a
-    // clean value passes through unchanged. Covers every plain-text
-    // field that flows through the agent boundary — title, content body,
-    // and the rich_text fields that downstream similarity/embedding
-    // surfaces (near-duplicate probe, entity canonicalization,
-    // DS-scoped search) will read.
-    const decoded = decodeMemoryTextFields(input)
-    const createsPinnedBlock = input.pinned?.pinned === true
-    await this.pinned.preflightCreate(input.pinned)
-
-    // Create the page with properties only
-    const page = await this.client.pages.create({
-      parent: { type: "database_id", database_id: this.db.databaseId },
-      properties: buildMemoryProps({
-        title: decoded.title,
-        projectIds: input.projectIds,
-        topicId: input.topicId,
-        source: input.source ?? "manual",
-        kind: input.kind,
-        status: input.status,
-        confidence: input.confidence,
-        confidenceScore: input.confidenceScore,
-        reviewBy: input.reviewBy,
-        decidedAt: input.decidedAt,
-        lastReferencedAt: input.lastReferencedAt,
-        supersedesIds: input.supersedesIds,
-        affectsIds: input.affectsIds,
-        alternatives: decoded.alternatives,
-        consequences: decoded.consequences,
-        author: decoded.author,
-        agent: decoded.agent,
-        tags: input.tags,
-        keywords: decoded.keywords,
-        synopsis: decoded.synopsis,
-        session: decoded.session,
-        taskState: input.taskState,
-        blockedBy: decoded.blockedBy,
-        entity: decoded.entity,
-        topicKey: input.topicKey,
-        revisionCount: input.revisionCount,
-        ...scopeInputToBuilderProps(input.scope),
-        ...pinnedInputToBuilderProps(input.pinned),
-      }),
-    })
-    if (createsPinnedBlock) {
-      this.pinned.invalidateCountCache()
-    }
-
-    // Write content via markdown API. The SDK splits memory creation
-    // across two calls — properties above, body below — so a rejection
-    // here would otherwise leave a properties-only orphan that a naive
-    // retry would duplicate. Best-effort archive the orphan, then
-    // surface a structured error carrying enough state for the caller
-    // to retry safely or surface the failure to the operator. See
-    // `MemoryCreatePartialFailureError`.
-    if (decoded.content) {
-      try {
-        await this.client.pages.updateMarkdown({
-          page_id: page.id,
-          type: "insert_content",
-          insert_content: { content: decoded.content },
-        })
-      } catch (bodyWriteError) {
-        // Direct `pages.update` rather than `MemoryService.archive()`:
-        // the page was just created in this same call, so the
-        // title-cache delete-then-tombstone-set discipline `archive()`
-        // performs to protect concurrent readers cannot apply — no
-        // consumer has had time to cache the title or dispatch a
-        // racing read against this id. Inlining keeps the cleanup a
-        // single round-trip with no incidental cache work.
-        //
-        // Cleanup writes BOTH `archived: true` AND the
-        // `MEMORY_CLEANUP_ORPHAN_SENTINEL` keyword in one atomic
-        // `pages.update`. Notion's archive is soft —
-        // within ~30 days the orphan can be restored from the workspace
-        // trash, at which point `isLiveFullPage` stops excluding it.
-        // The sentinel keyword survives archive/restore round-trips and
-        // is the load-bearing signal for `findByTopicKey`,
-        // `findNearDuplicates`, and `findAutosaveLearningDuplicate`
-        // ignoring the resurfaced empty-body shell. Combining the two
-        // mutations into one request closes the window where archive
-        // succeeds but the sentinel write fails — Notion's per-request
-        // atomicity guarantees both land or neither does.
-        //
-        // **Keyword preservation**. Notion's `rich_text` writes are
-        // full-replace, not append. Writing only the sentinel would
-        // clobber whatever the caller passed in `decoded.keywords`,
-        // which an operator inspecting Notion's trash would see as
-        // "your original keywords are gone" — the sentinel and the
-        // user's content. Concatenating preserves both: the sentinel
-        // substring still satisfies the `does_not_contain` /
-        // `keywords.includes` filters, and the original keywords
-        // remain visible if the operator restores the row to recover
-        // content. Use a single-space separator so the sentinel is
-        // word-tokenizable in any future tag-aware view; an empty
-        // existing keywords field collapses to bare-sentinel.
-        //
-        // **Multi-segment write at the cap edge**. Notion's per-block
-        // `rich_text` segment cap is 2000 chars
-        // (`RICH_TEXT_PROPERTY_MAX_LEN`), and the MCP boundary's
-        // `keywordsSchema` accepts keywords up to exactly that cap.
-        // Concatenating ` __lore-cleanup-orphan` (22 chars) onto a
-        // 2000-char keyword string would produce a 2022-char single
-        // segment that Notion rejects with a validation error. A
-        // rejected cleanup write means `cleanedUp = false` and the
-        // orphan stays live in the vault — exactly the partial-failure
-        // recovery regression the sentinel-write path is meant to
-        // prevent. Splitting
-        // into two segments — `[originalKeywords, " sentinel"]` —
-        // keeps each segment well under the cap; `extractRichText`
-        // joins them via empty-string concat, so the substring filter
-        // (`does_not_contain` server-side, `keywords.includes`
-        // client-side) still sees the unified `original sentinel`
-        // string. Always use the two-segment form when keywords are
-        // present so the at-cap edge is handled by the same code path
-        // as the under-cap normal case — no segment-size math at write
-        // time, no edge-case branching.
-        const existingKeywords = decoded.keywords?.trim() ?? ""
-        const cleanupKeywordsRichText: Array<{ text: { content: string } }> =
-          existingKeywords.length > 0
-            ? [
-                { text: { content: existingKeywords } },
-                { text: { content: ` ${MEMORY_CLEANUP_ORPHAN_SENTINEL}` } },
-              ]
-            : [{ text: { content: MEMORY_CLEANUP_ORPHAN_SENTINEL } }]
-        let cleanedUp = false
-        let cleanupError: unknown
-        try {
-          await this.client.pages.update({
-            page_id: page.id,
-            archived: true,
-            properties: {
-              [MEMORY_PROPS.KEYWORDS]: {
-                rich_text: cleanupKeywordsRichText,
-              },
-            },
-          })
-          cleanedUp = true
-        } catch (err) {
-          cleanupError = err
-        }
-        const cause =
-          bodyWriteError instanceof Error
-            ? bodyWriteError.message
-            : String(bodyWriteError)
-        const message = cleanedUp
-          ? `Memory create partial failure: the Memories DB row was ` +
-            `created (page ${page.id}) but the body write failed: ${cause}. ` +
-            `The orphan row was soft-archived to Notion's trash and its ` +
-            `Keywords column carries the '${MEMORY_CLEANUP_ORPHAN_SENTINEL}' ` +
-            `sentinel so dedup probes ignore it even if it is later restored ` +
-            `from trash. Your retry will land cleanly regardless of whether ` +
-            `you restore this row from trash later.`
-          : `Memory create partial failure: the Memories DB row was ` +
-            `created (page ${page.id}) but the body write failed: ${cause}. ` +
-            `The cleanup archive also failed (${
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-            }); the orphan row remains live in the vault. Archive it ` +
-            `manually (or hard-delete from Notion's trash) before retrying ` +
-            `to avoid a duplicate row.`
-        throw new MemoryCreatePartialFailureError(message, {
-          pageId: page.id,
-          cleanedUp,
-          bodyWriteError,
-          cleanupError,
-        })
-      }
-    }
-
-    return await this.pageToMemory(page as PageObjectResponse, decoded.content ?? "")
+    return this.creator.createWithResult(input)
   }
 
   async getById(id: string): Promise<Memory> {
@@ -1389,168 +541,9 @@ export class MemoryService {
     reviewer: string
     reason?: string
   }): Promise<{ memory: Memory; previousStatus: MemoryStatus }> {
-    // Properties-only fetch for the structural guards. `getPropertiesById`
-    // skips the `pages.retrieveMarkdown` round-trip that `getById` would
-    // pay for the body — the Status / Kind guards only inspect Notion
-    // select properties, and the body is needed solely on the success
-    // path for the audit-block append. Failing guards short-circuit
-    // before the body fetch fires. Mirrors the `lore inbox archive`
-    // status guard so both inbox-touching call sites share the
-    // property-only-read posture.
-    const memory = await this.getPropertiesById(input.memoryId)
-    if (memory.status !== "proposed") {
-      throw new MemoryReviewStateError(
-        `Cannot ${input.verdict} memory ${input.memoryId}: ` +
-          `current status is "${memory.status}", expected "proposed". ` +
-          `The approve / reject actions are inbox-only — use ` +
-          `\`lore-memory action='update' status='<value>'\` to flip a ` +
-          `non-proposed row's status directly.`,
-        {
-          memoryId: input.memoryId,
-          currentStatus: memory.status,
-        }
-      )
-    }
-    // Inbox contract is structural, not just UI: `proposedMemoryFilter()`
-    // (the canonical inbox predicate) excludes `Kind = decision` because
-    // proposed-state decisions are part of the decision lifecycle, not
-    // the auto-extracted-learning inbox. Refusing here prevents an
-    // operator or agent from running the memory-inbox approve / reject
-    // path on a decision row and bypassing the decision surface that
-    // owns governance (`lore-decision action='accept'` / `'supersede'`
-    // / `'review'`). Same `proposedMemoryFilter()` "single source of
-    // truth" contract that the count and listing surfaces honor.
-    if (memory.kind === "decision") {
-      throw new MemoryReviewStateError(
-        `Cannot ${input.verdict} memory ${input.memoryId}: ` +
-          `Kind is "decision". Decisions have their own lifecycle — ` +
-          `use \`lore-decision action='supersede'\` to retire a ` +
-          `decision or \`lore-decision action='review'\` to clear ` +
-          `the proposed state. The memory-inbox approve / reject ` +
-          `actions are limited to non-decision proposed memories.`,
-        {
-          memoryId: input.memoryId,
-          currentStatus: memory.status,
-        }
-      )
-    }
-
-    const newStatus: MemoryStatus = input.verdict === "approve" ? "accepted" : "rejected"
-    const trimmedReviewer = input.reviewer.trim()
-    if (trimmedReviewer.length === 0) {
-      throw new Error(
-        `MemoryService.recordReview: reviewer must be a non-empty string. ` +
-          `Resolve the engineer identity (LORE_USER_NAME env or ` +
-          `services.identity.resolveAuthor()) before calling.`
-      )
-    }
-
-    // Property write first — see the docstring above for the
-    // partial-state rationale. Direct partial-property update; not
-    // routed through `update()` to keep the title cache undisturbed
-    // and avoid touching `Last Referenced At` (review is a write,
-    // not a read citation).
-    await this.client.pages.update({
-      page_id: input.memoryId,
-      properties: {
-        [MEMORY_PROPS.STATUS]: { select: { name: newStatus } },
-      } as CreatePageParameters["properties"],
-    })
-
-    const today = todayUtc()
-    const reviewedAtIso = new Date().toISOString()
-    const verdictLabel = input.verdict === "approve" ? "approved" : "rejected"
-    // ISO 8601 timestamp on a separate `**Reviewed At:**` line so the
-    // audit trail records reviewer and timestamp in Notion-visible
-    // audit body. The heading keeps the date for human readability;
-    // `Reviewed At` carries the durable wall-clock evidence so a
-    // future audit walker can recover ordering / latency without
-    // relying on Notion's `last_edited_time` (which any subsequent
-    // edit overwrites).
-    const auditLines = [
-      "",
-      "---",
-      "",
-      `## Reviewed (${today})`,
-      "",
-      `**Verdict:** ${verdictLabel}`,
-      `**Reviewer:** ${trimmedReviewer}`,
-      `**Reviewed At:** ${reviewedAtIso}`,
-    ]
-    const trimmedReason = input.reason?.trim() ?? ""
-    if (trimmedReason.length > 0) {
-      auditLines.push(`**Reason:** ${trimmedReason}`)
-    }
-    const auditBlock = auditLines.join("\n")
-
-    // Body fetch + audit append are wrapped together: either a
-    // failed `retrieveMarkdown` (after the status flip already
-    // landed) or a failed `updateMarkdown` leaves the same partial
-    // state — Status column updated, body audit missing — so they
-    // share one `MemoryReviewAuditError` envelope. The body fetch
-    // is deliberately deferred until AFTER the property write so
-    // guard-rejection / property-write failures short-circuit
-    // without paying for the body round-trip.
-    let newBody: string
-    try {
-      const { markdown } = await this.client.pages.retrieveMarkdown({
-        page_id: input.memoryId,
-      })
-      newBody = markdown + auditBlock
-      await this.client.pages.updateMarkdown({
-        page_id: input.memoryId,
-        type: "replace_content",
-        replace_content: {
-          new_str: newBody,
-          allow_deleting_content: true,
-        },
-      })
-    } catch (err) {
-      const cause = err instanceof Error ? err.message : String(err)
-      throw new MemoryReviewAuditError(
-        `Review persisted (status: proposed → ${newStatus}) but ` +
-          `audit-block append failed: ${cause}. The Status column is ` +
-          `updated; the body audit trail is missing. A retry will ` +
-          `reject with MemoryReviewStateError because the row is no ` +
-          `longer in proposed state. Inspect memory ${input.memoryId} ` +
-          `on Notion and append the audit manually if needed.`,
-        {
-          memoryId: input.memoryId,
-          previousStatus: memory.status,
-          newStatus,
-          cause: err,
-        }
-      )
-    }
-
-    return {
-      memory: { ...memory, status: newStatus, content: newBody },
-      previousStatus: memory.status,
-    }
+    return this.reviewer.recordReview(input)
   }
 
-  /**
-   * Hydrate the markdown body for a memory whose properties are already
-   * known. Sibling of `getById` that skips the `pages.retrieve` call —
-   * issued exclusively for callers that just received the row from a
-   * `MemoryService.search` / `MemoryService.list` pass with
-   * `includeContent: false` and need the body without re-fetching the
-   * page properties Notion already returned.
-   *
-   * Call-count math, motivated by `lore-task action='reconcile'`'s
-   * internal-vault budget: routing reconcile's per-candidate hydration through
-   * `getById` would issue `271 * 5 * 2 = 2710` Notion calls (half of
-   * them re-fetching properties already returned by the index-tier
-   * search). `materializeContent` issues exactly one
-   * `pages.retrieveMarkdown` per call, bounding the budget to
-   * `271 * 5 = 1355` calls.
-   *
-   * Propagates the underlying `pages.retrieveMarkdown` error on failure.
-   * Callers that want graceful degradation to empty content (transient
-   * 5xx, archived page, etc.) wrap the call in `.catch(() => ({ ...m,
-   * content: "" }))`. Failure-handling lives at the caller because
-   * different callers want different fallback shapes.
-   */
   async materializeContent(memory: Memory): Promise<Memory> {
     const md = await this.client.pages.retrieveMarkdown({ page_id: memory.id })
     return { ...memory, content: md.markdown }
@@ -1583,9 +576,7 @@ export class MemoryService {
   async getTitleById(id: string): Promise<string | null> {
     // Stampede dedup, TTL, LRU, negative-tombstone caching, and the
     // identity-guard that suppresses stale-loader commits during
-    // concurrent writes are all owned by `LruCache.getOrLoad` —
-    // see the class docstring for the race protection that replaced
-    // the pre-PF1-09 bespoke `writeEpoch` + `pendingTitles` machinery.
+    // concurrent writes are all owned by `LruCache.getOrLoad`.
     //
     // The loader throws on transient errors so `getOrLoad` propagates
     // the rejection without caching (no poisoned tombstone for a
@@ -1657,243 +648,9 @@ export class MemoryService {
   }
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
-    validateRichTextMetadataFields(input, "MemoryService.update")
-
-    await this.pinned.preflightUpdate(id, input)
-
-    // Same decode-at-write discipline as `create`: encoded titles /
-    // content / alternatives / consequences flowing in from re-saves of
-    // autosave-rendered transcripts must land in Notion clean. Without
-    // this, `update` would write encoded text around the freshly-decoded
-    // rows `create` produces, re-opening the bug class PF1-06 closes.
-    const decoded = decodeUpdateTextFields(input)
-    const props: Record<string, unknown> = {}
-
-    if (decoded.title !== undefined) {
-      // Pre-write delete: clears the stored value AND drops any
-      // in-flight `getOrLoad` pending slot, so a reader whose loader
-      // is mid-`pages.retrieve` has its post-loader commit suppressed
-      // by `getOrLoad`'s identity guard. The post-write `set` below
-      // installs the authoritative value and (via `LruCache.set`'s
-      // pending-clearing discipline) closes the dispatched-during-
-      // write window for any reader that started after this delete.
-      this.titleCache.delete(id)
-      props[MEMORY_PROPS.TITLE] = { title: [{ text: { content: decoded.title } }] }
-    }
-    if (input.projectIds) {
-      props[MEMORY_PROPS.PROJECT] = { relation: input.projectIds.map((id) => ({ id })) }
-    }
-    if (input.topicId) {
-      props[MEMORY_PROPS.TOPIC] = { relation: [{ id: input.topicId }] }
-    }
-    if (input.tags) {
-      props[MEMORY_PROPS.TAGS] = {
-        multi_select: input.tags.map((t) => ({ name: t })),
-      }
-    }
-    if (decoded.keywords !== undefined) {
-      props[MEMORY_PROPS.KEYWORDS] = {
-        rich_text: [{ text: { content: decoded.keywords } }],
-      }
-    }
-    if (decoded.synopsis !== undefined) {
-      props[MEMORY_PROPS.SYNOPSIS] = {
-        rich_text: [{ text: { content: decoded.synopsis } }],
-      }
-    }
-    if (input.kind) {
-      props[MEMORY_PROPS.KIND] = { select: { name: input.kind } }
-    }
-    if (input.status) {
-      props[MEMORY_PROPS.STATUS] = { select: { name: input.status } }
-    }
-    if (input.confidence) {
-      props[MEMORY_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
-    }
-    // See `buildMemoryProps` for the three-state rationale.
-    if (input.confidenceScore !== undefined) {
-      props[MEMORY_PROPS.CONFIDENCE_SCORE] =
-        input.confidenceScore === null
-          ? { number: null }
-          : { number: input.confidenceScore }
-    }
-    // `null` explicitly clears a date; `undefined` leaves it untouched.
-    // Strict `=== null` matches `buildMemoryProps`' shape so update and
-    // create use one consistent rule for "is this a clear or a set?"
-    if (input.reviewBy !== undefined) {
-      props[MEMORY_PROPS.REVIEW_BY] =
-        input.reviewBy === null ? { date: null } : { date: { start: input.reviewBy } }
-    }
-    if (input.decidedAt !== undefined) {
-      props[MEMORY_PROPS.DECIDED_AT] =
-        input.decidedAt === null ? { date: null } : { date: { start: input.decidedAt } }
-    }
-    if (input.lastReferencedAt !== undefined) {
-      props[MEMORY_PROPS.LAST_REFERENCED_AT] =
-        input.lastReferencedAt === null
-          ? { date: null }
-          : { date: { start: input.lastReferencedAt } }
-    }
-    if (input.supersedesIds) {
-      props[MEMORY_PROPS.SUPERSEDES] = {
-        relation: input.supersedesIds.map((id) => ({ id })),
-      }
-    }
-    if (input.affectsIds) {
-      props[MEMORY_PROPS.AFFECTS] = { relation: input.affectsIds.map((id) => ({ id })) }
-    }
-    if (decoded.alternatives !== undefined) {
-      props[MEMORY_PROPS.ALTERNATIVES] = {
-        rich_text: [{ text: { content: decoded.alternatives } }],
-      }
-    }
-    if (decoded.consequences !== undefined) {
-      props[MEMORY_PROPS.CONSEQUENCES] = {
-        rich_text: [{ text: { content: decoded.consequences } }],
-      }
-    }
-    if (input.taskState) {
-      props[MEMORY_PROPS.TASK_STATE] = { select: { name: input.taskState } }
-    }
-    if (decoded.blockedBy !== undefined) {
-      props[MEMORY_PROPS.BLOCKED_BY] = {
-        rich_text: [{ text: { content: decoded.blockedBy } }],
-      }
-    }
-    if (decoded.entity !== undefined) {
-      props[MEMORY_PROPS.ENTITY] = {
-        rich_text: [{ text: { content: decoded.entity } }],
-      }
-    }
-    // Scope / lifetime. Mirror the `buildMemoryProps`
-    // tristate semantics in the inlined update path so the column
-    // writes are consistent across `create` and `update`. The update
-    // path inlines the property writes (rather than calling
-    // `buildMemoryProps`) because Notion's `pages.update` is a
-    // partial update — we only emit columns the caller actually
-    // touched.
-    if (input.scope !== undefined) {
-      const scope = input.scope
-      if (scope.kind !== undefined) {
-        props[MEMORY_PROPS.SCOPE_KIND] =
-          scope.kind === null ? { select: null } : { select: { name: scope.kind } }
-      }
-      if (scope.key !== undefined) {
-        props[MEMORY_PROPS.SCOPE_KEY] = {
-          rich_text: [{ text: { content: scope.key } }],
-        }
-      }
-      if (scope.audience !== undefined) {
-        props[MEMORY_PROPS.AUDIENCE] = {
-          rich_text: [{ text: { content: scope.audience } }],
-        }
-      }
-      if (scope.lifetime !== undefined) {
-        props[MEMORY_PROPS.LIFETIME] =
-          scope.lifetime === null
-            ? { select: null }
-            : { select: { name: scope.lifetime } }
-      }
-      if (scope.expiresAt !== undefined) {
-        props[MEMORY_PROPS.EXPIRES_AT] =
-          scope.expiresAt === null ? { date: null } : { date: { start: scope.expiresAt } }
-      }
-    }
-
-    // Pinned context block update. Mirrors the scope/
-    // lifetime branch above — the update path inlines column writes
-    // rather than calling `buildMemoryProps` because Notion's
-    // `pages.update` is partial-update only. The checkbox column has
-    // no clear sentinel; `priority` and `mutability` accept `null`
-    // for the clear path.
-    //
-    // Priority is clamped to `[PINNED_PRIORITY_MIN, PINNED_PRIORITY_MAX]`
-    // at the service boundary — the MCP Zod schema also clamps, but
-    // the service-layer guard catches CLI / hook callers and is the
-    // load-bearing protection against a malformed write.
-    if (input.pinned !== undefined) {
-      const pinnedInput = input.pinned
-      if (pinnedInput.pinned !== undefined) {
-        props[MEMORY_PROPS.PINNED] = { checkbox: pinnedInput.pinned }
-        // Invalidate the in-process pinned-count cache so a same-process
-        // pin / unpin sees the fresh count without waiting on the 30s TTL.
-        this.pinned.invalidateCountCache()
-      }
-      if (pinnedInput.priority !== undefined) {
-        props[MEMORY_PROPS.PINNED_PRIORITY] =
-          pinnedInput.priority === null
-            ? { number: null }
-            : { number: clampPinnedPriority(pinnedInput.priority) }
-      }
-      if (pinnedInput.mutability !== undefined) {
-        props[MEMORY_PROPS.MUTABILITY] =
-          pinnedInput.mutability === null
-            ? { select: null }
-            : { select: { name: pinnedInput.mutability } }
-      }
-    }
-
-    let propertiesApplied = false
-    if (Object.keys(props).length > 0) {
-      await this.client.pages.update({
-        page_id: id,
-        // Cast needed: we're building update props dynamically
-        properties: props as CreatePageParameters["properties"],
-      })
-      propertiesApplied = true
-    }
-
-    if (decoded.content !== undefined) {
-      try {
-        await this.client.pages.updateMarkdown({
-          page_id: id,
-          type: "replace_content",
-          replace_content: {
-            new_str: decoded.content,
-            allow_deleting_content: true,
-          },
-        })
-      } catch (bodyWriteError) {
-        if (!propertiesApplied) {
-          throw bodyWriteError
-        }
-        if (decoded.title !== undefined) {
-          this.titleCache.set(id, decoded.title || null)
-        }
-        const cause =
-          bodyWriteError instanceof Error
-            ? bodyWriteError.message
-            : String(bodyWriteError)
-        throw new MemoryUpdatePartialFailureError(
-          `Memory update partial failure: properties for memory ${id} ` +
-            `persisted, but the body write failed during phase "body": ${cause}. ` +
-            `The property changes are already on Notion; the body content was ` +
-            `not written. Inspect the row before retrying the update.`,
-          { memoryId: id, bodyWriteError }
-        )
-      }
-    }
-
-    const updated = await this.getById(id)
-    // Write-through: we just read the authoritative post-update state,
-    // so cache it. `LruCache.set` also drops any in-flight `getOrLoad`
-    // pending slot, so a reader whose `pages.retrieve` was dispatched
-    // *during* this `pages.update` — after the pre-write delete but
-    // before this set — has its post-loader commit suppressed by the
-    // identity guard. Mirror of `TopicService.getOrCreate`'s post-write
-    // `nameCache.set`.
-    if (decoded.title !== undefined) {
-      this.titleCache.set(id, updated.title || null)
-    }
-    return updated
+    return this.updater.update(id, input)
   }
 
-  /**
-   * Run the HTML-entity decode pass against this service's Memories DB.
-   * Thin wrapper over the standalone memory-encoding migration
-   * function so the CLI doesn't need to reach past the service
-   * boundary for the client + DatabaseRef.
-   */
   async fixEncoding(
     options: { dryRun?: boolean; projectId?: string } = {}
   ): Promise<MemoryEncodingReport> {
@@ -2761,115 +1518,7 @@ export class MemoryService {
     includeProposed?: boolean
     limit: number
   }): Promise<Memory[]> {
-    if (this.features.runTool.filterSql) {
-      try {
-        // Mirror `MemoryService.list`'s default: when the
-        // caller has not opted into proposed rows AND has not
-        // narrowed via an explicit `statuses` whitelist, exclude
-        // `Status = proposed` server-side. Without this, the SQL
-        // path would surface inbox/proposed rows that the REST
-        // path's default-exclude filter drops, breaking the
-        // "behavior unchanged with all RunTool flags off" contract
-        // under A/B testing.
-        const excludeStatuses =
-          opts.statuses === undefined && !opts.includeProposed
-            ? (["proposed"] as const)
-            : undefined
-        // **Tag filtering is pushed server-side via the verified
-        // exact-token SQL predicate.** An earlier overfetch
-        // heuristic was rejected because wrong-tag rows could fill
-        // the `limit * 4` window before tag-matching candidates.
-        // `fetchNearDuplicateCandidatePageIds` composes
-        // `(Tags LIKE %"tag1"% OR Tags LIKE %"tag2"%)` ahead of
-        // the LIMIT, so SQL `LIMIT N` truthfully bounds N
-        // tag-matching candidates — identical to REST
-        // `multi_select.contains` semantics.
-        const pageIds = await fetchNearDuplicateCandidatePageIds(this.client, {
-          dataSourceId: this.db.dataSourceId,
-          projectProperty: MEMORY_PROPS.PROJECT,
-          topicProperty: MEMORY_PROPS.TOPIC,
-          kindProperty: MEMORY_PROPS.KIND,
-          statusProperty: MEMORY_PROPS.STATUS,
-          keywordsProperty: MEMORY_PROPS.KEYWORDS,
-          tagsProperty: MEMORY_PROPS.TAGS,
-          projectId: opts.projectId,
-          // Default `includeUnscoped: true` matches
-          // `MemoryService.list`'s default `projectOrUnscopedFilter`
-          // — without this, project-scoped near-dup probes would
-          // miss vault-wide memories that REST surfaces.
-          ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
-          ...(opts.tags && opts.tags.length > 0 ? { tags: opts.tags } : {}),
-          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
-          ...(opts.excludeKinds && opts.excludeKinds.length > 0
-            ? { excludeKinds: opts.excludeKinds }
-            : {}),
-          ...(opts.statuses && opts.statuses.length > 0
-            ? { statuses: opts.statuses }
-            : {}),
-          ...(excludeStatuses ? { excludeStatuses } : {}),
-          cleanupOrphanSentinel: MEMORY_CLEANUP_ORPHAN_SENTINEL,
-          limit: opts.limit,
-        })
-        // One `pages.retrieve` per id, gated by the shared rate-
-        // limit gate. Hydrate via `getPropertiesById` (no body
-        // fetch) so the returned shape matches the REST path's
-        // `includeContent: false` — `content: ""`.
-        const memories = await Promise.all(
-          pageIds.map((id) =>
-            this.getPropertiesById(id).catch((err: unknown) => {
-              // A single failed id should not collapse the SQL
-              // branch — drop it and continue. Hydration failures
-              // are typically archived-after-query races; the row
-              // would have been filtered out by the REST path's
-              // `is_full_page` + `archived` filter anyway.
-              if (process.env["LORE_DEBUG"] === "1") {
-                process.stderr.write(
-                  `[lore] partial-failure: source=near-duplicate-hydrate ` +
-                    `pageId=${id} error=${err instanceof Error ? err.message : "unknown"}\n`
-                )
-              }
-              return null
-            })
-          )
-        )
-        // SQL applies exact tag filter before LIMIT (see SQL
-        // composition above), so the hydrated list is already
-        // tag-filtered and truncated to `opts.limit`. No JS
-        // post-filter needed for tags.
-        return memories.filter((m): m is Memory => m !== null)
-      } catch (err) {
-        if (isSqlValidationError(err)) {
-          // Surface to the operator: a 400 / validation_error
-          // indicates query-shape drift —
-          // column rename, gateway syntax change, parameter
-          // binding shape change. Silent fallback would mask a
-          // permanent SQL-rollout failure as "REST path always
-          // ran." The error message carries the gateway's
-          // specifics. Transient (network / 5xx / 429 /
-          // restricted / unauthorized / malformed) failures still
-          // fall back per call.
-          throw err
-        }
-        logRunToolFallback("near-duplicate-candidates", err)
-        // fall through to REST path
-      }
-    }
-
-    const { items } = await this.list({
-      projectId: opts.projectId,
-      ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
-      ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
-      ...(opts.excludeKinds && opts.excludeKinds.length > 0
-        ? { excludeKinds: [...opts.excludeKinds] }
-        : {}),
-      ...(opts.tags && opts.tags.length > 0 ? { tags: [...opts.tags] } : {}),
-      limit: opts.limit,
-      includeContent: false,
-      ...(opts.includeProposed !== undefined
-        ? { includeProposed: opts.includeProposed }
-        : {}),
-    })
-    return items
+    return this.lister.listForNearDuplicates(opts)
   }
 
   async list(opts: ListMemoriesOptions & { includeContent: true }): Promise<{
@@ -2901,203 +1550,7 @@ export class MemoryService {
     nextCursor?: string
     capped: boolean
   }> {
-    const filters: Array<Record<string, unknown>> = []
-
-    if (opts?.projectId) {
-      filters.push(
-        opts.includeUnscoped === false
-          ? { property: MEMORY_PROPS.PROJECT, relation: { contains: opts.projectId } }
-          : projectOrUnscopedFilter(opts.projectId)
-      )
-    }
-    if (opts?.topicId) {
-      filters.push({
-        property: MEMORY_PROPS.TOPIC,
-        relation: { contains: opts.topicId },
-      })
-    }
-    if (opts?.source) {
-      filters.push({
-        property: MEMORY_PROPS.SOURCE,
-        select: { equals: opts.source },
-      })
-    }
-    if (opts?.kind) {
-      filters.push({
-        property: MEMORY_PROPS.KIND,
-        select: { equals: opts.kind },
-      })
-    }
-    if (opts?.excludeKinds && opts.excludeKinds.length > 0) {
-      // One `does_not_equal` clause per excluded kind — Notion's
-      // select filter has no `not_in` operator, so each value
-      // gets its own clause. Pushed onto the outer `and:` chain
-      // by the surrounding combiner. Mirrors the
-      // `reviewTerminalStatusExclusionFilters` posture below.
-      for (const k of opts.excludeKinds) {
-        filters.push({ property: MEMORY_PROPS.KIND, select: { does_not_equal: k } })
-      }
-    }
-    if (opts?.confidence) {
-      filters.push({
-        property: MEMORY_PROPS.CONFIDENCE,
-        select: { equals: opts.confidence },
-      })
-    }
-    if (opts?.status) {
-      filters.push({
-        property: MEMORY_PROPS.STATUS,
-        select: { equals: opts.status },
-      })
-    } else if (opts?.includeProposed !== true) {
-      // Default-exclude review-terminal statuses (`proposed` and
-      // `rejected`) so neither pollutes default recall paths.
-      // Explicit `status` short-circuits this branch — when the
-      // caller asks for
-      // `status: "proposed"` (the inbox-review path) or
-      // `status: "rejected"` (the audit path) directly, that filter
-      // wins. Notion's `does_not_equal` semantics cover both
-      // explicit values and the null / unmigrated case (a row
-      // with no Status column set is NOT review-terminal and
-      // therefore passes the filter).
-      filters.push(...reviewTerminalStatusExclusionFilters())
-    }
-    if (opts?.reviewBefore) {
-      filters.push({
-        property: MEMORY_PROPS.REVIEW_BY,
-        date: { on_or_before: opts.reviewBefore },
-      })
-    }
-    if (opts?.tags?.length) {
-      if (opts.tags.length === 1) {
-        filters.push({
-          property: MEMORY_PROPS.TAGS,
-          multi_select: { contains: opts.tags[0] },
-        })
-      } else {
-        filters.push({
-          or: opts.tags.map((t) => ({
-            property: MEMORY_PROPS.TAGS,
-            multi_select: { contains: t },
-          })),
-        })
-      }
-    }
-    if (opts?.session) {
-      filters.push({
-        property: MEMORY_PROPS.SESSION,
-        rich_text: { equals: opts.session },
-      })
-    }
-    if (opts?.since) {
-      filters.push({
-        timestamp: "created_time",
-        created_time: { on_or_after: opts.since },
-      })
-    }
-    if (opts?.until) {
-      filters.push({
-        timestamp: "created_time",
-        created_time: { before: opts.until },
-      })
-    }
-
-    const baseFilter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
-          : undefined
-
-    // Resurfaced cleanup-orphan exclusion. Pushed
-    // server-side here so every consumer of `list` — including
-    // `lore-query action='recall'`, the wake-up related-memories
-    // pass, the autosave-learning probe, and `findNearDuplicates` —
-    // uniformly drops sentinel-tagged rows. Without this, an orphan
-    // restored from Notion's trash would surface in recall, wake-up,
-    // and the dedup post-filter would have to catch it after
-    // `MemoryService.list` had already consumed candidate-pool slots.
-    //
-    // Default scope filter. Composed before the orphan
-    // exclusion so both clauses live in the same top-level `and`.
-    // `includeOutOfScope: true` skips the scope clause for audit
-    // paths (`lore status` expiring-rows surface, conflict scanner,
-    // near-duplicate probe pool).
-    const scopedFilter =
-      opts?.includeOutOfScope === true || !this.scopeFilterEnabled
-        ? baseFilter
-        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
-    const filter = withCleanupOrphanExclusion(scopedFilter)
-
-    const limit = Math.min(opts?.limit ?? 20, 100)
-    if (limit <= 0) {
-      return { items: [], nextCursor: opts?.startCursor, capped: false }
-    }
-
-    // Notion's compound-filter language caps nesting at 2 levels,
-    // so `defaultScopeInclusionFilter` emits a server-side shape
-    // that includes the reader's narrow kinds without binding each
-    // kind to its key. The kind+key binding runs client-side via
-    // `matchesDefaultScope` here. The walker over-fetches by the
-    // slots dropped on the client side; backfilled pagination keeps
-    // the result at the caller's requested limit.
-    const today = todayUtc()
-    const applyExtraFilter =
-      opts?.includeOutOfScope === true || !this.scopeFilterEnabled
-        ? undefined
-        : (page: PageObjectResponse) =>
-            matchesDefaultScope(page.properties, this.scopeCtx, today)
-    const result = await collectLivePages({
-      limit,
-      startCursor: opts?.startCursor,
-      source: "MemoryService.list",
-      query: ({ page_size, start_cursor }) =>
-        this.client.dataSources.query({
-          data_source_id: this.db.dataSourceId,
-          filter: filter as QueryDataSourceParameters["filter"],
-          sorts: [
-            {
-              timestamp: opts?.sortBy ?? "last_edited_time",
-              direction: opts?.direction ?? "descending",
-            },
-          ],
-          page_size,
-          start_cursor,
-        }),
-      extraFilter: applyExtraFilter,
-    })
-
-    if (opts?.includeContent !== true) {
-      // `pageToMemory` is still async on the body-skipped branch —
-      // the wrap pays only the relation-hydration cost (per-row
-      // `pages.properties.retrieve` for truncated relation columns
-      // when `has_more: true`), not a body fetch. The N-way
-      // `pages.retrieveMarkdown` fan-out lives in the explicit-true
-      // branch below.
-      //
-      // Passing `""` to `pageToMemory` produces rows whose `content`
-      // field is the empty string. The runtime invariant matches the
-      // `MemoryWithoutContent` (`content: ""`) literal-typed shape that
-      // the omitted-or-false overload advertises; TypeScript cannot
-      // infer the literal from the empty-string argument alone, so the
-      // cast bridges the runtime guarantee to the type-level signal.
-      const items = (await Promise.all(
-        result.pages.map((page) => this.pageToMemory(page, ""))
-      )) as MemoryWithoutContent[]
-      return {
-        items,
-        nextCursor: result.nextCursor,
-        capped: result.capped,
-      }
-    }
-
-    const items = await Promise.all(
-      result.pages.map(async (page) => {
-        const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
-        return await this.pageToMemory(page, md.markdown)
-      })
-    )
-    return { items, nextCursor: result.nextCursor, capped: result.capped }
+    return this.lister.list(opts)
   }
 
   async search(input: SearchMemoriesInput): Promise<Memory[]> {
@@ -3187,133 +1640,13 @@ export class MemoryService {
     pages: PageObjectResponse[],
     includeContent: boolean | undefined
   ): Promise<Memory[]> {
-    if (includeContent === false) {
-      return Promise.all(pages.map((page) => this.pageToMemory(page, "")))
-    }
-    return Promise.all(
-      pages.map(async (page) => {
-        const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
-        return await this.pageToMemory(page, md.markdown)
-      })
-    )
+    return this.mapper.materializeMemories(pages, includeContent)
   }
 
   private async pageToMemory(
     page: PageObjectResponse,
     content?: string
   ): Promise<Memory> {
-    return pageToMemory(await hydrateMemoryRelationProperties(this.client, page), content)
+    return this.mapper.pageToMemory(page, content)
   }
-}
-
-/**
- * Convert a Notion page object to a `Memory` domain type. Pure function —
- * exported for unit testing. The hardened extractors guarantee graceful
- * defaults for pages that pre-date any schema addition: an unmigrated
- * page returns `kind: "note"`, `status: "informational"`, etc.
- */
-export function pageToMemory(page: PageObjectResponse, content?: string): Memory {
-  const props = page.properties
-  const topicIds = extractRelationIds(props[MEMORY_PROPS.TOPIC])
-  const session = extractRichText(props[MEMORY_PROPS.SESSION]).trim()
-
-  // Read `Task State` only when the column exists *and* a select is set.
-  // `extractSelect` falls back when the column is missing — fine for
-  // unmigrated pages — but we want a true `null` (not `"open"`) on
-  // every non-task memory so downstream code can branch on the field.
-  const taskStateProp = props[MEMORY_PROPS.TASK_STATE]
-  const taskState =
-    taskStateProp && taskStateProp.type === "select" && taskStateProp.select
-      ? (taskStateProp.select.name as TaskState)
-      : null
-
-  return {
-    id: page.id,
-    title: extractTitle(props[MEMORY_PROPS.TITLE]),
-    projectIds: extractRelationIds(props[MEMORY_PROPS.PROJECT]),
-    topicId: topicIds[0] ?? null,
-    source: extractSelect(props[MEMORY_PROPS.SOURCE], "manual") as MemorySource,
-    // Decision-related columns. Pre-migration pages default gracefully
-    // via the hardened extractors — no backfill required.
-    kind: extractSelect(props[MEMORY_PROPS.KIND], "note") as MemoryKind,
-    status: extractSelect(props[MEMORY_PROPS.STATUS], "informational") as MemoryStatus,
-    confidence: extractSelect(
-      props[MEMORY_PROPS.CONFIDENCE],
-      "certain"
-    ) as MemoryConfidenceLevel,
-    confidenceScore: extractNumber(props[MEMORY_PROPS.CONFIDENCE_SCORE]),
-    reviewBy: extractDate(props[MEMORY_PROPS.REVIEW_BY]),
-    doneAt: extractDate(props[MEMORY_PROPS.DONE_AT]),
-    decidedAt: extractDate(props[MEMORY_PROPS.DECIDED_AT]),
-    lastReferencedAt: extractDate(props[MEMORY_PROPS.LAST_REFERENCED_AT]),
-    supersedesIds: extractRelationIds(props[MEMORY_PROPS.SUPERSEDES]),
-    affectsIds: extractRelationIds(props[MEMORY_PROPS.AFFECTS]),
-    alternatives: extractRichText(props[MEMORY_PROPS.ALTERNATIVES]),
-    consequences: extractRichText(props[MEMORY_PROPS.CONSEQUENCES]),
-    author: extractRichText(props[MEMORY_PROPS.AUTHOR]),
-    agent: extractRichText(props[MEMORY_PROPS.AGENT]),
-    tags: extractMultiSelect(props[MEMORY_PROPS.TAGS]),
-    keywords: extractRichText(props[MEMORY_PROPS.KEYWORDS]),
-    synopsis: extractRichText(props[MEMORY_PROPS.SYNOPSIS]),
-    session: session.length > 0 ? session : null,
-    content: content ?? "",
-    createdAt: page.created_time,
-    updatedAt: page.last_edited_time,
-    taskState,
-    blockedBy: extractRichText(props[MEMORY_PROPS.BLOCKED_BY]),
-    entity: extractRichText(props[MEMORY_PROPS.ENTITY]),
-    topicKey: extractRichText(props[MEMORY_PROPS.TOPIC_KEY]),
-    // Legacy rows have a null `Revision Count` column. Coalesce
-    // to 1 — every existing row has been "saved once," so
-    // `formatMemoryListItem` treats the count as single-revision
-    // and surfaces no `rev` line. Distinct from the Confidence Score
-    // path (which preserves null to signal "never scored") because
-    // Revision Count carries no "uninitialized" semantic — every row
-    // has been written at least once by definition.
-    revisionCount: extractNumber(props[MEMORY_PROPS.REVISION_COUNT]) ?? 1,
-    comparedWith: extractRelationIds(props[MEMORY_PROPS.COMPARED_WITH]),
-    compareNotes: extractRichText(props[MEMORY_PROPS.COMPARE_NOTES]),
-    scope: extractMemoryScope(props),
-    pinned: extractMemoryPinned(props),
-  }
-}
-
-/**
- * Read the five scope columns into a `MemoryScope` bundle. Returns
- * `null` when all five columns are empty/missing. Vaults with the
- * scope schema migration applied but without backfilled scope still
- * pass through this branch; default retrieval treats null scope as
- * broadcast.
- *
- * Returns a populated `MemoryScope` with `kind: null` / `lifetime:
- * null` when only one column has been written (e.g. an operator set
- * `Lifetime` on a row but left `Scope Kind` empty) — same surface as
- * a row mid-scope-migration.
- */
-function extractMemoryScope(
-  props: PageObjectResponse["properties"]
-): import("../types.js").MemoryScope | null {
-  const kindProp = props[MEMORY_PROPS.SCOPE_KIND]
-  const kind =
-    kindProp && kindProp.type === "select" && kindProp.select
-      ? (kindProp.select.name as import("../types.js").MemoryScopeKind)
-      : null
-  const key = extractRichText(props[MEMORY_PROPS.SCOPE_KEY])
-  const audience = extractRichText(props[MEMORY_PROPS.AUDIENCE])
-  const lifetimeProp = props[MEMORY_PROPS.LIFETIME]
-  const lifetime =
-    lifetimeProp && lifetimeProp.type === "select" && lifetimeProp.select
-      ? (lifetimeProp.select.name as import("../types.js").MemoryLifetime)
-      : null
-  const expiresAt = extractDate(props[MEMORY_PROPS.EXPIRES_AT])
-  if (
-    kind === null &&
-    lifetime === null &&
-    expiresAt === null &&
-    key.length === 0 &&
-    audience.length === 0
-  ) {
-    return null
-  }
-  return { kind, key, audience, lifetime, expiresAt }
 }
