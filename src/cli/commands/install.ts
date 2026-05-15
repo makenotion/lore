@@ -4045,36 +4045,18 @@ async function runPrintConfig(
 
 export const installCommand = new Command("install")
   .description("Install Lore assistant integrations for the current project")
-  .option(
-    "--client <assistant>",
-    "assistant to configure: claude, codex, cursor, or all (default: all)"
-  )
-  .option("--project <path>", "project directory (default: cwd)")
-  .option(
-    "--cursor-global",
-    "Cursor only: write to ~/.cursor/mcp.json instead of <projectDir>/.cursor/mcp.json (overrides --project for the Cursor branch)"
-  )
+  .option("--client <assistant>", "Assistant to configure: claude, codex, cursor, or all")
+  .option("--project <path>", "Project directory (default: cwd)")
+  .option("--cursor-global", "Cursor only: write global Cursor MCP config")
   .option(
     "--print-config <format>",
-    "print a paste-ready MCP config snippet to stdout (no files written); format: json or toml"
+    "Print JSON/TOML MCP config instead of writing files"
   )
-  .option(
-    "--yarn-pnp",
-    "force the yarn-wrapped bin-dispatch shape ('yarn run -T lore mcp', 'yarn run -T lore hooks <event>'). Auto-detected from a .pnp.cjs marker; this flag pins it explicitly"
-  )
-  .option(
-    "--no-yarn-pnp",
-    "force the bare bin-dispatch shape ('lore mcp', 'lore hooks <event>'), overriding .pnp.cjs auto-detection. Use when your PnP project shims node_modules/.bin out-of-band"
-  )
-  .option(
-    "--ntn",
-    "internal-engineer path: auto-install `ntn` (if missing) and run `ntn login`. Without this flag, Lore takes the external-operator path and expects NOTION_API_TOKEN (a PAT from notion.so/developers/tokens) to be set."
-  )
-  .option(
-    "--dev",
-    "target the Notion dev environment. With --ntn, forwards NOTION_ENV=dev to ntn login. With the PAT path, expects a `development_ntn_…` token in NOTION_API_TOKEN and configures the dev base URL itself (plants NOTION_BASE_URL=https://api-dev.notion.com into both install-time preflight and the spawned MCP env as a literal). Fails fast when a conflicting shell selector (LORE_NOTION_BASE_URL / NOTION_BASE_URL / NOTION_API_BASE_URL / NOTION_ENV) routes auth to a non-dev URL."
-  )
-  .option("-y, --yes", "skip confirmation prompts")
+  .option("--yarn-pnp", "Force Yarn PnP launch commands")
+  .option("--no-yarn-pnp", "Force bare lore launch commands")
+  .option("--ntn", "Use internal ntn login flow")
+  .option("--dev", "Target the Notion dev environment")
+  .option("-y, --yes", "Skip confirmation prompts")
   .action(
     async (opts: {
       client?: string

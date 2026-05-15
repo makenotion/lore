@@ -1874,6 +1874,46 @@ describe("parsePrintConfigFormat (issue 0.9.0/12)", () => {
   })
 })
 
+describe("install command help", () => {
+  it("keeps install options concise and omits runtime wiring details", () => {
+    const help = installCommand.helpInformation()
+
+    expect(help).toContain(
+      "--client <assistant>     Assistant to configure: claude, codex, cursor, or all"
+    )
+    expect(help).toContain("--project <path>         Project directory (default: cwd)")
+    expect(help).toContain(
+      "--cursor-global          Cursor only: write global Cursor MCP config"
+    )
+    expect(help).toContain(
+      "--print-config <format>  Print JSON/TOML MCP config instead of writing files"
+    )
+    expect(help).toContain("--yarn-pnp               Force Yarn PnP launch commands")
+    expect(help).toContain("--no-yarn-pnp            Force bare lore launch commands")
+    expect(help).toContain("--ntn                    Use internal ntn login flow")
+    expect(help).toContain("--dev                    Target the Notion dev environment")
+    expect(help).toContain("-y, --yes                Skip confirmation prompts")
+
+    for (const lowLevelTerm of [
+      "development_ntn_",
+      "LORE_NOTION_BASE_URL",
+      "NOTION_BASE_URL",
+      "NOTION_API_BASE_URL",
+      "NOTION_ENV=dev",
+      "https://api-dev.notion.com",
+      "yarn run -T",
+      ".pnp.cjs",
+      "node_modules/.bin",
+    ]) {
+      expect(help).not.toContain(lowLevelTerm)
+    }
+
+    for (const option of installCommand.options) {
+      expect(option.description.length).toBeLessThanOrEqual(70)
+    }
+  })
+})
+
 describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
   // The print-config snippet is the escape hatch for hosts not supported
   // directly via --client (Gemini-CLI, OpenCode, Windsurf, etc.). The
