@@ -4,6 +4,174 @@ This is a compact overview of the main command surfaces and notable options,
 not an exhaustive flag reference. Run `lore <command> --help` for the complete
 registered flags for a command.
 
+## Common Workflows
+
+### Set up Lore for a shared vault
+
+Goal: connect this clone and its assistant integrations to a team-owned Notion
+vault page.
+
+Minimum commands:
+
+```sh
+# Bootstrap an empty shared page once, after auth is available:
+lore init <shared-page-id>
+
+# Internal Notion engineers configuring assistant integrations:
+lore install --ntn
+
+# External operators configuring assistant integrations:
+export NOTION_API_TOKEN=ntn_...
+lore install
+```
+
+Success signal: `lore init` writes a local `.lore.yaml`, and `lore install`
+prints successful auth and vault access checks before writing assistant config.
+See the `lore init [page-id]` and `lore install` command rows below for flag
+details; use [README](../README.md) and
+[team-rollout.md](team-rollout.md) for the full onboarding runbook.
+
+### Check setup health
+
+Goal: confirm the current auth source, vault access, profile, and database
+health before relying on recalled context.
+
+Minimum commands:
+
+```sh
+lore auth --status
+lore status
+```
+
+Success signal: auth status reports the expected source and workspace, and
+`lore status` shows the vault title, profile, database counts, and any topology
+or migration warnings. See the `lore auth` and `lore status` rows below; use
+[authentication.md](authentication.md) when auth points at the wrong workspace
+or cannot reach the vault.
+
+### Search remembered context
+
+Goal: find accepted memories relevant to a concrete question before asking an
+assistant to reason from scratch.
+
+Minimum commands:
+
+```sh
+lore search "PAT rollout"
+lore search "PAT rollout" --project Lore --limit 5
+```
+
+Success signal: matching memories render with titles, snippets, and Notion
+links; narrowing with `--project` or `--limit` changes the result set without
+changing vault contents. See the `lore search <query>` row below for the
+complete flag surface.
+
+### Add or inspect durable knowledge
+
+Goal: make useful project knowledge available to future sessions, then inspect
+the durable context that is already pinned or queryable.
+
+Minimum commands:
+
+```sh
+lore mine .
+lore memory save "Rollout note" --content "Use per-user PATs for external operators."
+lore decision create "Use PATs for external operators" --rationale "PATs preserve per-user permissions and rate limits."
+lore ask Authentication --project Lore --limit 10
+lore pinned list --project Lore
+```
+
+Success signal: write commands print the created or reused Notion row, `lore ask`
+returns facts and tasks for the entity, and `lore pinned list` shows active
+context blocks for the requested project or audience. Use the MCP
+`lore-fact`, `lore-memory`, `lore-decision`, and `lore-pinned` tools when a
+write path is only exposed through assistant integrations; see the matching
+command rows below for the CLI-covered paths.
+
+### Triage and close tasks
+
+Goal: review active work, create follow-up tasks, update metadata, and close
+work once the durable memory trail supports it.
+
+Minimum commands:
+
+```sh
+lore tasks list --project Lore
+lore tasks create "Document PAT onboarding" --project Lore --entity Authentication
+lore tasks update <task-id> --state blocked --blocked-by "Waiting for reviewer"
+lore tasks close <task-id>
+```
+
+Success signal: task lists split overdue and active work, create/update commands
+echo the affected row, and close reports the final state and `Done At` stamp
+when the vault has that column. See the `lore tasks ...` rows below for filters,
+JSON output, and cancellation.
+
+### Review proposed memories
+
+Goal: keep automatic learning useful by accepting, rejecting, or archiving
+proposed memories after human review.
+
+Minimum commands:
+
+```sh
+lore inbox list --project Lore
+lore inbox approve <memory-id> --reason "Accurate durable workflow"
+lore inbox reject <memory-id> --reason "Too transient"
+lore inbox archive <memory-id>
+```
+
+Success signal: approved memories move to accepted, rejected memories carry a
+review audit block, archived rows leave the inbox, and an empty inbox exits 0
+with a single status line. See the `lore inbox ...` rows below and
+[team-rollout.md](team-rollout.md#shared-vault-hook-configuration)
+for rollout guidance.
+
+### Repair or migrate a vault
+
+Goal: diagnose schema drift or legacy vault shape, then run the smallest
+targeted repair needed for current Lore.
+
+Minimum commands:
+
+```sh
+lore status
+lore vault ensure-entities --dry-run
+lore vault ensure-entities
+lore migrate --dry-run
+lore migrate
+```
+
+Success signal: dry runs describe planned writes without changing Notion, repair
+commands summarize created properties or migrated rows, and a follow-up
+`lore status` no longer reports the targeted schema warning. Project-capable
+one-shot data migrations require a scope and use the same specific migration
+flag in plan and apply mode, such as
+`lore migrate --build-entities --project Lore` followed by
+`lore migrate --build-entities --project Lore --yes`; bare `--yes` is invalid.
+See the `lore vault ensure-entities` and `lore migrate` rows below; legacy
+four-database vaults also need the entity cutover steps in
+[team-rollout.md](team-rollout.md#entities-database-cutover).
+
+### Generate config for unsupported MCP hosts
+
+Goal: produce a paste-ready MCP config snippet for an assistant host that
+`lore install --client` does not write directly.
+
+Minimum commands:
+
+```sh
+lore install --print-config json
+lore install --print-config toml
+```
+
+Success signal: Lore prints the requested JSON or TOML config to stdout without
+modifying host files, so you can paste it into the unsupported MCP client. See
+the `lore install` row below and
+[README](../README.md#other-mcp-hosts) for host integration context.
+
+## Command Reference
+
 | Command                                                    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lore init [page-id]`                                      | Create vault databases and write `.lore.yaml` with an exact built-in profile selector. Defaults to `profile: default@<runtime-profile-version>`; pass `--profile support@1.0.0` for the support pilot. Pass `<page-id>` for team / repo-scoped vaults (recommended); explicit-page init can use `--token <token>` to supply a literal token. Omit `[page-id]` to create a workspace-level page via the active auth source; no-arg init can use `--name <name>`, `--ntn-env <prod\|dev\|stg>`, and `--yes` for ntn install / login prompts. When `<page-id>` is supplied, `--name` and `--ntn-env` are ignored with warnings; `--yes` is silently irrelevant.                                                                                                                                                                                                                                                                                                         |

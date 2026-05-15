@@ -191,8 +191,9 @@ config load time. Use `NOTION_API_TOKEN` for Personal Access Tokens or
 
 Existing vaults from before PF3-01 need one bootstrap step before the
 entity backfill: run `lore vault ensure-entities`, then run
-`lore migrate --build-entities --yes` in a quiet window to canonicalize
-the fact graph.
+`lore migrate --build-entities --allow-unscoped` to preview the vault-wide
+backfill and `lore migrate --build-entities --allow-unscoped --yes` in a quiet
+window to canonicalize the fact graph.
 
 ### 4. Configure Your AI Assistant
 
@@ -247,8 +248,10 @@ lore auth --login
 
 Vaults created before the Entities database was introduced need one
 bootstrap step before the entity backfill: run
-`lore vault ensure-entities`, then run `lore migrate --build-entities --yes`
-in a quiet window to canonicalize the fact graph.
+`lore vault ensure-entities`, then run
+`lore migrate --build-entities --allow-unscoped` to preview the vault-wide
+backfill and `lore migrate --build-entities --allow-unscoped --yes` in a quiet
+window to canonicalize the fact graph.
 
 ### 6. Teach Your Agents to Use Lore
 
@@ -305,8 +308,11 @@ A vault is a Notion page containing five core databases:
 before the Entities database was introduced only have four (no Entities);
 they need a one-time legacy migration via `lore vault ensure-entities` to
 create the Entities database and add the `SubjectEntity` / `ObjectEntity`
-relation columns to Facts, followed by `lore migrate --build-entities --yes`
-to fill historical rows that do not already have relation values. See
+relation columns to Facts. Plan/apply the vault-wide backfill with
+`lore migrate --build-entities --allow-unscoped` and
+`lore migrate --build-entities --allow-unscoped --yes`, or use
+`--project <name>` in both commands for a project-scoped pass, to fill
+historical rows that do not already have relation values. See
 [`docs/team-rollout.md#entities-database-cutover`](docs/team-rollout.md#entities-database-cutover).
 
 **Predicate values accepted by `lore-fact action='create'`** are profile-aware.

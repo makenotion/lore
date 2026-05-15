@@ -56,10 +56,14 @@ Self-service repair for a four-database vault:
 2. Run `lore vault ensure-entities`. This creates the `Entities` child
    database with the supported schema and runs the additive schema
    migration so Facts gains `SubjectEntity` / `ObjectEntity`.
-3. Run `lore migrate --build-entities --yes` in a quiet window to create
-   canonical Entity rows and fill empty Fact entity relations. Populated
-   relations are preserved, and the row-level `SubjectKey` fallback remains
-   available until every row is backfilled.
+3. Run `lore migrate --build-entities --allow-unscoped` to preview the
+   vault-wide entity backfill, then run
+   `lore migrate --build-entities --allow-unscoped --yes` in a quiet
+   window to create canonical Entity rows and fill empty Fact entity
+   relations. Use `--project <name>` instead of `--allow-unscoped` in
+   both commands when repairing one project at a time. Populated
+   relations are preserved, and the row-level `SubjectKey` fallback
+   remains available until every row is backfilled.
 
 `lore vault ensure-entities --dry-run` previews the bootstrap step
 without writing. If a vault is missing any required child database other
