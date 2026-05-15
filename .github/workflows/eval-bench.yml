@@ -53,13 +53,15 @@ jobs:
     timeout-minutes: 360
     steps:
       - name: Checkout
-        # actions/checkout v4.2.0 — SHA-pinned per Semgrep supply-chain
+        # actions/checkout v4.2.1 — SHA-pinned per Semgrep supply-chain
         # finding 791747685; update by replacing the SHA and the
         # trailing version comment together.
         uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        # actions/setup-node v4.0.4
+        # actions/setup-node v4.0.3
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
         with:
           node-version: 20
@@ -142,10 +144,12 @@ jobs:
         run: |
           if [ -f "$ARTIFACT_PATH" ]; then
             if [ "$BASELINE_MODE" = "bootstrap" ]; then
-              echo "## Bootstrap run" >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "No baseline file present at workflow checkout. This run produced a fresh artifact but did NOT run drift gating. A maintainer must capture and commit \`evals/baselines/longmemeval-s-gpt4o-mini.json\` from this artifact before drift gating activates." >> "$GITHUB_STEP_SUMMARY"
-              echo "" >> "$GITHUB_STEP_SUMMARY"
+              {
+                echo "## Bootstrap run"
+                echo ""
+                echo "No baseline file present at workflow checkout. This run produced a fresh artifact but did NOT run drift gating. A maintainer must capture and commit \`evals/baselines/longmemeval-s-gpt4o-mini.json\` from this artifact before drift gating activates."
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
             fi
             node -e "
               const a = JSON.parse(require('fs').readFileSync(process.env.ARTIFACT_PATH, 'utf-8'));
@@ -280,8 +284,7 @@ jobs:
             // Strict integer validation: anything that isn't a
             // positive integer rejects the comment post. The raw
             // value lands here via env, so template-evaluation-time
-            // injection (the prior `${{ ... }}` inline-interpolation
-            // shape) is impossible.
+            // injection through inline workflow expressions is impossible.
             const raw = (process.env.PR_NUMBER_RAW ?? '').trim();
             if (!/^[1-9][0-9]{0,9}$/.test(raw)) {
               core.setFailed(`Invalid pr_number "${raw}"; expected positive integer`);

@@ -26,6 +26,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          install_dir="$RUNNER_TEMP/workflow-lint-bin"
+          mkdir -p "$install_dir"
+          curl -fsSLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz -C "$install_dir" actionlint
+          chmod +x "$install_dir/actionlint"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Run actionlint
+        run: actionlint .github/workflows/*.yml
+
+      - name: Install zizmor
+        env:
+          ZIZMOR_SHA256: a16853f39c9e059aed04f3f7961acb75468af67b235ae36a9faff337d61e3d24
+          ZIZMOR_VERSION: 1.25.0
+        run: |
+          install_dir="$RUNNER_TEMP/workflow-lint-bin"
+          mkdir -p "$install_dir"
+          curl -fsSLo zizmor.tar.gz "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  zizmor.tar.gz" | sha256sum -c -
+          tar -xzf zizmor.tar.gz -C "$install_dir" zizmor
+          chmod +x "$install_dir/zizmor"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Run zizmor
+        run: zizmor --min-severity medium --format github --no-progress .github/workflows
+
   ci:
     name: Format, lint, typecheck, test
     runs-on: ubuntu-latest
@@ -33,6 +75,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
