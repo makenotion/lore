@@ -18,7 +18,7 @@ context loading and session saving into supported hosts.
 
 ## Quick Start
 
-### 1. Install
+### 1. Install Lore
 
 > **Public npm publish is intentionally parked.** Lore still publishes
 > internal-only releases to GitHub Packages while the team finishes the
@@ -66,77 +66,19 @@ project or add a `lore` script to `package.json`. See
 the Yarn PnP wiring and path-portable setup teams use to share assistant
 config across a repo.
 
-### 2. Authenticate with Notion
+### 2. Join an Existing Shared Vault
 
-Lore needs a Notion bearer token. Two supported sources:
+Most operators should join an already initialized shared vault. A Lore vault is
+a Notion page that already contains the five databases (Projects, Topics,
+Memories, Entities, Facts). Joining that vault means pointing your local
+`.lore.yaml` at the shared `vault.pageId`; do not run database initialization
+against a shared page that your team lead has already bootstrapped.
 
-- **`NOTION_API_TOKEN`** — external operators set this environment variable
-  to a Notion Personal Access Token (PAT) from
-  `notion.so/developers/tokens`. PATs inherit the operator's Notion
-  permissions and keep rate limits per operator:
-
-  ```bash
-  export NOTION_API_TOKEN=ntn_...
-  ```
-
-  Do not use `secret_` integration tokens from
-  `notion.so/profile/integrations` for team rollout; they share one bucket
-  across every operator using the same integration.
-
-- **`ntn` CLI** — the [`ntn` tool](https://github.com/makenotion/skills)
-  issues per-user Notion tokens that inherit your own Notion permissions.
-  This is the recommended path for teams: each engineer gets their own
-  rate-limit bucket, no integration sharing is required, and access matches
-  what each engineer can already see in Notion's UI.
-
-  The simplest setup is to let Lore drive the internal flow — run
-  `lore install --ntn` when configuring assistants, or
-  `lore auth --login` for auth only. Both auto-install `ntn` if needed
-  and run `ntn login` for you, forcing the file-mode storage that Lore
-  reads.
-
-  To run `ntn` yourself, set `NOTION_KEYRING=0` before logging in. `ntn`
-  defaults to macOS Keychain storage, which Lore does not read; the env
-  var forces file-mode storage at `~/.config/notion/auth.json`:
-
-  ```bash
-  NOTION_KEYRING=0 ntn login
-  ```
-
-  Lore reads the resulting `auth.json` automatically. See
-  [`docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore`](docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore)
-  for the persistent shell-rc setup if you use `ntn` for other tooling too.
-
-Token resolution order is `NOTION_API_TOKEN` → ntn-resolved `auth.json`.
-The first source available wins. See
-[`docs/authentication.md`](docs/authentication.md) for the full priority chain,
-multi-workspace selection, and troubleshooting.
-
-### 3. Create a Vault
-
-A Lore vault is a Notion page containing the five databases (Projects,
-Topics, Memories, Entities, Facts).
-
-**For a shared team vault** — the common case — create a page in Notion at
-the location your team agrees on, make sure your auth source can access it,
-and pass its id to `lore init`:
-
-```bash
-lore init <page-id>
-```
-
-This is the recommended path for shared use: the page lives at a
-deliberate location (a team workspace, a project sub-page) with
-deliberate sharing, and every engineer's local `.lore.yaml` points at the
-same id.
-
-`.lore.yaml` is local-only — keep it out of version control. Copy
-`.lore.example.yaml` to `.lore.yaml` in each clone and paste the shared
-`vault.pageId` from your team's onboarding docs (or let `lore init`
-write the file for you). Distribute shared values via onboarding docs,
-not by committing config. This is the current policy even for credential-free
-shared vault config and supersedes older changelog notes that allowed
-intentional committed config.
+`.lore.yaml` is local-only. Keep it out of version control, and distribute
+shared values such as `vault.pageId` through onboarding docs instead of
+committing config. This is the current policy even for credential-free shared
+vault config and supersedes older changelog notes that allowed intentional
+committed config.
 
 Notion page IDs are access locators, not bearer credentials: knowing a page ID
 does not grant access unless the caller's Notion token can already read that
@@ -145,57 +87,58 @@ a public repo don't auto-target a maintainer's vault. If a personal or
 accidental page ID lands in git history, scrub the working tree and decide with
 the page owner whether to replace the page or rewrite history.
 
-**For personal vaults / fresh-onboarding scratch use**, the no-arg
-flow creates a workspace-level page on your behalf using the active auth
-source. If no auth resolves, it auto-installs ntn, runs `ntn login`, and then
-writes `.lore.yaml`:
+#### Internal Notion engineer + shared vault
+
+Use Lore's ntn-backed auth flow. It auto-installs `ntn` when needed, runs
+`ntn login`, and stores the per-user token where Lore can read it.
 
 ```bash
-lore init                            # default title: "Lore Vault — <basename(cwd)>"
-lore init --name "Lore Vault Widget" # explicit title
-lore init --ntn-env dev              # bootstrap against the dev Notion environment
-```
+# Join by pointing local config at the initialized shared vault.
+# Do not run database initialization against an existing shared vault.
+cat > .lore.yaml <<'YAML'
+vault:
+  pageId: "<shared-vault-page-id>"
+YAML
 
-If your existing ntn auth points at a different environment than `--ntn-env`,
-Lore exits 1 with recovery copy (typically
-`ntn logout && NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`) rather than
-silently creating a vault in the wrong environment. Either init path creates the
-five databases inside the page (Projects, Topics, Memories, Entities, Facts)
-and writes a `.lore.yaml` config file.
-
-For direct non-ntn setup, create a Notion Personal Access Token at
-`notion.so/developers/tokens`, set the canonical Notion SDK env var, and
-make sure the operator's Notion account can access the vault page before
-`lore init <page-id>`.
-
-```bash
-export NOTION_API_TOKEN=ntn_...
-```
-
-See [`docs/team-rollout.md`](docs/team-rollout.md) for the per-engineer
-onboarding flow and team-lead runbook.
-
-### 3. Refresh Auth for an Existing Vault
-
-Once your local `.lore.yaml` points at a configured vault, use the Lore auth
-wrapper to refresh ntn auth and preflight access:
-
-```bash
 lore auth --login
+lore auth --status
+lore status
 ```
 
-Deprecated token fallbacks have been removed. `LORE_NOTION_TOKEN` is no
-longer read, and any `auth.token` value in `.lore.yaml` is rejected at
-config load time. Use `NOTION_API_TOKEN` for Personal Access Tokens or
-`lore auth --login` for ntn auth.
+#### External operator + shared vault
 
-Existing vaults from before PF3-01 need one bootstrap step before the
-entity backfill: run `lore vault ensure-entities`, then run
-`lore migrate --build-entities --allow-unscoped` to preview the vault-wide
-backfill and `lore migrate --build-entities --allow-unscoped --yes` in a quiet
-window to canonicalize the fact graph.
+Create a Notion Personal Access Token at `notion.so/developers/tokens`, then
+use it through the canonical Notion SDK environment variable. Do not use
+`secret_` integration tokens from `notion.so/profile/integrations` for team
+rollout; they share one rate-limit bucket across every operator using the same
+integration. Persist `NOTION_API_TOKEN` in your shell profile or assistant host
+environment before running `lore install` and restarting your assistant.
 
-### 4. Configure Your AI Assistant
+```bash
+export NOTION_API_TOKEN="<notion-pat>"
+
+# Join by pointing local config at the initialized shared vault.
+# Do not run database initialization against an existing shared vault.
+cat > .lore.yaml <<'YAML'
+vault:
+  pageId: "<shared-vault-page-id>"
+YAML
+
+lore auth --status
+lore status
+```
+
+The last two commands verify that Lore can resolve auth and read the vault.
+After they pass, configure your assistant in step 3. Restart or reconnect the
+assistant after install or config changes so it reloads the MCP server and
+hooks.
+
+Token resolution order is `NOTION_API_TOKEN` -> ntn-resolved `auth.json`.
+The first source available wins. See
+[`docs/authentication.md`](docs/authentication.md) for the full priority chain,
+multi-workspace selection, and troubleshooting.
+
+### 3. Configure Your Assistant
 
 ```bash
 # Internal ntn path:
@@ -237,7 +180,77 @@ For agents not directly supported by `lore install --client`, run
 paste the emitted MCP server snippet into the host's config file. See
 [`docs/mcp-hosts.md`](docs/mcp-hosts.md) for host notes and hook limitations.
 
-### 5. Refresh Auth On An Existing Vault
+Restart or reconnect your assistant after `lore install` or manual host config
+changes so it reloads the MCP server and hooks.
+
+### 4. Advanced and Maintenance Flows
+
+#### Team-lead / first-time shared-vault bootstrap
+
+Use this path only when you are creating the shared vault databases for the
+first time. Pick or create the Notion page your team will share, make sure your
+auth source can write to it, then run:
+
+```bash
+lore init <page-id>
+```
+
+That command creates the five databases inside the page (Projects, Topics,
+Memories, Entities, Facts) and writes your local `.lore.yaml`. Operators who
+join the initialized vault later should use step 2 instead of running
+initialization again.
+
+See [`docs/team-rollout.md`](docs/team-rollout.md) for the per-engineer
+onboarding flow and team-lead runbook.
+
+#### Personal or Scratch Vault Creation
+
+For personal vaults or fresh-onboarding scratch use, the no-arg flow creates a
+workspace-level page on your behalf using the active auth source. If no auth
+resolves, it auto-installs ntn, runs `ntn login`, and then writes
+`.lore.yaml`:
+
+```bash
+lore init                            # default title: "Lore Vault - <basename(cwd)>"
+lore init --name "Lore Vault Widget" # explicit title
+```
+
+For direct non-ntn setup, create a Notion Personal Access Token at
+`notion.so/developers/tokens`, set the canonical Notion SDK env var, and make
+sure the operator's Notion account can access the vault page before
+bootstrapping a new vault:
+
+```bash
+export NOTION_API_TOKEN="<notion-pat>"
+```
+
+#### Dev-Environment Setup
+
+Use the dev environment only when you intentionally want a dev-environment
+vault:
+
+```bash
+lore init --ntn-env dev
+```
+
+If your existing ntn auth points at a different environment than `--ntn-env`,
+Lore exits 1 with recovery copy (typically
+`ntn logout && NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`) rather than
+silently creating a vault in the wrong environment.
+
+To run `ntn` yourself, set `NOTION_KEYRING=0` before logging in. `ntn` defaults
+to macOS Keychain storage, which Lore does not read; the env var forces
+file-mode storage at `~/.config/notion/auth.json`:
+
+```bash
+NOTION_KEYRING=0 ntn login
+```
+
+Lore reads the resulting `auth.json` automatically. See
+[`docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore`](docs/team-rollout.md#known-gotcha-direct-ntn-login-outside-lore)
+for the persistent shell-rc setup if you use `ntn` for other tooling too.
+
+#### Refresh Auth for an Existing Vault
 
 Once your local `.lore.yaml` points at a configured vault, refresh ntn auth
 and preflight access with:
@@ -246,14 +259,23 @@ and preflight access with:
 lore auth --login
 ```
 
+Legacy token sources are not valid for new setup. `LORE_NOTION_TOKEN` is no
+longer read as an auth source; when no supported auth source resolves, Lore
+only mentions it as a migration hint. Any `auth.token` value in `.lore.yaml`
+is rejected at config load time. Use `NOTION_API_TOKEN` for Personal Access
+Tokens or `lore auth --login` for ntn auth.
+
+#### Legacy Four-Database Vault Migration
+
 Vaults created before the Entities database was introduced need one
 bootstrap step before the entity backfill: run
 `lore vault ensure-entities`, then run
 `lore migrate --build-entities --allow-unscoped` to preview the vault-wide
 backfill and `lore migrate --build-entities --allow-unscoped --yes` in a quiet
-window to canonicalize the fact graph.
+window to canonicalize the fact graph. Use `--project <name>` in both commands
+for a project-scoped pass.
 
-### 6. Teach Your Agents to Use Lore
+### 5. Teach Your Agents to Use Lore
 
 `lore install` wires the MCP server and hooks into the assistant host, but
 agents still need repo-local instructions that tell them to prefer the shared
