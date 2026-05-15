@@ -11,21 +11,9 @@ import type {
   QueryDataSourceParameters,
   UpdatePageParameters,
 } from "@notionhq/client"
-import type {
-  Fact,
-  CreateFactInput,
-  FactPredicate,
-  MemoryScopeContext,
-  DatabaseRef,
-} from "../types.js"
+import type { Fact, CreateFactInput, MemoryScopeContext, DatabaseRef } from "../types.js"
 import { buildFactProps, FACT_PROPS } from "../notion/schema.js"
 import { extractMissingPropertyName, isMissingPropertyError } from "../notion/errors.js"
-import {
-  projectOrUnscopedFilter,
-  withDefaultScopeFilter,
-  FACT_SCOPE_PROPS,
-} from "../notion/filters.js"
-import { matchesDefaultScope } from "./memory-scope.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { withEntityRelationLocks } from "./entity-relation-lock.js"
@@ -43,7 +31,7 @@ import {
 } from "./fact-dedup.js"
 import { fixFactEncoding, type FactEncodingReport } from "./fact-encoding.js"
 import { todayUtc } from "./task.js"
-import { isFullPage, isLiveFullPage, extractRelationIds } from "../notion/extractors.js"
+import { isFullPage, extractRelationIds } from "../notion/extractors.js"
 import {
   pageToFact as mapPageToFact,
   pageToFacts as mapPageToFacts,
@@ -51,81 +39,22 @@ import {
 } from "./fact-mapper.js"
 import { factScopeInputToBuilderProps } from "./fact-scope.js"
 import { synthesizeFactFromCreateInput } from "./fact-synthesis.js"
+import { FactQueries, NOTION_MAX_PAGE_SIZE } from "./fact-queries.js"
+import type {
+  ListRecentOpts,
+  QueryByEntityOpts,
+  QueryFactsOpts,
+  QueryOverdueOpts,
+} from "./fact-queries.js"
 
 export { scopesMatchForMerge } from "./fact-scope.js"
-
-type QueryFactsOpts = {
-  projectId?: string
-  includeInvalidated?: boolean
-  predicates?: FactPredicate[]
-  /**
-   * Transaction-time as-of cutoff in `YYYY-MM-DD` form. When
-   * set, the read returns the slice of facts Lore knew about at `asOf`
-   * (Observed At ≤ asOf) AND had not yet invalidated by `asOf`
-   * (Invalidated At is empty OR > asOf). Rows with empty Observed At
-   * are treated as known (the `is_empty` short-circuit on each clause
-   * keeps un-backfilled rows visible during the migration window so
-   * `lore-query action='ask'` doesn't suddenly empty out before the
-   * operator runs `lore migrate --backfill-fact-observed-at`).
-   *
-   * Independent of `includeInvalidated` (domain-truth `Valid Until` axis).
-   * When `asOf` is set, the legacy `Valid Until is_empty` filter is NOT
-   * applied — domain-truth state at the asOf point is a separate query
-   * the operator can layer on top via `Valid From` / `Valid Until` if
-   * needed. The default `lore-query action='ask'` surface does not
-   * combine the two axes; an operator wanting the intersection asks for
-   * each separately.
-   */
-  asOf?: string
-  /**
-   * Cap total results. Pagination stops as soon as this is reached.
-   * Without a limit, all matching facts are fetched across pages.
-   */
-  limit?: number
-  /**
-   * Opt into the "list every fact in scope" branch when the subject /
-   * object argument is strict-empty (`""`). Without this flag the
-   * service short-circuits to `[]` so a typoed / blank caller cannot
-   * accidentally enumerate the entire vault. Internal callers that
-   * genuinely want vault-wide enumeration (the `--build-entities`
-   * migration scan) pass `true`. Agent-facing surfaces (MCP
-   * `lore-query action='ask'`, `lore-decision action='context'`,
-   * `lore-fact action='create'`) never set this — they're guarded at
-   * the Zod boundary instead, so the agent gets a validation error
-   * before any service call runs.
-   */
-  allowUnfiltered?: boolean
-  /**
-   * When `true`, skip the default scope filter that
-   * excludes narrow-scope facts whose `Scope Key` does not match the
-   * resolved scope context, and skip the expired-row exclusion.
-   * Defaults to `false`. Operator audit paths
-   * (`lore migrate --build-entities`, conflict scanner, status
-   * surfaces) opt in.
-   */
-  includeOutOfScope?: boolean
-}
-
-type ListRecentOpts = {
-  projectId?: string
-  /**
-   * Maximum rows returned. The query is single-page by design — callers on
-   * the hot path (`loadWakeUpData`) cannot afford pagination loops. Clamped
-   * to Notion's 100-row ceiling.
-   */
-  limit?: number
-  includeInvalidated?: boolean
-  /**
-   * When `true`, skip the default scope filter that
-   * excludes narrow-scope facts whose `Scope Key` doesn't match the
-   * resolved scope context, and skip the expired-row exclusion.
-   * Defaults to `false`. Operator audit paths opt in.
-   */
-  includeOutOfScope?: boolean
-}
-
-/** Notion's hard ceiling on `page_size`. */
-const NOTION_MAX_PAGE_SIZE = 100
+export { clampNotionPageSize } from "./fact-queries.js"
+export type {
+  ListRecentOpts,
+  QueryByEntityOpts,
+  QueryFactsOpts,
+  QueryOverdueOpts,
+} from "./fact-queries.js"
 
 /**
  * Once-per-process stderr warning when
@@ -190,187 +119,6 @@ async function mapWithConcurrency<T, R>(
   )
   await Promise.all(workers)
   return results
-}
-
-/**
- * Clamp a caller-supplied `limit` to a Notion-safe `page_size`. Six
- * `FactService` retrieval methods share this shape: unlimited
- * (`undefined`) → Notion's max; bounded → `min(max(limit, 1), 100)`.
- *
- * - `limit: undefined` paginates to exhaustion at `NOTION_MAX_PAGE_SIZE`
- *   (callers that need the full slice — wake-up paths, migration scans).
- * - `limit: 0` is clamped up to 1; passing `0` to `dataSources.query`
- *   either infinite-loops or 400s depending on SDK version.
- * - `limit: > NOTION_MAX_PAGE_SIZE` is clamped down to the ceiling;
- *   pagination satisfies the over-100 case via the cursor loop, not by
- *   inflating `page_size`.
- *
- * The verbose name is load-bearing: a bare `clampPageSize` invites
- * callers from a future non-Notion query layer (a search index, an
- * upstream aggregator) that has a different ceiling. The `Notion`
- * prefix is the constraint that protects future correctness — this
- * helper is **not** a general clamping utility.
- *
- * `queryOverdue` is deliberately left on its own clamp shape
- * (`Math.min(limit ?? 100, 100)`, missing the `Math.max(_, 1)` guard)
- * — folding it onto this helper would change behavior for the
- * `limit: 0` caller (a 400 today, an empty result tomorrow). Worth
- * doing in a separate, scoped refactor; out of scope here.
- *
- * @internal — Notion-specific. Not a general clamping utility.
- */
-export function clampNotionPageSize(limit: number | undefined): number {
-  if (limit === undefined) return NOTION_MAX_PAGE_SIZE
-  return Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
-}
-
-/**
- * Build the server-side `Predicate` filter clause for a list of predicates.
- * Returns `undefined` when the input is empty so callers can skip pushing
- * a no-op clause. A single predicate collapses to `select.equals`; multiple
- * predicates fan out as an OR-of-equals (Notion's `select` filter has no
- * `is_one_of` primitive).
- *
- * Centralized so `queryBySubject`, `queryByObject`, `queryByEntityId`, and
- * `queryByEntityTextOnUnmigrated` apply the same shape — the predicate
- * filter is a recurring need across the entity-side read paths and a
- * helper avoids drift.
- */
-function predicateFilterClause(
-  predicates: FactPredicate[] | undefined
-): Record<string, unknown> | undefined {
-  if (!predicates?.length) return undefined
-  if (predicates.length === 1) {
-    return {
-      property: FACT_PROPS.PREDICATE,
-      select: { equals: predicates[0] },
-    }
-  }
-  return {
-    or: predicates.map((p) => ({
-      property: FACT_PROPS.PREDICATE,
-      select: { equals: p },
-    })),
-  }
-}
-
-/**
- * Build the server-side as-of filter for a temporal recall.
- * Returns the AND-of-clauses array the caller pushes flat into its
- * existing filter pipeline (saves a level of nesting when the caller
- * already has 4+ AND clauses).
- *
- * **Bitemporal contract.** `Observed At` and `Invalidated At` are
- * transaction-time (when Lore learned things), distinct from
- * `Valid From` / `Valid Until` (domain truth). The asOf cutoff means
- * "what Lore knew at this point":
- *
- *  1. `Observed At is_empty OR <= asOf` — Lore knew about the row.
- *  2. `Invalidated At is_empty OR > asOf` — Lore had not yet
- *     invalidated it.
- *
- * **Un-migrated-vault correction.** Both transaction-time legs keep
- * an `is_empty` short-circuit so rows without the new columns
- * surface during the `--backfill-fact-observed-at` rollout window.
- * Without further gating, a legacy already-invalidated row
- * (`Valid Until` set, `Observed At` null, `Invalidated At` null)
- * would also surface in an asOf recall because its
- * `Invalidated At is_empty` leg matches —
- * even though it was invalidated BEFORE asOf. The third clause
- * approximates transaction-time invalidation with domain-truth
- * `Valid Until` to close that asymmetry: when the row has no
- * `Invalidated At` (unmigrated or live), only surface it when
- * its `Valid Until` is either empty (still live) or strictly after
- * asOf (became domain-untrue after the cutoff). Once an operator
- * runs `lore migrate --backfill-fact-observed-at`, `Invalidated At
- * = Valid Until` on those rows and the third clause is byte-equivalent
- * to the second — the safety net narrows to "Observed At backfilled
- * but Invalidated At not yet" rows the migration walks atomically.
- *
- * After backfill the `is_empty` legs match no rows for `Observed At`
- * (every row carries a timestamp). The `Invalidated At` `is_empty`
- * leg keeps matching live rows.
- */
-function asOfFilterClauses(
-  asOf: string,
-  opts: { includeInvalidated?: boolean } = {}
-): Array<Record<string, unknown>> {
-  const clauses: Array<Record<string, unknown>> = [
-    {
-      or: [
-        { property: FACT_PROPS.OBSERVED_AT, date: { is_empty: true } },
-        { property: FACT_PROPS.OBSERVED_AT, date: { on_or_before: asOf } },
-      ],
-    },
-  ]
-  // R3 blocker fix: when `includeInvalidated` is set alongside `asOf`,
-  // surface rows invalidated by asOf too — semantics is "everything
-  // Lore knew up through asOf, including rows already invalidated by
-  // then." Without this, `pushLiveOrAsOfClauses` silently ignored the
-  // `includeInvalidated` flag whenever `asOf` was set, contradicting
-  // the documented contract that the two flags are independent.
-  // Default `asOf` recall (no `includeInvalidated`) keeps the live-at-
-  // asOf gate on the Invalidated At axis.
-  if (!opts.includeInvalidated) {
-    clauses.push({
-      // Either Lore explicitly recorded a transaction-time invalidation
-      // after the cutoff (or none yet), OR — for unmigrated rows
-      // missing Invalidated At — domain truth signals the row was still
-      // valid at asOf. The second branch keeps un-migrated vaults
-      // honest until the backfill lands.
-      or: [
-        {
-          and: [
-            { property: FACT_PROPS.INVALIDATED_AT, date: { is_empty: true } },
-            {
-              or: [
-                { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
-                { property: FACT_PROPS.VALID_UNTIL, date: { after: asOf } },
-              ],
-            },
-          ],
-        },
-        { property: FACT_PROPS.INVALIDATED_AT, date: { after: asOf } },
-      ],
-    })
-  }
-  return clauses
-}
-
-/**
- * Apply the bitemporal live-or-asOf gate to a filter accumulator.
- * Centralizes the four-call-site repeated pattern:
- *
- *   if (opts?.asOf) {
- *     filters.push(...asOfFilterClauses(opts.asOf))
- *   } else if (!opts?.includeInvalidated) {
- *     filters.push({ property: VALID_UNTIL, date: { is_empty: true } })
- *   }
- *
- * Mutates `filters` in place — same contract callers already use.
- */
-function pushLiveOrAsOfClauses(
-  filters: Array<Record<string, unknown>>,
-  opts: { asOf?: string; includeInvalidated?: boolean } | undefined
-): void {
-  if (opts?.asOf) {
-    // R3 blocker fix (review of `1b92d1a`): forward `includeInvalidated`
-    // into the asOf clause builder so the combined `asOf + includeHistory`
-    // case actually surfaces rows Lore had already invalidated by asOf.
-    // Pre-fix, this call dropped the flag on the way through, leaving the
-    // core filter byte-identical to the asOf-only path even when MCP
-    // correctly threaded `includeHistory: true`.
-    filters.push(
-      ...asOfFilterClauses(opts.asOf, {
-        includeInvalidated: opts.includeInvalidated,
-      })
-    )
-  } else if (!opts?.includeInvalidated) {
-    filters.push({
-      property: FACT_PROPS.VALID_UNTIL,
-      date: { is_empty: true },
-    })
-  }
 }
 
 /**
@@ -576,20 +324,7 @@ export function __resetRunToolBatchCreatesAuthFallbackLogForTests(): void {
 }
 
 export class FactService {
-  /**
-   * Resolved scope context. Same posture as
-   * `MemoryService.scopeCtx`. Default reads filter the Facts DB by
-   * the same scope-inclusion rule as the Memories DB.
-   */
-  private scopeCtx: MemoryScopeContext = {}
-
-  /**
-   * Opt-in flag that parallels `MemoryService.scopeFilterEnabled`. Tests
-   * constructing FactService without a scope context get unscoped
-   * retrieval shape; production callers that pass a context (even
-   * empty) get the scoped filter.
-   */
-  private scopeFilterEnabled = false
+  private readonly queries: FactQueries
 
   /**
    * Opt-in to batching auto-`mentions` fact creates via
@@ -621,10 +356,11 @@ export class FactService {
     scopeCtx?: MemoryScopeContext,
     options?: { useRunToolBatchCreates?: boolean; relationUrlBase?: string }
   ) {
-    if (scopeCtx) {
-      this.scopeCtx = scopeCtx
-      this.scopeFilterEnabled = true
-    }
+    this.queries = new FactQueries({
+      client,
+      db,
+      scopeCtx,
+    })
     if (options?.useRunToolBatchCreates === true) {
       this.useRunToolBatchCreates = true
     }
@@ -634,7 +370,7 @@ export class FactService {
       this.client,
       this.db,
       (page) => this.pageToFact(page),
-      () => this.scopeCtx
+      () => this.queries.getScopeContext()
     )
   }
 
@@ -650,64 +386,11 @@ export class FactService {
   }
 
   setScopeContext(ctx: MemoryScopeContext): void {
-    this.scopeCtx = ctx
-    this.scopeFilterEnabled = true
+    this.queries.setScopeContext(ctx)
   }
 
   getScopeContext(): Readonly<MemoryScopeContext> {
-    return this.scopeCtx
-  }
-
-  /**
-   * Wrap a caller-built filter with the default scope
-   * inclusion clauses (`Scope Kind` broadcast / narrow-key match,
-   * `Expires At` not-past). Threaded through every public read on
-   * the Facts DB so a session-scoped fact created by another reader
-   * cannot surface in this reader's `queryByEntity` /
-   * `queryBySubject` / `queryByObject` / `queryBySourceMemory`
-   * results.
-   *
-   * No-ops on two paths:
-   * - Caller passes `includeOutOfScope: true` (audit / migration paths).
-   * - The service was constructed without a scope context (test
-   *   fixtures running on the unscoped filter shape).
-   *
-   * Parallels the corresponding helpers on `MemoryService`. Centralized
-   * so a future contributor adding a new public read on `FactService`
-   * threads the same gate by calling this one method rather than
-   * re-deriving the scope clause.
-   */
-  private applyDefaultScope(
-    filter: Record<string, unknown> | undefined,
-    includeOutOfScope: boolean | undefined
-  ): Record<string, unknown> | undefined {
-    if (includeOutOfScope === true || !this.scopeFilterEnabled) return filter
-    return withDefaultScopeFilter(filter, this.scopeCtx, todayUtc(), FACT_SCOPE_PROPS)
-  }
-
-  /**
-   * Companion client-side post-filter for `applyDefaultScope`.
-   * Notion's compound-filter language caps nesting
-   * at 2 levels, so the server-side filter narrows to "scope kind
-   * is broadcast OR one of the reader's narrow kinds" without
-   * binding kind+key. The kind+key binding runs here client-side:
-   * a row whose `Scope Kind` is `session` and whose `Scope Key`
-   * does not equal the reader's `LORE_SESSION_ID` drops at this
-   * step. The over-fetch is small in practice; pagination loops
-   * in the public reads continue past dropped rows so the result
-   * still hits the caller's `limit`.
-   *
-   * Returns `undefined` when scope filtering is disabled (audit
-   * caller / no scope context) so the caller can skip the
-   * post-filter step entirely.
-   */
-  private postScopeFilterPredicate(
-    includeOutOfScope: boolean | undefined
-  ): ((page: PageObjectResponse) => boolean) | undefined {
-    if (includeOutOfScope === true || !this.scopeFilterEnabled) return undefined
-    const today = todayUtc()
-    const ctx = this.scopeCtx
-    return (page) => matchesDefaultScope(page.properties, ctx, today, FACT_SCOPE_PROPS)
+    return this.queries.getScopeContext()
   }
 
   async create(input: CreateFactInput): Promise<Fact> {
@@ -890,88 +573,6 @@ export class FactService {
     } while (cursor)
 
     return hits
-  }
-
-  /**
-   * Find live facts where the given Entity row appears on either the
-   * Subject or Object side via the canonical relation columns. This is
-   * the post-PF3-01 read path: a single round-trip with deduped results
-   * across both sides, no substring fragility.
-   *
-   * Returns `[]` on a vault that hasn't run the build-entities migration
-   * yet — no rows reference the entity, so the result is empty by
-   * construction. Private by design — exposing it would invite a caller
-   * to skip the unbackfilled-text companion in `queryByEntity` and ship
-   * a silent recall regression on transition-window vaults. Symmetric
-   * with the also-private `queryByEntityTextOnUnmigrated`; both are
-   * union members, neither is a public read path. External consumers
-   * must go through `queryByEntity`, which unions the two branches.
-   */
-  private async queryByEntityId(
-    entityId: string,
-    opts?: {
-      projectId?: string
-      includeInvalidated?: boolean
-      predicates?: FactPredicate[]
-      /**
-       * Cap total results. Pagination stops as soon as this is reached and
-       * the per-request `page_size` is clamped to `min(limit, 100)` so a
-       * top-N consumer doesn't pay for a full unbounded walk. Mirrors the
-       * shape of `queryBySubject` / `queryByObject` / `queryBySourceMemory`.
-       */
-      limit?: number
-      /** Issue #283. See `applyDefaultScope` for semantics. */
-      includeOutOfScope?: boolean
-      /** Issue #284. See `asOfFilterClauses` for semantics. */
-      asOf?: string
-    }
-  ): Promise<Fact[]> {
-    const filters: Array<Record<string, unknown>> = [
-      {
-        or: [
-          { property: FACT_PROPS.SUBJECT_ENTITY, relation: { contains: entityId } },
-          { property: FACT_PROPS.OBJECT_ENTITY, relation: { contains: entityId } },
-        ],
-      },
-    ]
-
-    if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-    pushLiveOrAsOfClauses(filters, opts)
-
-    const predicateClause = predicateFilterClause(opts?.predicates)
-    if (predicateClause) filters.push(predicateClause)
-
-    const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
-    // Narrow-scope facts whose Scope Key doesn't match the reader
-    // drop out of default `queryByEntity` recall. The server-side
-    // filter narrows to broadcast + reader's narrow kinds; the
-    // kind+key binding runs in `postScopePredicate`.
-    const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
-    const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
-    const results: PageObjectResponse[] = []
-    let cursor: string | undefined = undefined
-    const limit = opts?.limit
-    const pageSize = clampNotionPageSize(limit)
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: pageSize,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        if (postScopePredicate && !postScopePredicate(page)) continue
-        results.push(page)
-        if (limit !== undefined && results.length >= limit) break
-      }
-      if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return await this.pageToFacts(results)
   }
 
   /**
@@ -1914,271 +1515,18 @@ export class FactService {
   }
 
   async queryBySubject(subject: string, opts?: QueryFactsOpts): Promise<Fact[]> {
-    // Strict-empty subject (`""`) is gated behind an explicit
-    // `allowUnfiltered: true` opt-in. Without the flag, this method
-    // returns `[]` rather than silently falling through to "list every
-    // fact in scope" — preventing an MCP caller or future internal
-    // caller from quietly enumerating the entire vault. Internal
-    // callers that genuinely want vault-wide enumeration (the
-    // `--build-entities` migration scan) pass the flag.
-    //
-    // DO NOT tighten this to `subject.trim() === ""`. Whitespace-only
-    // inputs (`"   "`) intentionally still pass through to the literal-
-    // substring `Subject contains <raw>` fallback below — same posture
-    // as the punctuation-only case (`"."`, `"!!!"`) pinned by the
-    // `falls back to raw Subject when input normalizes to empty
-    // (punctuation/whitespace only)` test. The agent-
-    // facing surface guards empty / whitespace at the `queryByEntity`
-    // and MCP boundaries (which is where typoed /
-    // `expandEntityQueryVariants`-empty values reach the system) so
-    // this internal helper does not need a tighter trim check.
-    if (subject === "" && !opts?.allowUnfiltered) return []
-
-    const filters: Array<Record<string, unknown>> = []
-
-    // Allow empty subject to list all facts in scope (only reachable
-    // via `allowUnfiltered: true` per the guard above).
-    if (subject) {
-      // Case-insensitive match via the normalized SubjectKey column so
-      // `MemoryService` and `memoryservice` resolve to the same fact
-      // set. The OR with a raw Subject `contains` keeps un-backfilled
-      // rows reachable until `lore migrate --dedup-keys` backfills
-      // SubjectKey on every fact — once the backfill lands the
-      // raw-side branch becomes redundant, but it costs one cheap
-      // clause and avoids a window where queries silently lose results.
-      //
-      // Punctuation/whitespace-only inputs (`"."`, `"   "`, `"!!!"`) all
-      // normalize to `""`. Notion's `rich_text contains ""` matches every
-      // row with a non-null SubjectKey value — i.e., it broadens the
-      // query to "every fact in scope" rather than restricting it. Skip
-      // the SubjectKey clause when the normalized form is empty and fall
-      // back to a raw `Subject title contains <input>` filter, which
-      // gives literal-substring semantics for these edge inputs.
-      const normalizedKey = computeSubjectKey(subject)
-      if (normalizedKey) {
-        filters.push({
-          or: [
-            {
-              property: FACT_PROPS.SUBJECT_KEY,
-              rich_text: { contains: normalizedKey },
-            },
-            { property: FACT_PROPS.SUBJECT, title: { contains: subject } },
-          ],
-        })
-      } else {
-        filters.push({ property: FACT_PROPS.SUBJECT, title: { contains: subject } })
-      }
-    }
-
-    if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    pushLiveOrAsOfClauses(filters, opts)
-
-    if (opts?.predicates?.length) {
-      if (opts.predicates.length === 1) {
-        filters.push({
-          property: FACT_PROPS.PREDICATE,
-          select: { equals: opts.predicates[0] },
-        })
-      } else {
-        filters.push({
-          or: opts.predicates.map((p) => ({
-            property: FACT_PROPS.PREDICATE,
-            select: { equals: p },
-          })),
-        })
-      }
-    }
-
-    const baseFilter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
-          : undefined
-
-    // Apply the default scope filter before pagination so narrow-scope
-    // facts whose Scope Key doesn't match the reader drop out of
-    // `lore-query action='ask'` Subject substring recall.
-    const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
-    const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
-
-    const results: PageObjectResponse[] = []
-    let cursor: string | undefined = undefined
-    const limit = opts?.limit
-    const pageSize = clampNotionPageSize(limit)
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: pageSize,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        if (postScopePredicate && !postScopePredicate(page)) continue
-        results.push(page)
-        if (limit !== undefined && results.length >= limit) break
-      }
-      if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return await this.pageToFacts(results)
+    return this.queries.queryBySubject(subject, opts)
   }
 
   async queryByObject(object: string, opts?: QueryFactsOpts): Promise<Fact[]> {
-    // Mirror `queryBySubject`'s strict-empty guard. `Object rich_text
-    // contains ""` matches every populated row in scope, so a strict-
-    // empty string would silently produce a vault-wide scan. Whitespace-
-    // only inputs still pass through to a literal-substring filter
-    // (same posture as `queryBySubject`).
-    if (object === "" && !opts?.allowUnfiltered) return []
-
-    const filters: Array<Record<string, unknown>> = []
-
-    if (object) {
-      // Case-sensitive `contains` on the raw Object column. The
-      // canonical SubjectKey column has no `ObjectKey` mirror — that
-      // surface lives in the Entities DB instead. Until an Object-
-      // side normalization column exists, `queryByEntity` is
-      // half-canonical: case-folded against Subject, raw against Object.
-      filters.push({ property: FACT_PROPS.OBJECT, rich_text: { contains: object } })
-    }
-
-    if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    pushLiveOrAsOfClauses(filters, opts)
-
-    if (opts?.predicates?.length) {
-      if (opts.predicates.length === 1) {
-        filters.push({
-          property: FACT_PROPS.PREDICATE,
-          select: { equals: opts.predicates[0] },
-        })
-      } else {
-        filters.push({
-          or: opts.predicates.map((p) => ({
-            property: FACT_PROPS.PREDICATE,
-            select: { equals: p },
-          })),
-        })
-      }
-    }
-
-    const baseFilter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
-          : undefined
-
-    // Apply default scope filter on Object substring recall so
-    // narrow-scope facts referenced in another reader's session
-    // don't surface here.
-    const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
-    const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
-
-    const results: PageObjectResponse[] = []
-    let cursor: string | undefined = undefined
-    const limit = opts?.limit
-    const pageSize = clampNotionPageSize(limit)
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: pageSize,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        if (postScopePredicate && !postScopePredicate(page)) continue
-        results.push(page)
-        if (limit !== undefined && results.length >= limit) break
-      }
-      if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return await this.pageToFacts(results)
+    return this.queries.queryByObject(object, opts)
   }
 
   async queryBySourceMemory(
     sourceMemoryId: string,
     opts?: QueryFactsOpts
   ): Promise<Fact[]> {
-    const filters: Array<Record<string, unknown>> = [
-      {
-        property: FACT_PROPS.SOURCE,
-        relation: { contains: sourceMemoryId },
-      },
-    ]
-
-    if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    if (!opts?.includeInvalidated) {
-      filters.push({
-        property: FACT_PROPS.VALID_UNTIL,
-        date: { is_empty: true },
-      })
-    }
-
-    if (opts?.predicates?.length) {
-      if (opts.predicates.length === 1) {
-        filters.push({
-          property: FACT_PROPS.PREDICATE,
-          select: { equals: opts.predicates[0] },
-        })
-      } else {
-        filters.push({
-          or: opts.predicates.map((p) => ({
-            property: FACT_PROPS.PREDICATE,
-            select: { equals: p },
-          })),
-        })
-      }
-    }
-
-    const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
-
-    // Narrow-scope facts whose Scope Key doesn't match the reader
-    // drop out of `queryBySourceMemory` recall by default. The
-    // auto-mentions diff path in `MemoryService.update` opts out
-    // (`includeOutOfScope: true`) because the diff must see every
-    // fact the row sourced regardless of scope, otherwise the
-    // re-emission would leave orphan facts whose source memory was
-    // re-titled.
-    const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
-    const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
-
-    const results: PageObjectResponse[] = []
-    let cursor: string | undefined = undefined
-    const limit = opts?.limit
-    const pageSize = clampNotionPageSize(limit)
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: pageSize,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        if (postScopePredicate && !postScopePredicate(page)) continue
-        results.push(page)
-        if (limit !== undefined && results.length >= limit) break
-      }
-      if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return await this.pageToFacts(results)
+    return this.queries.queryBySourceMemory(sourceMemoryId, opts)
   }
 
   /**
@@ -2195,59 +1543,7 @@ export class FactService {
   async listRecent(
     opts: ListRecentOpts = {}
   ): Promise<{ items: Fact[]; hasMore: boolean }> {
-    const filters: Array<Record<string, unknown>> = []
-
-    if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    if (!opts.includeInvalidated) {
-      filters.push({
-        property: FACT_PROPS.VALID_UNTIL,
-        date: { is_empty: true },
-      })
-    }
-
-    const baseFilter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
-          : undefined
-
-    // Default scope filter. The wake-up Active Facts
-    // section reads through this method — without scope filtering,
-    // a session-scoped fact would surface in every other session's
-    // wake-up, which is the load-bearing acceptance-criterion failure
-    // mode. `includeOutOfScope: true` opts out for audit paths; the
-    // filter also no-ops when `scopeFilterEnabled` is false.
-    const filter =
-      opts.includeOutOfScope === true || !this.scopeFilterEnabled
-        ? baseFilter
-        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc(), FACT_SCOPE_PROPS)
-
-    const pageSize = clampNotionPageSize(opts.limit)
-
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-      sorts: [{ timestamp: "created_time", direction: "descending" }],
-      page_size: pageSize,
-    })
-
-    let pages = response.results.filter(isFullPage) as PageObjectResponse[]
-    // Kind+key binding via client-side post-filter. `listRecent` is
-    // single-page by design (the wake-up hot path), so dropped
-    // narrow-key-mismatch rows just shrink the result; we do NOT
-    // paginate to backfill — this method is a single-page contract.
-    const postScopePredicate = this.postScopeFilterPredicate(opts.includeOutOfScope)
-    if (postScopePredicate) {
-      pages = pages.filter(postScopePredicate)
-    }
-    return {
-      items: await this.pageToFacts(pages),
-      hasMore: response.has_more ?? false,
-    }
+    return this.queries.listRecent(opts)
   }
 
   /**
@@ -2277,214 +1573,8 @@ export class FactService {
    * Returns deduped: a fact whose Subject AND Object both reference
    * the entity surfaces once.
    */
-  async queryByEntity(
-    entity: string,
-    opts?: {
-      projectId?: string
-      entityId?: string | null
-      predicates?: FactPredicate[]
-      /**
-       * Cap total results returned to the caller. Forwarded into both
-       * underlying branches as a per-branch `page_size` clamp + early-stop,
-       * and applied again as a post-dedup slice so a `limit: 25` consumer
-       * never sees more than 25 rows even when both branches contribute
-       * distinct hits. `undefined` paginates each branch to exhaustion —
-       * required by wake-up paths and migration scans that need the full
-       * slice.
-       */
-      limit?: number
-      /**
-       * Forwarded into both underlying branches so the
-       * scope filter applies symmetrically across the relation and
-       * substring legs. Audit / migration paths set `true`.
-       */
-      includeOutOfScope?: boolean
-      /**
-       * Transaction-time as-of cutoff in `YYYY-MM-DD` form.
-       * Forwarded into every underlying branch so the bitemporal filter
-       * applies symmetrically across the relation and substring legs.
-       * Independent of `includeInvalidated`; the asOf clause replaces the
-       * legacy `Valid Until is_empty` filter when set.
-       */
-      asOf?: string
-      /**
-       * When true, drop the default `Valid Until is_empty`
-       * filter so invalidated rows surface alongside live ones. Useful
-       * when an agent is asking for a full history of facts about an
-       * entity. Independent of `asOf` — pass `asOf` for "at point T",
-       * pass `includeInvalidated` for "every fact ever recorded".
-       */
-      includeInvalidated?: boolean
-    }
-  ): Promise<Fact[]> {
-    // Empty / whitespace entity would otherwise reach `queryBySubject`
-    // and `queryByObject` — and the `queryByEntityTextOnUnmigrated`
-    // path below — all of which match every live fact in scope on a
-    // bare `contains: ""`. Short-circuit to `[]` so an MCP caller that
-    // lets an empty / trimmed-empty string through, or an
-    // `expandEntityQueryVariants` reduction that yields empty, cannot
-    // trigger a full-vault paginated scan. The relation branch via
-    // `entityId` is inherently filtered, but we guard at the top so
-    // the no-`entityId` fallback and the parallel substring branch
-    // share the same posture.
-    if (!entity.trim()) return []
-
-    const limit = opts?.limit
-    const sliceToLimit = (rows: Fact[]): Fact[] =>
-      limit !== undefined ? rows.slice(0, limit) : rows
-
-    if (opts?.entityId) {
-      // Hot-path: relation hits + un-backfilled substring hits, run in
-      // parallel so wall-clock is one round-trip, not two. Predicate
-      // filter applies server-side on both branches so callers like
-      // `lore-decision action='context'` (predicates: ["decided_by"]) don't
-      // over-fetch unrelated facts touching the same entity. The limit
-      // is forwarded into both branches so each underlying query clamps
-      // its `page_size` and stops after `limit` rows; the post-dedup
-      // slice below caps the union (two branches × `limit` could
-      // otherwise return up to `2 × limit` distinct rows).
-      const [byRelation, byTextOnUnmigrated] = await Promise.all([
-        this.queryByEntityId(opts.entityId, {
-          projectId: opts.projectId,
-          predicates: opts.predicates,
-          limit,
-          includeOutOfScope: opts.includeOutOfScope,
-          asOf: opts.asOf,
-          includeInvalidated: opts.includeInvalidated,
-        }),
-        this.queryByEntityTextOnUnmigrated(entity, {
-          projectId: opts.projectId,
-          predicates: opts.predicates,
-          limit,
-          includeOutOfScope: opts.includeOutOfScope,
-          asOf: opts.asOf,
-          includeInvalidated: opts.includeInvalidated,
-        }),
-      ])
-      const seen = new Set(byRelation.map((f) => f.id))
-      return sliceToLimit([
-        ...byRelation,
-        ...byTextOnUnmigrated.filter((f) => !seen.has(f.id)),
-      ])
-    }
-
-    const asSubject = await this.queryBySubject(entity, opts)
-    const asObject = await this.queryByObject(entity, opts)
-    const seen = new Set(asSubject.map((f) => f.id))
-    return sliceToLimit([...asSubject, ...asObject.filter((f) => !seen.has(f.id))])
-  }
-
-  /**
-   * Substring search restricted to facts whose `SubjectEntity` AND
-   * `ObjectEntity` relations are both empty — i.e. rows the
-   * build-entities migration has not backfilled yet. Used by
-   * `queryByEntity` to keep recall on transition-window vaults where
-   * some facts still lack relation columns.
-   *
-   * Mirrors `queryBySubject`'s SubjectKey-aware OR + `queryByObject`'s
-   * raw `contains`. Returns the union deduped by id.
-   */
-  private async queryByEntityTextOnUnmigrated(
-    entity: string,
-    opts?: {
-      projectId?: string
-      predicates?: FactPredicate[]
-      limit?: number
-      /** Issue #283 — forwarded from `queryByEntity`. */
-      includeOutOfScope?: boolean
-      /** Issue #284 — forwarded from `queryByEntity`. */
-      asOf?: string
-      /** Issue #284 — forwarded from `queryByEntity`. */
-      includeInvalidated?: boolean
-    }
-  ): Promise<Fact[]> {
-    // Whitespace-only entity must short-circuit too. `Subject contains
-    // ""` and `Object contains ""` are vault-wide matches in Notion,
-    // so the OR group below would otherwise bypass every other
-    // narrowing clause and emit every un-backfilled live fact.
-    if (!entity.trim()) return []
-
-    const baseFilters: Array<Record<string, unknown>> = [
-      // The relation columns may not exist on a stale live schema yet
-      // (a vault that hasn't run schema migration). Notion's
-      // `relation.is_empty` filter on a missing column is a 400, so
-      // we wrap the whole query in a try/catch and treat the failure
-      // as "schema drift has not been repaired; substring fallback
-      // already ran through the unresolved-entity path elsewhere —
-      // return empty here so we don't double-count."
-      { property: FACT_PROPS.SUBJECT_ENTITY, relation: { is_empty: true } },
-      { property: FACT_PROPS.OBJECT_ENTITY, relation: { is_empty: true } },
-    ]
-    pushLiveOrAsOfClauses(baseFilters, opts)
-    if (opts?.projectId) {
-      baseFilters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    const predicateClause = predicateFilterClause(opts?.predicates)
-    if (predicateClause) baseFilters.push(predicateClause)
-
-    const subjectKey = computeSubjectKey(entity)
-    const textOr: Array<Record<string, unknown>> = []
-    if (subjectKey) {
-      textOr.push({
-        property: FACT_PROPS.SUBJECT_KEY,
-        rich_text: { contains: subjectKey },
-      })
-    }
-    textOr.push(
-      { property: FACT_PROPS.SUBJECT, title: { contains: entity } },
-      { property: FACT_PROPS.OBJECT, rich_text: { contains: entity } }
-    )
-    baseFilters.push({ or: textOr })
-
-    // Apply default scope filter on the unmigrated-text branch.
-    // Symmetric with the relation branch via `queryByEntityId`, so a
-    // session-scoped fact does not surface in this reader's
-    // `queryByEntity` result regardless of which branch finds it.
-    const scopedFilter = this.applyDefaultScope(
-      { and: baseFilters },
-      opts?.includeOutOfScope
-    )
-    const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
-
-    try {
-      const results: PageObjectResponse[] = []
-      let cursor: string | undefined = undefined
-      const limit = opts?.limit
-      const pageSize = clampNotionPageSize(limit)
-      do {
-        const response = await this.client.dataSources.query({
-          data_source_id: this.db.dataSourceId,
-          filter: scopedFilter as QueryDataSourceParameters["filter"],
-          sorts: [{ timestamp: "created_time", direction: "descending" }],
-          page_size: pageSize,
-          start_cursor: cursor,
-        })
-        for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-          if (postScopePredicate && !postScopePredicate(page)) continue
-          results.push(page)
-          if (limit !== undefined && results.length >= limit) break
-        }
-        if (limit !== undefined && results.length >= limit) break
-        cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-      } while (cursor)
-      return await this.pageToFacts(results)
-    } catch (err) {
-      // Narrow swallow: only the "relation column doesn't exist on the
-      // schema yet" case (a legacy vault that hasn't run schema
-      // migration) should silently return `[]`. Transient errors —
-      // 5xx, rate-limit blips, network — must propagate so the
-      // relation-path side of the union surfaces a real failure to
-      // the caller instead of silently halving the result set.
-      //
-      // Notion's SDK reports the missing-column case via
-      // `validation_error` (HTTP 400). We match by code prefix to
-      // tolerate both v5 and any future SDK variants.
-      if (isMissingPropertyError(err)) {
-        return []
-      }
-      throw err
-    }
+  async queryByEntity(entity: string, opts?: QueryByEntityOpts): Promise<Fact[]> {
+    return this.queries.queryByEntity(entity, opts)
   }
 
   /**
@@ -2502,103 +1592,11 @@ export class FactService {
    * first N.
    */
   async queryOrphans(opts?: { projectId?: string; limit?: number }): Promise<Fact[]> {
-    const filters: Array<Record<string, unknown>> = [
-      { property: FACT_PROPS.SOURCE, relation: { is_empty: true } },
-      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
-    ]
-
-    if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    const limit = opts?.limit
-    const results: PageObjectResponse[] = []
-    let cursor: string | undefined = undefined
-    do {
-      const pageSize =
-        limit !== undefined ? Math.min(100, Math.max(1, limit - results.length)) : 100
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: { and: filters } as QueryDataSourceParameters["filter"],
-        sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: pageSize,
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        results.push(page)
-        if (limit !== undefined && results.length >= limit) break
-      }
-      if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return await this.pageToFacts(results)
+    return this.queries.queryOrphans(opts)
   }
 
-  async queryOverdue(opts?: {
-    projectId?: string
-    limit?: number
-    /**
-     * Opt out of the default-scope filter so audit /
-     * migration callers can see narrow-scope and expired rows. The
-     * MCP `lore-query action='audit'` surface keeps this `false`
-     * (default): a session-scoped overdue fact must not surface to
-     * a different reader through audit any more than it does
-     * through `queryBySubject` / `queryByObject`. Matches the
-     * other public reads on this service.
-     */
-    includeOutOfScope?: boolean
-  }): Promise<Fact[]> {
-    const today = new Date().toISOString().split("T")[0]
-    const filters: Array<Record<string, unknown>> = [
-      { property: FACT_PROPS.REVIEW_BY, date: { on_or_before: today } },
-      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
-    ]
-
-    if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
-    }
-
-    const baseFilter = { and: filters }
-    // Narrow-scope and expired-row filtering. Server-side clauses come
-    // from `applyDefaultScope`; the kind+key binding runs client-side
-    // via `postScopeFilterPredicate` because Notion's compound-filter
-    // language caps nesting at 2 levels (see
-    // `defaultScopeInclusionFilter`'s docstring for the empirical
-    // confirmation). The audit surface (`lore-query action='audit'`,
-    // wake-up's "Overdue for Review") consumes this method, so the
-    // gate is required to keep session-scoped overdue rows from
-    // bleeding to other readers.
-    const filter = this.applyDefaultScope(baseFilter, opts?.includeOutOfScope)
-    const postScopePredicate = this.postScopeFilterPredicate(opts?.includeOutOfScope)
-
-    // Paginate to exhaustion (or to `limit`) — Notion's default page is 100
-    // rows, so a single-shot query silently truncates a vault that has more
-    // than 100 overdue facts. Mirror the `queryBySubject` loop shape so the
-    // service exposes one consistent paginating-read pattern.
-    const limit = opts?.limit
-    const items: Fact[] = []
-    let cursor: string | undefined = undefined
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [{ property: FACT_PROPS.REVIEW_BY, direction: "ascending" }],
-        page_size: Math.min(limit ?? NOTION_MAX_PAGE_SIZE, NOTION_MAX_PAGE_SIZE),
-        start_cursor: cursor,
-      })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        if (postScopePredicate && !postScopePredicate(page)) continue
-        const fact = await this.pageToFact(page)
-        if (fact === null) continue
-        items.push(fact)
-        if (limit !== undefined && items.length >= limit) break
-      }
-      if (limit !== undefined && items.length >= limit) break
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return items
+  async queryOverdue(opts?: QueryOverdueOpts): Promise<Fact[]> {
+    return this.queries.queryOverdue(opts)
   }
 
   /**
@@ -2628,9 +1626,7 @@ export class FactService {
    * boundary.
    */
   async getById(id: string): Promise<Fact | null> {
-    const page = await this.client.pages.retrieve({ page_id: id })
-    if (!isLiveFullPage(page)) return null
-    return await this.pageToFact(page)
+    return this.queries.getById(id)
   }
 
   async extendReview(id: string, reviewBy: string | null): Promise<void> {
@@ -2897,39 +1893,7 @@ export class FactService {
    * Empty input returns 0 without issuing a query.
    */
   async countByPredicateRaw(strings: string[]): Promise<number> {
-    if (strings.length === 0) return 0
-
-    const predicateClause: Record<string, unknown> =
-      strings.length === 1
-        ? { property: FACT_PROPS.PREDICATE, select: { equals: strings[0] } }
-        : {
-            or: strings.map((p) => ({
-              property: FACT_PROPS.PREDICATE,
-              select: { equals: p },
-            })),
-          }
-
-    const filter = {
-      and: [
-        { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
-        predicateClause,
-      ],
-    }
-
-    let count = 0
-    let cursor: string | undefined = undefined
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        page_size: NOTION_MAX_PAGE_SIZE,
-        start_cursor: cursor,
-      })
-      count += response.results.length
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
-    } while (cursor)
-
-    return count
+    return this.queries.countByPredicateRaw(strings)
   }
 
   private async pageToFact(page: PageObjectResponse): Promise<Fact | null> {
