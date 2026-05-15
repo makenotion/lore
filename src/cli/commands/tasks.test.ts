@@ -1460,6 +1460,32 @@ describe("runTaskList", () => {
     expect(result.text).toContain("150 tasks (exact total):")
   })
 
+  it("keeps exact-limit results unsaturated when Notion reports no next cursor", async () => {
+    const rows = Array.from({ length: 20 }, (_, i) =>
+      makeTask({ id: `t-${i}`, title: `Task ${i}` })
+    )
+    const tasksList = vi.fn().mockResolvedValue({ items: rows, nextCursor: undefined })
+    const services = {
+      ...makeServices({ contextProject: null }),
+      tasks: { list: tasksList },
+    } as unknown as LoreServices
+
+    const result = await runTaskList(services, {
+      projectName: undefined,
+      entity: undefined,
+      state: undefined,
+      dueBefore: undefined,
+      limit: 20,
+    })
+
+    expect(tasksList).toHaveBeenCalledTimes(1)
+    expect(result.data.total).toBe(20)
+    expect(result.data.saturated).toBe(false)
+    expect(result.data.saturationReason).toBeNull()
+    expect(result.text).toContain("20 tasks (exact total):")
+    expect(result.text).not.toContain("more matching tasks exist")
+  })
+
   it("renders user-limit saturation footer when the walk stopped at --limit (raise --limit nudge)", async () => {
     // The user-limit case fires when the cursor walk stopped because
     // `tasks.length === --limit` while `nextCursor` was still set.
