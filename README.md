@@ -307,13 +307,19 @@ relation columns to Facts, followed by `lore migrate --build-entities --yes`
 to fill historical rows that do not already have relation values. See
 [`docs/team-rollout.md#entities-database-cutover`](docs/team-rollout.md#entities-database-cutover).
 
-**Predicate values accepted by `lore-fact action='create'`**: `is_a`, `has_a`,
-`uses`, `depends_on`, `related_to`, `created_by`, `owned_by`, `replaces`,
-`extends`, `conflicts_with`. System-managed predicates are `decided_by`,
-`supersedes_decision`, `informs` (`lore-decision action='create'` /
-`supersede`) and `mentions` (`lore-memory action='save'`). Historical tracking
-predicates (`needs_action`, `waiting_on`, `blocked_by`) are legacy row values
-only; use `lore-task action='create'` for tracked work.
+**Predicate values accepted by `lore-fact action='create'`** are profile-aware.
+Generic predicates `is_a`, `has_a`, and `related_to` are always available; the
+active profile contributes the rest of the agent-writable predicate set. The
+default profile currently adds `uses`, `depends_on`, `created_by`, `owned_by`,
+`replaces`, `extends`, and `conflicts_with`, while other profiles can expose
+different domain-specific predicates. See
+[`docs/profiles.md#taxonomy-contract`](docs/profiles.md#taxonomy-contract) and
+the active profile taxonomy for the writable set in a given vault.
+System-managed predicates are `decided_by`, `supersedes_decision`, `informs`
+(`lore-decision action='create'` / `supersede`) and `mentions`
+(`lore-memory action='save'`). Historical tracking predicates (`needs_action`,
+`waiting_on`, `blocked_by`) are legacy row values only; use
+`lore-task action='create'` for tracked work.
 
 **Confidence (categorical)**: `certain`, `likely`, `speculative`. This is the
 agent-writable categorical stance. The separate numeric `Confidence Score`
@@ -325,19 +331,28 @@ contract.
 
 **Memory sources**: `conversation`, `file`, `manual`, `agent_diary`, `digest`
 
-**Memory kinds**: `note`, `decision`, `incident`, `runbook`, `postmortem`, `policy`, `task`
+**Memory kinds**: `note`, `decision`, `incident`, `runbook`, `postmortem`,
+`policy`, `task`, `procedure`. Procedures are reviewed governance memory:
+propose them through `lore-procedure action='propose'`, then approve or reject
+them through `lore-memory action='approve'` /
+`lore-memory action='reject'`. `lore-memory action='save'` does not create
+`kind: "procedure"` rows.
 
 **Memory statuses**: `informational`, `proposed`, `accepted`, `superseded`, `deprecated`, `rejected`
 
 ### Topic keys
 
-Recurring memory topics can pass `topicKey` to `lore-memory action='save'`.
-Rows upsert by `(Topic Key + exact Project relation set)`: a matching row gets
-a revision appended and its `Revision Count` incremented instead of creating a
-new memory. Use stable prefixes matching recurring families:
-`decision/`, `runbook/`, `incident/`, `postmortem/`, and `policy/`. Topic keys
-apply to recurring categories; `note` and `task` kinds do not form revision
-chains. Use
+Recurring non-procedure memory topics (`decision`, `runbook`, `incident`,
+`postmortem`, and `policy`) can pass `topicKey` to
+`lore-memory action='save'`. Rows upsert by `(Topic Key + exact Project relation
+set)`: a matching row gets a revision appended and its `Revision Count`
+incremented instead of creating a new memory. Use stable prefixes matching those
+save families: `decision/`, `runbook/`, `incident/`, `postmortem/`, and
+`policy/`. Procedure topic keys use the `procedure/` family, but they are
+supplied to `lore-procedure action='propose'` for proposal idempotency and
+conflict detection rather than to `lore-memory action='save'` for revision
+chains. Only the non-procedure save families form `lore-memory` revision chains;
+`note` and `task` kinds do not form revision chains. Use
 `lore-memory action='suggest-topic-key'` to derive a key, and see
 [`docs/memory-workflows.md`](docs/memory-workflows.md#topic-keys) for
 promotion and re-keying rules.
@@ -476,7 +491,7 @@ implementation, ntn version policy, and keychain-mode workaround.
 
 | Variable                 | Effect                                                                                                                                                                                |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NOTION_API_TOKEN`       | Canonical Notion bearer token env var for Personal Access Tokens. Takes precedence over ntn `auth.json`                                                                                |
+| `NOTION_API_TOKEN`       | Canonical Notion bearer token env var for Personal Access Tokens. Takes precedence over ntn `auth.json`                                                                               |
 | `NOTION_WORKSPACE_ID`    | Selects a workspace from a multi-workspace ntn `auth.json`                                                                                                                            |
 | `LORE_AGENT_NAME`        | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`)                                                                                                         |
 | `LORE_USER_NAME`         | Override the `Author:` field on saved memories with a human display name. When unset, Lore resolves the engineer identity from `users.me` on the active ntn-issued token.             |

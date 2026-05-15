@@ -51,14 +51,14 @@ your stance; the numeric score accumulates evidence over time.
 `affectedMemoryId` to name the memory whose score should be reduced. For
 symmetric verdicts, omit it.
 
-| Verdict | Direction | Meaning |
-| ------- | --------- | ------- |
-| `conflicts_with` | Asymmetric | A and B make incompatible factual claims in the same scope. `affectedMemoryId` names the contradicted memory. |
-| `supersedes` | Asymmetric | Decision-kind affected targets only. The other memory is the later, more accurate decision. `affectedMemoryId` names the superseded decision. |
-| `scoped` | Symmetric | A and B differ, but the difference is explained by project, time, environment, or other scope. |
-| `related` | Symmetric | A and B share a subject but make non-overlapping claims. |
-| `compatible` | Symmetric | A and B make near-identical claims. Consider updating one memory if one should become canonical. |
-| `not_conflict` | Symmetric | A and B are about unrelated subjects. |
+| Verdict          | Direction  | Meaning                                                                                                                                       |
+| ---------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `conflicts_with` | Asymmetric | A and B make incompatible factual claims in the same scope. `affectedMemoryId` names the contradicted memory.                                 |
+| `supersedes`     | Asymmetric | Decision-kind affected targets only. The other memory is the later, more accurate decision. `affectedMemoryId` names the superseded decision. |
+| `scoped`         | Symmetric  | A and B differ, but the difference is explained by project, time, environment, or other scope.                                                |
+| `related`        | Symmetric  | A and B share a subject but make non-overlapping claims.                                                                                      |
+| `compatible`     | Symmetric  | A and B make near-identical claims. Consider updating one memory if one should become canonical.                                              |
+| `not_conflict`   | Symmetric  | A and B are about unrelated subjects.                                                                                                         |
 
 For non-decision memories that need to be replaced by a new synthesis, do not
 use `supersedes`. Either update/archive the old memory manually, or promote the
@@ -71,10 +71,11 @@ future scans skip it.
 
 ## Topic Keys
 
-Use `topicKey` when saving a memory about a recurring topic: a governance
-decision, runbook, incident, postmortem, or policy that may evolve. The save
-path upserts on `Topic Key` plus identical project relation set. A matching
-memory receives a revision block instead of a new row.
+Use `topicKey` when saving a non-procedure memory about a recurring topic: a
+governance decision, runbook, incident, postmortem, or policy that may evolve.
+The `lore-memory action='save'` path upserts on `Topic Key` plus identical
+project relation set. A matching memory receives a revision block instead of a
+new row.
 
 Use stable kebab-case paths grouped by kind:
 
@@ -85,18 +86,26 @@ Use stable kebab-case paths grouped by kind:
 - `policy/data-retention`
 - `procedure/cache-miss-investigation`
 
+Procedure topic keys use the `procedure/` family, but pass them to
+`lore-procedure action='propose'`, not `lore-memory action='save'`. The
+procedure propose path uses `topicKey` for proposal idempotency and conflict
+detection: it reuses an existing proposed row for the same project set and
+conflicts with accepted or deprecated rows instead of appending revision blocks.
+
 If unsure, call `lore-memory action='suggest-topic-key'` with the title and
 kind. Do not use `topicKey` on `kind: 'note'` or `kind: 'task'`.
 
-When an upsert chain grows beyond roughly 5 KB or 5 revisions, the save response
-surfaces a promotion advisory. For decision chains, promote the synthesis into a
-fresh formal decision. For non-decision chains, split into narrower topic keys
-or archive the broad chain and start a more specific one.
+When a non-procedure `lore-memory` upsert chain grows beyond roughly 5 KB or 5
+revisions, the save response surfaces a promotion advisory. For decision chains,
+promote the synthesis into a fresh formal decision. For non-decision chains,
+split into narrower topic keys or archive the broad chain and start a more
+specific one.
 
 To re-key a misnamed first save, pass `topicKey` to
-`lore-memory action='update'`. Re-keying appends a `## Re-keyed (YYYY-MM-DD)`
-audit block but does not bump `Revision Count`. Combining `topicKey` with
-`kind` in a single update is rejected.
+`lore-memory action='update'` for non-procedure topic-key rows. Re-keying
+appends a `## Re-keyed (YYYY-MM-DD)` audit block but does not bump
+`Revision Count`. Combining `topicKey` with `kind` in a single update is
+rejected.
 
 ## Passive Learning Extraction
 
