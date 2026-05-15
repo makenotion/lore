@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   registerDecisionTools: vi.fn(),
   registerTaskTools: vi.fn(),
   registerProcedureTools: vi.fn(),
+  registerHelpResources: vi.fn(),
   servers: [] as MockServer[],
   transports: [] as Array<{ kind: "stdio" }>,
 }))
@@ -64,6 +65,10 @@ vi.mock("./tools/tasks.js", () => ({
 
 vi.mock("./tools/procedures.js", () => ({
   registerProcedureTools: mocks.registerProcedureTools,
+}))
+
+vi.mock("./help.js", () => ({
+  registerHelpResources: mocks.registerHelpResources,
 }))
 
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
@@ -115,6 +120,7 @@ afterEach(() => {
   mocks.registerDecisionTools.mockReset()
   mocks.registerTaskTools.mockReset()
   mocks.registerProcedureTools.mockReset()
+  mocks.registerHelpResources.mockReset()
   mocks.servers.length = 0
   mocks.transports.length = 0
 })
@@ -147,6 +153,7 @@ describe("startServer", () => {
       expect(mocks.registerKnowledgeTools).not.toHaveBeenCalled()
       expect(mocks.registerDecisionTools).not.toHaveBeenCalled()
       expect(mocks.registerTaskTools).not.toHaveBeenCalled()
+      expect(mocks.registerHelpResources).not.toHaveBeenCalled()
 
       const server = mocks.servers[0]
       expect([...server!.tools.keys()].sort()).toEqual(DIAGNOSTIC_TOOL_NAMES)
@@ -411,6 +418,7 @@ describe("startServer", () => {
       expect(mocks.registerContextTools).toHaveBeenCalled()
       expect(mocks.registerMemoryTools).toHaveBeenCalled()
       expect(mocks.registerQueryTools).not.toHaveBeenCalled()
+      expect(mocks.registerHelpResources).not.toHaveBeenCalled()
       expect(mocks.servers[0]?.tools.size).toBe(0)
       expect(mocks.servers[0]?.connect).not.toHaveBeenCalled()
       expect(stderr).not.toHaveBeenCalled()
@@ -442,6 +450,7 @@ describe("startServer", () => {
       expect(mocks.registerKnowledgeTools).toHaveBeenCalled()
       expect(mocks.registerDecisionTools).toHaveBeenCalled()
       expect(mocks.registerTaskTools).toHaveBeenCalled()
+      expect(mocks.registerHelpResources).toHaveBeenCalledWith(mocks.servers[0])
       expect(mocks.servers[0]?.tools.size).toBe(0)
       expect(stderr).not.toHaveBeenCalled()
       expect(stdoutLog).not.toHaveBeenCalled()

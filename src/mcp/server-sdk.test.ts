@@ -151,6 +151,95 @@ describe("diagnostic MCP SDK schema", () => {
   })
 })
 
+describe("MCP help resources", () => {
+  it("lists and reads the help index and action recipes on initialized startup", async () => {
+    mocks.initServices.mockResolvedValue({ profile: undefined } as never)
+
+    await startServer()
+
+    const transport = mocks.transports[0]
+    expect(transport).toBeDefined()
+
+    transport!.receive({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "vitest", version: "0" },
+      },
+    })
+    await expectJsonRpcResult(transport!.waitForResponse(1))
+
+    transport!.receive({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    })
+
+    transport!.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "resources/list",
+      params: {},
+    })
+    const listResponse = await expectJsonRpcResult(transport!.waitForResponse(2))
+    const resources = (
+      listResponse.result as {
+        resources: Array<{ uri: string; mimeType?: string }>
+      }
+    ).resources
+    expect(resources).toContainEqual(
+      expect.objectContaining({ uri: "lore://help", mimeType: "text/markdown" })
+    )
+    expect(resources).toContainEqual(
+      expect.objectContaining({
+        uri: "lore://help/lore-memory/save",
+        mimeType: "text/markdown",
+      })
+    )
+
+    transport!.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "resources/templates/list",
+      params: {},
+    })
+    const templatesResponse = await expectJsonRpcResult(transport!.waitForResponse(3))
+    const templates = (
+      templatesResponse.result as {
+        resourceTemplates: Array<{ name: string; uriTemplate: string }>
+      }
+    ).resourceTemplates
+    expect(templates).toContainEqual(
+      expect.objectContaining({
+        name: "lore-help-action",
+        uriTemplate: "lore://help/{tool}/{action}",
+      })
+    )
+
+    transport!.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "resources/read",
+      params: { uri: "lore://help/lore-query/search" },
+    })
+    const readResponse = await expectJsonRpcResult(transport!.waitForResponse(4))
+    const contents = (
+      readResponse.result as {
+        contents: Array<{ uri: string; mimeType?: string; text?: string }>
+      }
+    ).contents
+    expect(contents[0]).toMatchObject({
+      uri: "lore://help/lore-query/search",
+      mimeType: "text/markdown",
+    })
+    expect(contents[0]?.text).toContain("# lore-query action='search'")
+    expect(contents[0]?.text).toContain("```json")
+  })
+})
+
 async function expectJsonRpcResult(
   response: Promise<JSONRPCMessage>
 ): Promise<JSONRPCResponse & { result: unknown }> {

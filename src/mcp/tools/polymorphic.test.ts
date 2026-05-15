@@ -19,6 +19,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
+import { z } from "zod"
 import { registerContextTools } from "./context.js"
 import { registerMemoryTools } from "./memory.js"
 import { registerPinnedTools } from "./pinned.js"
@@ -28,6 +29,8 @@ import { registerDecisionTools } from "./decisions.js"
 import { registerProjectTools } from "./project.js"
 import { registerTaskTools } from "./tasks.js"
 import { registerProcedureTools } from "./procedures.js"
+import { HELP_RECIPES } from "../help.js"
+import { resolveProfileFromConfig } from "../../profile/index.js"
 
 type Handler = (...args: never[]) => Promise<unknown>
 
@@ -119,6 +122,24 @@ function describeOf(schema: unknown): string {
   return ""
 }
 
+function enumValuesOf(schema: unknown): string[] {
+  if (!schema || typeof schema !== "object") return []
+  const def = (schema as { _def?: { values?: unknown } })._def
+  if (Array.isArray(def?.values)) return [...def.values]
+  return []
+}
+
+function validateAgainstInputSchema(
+  inputSchema: Record<string, unknown> | undefined,
+  payload: Record<string, unknown>
+): ReturnType<z.ZodObject<z.ZodRawShape>["safeParse"]> {
+  expect(inputSchema).toBeDefined()
+  return z
+    .object(inputSchema as z.ZodRawShape)
+    .passthrough()
+    .safeParse(payload)
+}
+
 function extractText(result: unknown): string {
   return (result as { content: Array<{ text: string }> }).content[0].text
 }
@@ -161,6 +182,7 @@ interface StubOpts {
   tasksUpdate?: ReturnType<typeof vi.fn>
   tasksClose?: ReturnType<typeof vi.fn>
   tasksList?: ReturnType<typeof vi.fn>
+  profile?: unknown
 }
 
 function makeEntityService() {
@@ -176,6 +198,7 @@ function makeEntityService() {
 
 function makeServices(opts: StubOpts = {}): unknown {
   return {
+    profile: opts.profile,
     config: { vault: { pageId: "v1" }, projects: [] },
     context: { project: null, vault: { pageId: "v1" } },
     vault: {
@@ -1649,6 +1672,80 @@ describe("MCP tool surface", () => {
       "lore-procedure",
     ]
     expect(mock.names().sort()).toEqual([...polymorphic].sort())
+  })
+
+  it("has a help recipe for every public polymorphic action", () => {
+    const registerAll = (services: never) => {
+      const mock = createMockServer()
+      registerContextTools(mock.server, services)
+      registerMemoryTools(mock.server, services)
+      registerPinnedTools(mock.server, services)
+      registerQueryTools(mock.server, services)
+      registerKnowledgeTools(mock.server, services)
+      registerDecisionTools(mock.server, services)
+      registerProjectTools(mock.server, services)
+      registerTaskTools(mock.server, services)
+      registerProcedureTools(mock.server, services)
+      return mock
+    }
+    const mock = registerAll(makeServices() as never)
+
+    const recipeKeys = HELP_RECIPES.map((recipe) => `${recipe.tool}/${recipe.action}`)
+    expect(new Set(recipeKeys).size, "help recipe keys must be unique").toBe(
+      recipeKeys.length
+    )
+
+    const helpActionsByTool = new Map<string, string[]>()
+    for (const recipe of HELP_RECIPES) {
+      const actions = helpActionsByTool.get(recipe.tool)
+      if (actions) {
+        actions.push(recipe.action)
+      } else {
+        helpActionsByTool.set(recipe.tool, [recipe.action])
+      }
+    }
+
+    for (const name of mock.names()) {
+      const actionSchema = mock.config(name).inputSchema?.["action"]
+      const publicActions = enumValuesOf(actionSchema)
+      expect(publicActions, `${name} must expose an action enum`).not.toEqual([])
+      expect(
+        [...(helpActionsByTool.get(name) ?? [])].sort(),
+        `${name} help recipes must match the registered public action enum`
+      ).toEqual([...publicActions].sort())
+    }
+
+    expect([...helpActionsByTool.keys()].sort()).toEqual(mock.names().sort())
+
+    const profileVariants = [
+      { label: "fallback", services: makeServices() },
+      {
+        label: "default@1.0.0",
+        services: makeServices({
+          profile: resolveProfileFromConfig({ profile: "default@1.0.0" }),
+        }),
+      },
+      {
+        label: "support@1.0.0",
+        services: makeServices({
+          profile: resolveProfileFromConfig({ profile: "support@1.0.0" }),
+        }),
+      },
+    ]
+
+    for (const { label, services } of profileVariants) {
+      const profileMock = registerAll(services as never)
+      for (const recipe of HELP_RECIPES) {
+        const result = validateAgainstInputSchema(
+          profileMock.config(recipe.tool).inputSchema,
+          recipe.example
+        )
+        expect(
+          result.success,
+          `${label}: ${recipe.tool} action='${recipe.action}' example must validate against the registered MCP input schema`
+        ).toBe(true)
+      }
+    }
   })
 
   // -----------------------------------------------------------------------
