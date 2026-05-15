@@ -1,8 +1,8 @@
 # Lore Team Onboarding Runbook
 
 > Audience: Team leads rolling Lore out to their teams.
-> Status: Current operator guidance. Historical 0.10.0 dogfood rollout
-> criteria are archived at the end of this file.
+> Status: Current operator guidance. Historical rollout evidence is archived in
+> [`docs/archive/team-rollout-0.10.0.md`](archive/team-rollout-0.10.0.md).
 
 This runbook covers the current team onboarding path for Lore's ntn-first
 auth flow, shared vault setup, and fallback auth options.
@@ -473,35 +473,3 @@ saves go straight into recall.
 
 See [`hooks.md`](hooks.md) for the reference of the underlying
 `learningExtraction` / `proposeAutosaveLearnings` knobs.
-
-## Historical rollout archive
-
-The following criteria are retained as historical context for the completed
-0.10.0 internal dogfood rollout. They are not current release gates.
-
-### 0.10.0 dogfood promotion criteria
-
-The release coordinator used these criteria before promoting 0.10.0 from
-"internal dogfood" to "ready for general internal adoption":
-
-- At least 2 internal teams had rolled out and had been on ntn-first auth
-  for at least 1 week.
-- No `[lore] partial-failure` lines tied to authentication appeared in the
-  rollout teams' stderr logs over the rollout window.
-- At least 1 engineer confirmed the multi-workspace flow
-  (`NOTION_WORKSPACE_ID` env or `auth.workspaceId` config) worked as
-  documented.
-- At least 1 engineer hit a mid-session token expiry and the documented
-  `lore auth --login` + bounded in-process retry worked. If the refreshed
-  auth was unchanged or still rejected, the fallback restart recovery also
-  worked.
-- No regressions appeared in the existing test surface.
-- No regressions appeared in the existing `lore status` output.
-
-### Historical telemetry note
-
-The 0.10.0 rollout optionally considered one stderr line per
-`resolveAuth` resolution, recording which source produced the token
-(`source: env-notion-api-token` / `ntn-auth-json`) behind `LORE_DEBUG=1`.
-That note was for release-coordinator visibility during the dogfood window
-and is not a current onboarding requirement.
