@@ -134,7 +134,9 @@ same id.
 `.lore.example.yaml` to `.lore.yaml` in each clone and paste the shared
 `vault.pageId` from your team's onboarding docs (or let `lore init`
 write the file for you). Distribute shared values via onboarding docs,
-not by committing config.
+not by committing config. This is the current policy even for credential-free
+shared vault config and supersedes older changelog notes that allowed
+intentional committed config.
 
 Notion page IDs are access locators, not bearer credentials: knowing a page ID
 does not grant access unless the caller's Notion token can already read that
@@ -420,7 +422,8 @@ from the current working directory.
 `.lore.example.yaml` to `.lore.yaml` and fill in your values, or run
 `lore init` to generate one. Distribute shared team values (`vault.pageId`,
 `auth.workspaceId`) through your onboarding docs rather than committing config;
-never put `auth.token`, personal scratch vault page IDs, or personally
+even credential-free shared vault config stays outside git under the current
+policy. Never put `auth.token`, personal scratch vault page IDs, or personally
 identifying values in the file.
 
 Threat-model posture for `vault.pageId`: a Notion page ID is not a credential,

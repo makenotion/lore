@@ -214,7 +214,10 @@ write it), and rely on `NOTION_API_TOKEN` (external operators, PAT) or
 shared team values (`vault.pageId`, `auth.workspaceId`) through onboarding
 docs rather than by committing config. Never put `auth.token`, personal
 scratch vault page IDs, or personally identifying values in the file.
-Lore rejects any `auth.token` value before any Notion call is made.
+Lore rejects any `auth.token` value before any Notion call is made. The
+local-only posture is the current policy even for credential-free shared vault
+config and supersedes older changelog notes that allowed intentional committed
+config.
 
 `vault.pageId` values are not bearer secrets. They identify a Notion page,
 but Notion still enforces access through the resolved token's permissions.

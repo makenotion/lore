@@ -11,6 +11,14 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clarified that the current `.lore.yaml` policy is local-only: the file stays
+  gitignored, the guard rejects any staged copy, and shared `vault.pageId` /
+  `auth.workspaceId` values should be distributed through onboarding docs rather
+  than committed config. This supersedes older changelog guidance that described
+  intentionally committed credential-free vault config. (#697)
+
 ## [0.14.0] - 2026-05-14
 
 ### Added
@@ -414,6 +422,10 @@ auth.baseUrl)` or `(default; no shell or .lore.yaml override)`
 - **Lore vault config can be committed intentionally.** `.lore.yaml` is no
   longer ignored by default so private deployments can carry shared,
   credential-free vault config in git when that is intentional. (#268)
+  **Current policy:** this historical behavior has been superseded. `.lore.yaml`
+  is local-only, remains gitignored, and is rejected by the pre-commit guard
+  when staged; share credential-free vault locators through onboarding docs
+  instead.
 - **Unscoped topic updates warn when they are skipped.** MCP memory, decision,
   and task write paths that include topic fields without a resolvable target
   now return a structured warning and still skip the topic update instead of

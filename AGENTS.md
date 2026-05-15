@@ -181,6 +181,8 @@ The two-source priority chain (highest first) backs both personas:
 values (`vault.pageId`, `auth.workspaceId`) through onboarding docs rather
 than by committing config. The Lore repo gitignores `.lore.yaml` and its
 pre-commit guard (`tools/check-lore-config.mjs`) rejects any staged content.
+The current policy applies even to credential-free shared vault config and
+supersedes older changelog guidance that allowed intentional committed config.
 Lore rejects any `auth.token` value at config-load time.
 
 Notion page IDs are access locators, not bearer secrets. Keeping them out of

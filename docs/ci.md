@@ -115,7 +115,9 @@ no-op on every CI run, fork or otherwise.
 
 `.lore.yaml` is local-only — each clone copies `.lore.example.yaml` to
 `.lore.yaml` and fills in values from team onboarding docs. The repo
-enforces this with two complementary layers:
+enforces this with two complementary layers. This invariant is the current
+policy even for credential-free shared vault config and supersedes older
+changelog notes that described intentionally committed config:
 
 - **Pre-commit guard.** `.githooks/pre-commit` invokes
   `node tools/check-lore-config.mjs --staged`, which rejects any staged

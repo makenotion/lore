@@ -75,8 +75,10 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 - `.lore.yaml` is local-only — keep it out of version control. Copy
   `.lore.example.yaml` to `.lore.yaml` per clone, and distribute shared team
   values (`vault.pageId`, `auth.workspaceId`) via onboarding docs rather than
-  by committing config. Never put `auth.token`, personal scratch vault page
-  IDs, or maintainer-specific values in the file.
+  by committing config. The current policy also applies to credential-free
+  shared vault config and supersedes older changelog guidance that allowed
+  intentional committed config. Never put `auth.token`, personal scratch vault
+  page IDs, or maintainer-specific values in the file.
 - Notion page IDs are locators, not bearer credentials. Keeping them out of
   git is still the right default so external clones don't auto-target an
   unrelated vault. Accidental maintainer-local page IDs that land in history
