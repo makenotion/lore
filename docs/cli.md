@@ -224,7 +224,9 @@ the `lore install` row below and
 
 See [`conflict-detection.md`](conflict-detection.md) for the full conflict scan
 workflow.
-See [`evals.md`](evals.md) for eval suite format, metrics, and artifact details.
+See [`evals.md`](evals.md) for the eval runner overview and
+[`evals-suite-format.md`](evals-suite-format.md) for suite format, metrics, and
+artifact details.
 
 ## Common memory operations
 

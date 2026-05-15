@@ -87,7 +87,7 @@ const evalTaskSchema = z
         "Prompt for the task. Consumed as `userQuery` only on the " +
           "wake-up.taskMemories surface. Decorative on memories, " +
           "relatedMemories, and staleConfidence surfaces, which route " +
-          "through queries that ignore the prompt. See docs/evals.md " +
+          "through queries that ignore the prompt. See docs/evals-suite-format.md " +
           '("Wake-up surfaces") for the per-surface contract.'
       ),
     surface: z.enum(EVAL_SURFACES).default("wake-up.taskMemories"),
