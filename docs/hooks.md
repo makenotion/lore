@@ -5,6 +5,15 @@ Default installs use bin dispatch (`lore hooks <event>`, or
 `yarn run -T lore hooks <event>` under Yarn PnP). The `hooks/*.sh` scripts are
 legacy compatibility entrypoints for older absolute-path installs.
 
+Developer/runtime details are split by flow:
+
+- [`hooks-autosave.md`](hooks-autosave.md) - Stop autosave, auth handoff,
+  learning extraction, and review-inbox routing.
+- [`hooks-wakeup.md`](hooks-wakeup.md) - context loading, ranked wake-up output,
+  per-session debounce, and debug counters.
+- [`hooks-background.md`](hooks-background.md) - background-agent config,
+  failure markers, auto-digest, locks, logs, and compatibility shims.
+
 ## Auto-Save
 
 `lore hooks autosave` runs on the assistant `Stop` hook, emits `{}` immediately,

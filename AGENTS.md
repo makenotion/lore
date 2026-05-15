@@ -6,30 +6,30 @@
 
 ## Subsystem Guides
 
-| Area             | Guide                                          | Scope                                                                  |
-| ---------------- | ---------------------------------------------- | ---------------------------------------------------------------------- |
-| MCP server       | [`src/mcp/AGENTS.md`](src/mcp/AGENTS.md)       | Tool registration, error handling, server startup                      |
-| Domain services  | [`src/core/AGENTS.md`](src/core/AGENTS.md)     | Service pattern, context resolution, fact invalidation                 |
-| Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics              |
-| CLI              | [`src/cli/AGENTS.md`](src/cli/AGENTS.md)       | Commander patterns, command reference, output formatting               |
-| Hook runner      | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md)   | Stop autosave, auto-digest, background spawn, lockfiles                |
+| Area             | Guide                                          | Scope                                                                       |
+| ---------------- | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| MCP server       | [`src/mcp/AGENTS.md`](src/mcp/AGENTS.md)       | Tool registration, error handling, server startup                           |
+| Domain services  | [`src/core/AGENTS.md`](src/core/AGENTS.md)     | Service pattern, context resolution, fact invalidation                      |
+| Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics                   |
+| CLI              | [`src/cli/AGENTS.md`](src/cli/AGENTS.md)       | Commander patterns, command reference, output formatting                    |
+| Hook runner      | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md)   | Hook routing, handler registration, doc precedence                          |
 | Auth layer       | [`src/auth/AGENTS.md`](src/auth/AGENTS.md)     | ntn / PAT auth, `auth.json` contract, vault preflight, token classification |
 
 ## Detailed Guides
 
-| Guide | Use it for |
-| ----- | ---------- |
-| [`docs/development.md`](docs/development.md) | Architecture, commands, conventions, stability rules, troubleshooting |
-| [`docs/authentication.md`](docs/authentication.md) | Auth priority chain, ntn behavior, rate limits, auth troubleshooting |
-| [`docs/profiles.md`](docs/profiles.md) | Default profile selector, profile-owned taxonomy/schema/prompts, no-singleton threading |
-| [`docs/memory-workflows.md`](docs/memory-workflows.md) | Lore memory/fact/decision/task workflow, confidence, topic keys, digest |
-| [`docs/conflict-detection.md`](docs/conflict-detection.md) | `lore conflicts scan` workflow and compare-verdict contract |
-| [`docs/memory-debt.md`](docs/memory-debt.md) | `lore debt scan` / `create-tasks` audit categories, scoring, recommended maintenance cadence, idempotency contract |
-| [`docs/topology.md`](docs/topology.md) | `lore status` topology section, health states, recovery workflow |
-| [`docs/hooks.md`](docs/hooks.md) | Installed hook behavior and auth forwarding |
-| [`docs/team-rollout.md`](docs/team-rollout.md) | Operator-facing ntn-first rollout runbook |
-| [`docs/ci.md`](docs/ci.md) | Per-step CI contract: token/network/fixture needs and fork-safety rules |
-| [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md) | CLI and MCP user-facing reference |
+| Guide                                                                                                                                                                                        | Use it for                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| [`docs/development.md`](docs/development.md)                                                                                                                                                 | Architecture, commands, conventions, stability rules, troubleshooting                                              |
+| [`docs/authentication.md`](docs/authentication.md)                                                                                                                                           | Auth priority chain, ntn behavior, rate limits, auth troubleshooting                                               |
+| [`docs/profiles.md`](docs/profiles.md)                                                                                                                                                       | Default profile selector, profile-owned taxonomy/schema/prompts, no-singleton threading                            |
+| [`docs/memory-workflows.md`](docs/memory-workflows.md)                                                                                                                                       | Lore memory/fact/decision/task workflow, confidence, topic keys, digest                                            |
+| [`docs/conflict-detection.md`](docs/conflict-detection.md)                                                                                                                                   | `lore conflicts scan` workflow and compare-verdict contract                                                        |
+| [`docs/memory-debt.md`](docs/memory-debt.md)                                                                                                                                                 | `lore debt scan` / `create-tasks` audit categories, scoring, recommended maintenance cadence, idempotency contract |
+| [`docs/topology.md`](docs/topology.md)                                                                                                                                                       | `lore status` topology section, health states, recovery workflow                                                   |
+| [`docs/hooks.md`](docs/hooks.md), [`docs/hooks-autosave.md`](docs/hooks-autosave.md), [`docs/hooks-wakeup.md`](docs/hooks-wakeup.md), [`docs/hooks-background.md`](docs/hooks-background.md) | Installed hook behavior and runtime-flow contracts                                                                 |
+| [`docs/team-rollout.md`](docs/team-rollout.md)                                                                                                                                               | Operator-facing ntn-first rollout runbook                                                                          |
+| [`docs/ci.md`](docs/ci.md)                                                                                                                                                                   | Per-step CI contract: token/network/fixture needs and fork-safety rules                                            |
+| [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md)                                                                                                                       | CLI and MCP user-facing reference                                                                                  |
 
 ## Repo At A Glance
 
