@@ -80,9 +80,11 @@ export {
 } from "./core/memory.js"
 export type { ListMemoriesOptions } from "./core/memory.js"
 export {
+  TaskClosePartialFailureError,
   TaskCreatePartialFailureError,
   TaskUpdatePartialFailureError,
 } from "./core/task.js"
+export type { CloseTaskOptions, CloseTaskResult } from "./core/task.js"
 export { FactService } from "./core/fact.js"
 export type {
   FactEntityRepointPlan,

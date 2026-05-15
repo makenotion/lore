@@ -102,6 +102,7 @@ interface MockClientOpts {
   createReturn?: PageObjectResponse
   createError?: unknown
   markdown?: string
+  retrieveMarkdownError?: unknown
   updateMarkdownError?: unknown
   updateError?: unknown
 }
@@ -128,7 +129,10 @@ function createMockClient(opts: MockClientOpts = {}) {
         opts.updateMarkdownError !== undefined
           ? vi.fn().mockRejectedValue(opts.updateMarkdownError)
           : vi.fn().mockResolvedValue({}),
-      retrieveMarkdown: vi.fn().mockResolvedValue({ markdown: opts.markdown ?? "" }),
+      retrieveMarkdown:
+        opts.retrieveMarkdownError !== undefined
+          ? vi.fn().mockRejectedValue(opts.retrieveMarkdownError)
+          : vi.fn().mockResolvedValue({ markdown: opts.markdown ?? "" }),
     },
     dataSources: {
       query: vi.fn().mockResolvedValue({
@@ -756,6 +760,7 @@ describe("TaskService.close", () => {
   it("does not append a duplicate closure note when the task was already terminal", async () => {
     const client = createMockClient({
       retrievedPages: { "task-id": taskPage("task-id", { state: "done" }) },
+      markdown: "Original task body.\n## Closed (2026-05-14) - done\n\nAlready handled.",
     })
     const service = new TaskService(client, DB)
 
@@ -766,7 +771,92 @@ describe("TaskService.close", () => {
     expect(result.alreadyClosed).toBe(true)
     expect(result.closureNote).toBeNull()
     expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(
+      (client.pages.update as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      (client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0]
+    )
     expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("repairs a missing closure note on an already-terminal task", async () => {
+    const client = createMockClient({
+      retrievedPages: { "task-id": taskPage("task-id", { state: "done" }) },
+      markdown: "Original task body.",
+    })
+    const service = new TaskService(client, DB)
+
+    const result = await service.close("task-id", "done", {
+      reason: "Retry after the first note append failed.",
+    })
+
+    expect(result.alreadyClosed).toBe(true)
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
+    expect(result.closureNote).toBe(
+      `## Closed (${result.doneAt}) - done\n\nRetry after the first note append failed.`
+    )
+  })
+
+  it("does not let markdown read failures block a non-terminal close", async () => {
+    const client = createMockClient({
+      retrievedPages: { "task-id": taskPage("task-id", { state: "open" }) },
+      retrieveMarkdownError: new Error("markdown unavailable"),
+    })
+    const service = new TaskService(client, DB)
+
+    const result = await service.close("task-id", "done", {
+      reason: "Finished without pre-reading the body.",
+    })
+
+    expect(result.alreadyClosed).toBe(false)
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
+    expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
+    expect(result.closureNote).toBe(
+      `## Closed (${result.doneAt}) - done\n\nFinished without pre-reading the body.`
+    )
+  })
+
+  it("throws a structured partial-failure when the post-close duplicate check fails", async () => {
+    const readError = new Error("markdown unavailable")
+    const client = createMockClient({
+      retrievedPages: { "task-id": taskPage("task-id", { state: "done" }) },
+      retrieveMarkdownError: readError,
+    })
+    const service = new TaskService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.close("task-id", "done", {
+        reason: "Repair an already-terminal task.",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    expect(
+      (client.pages.update as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      (client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0]
+    )
+    expect(caught).toBeInstanceOf(TaskClosePartialFailureError)
+    const partial = caught as TaskClosePartialFailureError
+    expect(partial.taskId).toBe("task-id")
+    expect(partial.state).toBe("done")
+    expect(partial.persisted).toEqual({
+      state: true,
+      doneAt: true,
+      closureNote: false,
+    })
+    expect(partial.closureNote).toContain("Repair an already-terminal task.")
+    expect(partial.closureNoteError).toBe(readError)
+    expect(partial.details.closureNoteCauseMessage).toBe("markdown unavailable")
+    expect(partial.message).toContain("closure note could not be checked")
   })
 
   it("throws a structured partial-failure error when the closure note write fails after the close", async () => {
@@ -792,7 +882,15 @@ describe("TaskService.close", () => {
     expect(partial.taskId).toBe("task-id")
     expect(partial.state).toBe("cancelled")
     expect(partial.closureNote).toContain("## Closed")
-    expect(partial.noteWriteError).toBe(noteWriteError)
+    expect(partial.doneAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(partial.failedPhase).toBe("closure-note")
+    expect(partial.persisted).toEqual({
+      state: true,
+      doneAt: true,
+      closureNote: false,
+    })
+    expect(partial.closureNoteError).toBe(noteWriteError)
+    expect(partial.details.closureNoteCauseMessage).toBe("notion 503")
   })
 
   it("closeMany trims, de-duplicates, preserves order, and reports per-ID outcomes", async () => {

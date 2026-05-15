@@ -22,6 +22,7 @@ import {
 import { initServices, type LoreServices } from "../../services.js"
 import type { Memory, Task, TaskSummary } from "../../types.js"
 import { INVALID_LIMIT_STRINGS, trapProcessExit } from "../test-helpers.js"
+import { TaskClosePartialFailureError } from "../../core/task.js"
 
 vi.mock("../../services.js", () => ({
   initServices: vi.fn(),
@@ -1307,6 +1308,7 @@ describe("runTaskClose", () => {
       state: "done",
       doneAt: "2026-05-03",
       closureNote: null,
+      partialFailure: null,
     })
   })
 
@@ -1331,6 +1333,7 @@ describe("runTaskClose", () => {
       state: "cancelled",
       doneAt: null,
       closureNote: null,
+      partialFailure: null,
     })
   })
 
@@ -1370,6 +1373,56 @@ describe("runTaskClose", () => {
     expect(result.data.closureNote).toBe(
       "## Closed (2026-05-03) - done\n\nParent PR merged"
     )
+    expect(result.data.partialFailure).toBeNull()
+  })
+
+  it("returns structured partial-failure data when the closure note append fails", async () => {
+    const closureNote = "## Closed (2026-05-03) - done\n\nParent PR merged"
+    const tasksClose = vi.fn().mockRejectedValue(
+      new TaskClosePartialFailureError(
+        `Task close partial failure: task t-close was closed as done ` +
+          `with Done At 2026-05-03, but the closure note could not be written ` +
+          `during phase "closure-note": notion 503.`,
+        {
+          taskId: "t-close",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote,
+          closureNoteError: new Error("notion 503"),
+        }
+      )
+    )
+    const tasksGetById = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-close",
+        title: "closed",
+        taskState: "done",
+        doneAt: "2026-05-03",
+      }) as unknown as Task
+    )
+    const services = makeServices({
+      contextProject: null,
+      tasksClose,
+      tasksGetById,
+    })
+
+    const result = await runTaskClose(services, {
+      taskId: "t-close",
+      state: "done",
+      reason: "Parent PR merged",
+    })
+
+    expect(result.text).toContain("Closure note failed: notion 503")
+    expect(result.data.closureNote).toBeNull()
+    expect(result.data.partialFailure).toEqual({
+      kind: "task-close-partial",
+      message: expect.stringContaining("Task close partial failure"),
+      doneAt: "2026-05-03",
+      failedPhase: "closure-note",
+      persisted: { state: true, doneAt: true, closureNote: false },
+      causeMessage: "notion 503",
+      attemptedClosureNote: closureNote,
+    })
   })
 })
 
@@ -2518,7 +2571,54 @@ describe("tasksCommand create/update/close/list actions", () => {
       state: "done",
       doneAt: "2026-05-03",
       closureNote: null,
+      partialFailure: null,
     })
+  })
+
+  it("close --json prints structured partial failure details and exits 1", async () => {
+    const closureNote = "## Closed (2026-05-03) - done\n\nParent PR merged"
+    const tasksClose = vi.fn().mockRejectedValue(
+      new TaskClosePartialFailureError(
+        `Task close partial failure: task t-close was closed as done ` +
+          `with Done At 2026-05-03, but the closure note could not be written ` +
+          `during phase "closure-note": notion 503.`,
+        {
+          taskId: "t-close",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote,
+          closureNoteError: new Error("notion 503"),
+        }
+      )
+    )
+    const tasksGetById = vi.fn().mockResolvedValue(
+      makeTask({
+        id: "t-close",
+        title: "closed",
+        taskState: "done",
+        doneAt: "2026-05-03",
+      }) as unknown as Task
+    )
+    const services = makeServices({
+      contextProject: null,
+      tasksClose,
+      tasksGetById,
+    })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    await tasksCommand.parseAsync(
+      ["close", "t-close", "--reason", "Parent PR merged", "--json"],
+      { from: "user" }
+    )
+
+    const logged = logSpy.mock.calls[0]!.join("\n")
+    const parsed = JSON.parse(logged) as {
+      partialFailure: { causeMessage: string; attemptedClosureNote: string }
+    }
+    expect(parsed.partialFailure.causeMessage).toBe("notion 503")
+    expect(parsed.partialFailure.attemptedClosureNote).toBe(closureNote)
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 
   it("close-many exits 1 before initServices when --ids-from is missing", async () => {

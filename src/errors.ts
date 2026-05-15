@@ -127,9 +127,15 @@ export interface LoreErrorDetailsByKind {
   "task-close-partial": {
     readonly taskId: string
     readonly state: string
+    readonly doneAt: string
+    readonly failedPhase: "closure-note"
     readonly closureNote: string
-    readonly persisted: { readonly properties: true; readonly closureNote: false }
-    readonly noteWriteCauseMessage: string
+    readonly persisted: {
+      readonly state: true
+      readonly doneAt: true
+      readonly closureNote: false
+    }
+    readonly closureNoteCauseMessage: string
   }
   "pinned-audit-failed": {
     readonly memoryId: string

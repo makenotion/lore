@@ -541,6 +541,25 @@ export const HELP_RECIPES = [
   },
   {
     tool: "lore-task",
+    action: "close-many",
+    summary: "Close an explicit batch of task IDs.",
+    whenToUse:
+      "Use this after a reconcile or maintenance pass when you have already reviewed a specific list of task IDs to close.",
+    example: {
+      action: "close-many",
+      ids: [
+        "66666666-6666-6666-6666-666666666666",
+        "77777777-7777-7777-7777-777777777777",
+      ],
+      state: "done",
+      reason: "Resolved by the merged task-close maintenance PR.",
+    },
+    cautions: [
+      "Only pass IDs you have explicitly reviewed; already-closed tasks are reported as no-ops.",
+    ],
+  },
+  {
+    tool: "lore-task",
     action: "list",
     summary: "List active task memories with overdue and active sections.",
     whenToUse:

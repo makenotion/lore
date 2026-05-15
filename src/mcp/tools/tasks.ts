@@ -52,6 +52,7 @@ import { nonBlankBody, nonBlankString } from "./text-schema.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
+  structuredContent?: Record<string, unknown>
   isError?: boolean
   /** Issue #495 — see `withWakeUpCacheBump`'s docstring for the marker contract. */
   noopWrite?: boolean
@@ -610,10 +611,10 @@ async function handleClose(services: LoreServices, args: CloseArgs): Promise<Too
     // `Done At`. On a vault that hasn't migrated the
     // Memories DS to add the column, `extractDate` returns `null` and
     // we suppress the line — graceful degradation, no version gate.
-    let doneAt: string | null = null
+    let doneAt: string | null = closeResult?.doneAt ?? null
     try {
       const reread = await services.tasks.getById(args.taskId)
-      doneAt = reread.doneAt
+      doneAt = reread.doneAt ?? doneAt
     } catch {
       // Ignore re-read failures: the close itself succeeded, and the
       // Done At echo is a courtesy line. A transient 5xx shouldn't
@@ -631,6 +632,12 @@ async function handleClose(services: LoreServices, args: CloseArgs): Promise<Too
 
     return {
       content: [{ type: "text", text }],
+      structuredContent: {
+        id: args.taskId,
+        state: closingState,
+        doneAt,
+        closureNote,
+      },
     }
   } catch (err) {
     return toolError(err)

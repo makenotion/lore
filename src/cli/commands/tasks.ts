@@ -15,7 +15,11 @@ import {
   resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
-import { normalizeCloseManyTaskIds, taskDaysOverdue } from "../../core/task.js"
+import {
+  TaskClosePartialFailureError,
+  normalizeCloseManyTaskIds,
+  taskDaysOverdue,
+} from "../../core/task.js"
 import {
   findDuplicateActiveTasks,
   findExactReuseTarget,
@@ -1011,11 +1015,26 @@ export interface CloseCliOptions {
   reason?: string
 }
 
+export interface CloseCliPartialFailureData {
+  kind: "task-close-partial"
+  message: string
+  doneAt: string
+  failedPhase: "closure-note"
+  persisted: {
+    state: true
+    doneAt: true
+    closureNote: false
+  }
+  causeMessage: string
+  attemptedClosureNote: string
+}
+
 export interface CloseCliResultData {
   id: string
   state: "done" | "cancelled"
   doneAt: string | null
   closureNote: string | null
+  partialFailure: CloseCliPartialFailureData | null
 }
 
 export interface CloseCliResult {
@@ -1048,23 +1067,40 @@ export async function runTaskClose(
   services: LoreServices,
   opts: CloseCliOptions
 ): Promise<CloseCliResult> {
-  const closeResult =
-    opts.reason !== undefined
-      ? await services.tasks.close(opts.taskId, opts.state, { reason: opts.reason })
-      : await services.tasks.close(opts.taskId, opts.state)
+  let closeResult: Awaited<ReturnType<typeof services.tasks.close>> | undefined =
+    undefined
+  let partialFailure: CloseCliPartialFailureData | null = null
+  try {
+    closeResult =
+      opts.reason !== undefined
+        ? await services.tasks.close(opts.taskId, opts.state, { reason: opts.reason })
+        : await services.tasks.close(opts.taskId, opts.state)
+  } catch (err) {
+    if (!(err instanceof TaskClosePartialFailureError)) throw err
+    partialFailure = {
+      kind: err.kind,
+      message: err.message,
+      doneAt: err.doneAt,
+      failedPhase: err.failedPhase,
+      persisted: err.persisted,
+      causeMessage: err.details.closureNoteCauseMessage,
+      attemptedClosureNote: err.closureNote,
+    }
+  }
   const closureNote = closeResult?.closureNote ?? null
 
-  let doneAt: string | null = null
+  let doneAt: string | null = closeResult?.doneAt ?? null
   try {
     // Re-read the post-close row so the response can echo the stamped
     // `Done At`. On a vault that hasn't migrated the Memories DS to add
     // the column, this throws and we suppress the line — graceful
     // degradation, no version gate. Same posture as the MCP handler.
     const reread = await services.tasks.getById(opts.taskId)
-    doneAt = reread.doneAt
+    doneAt = reread.doneAt ?? doneAt
   } catch {
     // Ignore re-read failures: the close itself succeeded, and the
     // Done At echo is a courtesy line.
+    if (partialFailure) doneAt = partialFailure.doneAt
   }
 
   const text =
@@ -1072,9 +1108,11 @@ export async function runTaskClose(
     (doneAt ? `\nDone at: ${doneAt}` : "") +
     (closureNote
       ? `\nClosure note appended.`
-      : opts.reason
-        ? `\nClosure note skipped: task was already closed.`
-        : "")
+      : partialFailure
+        ? `\nClosure note failed: ${partialFailure.causeMessage}`
+        : opts.reason
+          ? `\nClosure note skipped: task was already closed.`
+          : "")
   return {
     text,
     data: {
@@ -1082,6 +1120,7 @@ export async function runTaskClose(
       state: opts.state,
       doneAt,
       closureNote,
+      partialFailure,
     },
   }
 }
@@ -1107,6 +1146,9 @@ const closeCommand = new Command("close")
         const services = await initServices()
         const result = await runTaskClose(services, parsed.value)
         console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text)
+        if (result.data.partialFailure) {
+          process.exit(1)
+        }
       } catch (err) {
         console.error("Task close failed:", err instanceof Error ? err.message : err)
         process.exit(1)

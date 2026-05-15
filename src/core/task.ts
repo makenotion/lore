@@ -249,16 +249,24 @@ export class TaskUpdatePartialFailureError extends LoreError<"task-update-partia
 export class TaskClosePartialFailureError extends LoreError<"task-close-partial"> {
   readonly taskId: string
   readonly state: CloseTaskState
+  readonly doneAt: string
+  readonly failedPhase: "closure-note"
+  readonly persisted: {
+    readonly state: true
+    readonly doneAt: true
+    readonly closureNote: false
+  }
   readonly closureNote: string
-  readonly noteWriteError: unknown
+  readonly closureNoteError: unknown
 
   constructor(
     message: string,
     details: {
       taskId: string
       state: CloseTaskState
+      doneAt: string
       closureNote: string
-      noteWriteError: unknown
+      closureNoteError: unknown
     }
   ) {
     const prefixedMessage = message.startsWith("TaskClosePartialFailureError: ")
@@ -270,17 +278,22 @@ export class TaskClosePartialFailureError extends LoreError<"task-close-partial"
       {
         taskId: details.taskId,
         state: details.state,
+        doneAt: details.doneAt,
+        failedPhase: "closure-note",
         closureNote: details.closureNote,
-        persisted: { properties: true, closureNote: false },
-        noteWriteCauseMessage: errorCauseMessage(details.noteWriteError),
+        persisted: { state: true, doneAt: true, closureNote: false },
+        closureNoteCauseMessage: errorCauseMessage(details.closureNoteError),
       },
-      { cause: details.noteWriteError }
+      { cause: details.closureNoteError }
     )
     this.name = "TaskClosePartialFailureError"
     this.taskId = details.taskId
     this.state = details.state
+    this.doneAt = details.doneAt
+    this.failedPhase = "closure-note"
+    this.persisted = { state: true, doneAt: true, closureNote: false }
     this.closureNote = details.closureNote
-    this.noteWriteError = details.noteWriteError
+    this.closureNoteError = details.closureNoteError
   }
 }
 
@@ -290,6 +303,10 @@ export function buildTaskClosureNote(input: {
   reason: string
 }): string {
   return `## Closed (${input.today}) - ${input.state}\n\n${input.reason}`
+}
+
+function hasTaskClosureNote(markdown: string): boolean {
+  return /^## Closed \(\d{4}-\d{2}-\d{2}\) - (done|cancelled)$/m.test(markdown)
 }
 
 export interface OverdueTaskWindow {
@@ -800,6 +817,11 @@ export class TaskService {
    *
    * Pass `state: "cancelled"` when the task was dropped without
    * completion — distinguishing the two for downstream metrics.
+   * Pass `options.reason` to append a closure note after the state
+   * write. Already-terminal rows with an existing closure note skip
+   * the append so repeated close calls do not duplicate audit blocks;
+   * terminal rows missing the note can still be repaired by retrying
+   * with a reason.
    *
    * **Non-transactional**. Notion has no conditional-write or
    * compare-and-swap primitive, so two agents racing on the same task
@@ -863,29 +885,57 @@ export class TaskService {
     })
 
     let closureNote: string | null = null
-    if (trimmedReason !== undefined && alreadyClosed === false) {
-      closureNote = buildTaskClosureNote({
+    if (trimmedReason !== undefined) {
+      const attemptedClosureNote = buildTaskClosureNote({
         today,
         state,
         reason: decodeTextEntities(trimmedReason),
       })
+      closureNote = attemptedClosureNote
+      const throwPartialFailure = (closureNoteError: unknown, action: string): never => {
+        const cause =
+          closureNoteError instanceof Error
+            ? closureNoteError.message
+            : String(closureNoteError)
+        throw new TaskClosePartialFailureError(
+          `Task close partial failure: task ${id} was closed as ${state} ` +
+            `with Done At ${today}, but the closure note could not be ${action} ` +
+            `during phase "closure-note": ${cause}. The task is already closed; ` +
+            `the requested audit note must be handled separately.`,
+          {
+            taskId: id,
+            state,
+            doneAt: today,
+            closureNote: attemptedClosureNote,
+            closureNoteError,
+          }
+        )
+      }
+
+      if (alreadyClosed === true) {
+        const { markdown } = await this.client.pages
+          .retrieveMarkdown({ page_id: id })
+          .catch((closureNoteError) => throwPartialFailure(closureNoteError, "checked"))
+        if (hasTaskClosureNote(markdown)) {
+          return {
+            id,
+            state,
+            doneAt: today,
+            previousState,
+            alreadyClosed,
+            closureNote: null,
+          }
+        }
+      }
+
       try {
         await this.client.pages.updateMarkdown({
           page_id: id,
           type: "insert_content",
-          insert_content: { content: closureNote },
+          insert_content: { content: attemptedClosureNote },
         })
-      } catch (noteWriteError) {
-        const cause =
-          noteWriteError instanceof Error
-            ? noteWriteError.message
-            : String(noteWriteError)
-        throw new TaskClosePartialFailureError(
-          `Task close partial failure: state for task ${id} persisted as ` +
-            `"${state}", but the closure note write failed: ${cause}. ` +
-            `The task is already closed in Notion; the body audit trail is missing.`,
-          { taskId: id, state, closureNote, noteWriteError }
-        )
+      } catch (closureNoteError) {
+        throwPartialFailure(closureNoteError, "written")
       }
     }
 

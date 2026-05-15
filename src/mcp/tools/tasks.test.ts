@@ -2,7 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerTaskTools } from "./tasks.js"
-import { TaskUpdatePartialFailureError } from "../../core/task.js"
+import {
+  TaskClosePartialFailureError,
+  TaskUpdatePartialFailureError,
+} from "../../core/task.js"
 import type { Task, TaskSummary } from "../../types.js"
 
 function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary {
@@ -1327,9 +1330,53 @@ describe("lore-task-close", () => {
     expect(svc.tasks.close).toHaveBeenCalledWith("task-id", "done", {
       reason: "Parent PR merged",
     })
-    expect((result as { content: Array<{ text: string }> }).content[0].text).toContain(
-      "Closure note appended"
+    const closeResult = result as {
+      content: Array<{ text: string }>
+      structuredContent?: Record<string, unknown>
+    }
+    expect(closeResult.content[0].text).toContain("Closure note appended")
+    expect(closeResult.structuredContent).toEqual({
+      id: "task-id",
+      state: "done",
+      doneAt: "2026-05-03",
+      closureNote: "## Closed (2026-05-03) - done\n\nParent PR merged",
+    })
+  })
+
+  it("surfaces structured task close partial-failure messages as MCP errors", async () => {
+    const closureNote = "## Closed (2026-05-03) - done\n\nParent PR merged"
+    const svc = services()
+    svc.tasks.close = vi.fn().mockRejectedValue(
+      new TaskClosePartialFailureError(
+        `Task close partial failure: task task-id was closed as done ` +
+          `with Done At 2026-05-03, but the closure note could not be written ` +
+          `during phase "closure-note": notion 503.`,
+        {
+          taskId: "task-id",
+          state: "done",
+          doneAt: "2026-05-03",
+          closureNote,
+          closureNoteError: new Error("notion 503"),
+        }
+      )
     )
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = (await handler({
+      action: "close",
+      taskId: "task-id",
+      reason: "Parent PR merged",
+    } as never)) as { isError?: boolean; content: Array<{ text: string }> }
+
+    const text = result.content[0].text
+    expect(result.isError).toBe(true)
+    expect(text).toContain("Error: TaskClosePartialFailureError")
+    expect(text).toContain("task task-id was closed as done")
+    expect(text).toContain("closure note could not be written")
+    expect(text).toContain('"kind":"task-close-partial"')
+    expect(text).toContain('"closureNoteCauseMessage":"notion 503"')
   })
 
   it("supports close-many with explicit IDs and reports partial failures", async () => {
