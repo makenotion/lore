@@ -15,12 +15,7 @@ import type {
   Fact,
   CreateFactInput,
   FactPredicate,
-  FactConfidence,
   MemoryScopeContext,
-  MemoryScopeInput,
-  MemoryScope,
-  MemoryScopeKind,
-  MemoryLifetime,
   DatabaseRef,
 } from "../types.js"
 import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
@@ -53,20 +48,16 @@ import {
   seedConfidenceScore,
 } from "./decay.js"
 import { todayUtc } from "./task.js"
+import { isFullPage, isLiveFullPage, extractRelationIds } from "../notion/extractors.js"
 import {
-  isFullPage,
-  isLiveFullPage,
-  extractTitle,
-  extractRichText,
-  extractSelect,
-  extractRelationIds,
-  extractDate,
-  extractNumber,
-} from "../notion/extractors.js"
-import {
-  hydrateRelationProperties,
-  hydrateRelationPropertiesForPages,
-} from "../notion/relation-properties.js"
+  pageToFact as mapPageToFact,
+  pageToFacts as mapPageToFacts,
+  pageToFactSync as mapPageToFactSync,
+} from "./fact-mapper.js"
+import { factScopeInputToBuilderProps } from "./fact-scope.js"
+import { synthesizeFactFromCreateInput } from "./fact-synthesis.js"
+
+export { scopesMatchForMerge } from "./fact-scope.js"
 
 type QueryFactsOpts = {
   projectId?: string
@@ -223,11 +214,6 @@ function logDedupDuplicateScopeMatchOnce(dedupKey: string): void {
       "stay distinct).\n"
   )
 }
-
-// Only multi-relation columns belong here. Source/SubjectEntity/ObjectEntity
-// are 0-or-1 relation columns, so they cannot be truncated by Notion's
-// inline relation limit.
-const FACT_RELATION_PROPERTIES = [FACT_PROPS.PROJECT] as const
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -3337,357 +3323,15 @@ export class FactService {
     return count
   }
 
-  /**
-   * Map a Notion page to the `Fact` domain type, or `null` for rows
-   * whose raw `Predicate` select value is one of the historical
-   * tracking strings (`needs_action` / `waiting_on` / `blocked_by`).
-   *
-   * Tracking predicates were removed from `FactPredicate` in 0.6.0
-   * (`lore-task` is the canonical surface for tracked work). Historical
-   * Notion rows still carry those select values — the schema is
-   * additive-only — so the deserialization boundary filters them so
-   * no live read path surfaces them as a `Fact`. `countByPredicateRaw`
-   * deliberately bypasses this filter so the `lore status` preflight
-   * keeps counting the rows.
-   *
-   * `SubjectKey` and `DedupKey` are deliberately *not* projected onto
-   * `Fact` — they're query-only indexes derived from the canonical
-   * `Subject` / `Object` / `Predicate` triple, not domain data. Surfacing
-   * them on `Fact` would invite callers to read the cached normalized
-   * form instead of recomputing it from the source-of-truth fields, and
-   * a stale cache (e.g. mid-encoding-fix) would silently diverge from
-   * the canonical value. The repo-wide rule that adding a DB
-   * property requires updating `Fact` + `pageToFact` is intentionally
-   * waived for these two columns; the next contributor should not
-   * "fix" the asymmetry by exposing them.
-   */
   private async pageToFact(page: PageObjectResponse): Promise<Fact | null> {
-    page = await hydrateRelationProperties(this.client, page, FACT_RELATION_PROPERTIES)
-    return this.pageToFactSync(page)
+    return await mapPageToFact(this.client, page)
   }
 
-  /**
-   * Batched sibling of `pageToFact`: hydrates relation overflow for the
-   * full result set in a single `p-limit(3)`-gated call (via
-   * `hydrateRelationPropertiesForPages`), then runs the synchronous
-   * deserialization over the already-hydrated pages and drops historical
-   * tracking-predicate `null` returns.
-   *
-   * Result-set callers (paginated `dataSources.query` consumers) must
-   * route through this method instead of `Promise.all(results.map(p =>
-   * this.pageToFact(p)))`. The shapes are observationally equivalent —
-   * both inherit the rate-limit Proxy's concurrency-3 gate — but
-   * routing through here consolidates relation-property semantics on
-   * the batched helper so a future change to retry policy, hydration
-   * scope, or column set has one chokepoint instead of one per call
-   * site.
-   *
-   * The single-row `pageToFact` callers (`getById`, `lookupByDedupKey`,
-   * and the inner-loop iterators in `queryOverdue` /
-   * `listAllForBackfill` that process one row per outer page) keep the
-   * per-page hydration path — there is no result set to batch.
-   */
   private async pageToFacts(pages: readonly PageObjectResponse[]): Promise<Fact[]> {
-    if (pages.length === 0) return []
-    const hydrated = await hydrateRelationPropertiesForPages(
-      this.client,
-      pages,
-      FACT_RELATION_PROPERTIES
-    )
-    const facts: Fact[] = []
-    for (const page of hydrated) {
-      const fact = this.pageToFactSync(page)
-      if (fact !== null) facts.push(fact)
-    }
-    return facts
+    return await mapPageToFacts(this.client, pages)
   }
 
-  /**
-   * Synchronous deserialization of an already-hydrated fact page.
-   * `pageToFact` and `pageToFacts` both delegate here after their
-   * respective hydration step. Returns `null` for historical
-   * tracking-predicate rows so callers can filter them at the
-   * deserialization boundary.
-   */
   private pageToFactSync(page: PageObjectResponse): Fact | null {
-    const props = page.properties
-    const rawPredicate = extractSelect(props[FACT_PROPS.PREDICATE], "related_to")
-    if (HISTORICAL_TRACKING_PREDICATE_VALUES.has(rawPredicate)) {
-      return null
-    }
-    const sourceIds = extractRelationIds(props[FACT_PROPS.SOURCE])
-    // PF3-01 — relation columns return `[]` on un-migrated rows
-    // because Notion responds with an empty list when the column
-    // exists in the schema but is unset on the row. Treat any populated
-    // relation as the canonical entity id; ignore the [1+] case (a
-    // Fact only ever points at one canonical Entity per side).
-    const subjectEntityIds = extractRelationIds(props[FACT_PROPS.SUBJECT_ENTITY])
-    const objectEntityIds = extractRelationIds(props[FACT_PROPS.OBJECT_ENTITY])
-    // Transaction-time provenance. `Observed At` /
-    // `Invalidated At` are `null` on rows the backfill migration hasn't
-    // touched yet; the read-side filters in `applyTransactionTimeFilter`
-    // tolerate that absence (`is_empty` short-circuit for the migration
-    // window).
-    const invalidatedByIds = extractRelationIds(props[FACT_PROPS.INVALIDATED_BY])
-
-    return {
-      id: page.id,
-      subject: extractTitle(props[FACT_PROPS.SUBJECT]),
-      predicate: rawPredicate as FactPredicate,
-      object: extractRichText(props[FACT_PROPS.OBJECT]),
-      projectIds: extractRelationIds(props[FACT_PROPS.PROJECT]),
-      validFrom: extractDate(props[FACT_PROPS.VALID_FROM]),
-      validUntil: extractDate(props[FACT_PROPS.VALID_UNTIL]),
-      observedAt: extractDate(props[FACT_PROPS.OBSERVED_AT]),
-      invalidatedAt: extractDate(props[FACT_PROPS.INVALIDATED_AT]),
-      invalidatedBySourceMemoryId: invalidatedByIds[0] ?? null,
-      reviewBy: extractDate(props[FACT_PROPS.REVIEW_BY]),
-      sourceMemoryId: sourceIds[0] ?? null,
-      confidence: extractSelect(
-        props[FACT_PROPS.CONFIDENCE],
-        "certain"
-      ) as FactConfidence,
-      // DEFERRED-02 — system-managed numeric mirror of the categorical
-      // `Confidence` select. `null` on unmigrated rows; populated by
-      // `touchOnRead` / `decrementConfidence` / the build-fact-confidence-
-      // scores migration. `extractNumber` returns `null` for missing
-      // columns so legacy vaults that haven't run schema migration deserialize
-      // cleanly.
-      confidenceScore: extractNumber(props[FACT_PROPS.CONFIDENCE_SCORE]),
-      lastReferencedAt: extractDate(props[FACT_PROPS.LAST_REFERENCED_AT]),
-      createdAt: page.created_time,
-      subjectEntityId: subjectEntityIds[0] ?? null,
-      objectEntityId: objectEntityIds[0] ?? null,
-      scope: extractFactScope(props),
-    }
-  }
-}
-
-/**
- * Read the five scope columns on a Facts DB row into a `MemoryScope`
- * bundle. Matches `extractMemoryScope` — same
- * "all-empty → null" rule so rows without scope columns deserialize
- * as null.
- */
-function extractFactScope(props: PageObjectResponse["properties"]): MemoryScope | null {
-  const kindProp = props[FACT_PROPS.SCOPE_KIND]
-  const kind =
-    kindProp && kindProp.type === "select" && kindProp.select
-      ? (kindProp.select.name as MemoryScopeKind)
-      : null
-  const key = extractRichText(props[FACT_PROPS.SCOPE_KEY])
-  const audience = extractRichText(props[FACT_PROPS.AUDIENCE])
-  const lifetimeProp = props[FACT_PROPS.LIFETIME]
-  const lifetime =
-    lifetimeProp && lifetimeProp.type === "select" && lifetimeProp.select
-      ? (lifetimeProp.select.name as MemoryLifetime)
-      : null
-  const expiresAt = extractDate(props[FACT_PROPS.EXPIRES_AT])
-  if (
-    kind === null &&
-    lifetime === null &&
-    expiresAt === null &&
-    key.length === 0 &&
-    audience.length === 0
-  ) {
-    return null
-  }
-  return { kind, key, audience, lifetime, expiresAt }
-}
-
-/**
- * Raw Notion `Predicate` select values not in the current
- * `FactPredicate` union. Notion rows still exist for vaults that
- * skipped the `--migrate-tracking-to-tasks` migration (the schema is
- * additive-only), so `pageToFact` filters
- * them at the deserialization boundary. Inlined as a plain set rather
- * than re-exported from the public types module because the
- * `FactPredicate` union does not include these values.
- */
-const HISTORICAL_TRACKING_PREDICATE_VALUES: ReadonlySet<string> = new Set([
-  "needs_action",
-  "waiting_on",
-  "blocked_by",
-])
-
-/**
- * Decide whether `createWithDedup`'s probe hit on an existing row
- * should merge into that row, or fall through to a blind create.
- *
- * Returns `true` only when the existing row's scope deep-equals the
- * incoming write's scope. The match is exact:
- *
- * - Both null (or absent): match — un-migrated rows or untouched-scope
- *   writes coalesce as broadcast.
- * - One null, one populated: NO match — adding scope to a broadcast row,
- *   or vice versa, must not silently merge. The
- *   narrow-scope write needs its own row; the broadcast write also
- *   needs its own row so default team reads can see it.
- * - Both populated: must match on every component (`kind`, `key`,
- *   `audience`, `lifetime`, `expiresAt`).
- *
- * The `key`, `audience` rich_text comparison normalizes empty string
- * and whitespace-only on both sides to "not declared" so an explicit
- * `key: ""` clear from one side doesn't structurally split from a
- * legacy null on the other side. Select / date columns compare with
- * strict equality.
- *
- * The function is intentionally narrow: a future contributor adding
- * a sixth scope column to the type bundle gets a typecheck error
- * here when they forget to compare it, because the incoming side is
- * destructured and the destructure-rest pattern is `{ ...rest } =
- * input` — any leftover key blocks the same-shape assertion. (The
- * destructure-rest pattern is itself the test fixture's
- * regression detector.)
- */
-export function scopesMatchForMerge(
-  existing: import("../types.js").MemoryScope | null,
-  incoming: import("../types.js").MemoryScopeInput | undefined
-): boolean {
-  // Treat all-undefined incoming and null existing as the same case:
-  // a write with no scope bundle merging into a row with no scope.
-  const incomingDeclared =
-    incoming !== undefined &&
-    (incoming.kind !== undefined ||
-      incoming.lifetime !== undefined ||
-      incoming.expiresAt !== undefined ||
-      isMeaningful(incoming.key) ||
-      isMeaningful(incoming.audience))
-  if (existing === null && !incomingDeclared) return true
-  if (existing === null || !incomingDeclared) return false
-
-  // Both sides declare scope — every column must align. The Memory-
-  // Scope-Input type allows partial writes (e.g. just `lifetime:
-  // "expires"` + `expiresAt: ...` without a `kind`); for merge
-  // purposes, `undefined` on the incoming side AND a non-null value
-  // on the existing side is a mismatch — caller didn't declare the
-  // same identity slot.
-  const existingKey = existing.key.trim().length > 0 ? existing.key : null
-  const incomingKey =
-    incoming.key !== undefined && incoming.key.trim().length > 0 ? incoming.key : null
-  const existingAudience = existing.audience.trim().length > 0 ? existing.audience : null
-  const incomingAudience =
-    incoming.audience !== undefined && incoming.audience.trim().length > 0
-      ? incoming.audience
-      : null
-
-  return (
-    existing.kind === (incoming.kind ?? null) &&
-    existingKey === incomingKey &&
-    existingAudience === incomingAudience &&
-    existing.lifetime === (incoming.lifetime ?? null) &&
-    existing.expiresAt === (incoming.expiresAt ?? null)
-  )
-}
-
-function isMeaningful(value: string | undefined): boolean {
-  return value !== undefined && value.trim().length > 0
-}
-
-/**
- * Translate the agent-facing `MemoryScopeInput` shape into the flat
- * primitive arguments `buildFactProps` consumes. Matches
- * `scopeInputToBuilderProps` — that helper's
- * docstring carries the rationale on keeping the bundle-to-primitive
- * translation outside the builder.
- */
-function factScopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
-  scopeKind?: string | null
-  scopeKey?: string
-  audience?: string
-  lifetime?: string | null
-  expiresAt?: string | null
-} {
-  if (scope === undefined) return {}
-  const out: ReturnType<typeof factScopeInputToBuilderProps> = {}
-  if (scope.kind !== undefined) out.scopeKind = scope.kind
-  if (scope.key !== undefined) out.scopeKey = scope.key
-  if (scope.audience !== undefined) out.audience = scope.audience
-  if (scope.lifetime !== undefined) out.lifetime = scope.lifetime
-  if (scope.expiresAt !== undefined) out.expiresAt = scope.expiresAt
-  return out
-}
-
-/**
- * Synthesize a `Fact` shape from a freshly-created page id + the
- * `CreateFactInput` that produced it (batch path).
- *
- * The batch `create_pages` response carries only `{ id }` per page,
- * so the caller cannot route through `pageToFact`'s
- * `PageObjectResponse` extractor. Re-fetching every created row
- * via `pages.retrieve` would give back the N round-trips the batch
- * call just saved (the `createBatchWithDedupRunToolLocked`
- * "load-bearing batching win" note carries the rationale).
- * Synthesizing from the input
- * preserves the wall-clock win at the cost of leaving the
- * system-managed read-side fields (`confidenceScore`,
- * `lastReferencedAt`) at their fresh-row default of `null`, which
- * is exactly what `pageToFact` would return for a never-touched
- * post-create row anyway.
- *
- * `createdAt` defaults to "now" because Notion's `created_time` is
- * server-side and not in the response. The Fact carries this as
- * an optional field per the `Fact.createdAt` doc comment.
- *
- * Auto-mention emission — the canonical caller — only checks
- * fulfilled / rejected on each result and never reads back the
- * synthesized fields, so the "approximate fields" cost is entirely
- * paid by hypothetical future consumers, which the type's optional
- * markers permit.
- *
- * **Invariant — keep aligned with `pageToFact`.** This synthesizer
- * deliberately bypasses `pageToFact`'s historical-tracking-predicate
- * filter (the `pageToFactSync` null-return for legacy
- * `needs_action` / `waiting_on` / `blocked_by` rows). The bypass is
- * safe today because the batch path validates `predicate` upstream
- * via the `FactPredicate` type — historical strings cannot reach
- * here. A future contributor who tightens `pageToFact`'s filter
- * (e.g. adding a new historical-only predicate to the null-return
- * set) MUST mirror that change here, otherwise the batch path
- * would silently surface filtered rows that the single-input path
- * would drop. Pinned only by documentation, not test scaffolding.
- */
-function synthesizeFactFromCreateInput(
-  id: string,
-  input: CreateFactInput,
-  validFromDefault: string,
-  observedAtDefault: string
-): Fact {
-  return {
-    id,
-    subject: input.subject,
-    predicate: input.predicate,
-    object: input.object,
-    projectIds: input.projectIds ? [...input.projectIds] : [],
-    validFrom: input.validFrom ?? validFromDefault,
-    validUntil: null,
-    // `observedAt` is bitemporally distinct from `validFrom`:
-    // `validFrom` is domain truth (when the fact started being true in
-    // the world), `observedAt` is transaction time (when Lore learned
-    // about it). The caller passes both defaults explicitly so a future
-    // backfill caller decoupling them (e.g., `validFrom: "2024-01-01",
-    // observedAt: today`) can't silently land an `observedAt` derived
-    // from the wrong axis. `invalidatedAt` and
-    // `invalidatedBySourceMemoryId` stay null until invalidation.
-    observedAt: observedAtDefault,
-    invalidatedAt: null,
-    invalidatedBySourceMemoryId: null,
-    reviewBy: input.reviewBy ?? null,
-    sourceMemoryId: input.sourceMemoryId ?? null,
-    confidence: input.confidence ?? "certain",
-    confidenceScore: null,
-    lastReferencedAt: null,
-    createdAt: new Date().toISOString(),
-    subjectEntityId: input.subjectEntityId ?? null,
-    objectEntityId: input.objectEntityId ?? null,
-    scope: input.scope
-      ? {
-          kind: input.scope.kind ?? null,
-          key: input.scope.key ?? "",
-          audience: input.scope.audience ?? "",
-          lifetime: input.scope.lifetime ?? null,
-          expiresAt: input.scope.expiresAt ?? null,
-        }
-      : null,
+    return mapPageToFactSync(page)
   }
 }
