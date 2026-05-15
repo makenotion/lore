@@ -49,6 +49,7 @@ import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
 import { nonBlankBody, nonBlankString } from "./text-schema.js"
+import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -56,6 +57,7 @@ type ToolResult = {
   isError?: boolean
   /** Issue #495 — see `withWakeUpCacheBump`'s docstring for the marker contract. */
   noopWrite?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 const TASK_STATES = ["open", "in-progress", "blocked", "done", "cancelled"] as const
@@ -499,6 +501,7 @@ async function handleCreate(
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { tasksCreated: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -586,6 +589,7 @@ async function handleUpdate(
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { tasksUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -638,6 +642,7 @@ async function handleClose(services: LoreServices, args: CloseArgs): Promise<Too
         doneAt,
         closureNote,
       },
+      costOutputs: { tasksClosed: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -673,6 +678,7 @@ async function handleCloseMany(
     return {
       content: [{ type: "text", text: lines.join("\n") }],
       isError: result.failed.length > 0 ? true : undefined,
+      costOutputs: result.closed > 0 ? { tasksClosed: result.closed } : undefined,
     }
   } catch (err) {
     return toolError(err)
@@ -763,6 +769,7 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
             text: `${emptyText}${paginationFooter(nextCursor, { truncated: saturated })}`,
           },
         ],
+        costOutputs: { tasksReturned: 0 },
       }
     }
 
@@ -855,6 +862,7 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
           text: `${totalLabel} (${totalSemantics})${filterSuffix}:\n\n${sections.join("\n\n")}${footer}${pagination}`,
         },
       ],
+      costOutputs: { tasksReturned: tasks.length },
     }
   } catch (err) {
     return toolError(err)

@@ -71,6 +71,18 @@ projects:
 #   patterns: ["src/*/package.json"]
 #   exclude: ["node_modules"]
 
+# Local cost and usage ledger (optional, disabled by default).
+# Writes redacted JSONL rows only: byte/token counts, operation counts,
+# model metadata when known, and aggregate cost estimates. It does not
+# store raw prompts, transcripts, MCP arguments/results, memory content,
+# Notion page bodies, or response payloads.
+# costTracking:
+#   enabled: true
+#   ledgerPath: ~/.local/share/lore/cost-ledger.jsonl
+#   pricing:
+#     builtinTable: openai-2026-05
+#     overridesPath: ~/.config/lore/pricing.json
+
 # AI assistant hook settings
 #
 # Lore wires four background hooks into your assistant by default. Writes

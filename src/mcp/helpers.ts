@@ -12,6 +12,7 @@ import { isRetryableError } from "../core/project-scope.js"
 import { WriteBudgetExceededError } from "../notion/rate-limit.js"
 import { redactDebugError, redactDebugMessage } from "../debug-redact.js"
 import { isLoreError } from "../errors.js"
+import type { CostOutputCounts } from "../core/cost-ledger.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -35,6 +36,7 @@ type ToolResult = {
    * default.
    */
   noopWrite?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 /**

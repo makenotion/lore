@@ -437,7 +437,7 @@ function defaultSetTimer(callback: () => void, delayMs: number): void {
  * so the line shape matches the existing SDK-debug emitter and any
  * `[lore]`-prefixed log aggregation keeps working unchanged.
  */
-function defaultOnBackoff(ms: number, source: BackoffSource): void {
+export function defaultOnBackoff(ms: number, source: BackoffSource): void {
   process.stderr.write(`[lore] notion-sdk warn: 429 backoff ${ms}ms (source=${source})\n`)
 }
 

@@ -203,6 +203,39 @@ features:
     })
   })
 
+  it("parses optional cost tracking config", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+costTracking:
+  enabled: true
+  ledgerPath: ./state/lore-costs.jsonl
+  pricing:
+    builtinTable: openai-2026-05
+    overridesPath: ~/.config/lore/pricing.json
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.costTracking).toEqual({
+      enabled: true,
+      ledgerPath: "./state/lore-costs.jsonl",
+      pricing: {
+        builtinTable: "openai-2026-05",
+        overridesPath: "~/.config/lore/pricing.json",
+      },
+    })
+  })
+
+  it("keeps cost tracking disabled by default when omitted", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.costTracking).toBeUndefined()
+  })
+
   it("rejects malformed profile selectors", () => {
     expect(() =>
       parseConfigAllowingInvalidHooks(`

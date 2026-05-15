@@ -16,6 +16,7 @@ import {
 import { mergeHookDefaults } from "../../hooks/config.js"
 import { touchDigestMarker } from "../../hooks/digest-marker.js"
 import { safeFilenameSegment } from "../../hooks/marker-key.js"
+import { recordBackgroundModelCostEvent } from "../../hooks/cost-events.js"
 
 /**
  * Resolve the absolute path configured for a project in .lore.yaml. When
@@ -172,6 +173,17 @@ export const digestCommand = new Command("digest")
           // `authSource`, so the synthesizer's env matches the source
           // the foreground gather call already authenticated against.
           authSource: services.authSource,
+        })
+        await recordBackgroundModelCostEvent({
+          costTracking: services.costTracking,
+          eventType: "digest.background_model",
+          source: "cli",
+          prompt,
+          result,
+          projectName: projectLabel,
+          agentName: process.env["LORE_AGENT_NAME"],
+          sessionId: process.env["LORE_SESSION_ID"],
+          agent: hookConfig.backgroundAgent,
         })
         if (result.kind !== "spawned") {
           // Benign races (lock-held, cap-hit, race-lost) mean a peer is

@@ -127,6 +127,32 @@ export interface LoreFeatureConfig {
   }
 }
 
+export interface CostTrackingPricingConfig {
+  /**
+   * Checked-in pricing table id. V1 never fetches pricing over the network.
+   */
+  builtinTable?: string
+  /**
+   * Optional absolute, `~`-expanded, or config-root-relative JSON file whose
+   * model entries override the selected built-in table.
+   */
+  overridesPath?: string
+}
+
+export interface CostTrackingConfig {
+  /**
+   * Opt-in switch for the local JSONL cost ledger. Defaults to false when the
+   * block or field is omitted.
+   */
+  enabled?: boolean
+  /**
+   * Ledger JSONL path. Defaults to ~/.local/share/lore/cost-ledger.jsonl when
+   * tracking is enabled.
+   */
+  ledgerPath?: string
+  pricing?: CostTrackingPricingConfig
+}
+
 export interface LoreConfig {
   vault: {
     pageId: string
@@ -150,6 +176,11 @@ export interface LoreConfig {
    * kill switches.
    */
   features?: LoreFeatureConfig
+  /**
+   * Local-only cost and usage ledger. Disabled by default and writes only
+   * redacted numeric summaries when explicitly enabled.
+   */
+  costTracking?: CostTrackingConfig
   /**
    * Read-only vaults whose memories can be inherited by topology-aware read
    * paths. The primary vault remains the only normal write target.

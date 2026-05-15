@@ -30,6 +30,8 @@ import { registerQueryTools } from "./tools/query.js"
 import { registerTaskTools } from "./tools/tasks.js"
 import { registerProcedureTools } from "./tools/procedures.js"
 import { registerHelpResources } from "./help.js"
+import { installCostTrackingToolWrapper } from "./cost-tracking.js"
+import type { CostOutputCounts } from "../core/cost-ledger.js"
 
 // Re-export for consumers that already import from this module
 export type { LoreServices } from "../services.js"
@@ -38,6 +40,7 @@ export { initServices } from "../services.js"
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 const DIAGNOSTIC_TOOL_NAMES = [
@@ -107,6 +110,7 @@ export async function startServer(): Promise<void> {
   }
 
   if (services) {
+    installCostTrackingToolWrapper(server, services)
     // Register every polymorphic dispatcher. Each register* call below
     // adds exactly one `lore-*` tool name to the agent-visible surface;
     // the polymorphic dispatch pattern multiplexes per-tool actions

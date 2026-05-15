@@ -42,6 +42,7 @@ import {
 } from "../core/digest.js"
 import { buildDigestPrompt } from "./prompts.js"
 import { DIGEST_ALLOWLIST, isBenignRace, spawnBackgroundSave } from "./background.js"
+import { recordBackgroundModelCostEvent } from "./cost-events.js"
 import type { BackgroundAgentConfig } from "./config.js"
 import {
   clearDigestMarker,
@@ -267,6 +268,17 @@ export async function fireDigestIfStale(
     // `authSource`, so the digest synthesizer's spawn-time env
     // matches the source the foreground digest gather already used.
     authSource: services.authSource,
+  })
+  await recordBackgroundModelCostEvent({
+    costTracking: services.costTracking,
+    eventType: "digest.background_model",
+    source: "hook",
+    prompt,
+    result,
+    projectName: project.name,
+    agentName: process.env["LORE_AGENT_NAME"],
+    sessionId: process.env["LORE_SESSION_ID"],
+    agent: state.backgroundAgent,
   })
 
   if (result.kind === "spawned") {

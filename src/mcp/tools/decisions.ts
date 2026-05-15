@@ -33,10 +33,12 @@ import { findNearDuplicates, type NearDuplicateMatch } from "../../core/near-dup
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { LoreError, errorCauseMessage } from "../../errors.js"
 import { resolveFeatureFlags } from "../../feature-flags.js"
+import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 interface SupersedeRef {
@@ -625,7 +627,13 @@ async function handleCreate(
       lines.push("", `Warnings: ${allWarnings.join("; ")}`)
     }
 
-    return { content: [{ type: "text", text: lines.join("\n") }] }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: {
+        decisionsCreated: 1,
+        ...(affectsCreated.length > 0 ? { factsCreated: affectsCreated.length } : {}),
+      },
+    }
   } catch (err) {
     return toolError(err)
   }
@@ -702,6 +710,7 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
           text: `${lines.join("\n")}${paginationFooter(nextCursor, { truncated: capped })}`,
         },
       ],
+      costOutputs: { decisionsReturned: decisions.length },
     }
   } catch (err) {
     return toolError(err)
@@ -750,7 +759,10 @@ async function handleGet(
       lines.push("", "---", "", "## Rationale", "", decision.content)
     }
 
-    return { content: [{ type: "text", text: lines.join("\n") }] }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { decisionsReturned: 1 },
+    }
   } catch (err) {
     return toolError(err)
   }
@@ -897,6 +909,7 @@ async function handleContext(
 
     return {
       content: [{ type: "text", text: lines.join("\n") + formatWarnings() }],
+      costOutputs: { decisionsReturned: shown.length },
     }
   } catch (err) {
     return toolError(err)
@@ -959,6 +972,7 @@ async function handleSupersede(
             `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"}.`,
         },
       ],
+      costOutputs: { decisionsUpdated: 1, factsCreated: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -981,6 +995,7 @@ async function handleReview(
             text: `Cleared review date for decision ${args.decisionId}.`,
           },
         ],
+        costOutputs: { decisionsUpdated: 1 },
       }
     }
     return {
@@ -990,6 +1005,7 @@ async function handleReview(
           text: `Marked decision ${args.decisionId} as reviewed. New review date: ${newDate}`,
         },
       ],
+      costOutputs: { decisionsUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)

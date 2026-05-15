@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import {
   formatConfidenceSummary,
@@ -5,6 +8,7 @@ import {
   formatDriftStatus,
   formatTrackingPreflight,
   groupLatestDigestByProject,
+  loadCostStatusLines,
   loadDigestStatus,
   loadDriftStatus,
   loadTrackingPreflight,
@@ -23,6 +27,11 @@ import { DRIFT_DEBOUNCE_DAYS } from "../../hooks/drift-marker.js"
 import type { BackgroundFailureMarker } from "../../hooks/background-failure-marker.js"
 import type { LoreServices } from "../../services.js"
 import type { LoreConfig, Memory, Project } from "../../types.js"
+import {
+  COST_LEDGER_SCHEMA_VERSION,
+  payloadSummary,
+  resolveCostTracking,
+} from "../../core/cost-ledger.js"
 
 function makeMemory(overrides: Partial<Memory>): Memory {
   return {
@@ -833,6 +842,57 @@ describe("loadTrackingPreflight (issue 0.6.0/24)", () => {
     const report = await loadTrackingPreflight(makePreflightServices(serviceProbe))
     expect(serviceProbe).toHaveBeenCalledTimes(1)
     expect(report.count).toBe(12)
+  })
+})
+
+describe("loadCostStatusLines", () => {
+  it("skips schema-invalid ledger rows so status still renders costs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lore-status-costs-"))
+    try {
+      const costTracking = resolveCostTracking(
+        {
+          costTracking: {
+            enabled: true,
+            ledgerPath: "state/costs.jsonl",
+          },
+        },
+        dir
+      )
+      if (!costTracking.enabled) {
+        throw new Error("expected cost tracking to be enabled")
+      }
+      mkdirSync(join(dir, "state"))
+      writeFileSync(
+        costTracking.ledgerPath,
+        [
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            eventType: "mcp.invocation",
+            status: "success",
+            projectName: "SECRET_INVALID_STATUS_ROW",
+          }),
+          JSON.stringify({
+            schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+            timestamp: new Date().toISOString(),
+            eventType: "mcp.invocation",
+            source: "host_agent",
+            status: "success",
+            tool: "lore-query",
+            action: "search",
+            payload: payloadSummary("{}", "ok"),
+            notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+          }),
+        ].join("\n") + "\n"
+      )
+
+      const lines = await loadCostStatusLines({ costTracking } as LoreServices)
+      const output = lines.join("\n")
+      expect(output).toContain("Cost tracking: enabled")
+      expect(output).toContain("1 MCP calls")
+      expect(output).not.toContain("SECRET_INVALID_STATUS_ROW")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

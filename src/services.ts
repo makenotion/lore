@@ -23,7 +23,14 @@ import {
   type ClientAuthRefreshOutcome,
   type RefreshClientAuth,
 } from "./notion/client.js"
-import { createLimitedClient, wrapWithWriteBudget } from "./notion/rate-limit.js"
+import {
+  createLimitedClient,
+  defaultOnBackoff,
+  wrapWithWriteBudget,
+} from "./notion/rate-limit.js"
+import { createOperationAccountingClient } from "./notion/operation-accounting.js"
+import { recordNotionRateLimitBackoff } from "./core/cost-accounting.js"
+import { resolveCostTracking, type ResolvedCostTracking } from "./core/cost-ledger.js"
 import { warnRunToolIntegrationSecretOnce } from "./notion/runtool/error-helpers.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
@@ -368,6 +375,12 @@ export interface LoreServices {
    */
   features: LoreFeatureFlags
   /**
+   * Resolved local cost-tracking ledger config. Disabled by default; when
+   * enabled, interface layers append redacted usage summaries through this
+   * single shared resolver.
+   */
+  costTracking: ResolvedCostTracking
+  /**
    * Shared Notion SDK client for this process. This is the same
    * auth-refreshing, rate-limited Proxy used by every service below; callers
    * that need vault-adjacent reads should reuse it instead of creating a
@@ -495,6 +508,7 @@ export async function initServicesFromConfig(
 ): Promise<LoreServices> {
   const profile = resolveProfileFromConfigAtRoot(config, configRoot)
   const features = resolveFeatureFlags(process.env, config)
+  const costTracking = resolveCostTracking(config, configRoot)
   const auth = await resolveAuth(config, configRoot)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
   const authSnapshotRef = { current: toClientAuth(auth) }
@@ -527,22 +541,25 @@ export async function initServicesFromConfig(
     writeBudgetFlush = wrapped.flushBudgetCount
     return wrapped.client
   }
+  const rateLimitDeps = {
+    onBackoff: (ms: number, source: Parameters<typeof defaultOnBackoff>[1]) => {
+      recordNotionRateLimitBackoff()
+      defaultOnBackoff(ms, source)
+    },
+  }
+  const wrapRuntimeClient = (raw: Client): Client =>
+    createOperationAccountingClient(
+      createLimitedClient(installWriteBudget(raw), rateLimitOptions, rateLimitDeps)
+    )
   const client = authRefresh
     ? createAuthRefreshingClient(authSnapshotRef.current, authRefresh, {
-        createClient: (token, baseUrl) =>
-          createLimitedClient(
-            installWriteBudget(createClient(token, baseUrl)),
-            rateLimitOptions
-          ),
+        createClient: (token, baseUrl) => wrapRuntimeClient(createClient(token, baseUrl)),
         onAuthChange: (nextAuth) => {
           authSnapshotRef.current = nextAuth
           identityRef.current?.clearCache()
         },
       })
-    : createLimitedClient(
-        installWriteBudget(createClient(auth.token, auth.baseUrl)),
-        rateLimitOptions
-      )
+    : wrapRuntimeClient(createClient(auth.token, auth.baseUrl))
   // Install the shutdown hook ONLY when bench-mode env was active.
   // The handler set is module-scope and once-per-process; this call
   // updates the active flush callback and is idempotent across
@@ -659,6 +676,7 @@ export async function initServicesFromConfig(
     client,
     profile,
     features,
+    costTracking,
     vault,
     projects,
     topics,

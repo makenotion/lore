@@ -3,10 +3,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { formatDispatchError, toolError } from "../helpers.js"
 import { resolveProjectByName } from "../../core/project-scope.js"
+import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 // -------------------------------------------------------------------------
@@ -42,6 +44,7 @@ async function handleList(
           text: `${projects.length} projects:\n\n${text}`,
         },
       ],
+      costOutputs: { projectsReturned: projects.length },
     }
   } catch (err) {
     return toolError(err)
@@ -92,6 +95,10 @@ async function handleGet(
 
     return {
       content: [{ type: "text", text: sections.join("\n") }],
+      costOutputs: {
+        projectsReturned: 1,
+        memoriesReturned: recentMemories.length,
+      },
     }
   } catch (err) {
     return toolError(err)

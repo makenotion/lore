@@ -102,6 +102,19 @@ const featuresConfigSchema = z
   })
   .optional()
 
+const costTrackingConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    ledgerPath: z.string().min(1).optional(),
+    pricing: z
+      .object({
+        builtinTable: z.string().min(1).optional(),
+        overridesPath: z.string().min(1).optional(),
+      })
+      .optional(),
+  })
+  .optional()
+
 const configSchema = z.object({
   vault: z.object({
     pageId: pageIdSchema("vault.pageId is required"),
@@ -109,6 +122,7 @@ const configSchema = z.object({
   profile: profileSelectorSchema.optional(),
   profiles: profilesConfigSchema,
   features: featuresConfigSchema,
+  costTracking: costTrackingConfigSchema,
   upstreamVaults: z
     .array(
       namedVaultRefSchema.extend({

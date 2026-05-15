@@ -266,6 +266,38 @@ Digest and drift watermarks:
 - If there is no configured `.lore.yaml` root, drift status returns no lines and
   the section is suppressed.
 
+Cost tracking:
+
+- `lore status` renders a compact cost section only when
+  `costTracking.enabled` is true. Disabled or omitted cost tracking is silent.
+- The section reads the local ledger only; it must not initialize any extra
+  Notion clients beyond the status probes already running for the command.
+- The line reports today's Lore-owned model spend, wake-up estimated tokens,
+  MCP call count, and Notion writes. A month-to-date line appears only when the
+  current month has ledger entries.
+- Missing, empty, or malformed ledger rows must not fail status output.
+
+## The `costs` Command
+
+`lore costs` is a local-only inspection surface for the opt-in cost ledger. It
+does not initialize Notion services and must never require vault reachability to
+summarize or export existing local usage rows.
+
+- `summary` defaults to the local calendar day `today`; `export` defaults to all
+  ledger rows.
+- `--since` accepts only `Nh`, `Nd`, or `Nw` with a positive integer. `--month`
+  accepts `YYYY-MM` in local calendar time. Combining them exits non-zero before
+  reading the ledger.
+- Disabled tracking prints a short status message for `summary` and exits
+  non-zero for `export`, because export scripts expect data on stdout.
+- JSONL export writes the original redacted ledger lines that match the range.
+  CSV export writes stable columns with missing values as empty cells.
+- Summary output distinguishes exact, estimated, and unknown model cost, reports
+  wake-up tokens as cost unknown by default, and groups MCP usage by tool/action
+  and success/error.
+- The command must never print raw prompts, MCP arguments, MCP results, memory
+  content, fact content, Notion page bodies, or Notion response payloads.
+
 ## The `install` Command
 
 `lore install` writes assistant integration configuration and performs auth and

@@ -41,6 +41,7 @@ in [`../../docs/cli.md`](../../docs/cli.md) must stay in sync.
 | [`commands/inbox.ts`](commands/inbox.ts)           | `lore inbox list/approve/reject/archive`                      |
 | [`commands/pinned.ts`](commands/pinned.ts)         | `lore pinned list`                                            |
 | [`commands/status.ts`](commands/status.ts)         | `lore status`                                                 |
+| [`commands/costs.ts`](commands/costs.ts)           | `lore costs summary/export`                                   |
 | [`commands/install.ts`](commands/install.ts)       | `lore install`                                                |
 | [`commands/migrate.ts`](commands/migrate.ts)       | `lore migrate`                                                |
 | [`commands/digest.ts`](commands/digest.ts)         | `lore digest`                                                 |

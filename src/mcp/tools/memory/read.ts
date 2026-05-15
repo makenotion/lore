@@ -38,6 +38,7 @@ export async function handleRecall(
       if (!found) {
         return {
           content: [{ type: "text", text: `No topic named "${args.topicName}" found.` }],
+          costOutputs: { memoriesReturned: 0 },
         }
       }
       topicId = found.id
@@ -72,6 +73,7 @@ export async function handleRecall(
             text: `${header}${paginationFooter(nextCursor, { truncated: capped })}`,
           },
         ],
+        costOutputs: { memoriesReturned: 0 },
       }
     }
 
@@ -98,6 +100,7 @@ export async function handleRecall(
           text: `${memories.length} recent memories:\n\n${text}${bodiesFooter}${paginationFooter(nextCursor, { truncated: capped })}`,
         },
       ],
+      costOutputs: { memoriesReturned: memories.length },
     }
 
     // Citation-as-evidence. Touch fires AFTER the
@@ -144,6 +147,7 @@ export async function handleSearch(
       if (!found) {
         return {
           content: [{ type: "text", text: `No topic named "${args.topicName}" found.` }],
+          costOutputs: { memoriesReturned: 0 },
         }
       }
       topicId = found.id
@@ -213,6 +217,7 @@ export async function handleSearch(
             text: `No memories found for: "${args.query}"${warn}${cappedFooter}`,
           },
         ],
+        costOutputs: { memoriesReturned: 0 },
       }
     }
 
@@ -241,6 +246,7 @@ export async function handleSearch(
           text: `Found ${results.length} memories for "${args.query}":\n\n${text}${bodiesFooter}${explainFooter}${warn}${cappedFooter}`,
         },
       ],
+      costOutputs: { memoriesReturned: results.length },
     }
 
     // Citation-as-evidence. Touches every surfaced

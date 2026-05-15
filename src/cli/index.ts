@@ -24,6 +24,7 @@ import { profileCommand } from "./commands/profile.js"
 import { memoryCommand } from "./commands/memory.js"
 import { decisionCommand } from "./commands/decision.js"
 import { askCommand } from "./commands/ask.js"
+import { costsCommand } from "./commands/costs.js"
 
 const program = new Command()
 
@@ -54,5 +55,6 @@ program.addCommand(profileCommand)
 program.addCommand(memoryCommand)
 program.addCommand(decisionCommand)
 program.addCommand(askCommand)
+program.addCommand(costsCommand)
 
 program.parse()

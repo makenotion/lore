@@ -29,6 +29,13 @@ import {
   formatBackgroundFailureStatus,
   loadBackgroundFailureStatus,
 } from "../../hooks/background-failure-status.js"
+import {
+  defaultTodayRange,
+  formatUsd,
+  monthRange,
+  readLedgerEvents,
+  summarizeCostEvents,
+} from "../../core/cost-ledger.js"
 import { defaultProfileSelector } from "../../profile/index.js"
 import { notionPageUrl, terminalLink } from "../output.js"
 
@@ -118,6 +125,12 @@ export const statusCommand = new Command("status")
       console.log(`  Topics:   ${stats.topics}`)
       console.log(`  Memories: ${stats.memories}`)
       console.log(`  Facts:    ${stats.facts}`)
+
+      const costLines = await loadCostStatusLines(services)
+      if (costLines.length > 0) {
+        console.log()
+        for (const line of costLines) console.log(line)
+      }
 
       // Background hook markers are filesystem-only operator health, so keep
       // their scope disclaimer near the top before longer project/digest lists.
@@ -324,6 +337,61 @@ const topicsCmd = new Command("topics")
 
 statusCommand.addCommand(projectsCmd)
 statusCommand.addCommand(topicsCmd)
+
+// ---------------------------------------------------------------------------
+// Cost tracking section
+// ---------------------------------------------------------------------------
+
+export async function loadCostStatusLines(services: LoreServices): Promise<string[]> {
+  const costTracking = services.costTracking
+  if (!costTracking?.enabled) return []
+  const todayRange = defaultTodayRange()
+  const now = new Date()
+  const monthLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  const [todayRows, monthRows] = await Promise.all([
+    readLedgerEvents(costTracking, todayRange),
+    readLedgerEvents(costTracking, monthRange(monthLabel)),
+  ])
+  const today = summarizeCostEvents(
+    todayRows.map((row) => row.event),
+    todayRange.label
+  )
+  const month = summarizeCostEvents(
+    monthRows.map((row) => row.event),
+    monthLabel
+  )
+
+  const lines = [`Cost tracking: enabled (ledger: ${costTracking.displayLedgerPath})`]
+  if (today.eventCount === 0) {
+    lines.push("Today: no cost events yet")
+  } else {
+    lines.push(`Today: ${formatCompactCostLine(today)}`)
+  }
+  if (month.eventCount > 0) {
+    lines.push(`This month: ${formatCompactCostLine(month, { omitNotionWrites: true })}`)
+  }
+  return lines
+}
+
+function formatCompactCostLine(
+  summary: ReturnType<typeof summarizeCostEvents>,
+  opts: { omitNotionWrites?: boolean } = {}
+): string {
+  const modelCost = summary.modelExactUsd + summary.modelEstimatedUsd
+  const modelPrefix = summary.modelEstimatedUsd > 0 ? "~" : ""
+  const parts = [
+    `${modelPrefix}${formatUsd(modelCost)} Lore-owned`,
+    `${summary.wakeupEstimatedTokens.toLocaleString()} wake-up tokens (cost unknown)`,
+    `${summary.mcpTotal} MCP calls`,
+  ]
+  if (!opts.omitNotionWrites) {
+    parts.push(`${summary.notionWrites} Notion writes`)
+  }
+  if (summary.modelUnknownEvents > 0) {
+    parts.push(`${summary.modelUnknownEvents} model events with unknown cost`)
+  }
+  return parts.join(", ")
+}
 
 // ---------------------------------------------------------------------------
 // Digests section

@@ -883,6 +883,7 @@ export async function handleUpdate(
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { memoriesUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)

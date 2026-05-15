@@ -17,6 +17,7 @@ import { clearableYmdDateSchema } from "./date-schema.js"
 import { nonBlankString } from "./text-schema.js"
 import { scopeInputSchema } from "./scope-schema.js"
 import { isTransientNotionError } from "../../notion/errors.js"
+import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
 import {
   DEFAULT_WRITABLE_FACT_PREDICATES,
@@ -31,6 +32,7 @@ import { writableFactPredicates } from "../../profile/index.js"
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 /**
@@ -333,6 +335,11 @@ export async function handleLearn(
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: !deduped
+        ? { factsCreated: 1 }
+        : enriched.length > 0
+          ? { factsUpdated: 1 }
+          : undefined,
     }
   } catch (err) {
     return toolError(err)
@@ -445,6 +452,7 @@ export async function handleInvalidate(
 
     return {
       content: [{ type: "text", text: `Invalidated fact ${args.factId}` }],
+      costOutputs: { factsUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -460,6 +468,7 @@ export async function handleExtendFact(
     if (args.reviewBy === null) {
       return {
         content: [{ type: "text", text: `Cleared review date for ${args.factId}` }],
+        costOutputs: { factsUpdated: 1 },
       }
     }
     return {
@@ -469,6 +478,7 @@ export async function handleExtendFact(
           text: `Extended review date for ${args.factId} to ${args.reviewBy}`,
         },
       ],
+      costOutputs: { factsUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)

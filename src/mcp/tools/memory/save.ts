@@ -626,6 +626,10 @@ export async function handleSave(
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: {
+        ...(writeResult.upserted ? { memoriesUpdated: 1 } : { memoriesCreated: 1 }),
+        ...(autoMentionsCount > 0 ? { factsCreated: autoMentionsCount } : {}),
+      },
     }
   } catch (err) {
     return toolError(err)

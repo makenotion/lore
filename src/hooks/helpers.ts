@@ -55,11 +55,16 @@ import {
   formatWakeUpCoverage,
   loadWakeUpData,
 } from "../core/wakeup.js"
+import { resolveCostTracking } from "../core/cost-ledger.js"
 import { composeProjectContext, type ProjectContext } from "../core/project-context.js"
 import { formatCatchAllScopeSummary } from "../core/context.js"
 import { taskDaysOverdue, taskDaysStale } from "../core/task.js"
 import { spawnBackgroundSave, type SpawnResult } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
+import {
+  recordBackgroundModelCostEvent,
+  recordWakeupContextCostEvent,
+} from "./cost-events.js"
 import { getStateDir, logPath } from "./lock.js"
 import { safeFilenameSegment } from "./marker-key.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
@@ -634,6 +639,20 @@ export async function handleStop(
           event.session_id,
           { agent: config.backgroundAgent, authSource }
         )
+        await recordBackgroundModelCostEvent({
+          costTracking:
+            failureContext?.config && failureContext.configRoot
+              ? resolveCostTracking(failureContext.config, failureContext.configRoot)
+              : undefined,
+          eventType: "autosave.background_model",
+          source: "hook",
+          prompt,
+          result,
+          projectName: failureScope.projectName ?? undefined,
+          agentName: deriveAgentName(event),
+          sessionId: event.session_id,
+          agent: config.backgroundAgent,
+        })
         if (result.kind === "spawned") {
           await writeSaveCount(event.session_id, currentCount)
           await clearStopFailure(failureContext?.configRoot, failureScope, recoveredAt)
@@ -842,7 +861,19 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // Check before service initialization so we avoid the Notion round-trip when disabled.
   const hookState = await loadHookState()
   const { hookConfig } = hookState
-  if (!hookConfig.wakeUp) return
+  const hookCostTracking =
+    hookState.config && hookState.configRoot
+      ? resolveCostTracking(hookState.config, hookState.configRoot)
+      : undefined
+  if (!hookConfig.wakeUp) {
+    await recordWakeupContextCostEvent({
+      costTracking: hookCostTracking,
+      status: "skipped",
+      agentName: process.env["LORE_AGENT_NAME"],
+      sessionId: eventMeta.sessionId,
+    })
+    return
+  }
   if (!hookState.config || !hookState.configRoot) return
 
   if (eventMeta.hookEventName === "UserPromptSubmit") {
@@ -862,6 +893,12 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
           )}\n`
         )
       }
+      await recordWakeupContextCostEvent({
+        costTracking: hookCostTracking,
+        status: "skipped",
+        agentName: process.env["LORE_AGENT_NAME"],
+        sessionId: eventMeta.sessionId,
+      })
       return
     }
   }
@@ -887,6 +924,12 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     process.stderr.write(
       `[lore] wakeup: init failed — ${redactDebugError(err)}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`
     )
+    await recordWakeupContextCostEvent({
+      costTracking: hookCostTracking,
+      status: "error",
+      agentName: process.env["LORE_AGENT_NAME"],
+      sessionId: eventMeta.sessionId,
+    })
     return
   }
   const project = services.context.project
@@ -962,6 +1005,13 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     process.stderr.write(
       `[lore] wakeup: load failed — ${redactDebugError(err)}. Skipping context injection.\n`
     )
+    await recordWakeupContextCostEvent({
+      costTracking: services.costTracking,
+      status: "error",
+      projectName: project?.name,
+      agentName: process.env["LORE_AGENT_NAME"],
+      sessionId: eventMeta.sessionId,
+    })
     return
   }
 
@@ -1118,7 +1168,24 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // applied once at the top, never re-emitted per section.
     sections.unshift(UNTRUSTED_VAULT_PREAMBLE)
     sections.unshift("# Lore Context")
-    console.log(sections.join("\n"))
+    const output = sections.join("\n")
+    console.log(output)
+    await recordWakeupContextCostEvent({
+      costTracking: services.costTracking,
+      status: "success",
+      output,
+      projectName: project?.name,
+      agentName: process.env["LORE_AGENT_NAME"],
+      sessionId: eventMeta.sessionId,
+    })
+  } else {
+    await recordWakeupContextCostEvent({
+      costTracking: services.costTracking,
+      status: "skipped",
+      projectName: project?.name,
+      agentName: process.env["LORE_AGENT_NAME"],
+      sessionId: eventMeta.sessionId,
+    })
   }
 }
 

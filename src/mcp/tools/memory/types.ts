@@ -1,10 +1,12 @@
 import type { MemoryKind } from "../../../types.js"
+import type { CostOutputCounts } from "../../../core/cost-ledger.js"
 
 export type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
   /** The `withWakeUpCacheBump` docstring carries the marker contract. */
   noopWrite?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 export const KINDS = [

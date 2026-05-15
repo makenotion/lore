@@ -15,6 +15,7 @@ export async function handleArchive(
     services.decisions.clearCache()
     return {
       content: [{ type: "text", text: `Archived memory ${args.memoryId}` }],
+      costOutputs: { memoriesArchived: 1 },
     }
   } catch (err) {
     return toolError(err)

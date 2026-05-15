@@ -420,6 +420,7 @@ Core commands:
 - `lore decision create <statement>` records a decision with rationale.
 - `lore ask <entity>` queries facts and tasks about an entity.
 - `lore status` reports vault health and active project resolution.
+- `lore costs summary` summarizes the opt-in local cost ledger.
 - `lore migrate` runs schema and one-shot data migrations.
 - `lore entities merge --from <loser-id> --into <winner-id>` previews or applies
   duplicate Entity merges.
