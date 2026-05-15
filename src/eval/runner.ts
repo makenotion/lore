@@ -492,12 +492,11 @@ function buildRetrievalResult(input: {
 
 /**
  * Memory statuses that the fixture-runner suppresses from retrieval.
- * Production retrieval today is status-blind (Notion's `dataSources.query`
- * and `client.search` do not filter on the `Status` column), so this is
- * the eval's enforced contract: a status-aware retriever MUST drop
- * superseded/deprecated/rejected rows before they reach an agent.
- * The Notion-backed runner exercises whatever production actually
- * does and may report harm > 0 until status-aware retrieval lands.
+ * Default production recall excludes `proposed` and `rejected` rows, but
+ * it does not universally suppress `superseded` or `deprecated` rows.
+ * The fixture stale-memory ablation is intentionally stricter so suites
+ * can encode temporal-correctness expectations until lifecycle-aware
+ * production retrieval closes that gap.
  */
 const SUPPRESSED_RETRIEVAL_STATUSES = new Set(["superseded", "deprecated", "rejected"])
 
@@ -521,9 +520,9 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
         const sourceFiltered = opts.source
           ? memories.filter((memory) => memory.source === opts.source)
           : memories
-        // Status filter applies the same suppression as search:
-        // a status-aware retriever does not surface superseded/deprecated
-        // rows on the recents (memories.list) path either.
+        // Status filtering applies the same suppression as search:
+        // fixture recall does not surface superseded, deprecated, or
+        // rejected rows on the recents path either.
         const statusFiltered = sourceFiltered.filter(isStatusRetrievable)
         const limit = opts.limit ?? Number.MAX_SAFE_INTEGER
         return { items: statusFiltered.slice(0, limit) }

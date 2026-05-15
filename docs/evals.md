@@ -65,10 +65,11 @@ honest apples-to-apples comparison; until then, the caveat applies.
 
 ## Runner modes
 
-Four runners ship today; the first two share the same suite YAML format and
-surface registry, the last two each have their own format because they score
-agent-produced workspace state or LongMemEval-style multi-session recall
-rather than retrieved memory ids:
+Five runners ship today. `retrieval` and `notion` share the same suite YAML
+format and surface registry; `task`, `bench`, and `profile` each have their own
+suite shape and scoring path because they score agent-produced workspace state,
+LongMemEval-style multi-session recall, or profile taxonomy quality rather than
+retrieved memory ids:
 
 | Runner | What it exercises | Where to use it |
 | --- | --- | --- |
@@ -76,6 +77,7 @@ rather than retrieved memory ids:
 | `notion` | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion. | Nightly CI; PRs that touch retrieval composition or ranking. |
 | `task` | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`. | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path. |
 | `bench` | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI. | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0. |
+| `profile` | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls. | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts. |
 
 Pass `--runner notion --project <SandboxProject>` to route a run through the
 production retrieval stack (rate limiter, hybrid search, contains/semantic
@@ -185,12 +187,13 @@ claim: positive lift, no lift, or harm are Phase 1+ findings.
 
 ## Existing Lore Eval Inventory
 
-Lore already has four eval surfaces. The retrieval and notion runners measure
-which memory rows surface; the task runner measures whether an agent changes a
-workspace correctly; the bench runner measures LongMemEval-style ingest and
-recall. The hook-native longitudinal claim needs the task runner's workspace
-and verifier model, plus the hook and wake-up seams already proven in the bench
-runner.
+Lore already has five eval runner modes. The retrieval and notion runners
+measure which memory rows surface; the task runner measures whether an agent
+changes a workspace correctly; the bench runner measures LongMemEval-style
+ingest and recall; the profile runner measures deterministic profile-owned
+taxonomy quality. The hook-native longitudinal claim needs the task runner's
+workspace and verifier model, plus the hook and wake-up seams already proven in
+the bench runner.
 
 | Existing surface | Current fit | Limits for this decision |
 | --- | --- | --- |
@@ -198,6 +201,7 @@ runner.
 | `notion` runner (`src/eval/runner.ts`) | Same suite shape against real `LoreServices` scoped to a sandbox project. Useful for retrieval-stack drift. | Read-only live-vault state. No isolated seed/cleanup, no phase boundary, no agent workspace. |
 | `task` runner (`src/eval/task-runner.ts`, `evals/task-suites/starter.yaml`) | Copies synthetic workspaces, runs `codex exec`, and scores deterministic verifiers. | Current memory matrix seeds `.lore-memories.json`; it does not exercise Stop-hook-shaped formation or wake-up injection. |
 | `bench` runner (`src/eval/bench-runner.ts`, `src/eval/bench-ingest.ts`, `evals/bench-suites/*.yaml`) | Replays LongMemEval haystacks through `runConversationMining`, raw transcripts, or simulated autosave; supports `wake-up-prefetch`. | LongMemEval is conversation-memory QA, not multi-session software work. Tool-driven retrieval remains unavailable under `codex exec`; runnable paths use `wake-up-prefetch`. |
+| `profile` runner (`src/eval/profile-runner.ts`, `evals/profile-suites/support.yaml`) | Scores committed profile extraction artifacts against profile-owned taxonomy and output-shape expectations. | Does not exercise memory retrieval, hook capture, live Notion state, or agent workspace behavior. |
 
 ## Candidate Benchmark Review
 
@@ -873,11 +877,16 @@ the row never surfaces, the assertion passes, and `memoryHarm` stays 0; if
 a future change drops the filter (or surfaces the row another way), the
 assertion fires and `memoryHarm` flags the regression.
 
-This is the eval's enforced ideal. Production retrieval today is
-status-blind (Notion's `dataSources.query` and `client.search` do not
-filter on the `Status` column), so the Notion-backed runner can report
-`memoryHarm > 0` against the same suite — that gap is what #284 (temporal
-recall) tracks.
+This is the eval's enforced ideal. Production default list/search is not wholly
+blind to review state: it excludes `proposed` and `rejected` rows by default,
+using server-side filters for `dataSources.query` paths and a client-side
+post-filter after `client.search`, which cannot apply property filters. The
+remaining temporal-correctness gap is narrower: default production recall can
+still surface `superseded` and `deprecated` rows unless a caller requests a
+status-specific slice or another lifecycle-aware path removes them. The
+Notion-backed runner exercises that production behavior, so `memoryHarm > 0`
+against stale-memory tasks still tracks the `superseded` / `deprecated` recall
+gap covered by #284 (temporal recall).
 
 The suite `version` is required. Retrieval mode is deterministic and requires
 `trials: 1`; the CLI rejects other trial counts until a nondeterministic runner
