@@ -5,7 +5,8 @@ one MCP registration: `lore-context`, `lore-memory`, `lore-pinned`,
 `lore-query`, `lore-fact`, `lore-decision`, `lore-project`, `lore-task`, and
 `lore-procedure`. The prior single-purpose tool names and task aliases were
 removed in the 0.6.0 deprecation purge; see
-[`src/mcp/AGENTS.md`](../src/mcp/AGENTS.md) for the historical timeline.
+[`archive/mcp-tool-history.md`](archive/mcp-tool-history.md) for the
+historical timeline.
 
 ## `lore-context` — vault context
 

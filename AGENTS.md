@@ -30,6 +30,7 @@
 | [`docs/team-rollout.md`](docs/team-rollout.md)                                                                                                                                               | Operator-facing ntn-first rollout runbook                                                                          |
 | [`docs/ci.md`](docs/ci.md)                                                                                                                                                                   | Per-step CI contract: token/network/fixture needs and fork-safety rules                                            |
 | [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md)                                                                                                                       | CLI and MCP user-facing reference                                                                                  |
+| [`docs/mcp-tool-authoring.md`](docs/mcp-tool-authoring.md), [`docs/archive/mcp-tool-history.md`](docs/archive/mcp-tool-history.md)                                                           | MCP tool-authoring patterns and historical MCP release evidence                                                    |
 
 ## Repo At A Glance
 
