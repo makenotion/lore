@@ -11,7 +11,7 @@
 | MCP server       | [`src/mcp/AGENTS.md`](src/mcp/AGENTS.md)       | Tool registration, error handling, server startup                           |
 | Domain services  | [`src/core/AGENTS.md`](src/core/AGENTS.md)     | Service pattern, context resolution, fact invalidation                      |
 | Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics                   |
-| CLI              | [`src/cli/AGENTS.md`](src/cli/AGENTS.md)       | Commander patterns, command reference, output formatting                    |
+| CLI              | [`src/cli/AGENTS.md`](src/cli/AGENTS.md)       | CLI routing, command inventory, detailed guide pointers                     |
 | Hook runner      | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md)   | Hook routing, handler registration, doc precedence                          |
 | Auth layer       | [`src/auth/AGENTS.md`](src/auth/AGENTS.md)     | ntn / PAT auth, `auth.json` contract, vault preflight, token classification |
 
@@ -29,7 +29,7 @@
 | [`docs/hooks.md`](docs/hooks.md), [`docs/hooks-autosave.md`](docs/hooks-autosave.md), [`docs/hooks-wakeup.md`](docs/hooks-wakeup.md), [`docs/hooks-background.md`](docs/hooks-background.md) | Installed hook behavior and runtime-flow contracts                                                                 |
 | [`docs/team-rollout.md`](docs/team-rollout.md)                                                                                                                                               | Operator-facing ntn-first rollout runbook                                                                          |
 | [`docs/ci.md`](docs/ci.md)                                                                                                                                                                   | Per-step CI contract: token/network/fixture needs and fork-safety rules                                            |
-| [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md)                                                                                                                       | CLI and MCP user-facing reference                                                                                  |
+| [`docs/cli.md`](docs/cli.md), [`docs/cli-authoring.md`](docs/cli-authoring.md), [`docs/cli-command-contracts.md`](docs/cli-command-contracts.md), [`docs/mcp-tools.md`](docs/mcp-tools.md)   | CLI and MCP user-facing reference, CLI authoring rules, command contracts                                          |
 | [`docs/mcp-tool-authoring.md`](docs/mcp-tool-authoring.md), [`docs/archive/mcp-tool-history.md`](docs/archive/mcp-tool-history.md)                                                           | MCP tool-authoring patterns and historical MCP release evidence                                                    |
 
 ## Repo At A Glance
