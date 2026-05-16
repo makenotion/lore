@@ -22,9 +22,23 @@ export type CostEventSource = "host_agent" | "background_agent" | "hook" | "cli"
 export type CostEventStatus = "success" | "error" | "skipped"
 
 export interface CostPayloadSummary {
+  /**
+   * UTF-8 byte length of the payload string summarized for the event.
+   * For MCP invocations, this is the serialized MCP argument envelope that is
+   * reduced to redacted counters before it is written to the ledger.
+   */
   inputBytes?: number
+  /** UTF-8 byte length of the output string summarized for the event. */
   outputBytes?: number
+  /**
+   * Byte-based estimate derived from `inputBytes` with TOKEN_ESTIMATOR. This is
+   * not provider tokenizer output.
+   */
   estimatedInputTokens?: number
+  /**
+   * Byte-based estimate derived from `outputBytes` with TOKEN_ESTIMATOR. This is
+   * not provider tokenizer output.
+   */
   estimatedOutputTokens?: number
   redacted: true
   tokenEstimator: typeof TOKEN_ESTIMATOR

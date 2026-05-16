@@ -77,7 +77,7 @@ describe("MCP cost tracking", () => {
     }
   })
 
-  it("logs redacted invocation metrics without changing tool results", async () => {
+  it("logs serialized argument-envelope byte metrics without changing tool results", async () => {
     const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
     dirs.push(root)
     const costTracking = resolveCostTracking(
@@ -90,18 +90,19 @@ describe("MCP cost tracking", () => {
     } as unknown as LoreServices
     process.env["LORE_AGENT_NAME"] = "TrustedAgent"
     process.env["LORE_SESSION_ID"] = "trusted-session"
+    const args = {
+      action: "save",
+      projectName: "secret project scope",
+      agent: "secret agent prompt",
+      session: "secret session prompt",
+      title: "secret title",
+      content: "secret body",
+    }
 
     const result = await runMcpInvocationWithCostTracking(
       services,
       "lore-memory",
-      {
-        action: "save",
-        projectName: "secret project scope",
-        agent: "secret agent prompt",
-        session: "secret session prompt",
-        title: "secret title",
-        content: "secret body",
-      },
+      args,
       async () => {
         recordNotionRead()
         recordNotionWrite()
@@ -121,6 +122,14 @@ describe("MCP cost tracking", () => {
       tool: "lore-memory",
       action: "save",
       status: "success",
+      payload: {
+        inputBytes: Buffer.byteLength(JSON.stringify(args), "utf8"),
+        estimatedInputTokens: Math.ceil(
+          Buffer.byteLength(JSON.stringify(args), "utf8") / 4
+        ),
+        redacted: true,
+        tokenEstimator: "chars_per_token_4",
+      },
       notion: { reads: 1, writes: 1 },
       outputs: { memoriesCreated: 1 },
       projectName: "Project",

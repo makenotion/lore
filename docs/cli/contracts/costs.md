@@ -45,7 +45,18 @@ response payloads.
   `modelUsage.source: "prompt_estimate"` as prompt-side estimates; CSV keeps the
   existing `modelUsageEstimated` / `estimatedUsd` columns instead of adding a
   source column.
-- Summary output reports wake-up tokens as cost unknown by default and groups
-  MCP usage by tool/action and success/error.
+- JSONL/CSV payload fields are compatibility-stable: `inputBytes`,
+  `outputBytes`, `estimatedInputTokens`, and `estimatedOutputTokens` must not be
+  renamed in this schema version.
+- For `mcp.invocation` rows, `payload.inputBytes` is the UTF-8 byte length of
+  the serialized MCP argument envelope summarized into the redacted payload
+  record. The ledger stores only the byte count and token estimate, not the
+  arguments. It is useful payload telemetry, not tokenizer-accurate model prompt
+  size.
+- `estimatedInputTokens` and `estimatedOutputTokens` use the repo's
+  `chars_per_token_4` estimator (`ceil(bytes / 4)`). They are estimates, not
+  provider tokenizer output.
+- Summary output reports wake-up context estimated tokens as cost unknown by
+  default and groups MCP usage by tool/action and success/error.
 - The command must never print raw prompts, MCP argument bodies, MCP result
   bodies, memory/fact text, Notion page bodies, or Notion response payloads.
