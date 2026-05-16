@@ -20,7 +20,10 @@ import {
   readLedgerEvents,
   resolveCostTracking,
   summarizeCostEvents,
+  validatePricingTable,
   type CostLedgerEvent,
+  type PricingTable,
+  type ResolvedCostTracking,
 } from "./cost-ledger.js"
 
 describe("cost ledger", () => {
@@ -34,6 +37,53 @@ describe("cost ledger", () => {
     const dir = mkdtempSync(join(tmpdir(), "lore-cost-ledger-"))
     dirs.push(dir)
     return dir
+  }
+
+  function enabledCostTracking(
+    root: string,
+    options: {
+      ledgerPath?: string
+      builtinTable?: string
+      overridesPath?: string
+    } = {}
+  ): Extract<ResolvedCostTracking, { enabled: true }> {
+    const costTracking = resolveCostTracking(
+      {
+        costTracking: {
+          enabled: true,
+          ...(options.ledgerPath ? { ledgerPath: options.ledgerPath } : {}),
+          ...(options.builtinTable || options.overridesPath
+            ? {
+                pricing: {
+                  ...(options.builtinTable ? { builtinTable: options.builtinTable } : {}),
+                  ...(options.overridesPath
+                    ? { overridesPath: options.overridesPath }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+      },
+      root
+    )
+    if (!costTracking.enabled) throw new Error("expected cost tracking to be enabled")
+    return costTracking
+  }
+
+  async function captureStderr<T>(
+    run: () => Promise<T>
+  ): Promise<{ value: T; stderr: string }> {
+    const chunks: string[] = []
+    const originalWrite = process.stderr.write
+    process.stderr.write = ((chunk: unknown) => {
+      chunks.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
+    try {
+      return { value: await run(), stderr: chunks.join("") }
+    } finally {
+      process.stderr.write = originalWrite
+    }
   }
 
   it("is disabled by default and does not create a ledger file", async () => {
@@ -253,5 +303,147 @@ describe("cost ledger", () => {
 
     expect(summary.modelEstimatedUsd).toBe(0.01575)
     expect(summary.modelUnknownEvents).toBe(0)
+  })
+
+  it("merges schema-valid pricing overrides with the builtin table", async () => {
+    const root = tempDir()
+    const overridePath = join(root, "pricing-overrides.json")
+    writeFileSync(
+      overridePath,
+      JSON.stringify({
+        source: "local-test",
+        models: {
+          "custom-model": {
+            inputPer1K: 1,
+            cachedInputPer1K: 0.5,
+            outputPer1K: 2,
+            reasoningOutputPer1K: 3,
+          },
+        },
+      })
+    )
+
+    const pricing = await loadPricingTable(
+      enabledCostTracking(root, { overridesPath: "pricing-overrides.json" })
+    )
+
+    expect(pricing).toMatchObject({
+      source: "builtin-openai-2026-05+local-test",
+      models: {
+        "custom-model": {
+          inputPer1K: 1,
+          cachedInputPer1K: 0.5,
+          outputPer1K: 2,
+          reasoningOutputPer1K: 3,
+        },
+      },
+    })
+    expect(pricing?.models["gpt-5.2-codex"]).toMatchObject({
+      inputPer1K: 0.00175,
+      outputPer1K: 0.014,
+    })
+  })
+
+  it.each([
+    [
+      "string rates",
+      {
+        source: "SECRET_SOURCE",
+        models: { "custom-model": { inputPer1K: "1" } },
+      },
+    ],
+    [
+      "negative rates",
+      {
+        source: "SECRET_SOURCE",
+        models: { "custom-model": { outputPer1K: -1 } },
+      },
+    ],
+    [
+      "typoed model-rate keys",
+      {
+        source: "SECRET_SOURCE",
+        models: { "custom-model": { inputPerThousand: 1 } },
+      },
+    ],
+    [
+      "unknown top-level keys",
+      {
+        source: "SECRET_SOURCE",
+        models: { "custom-model": { inputPer1K: 1 } },
+        secretTopLevel: "SECRET_CONTENT",
+      },
+    ],
+  ])("ignores override files with %s", async (_name, override) => {
+    const root = tempDir()
+    const overridePath = join(root, "pricing-overrides.json")
+    writeFileSync(overridePath, JSON.stringify(override))
+
+    const { value: pricing, stderr } = await captureStderr(() =>
+      loadPricingTable(enabledCostTracking(root, { overridesPath: overridePath }))
+    )
+
+    expect(pricing?.source).toBe("builtin-openai-2026-05")
+    expect(pricing?.models["custom-model"]).toBeUndefined()
+    expect(stderr).toContain("ignored invalid pricing overrides")
+    expect(stderr).toContain(overridePath)
+    expect(stderr).toContain("schema validation failed")
+    expect(stderr).not.toContain("SECRET")
+  })
+
+  it("ignores malformed or unreadable override files with a warning", async () => {
+    const root = tempDir()
+    const malformedPath = join(root, "malformed-pricing.json")
+    writeFileSync(malformedPath, "{not json SECRET_CONTENT")
+
+    const malformed = await captureStderr(() =>
+      loadPricingTable(enabledCostTracking(root, { overridesPath: malformedPath }))
+    )
+    const unreadable = await captureStderr(() =>
+      loadPricingTable(
+        enabledCostTracking(root, { overridesPath: "missing-pricing.json" })
+      )
+    )
+
+    expect(malformed.value?.source).toBe("builtin-openai-2026-05")
+    expect(malformed.stderr).toContain("invalid JSON")
+    expect(malformed.stderr).not.toContain("SECRET_CONTENT")
+    expect(unreadable.value?.source).toBe("builtin-openai-2026-05")
+    expect(unreadable.stderr).toContain("ENOENT")
+    expect(unreadable.stderr).toContain("missing-pricing.json")
+  })
+
+  it.each(["unknown-table", "constructor", "toString"])(
+    "keeps unknown builtin pricing table %s non-fatal",
+    async (builtinTable) => {
+      const root = tempDir()
+      writeFileSync(
+        join(root, "pricing-overrides.json"),
+        JSON.stringify({
+          models: { "custom-model": { inputPer1K: 1 } },
+        })
+      )
+      const pricing = await loadPricingTable(
+        enabledCostTracking(root, {
+          builtinTable,
+          overridesPath: "pricing-overrides.json",
+        })
+      )
+
+      expect(pricing).toEqual({ source: builtinTable, models: {} })
+    }
+  )
+
+  it("rejects malformed pricing tables before they can be used", () => {
+    expect(() =>
+      validatePricingTable({
+        source: "broken",
+        models: {
+          "custom-model": {
+            inputPer1K: Number.POSITIVE_INFINITY,
+          },
+        },
+      } satisfies PricingTable)
+    ).toThrow()
   })
 })

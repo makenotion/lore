@@ -2,6 +2,7 @@ import { mkdir, open, readFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { dirname, isAbsolute, relative, resolve } from "node:path"
 import { homedir } from "node:os"
+import { z } from "zod"
 import type { CostTrackingConfig, LoreConfig } from "../types.js"
 import { redactDebugError } from "../debug-redact.js"
 
@@ -124,6 +125,26 @@ export interface PricingTable {
   source: string
   models: Record<string, ModelRates>
 }
+
+const modelRatesSchema = z
+  .object({
+    inputPer1K: z.number().finite().nonnegative().optional(),
+    cachedInputPer1K: z.number().finite().nonnegative().optional(),
+    outputPer1K: z.number().finite().nonnegative().optional(),
+    reasoningOutputPer1K: z.number().finite().nonnegative().optional(),
+  })
+  .strict()
+
+const pricingTableSchema = z
+  .object({
+    source: z.string().optional(),
+    models: z.record(modelRatesSchema),
+  })
+  .strict()
+
+const builtinPricingTableSchema = pricingTableSchema.extend({
+  source: z.string(),
+})
 
 export type ResolvedCostTracking =
   | {
@@ -302,27 +323,68 @@ export async function loadPricingTable(
   costTracking: ResolvedCostTracking
 ): Promise<PricingTable | null> {
   if (!costTracking.enabled) return null
-  const base = BUILTIN_PRICING_TABLES[costTracking.pricing.builtinTable]
+  const base = lookupBuiltinPricingTable(costTracking.pricing.builtinTable)
   if (!base) {
     return { source: costTracking.pricing.builtinTable, models: {} }
   }
+  const validatedBase = validateBuiltinPricingTable(
+    costTracking.pricing.builtinTable,
+    base
+  )
   const merged: PricingTable = {
-    source: base.source,
-    models: { ...base.models },
+    source: validatedBase.source,
+    models: { ...validatedBase.models },
   }
   const overridePath = costTracking.pricing.overridesPath
   if (!overridePath) return merged
   try {
-    const parsed = JSON.parse(await readFile(overridePath, "utf-8")) as PricingTable
-    if (parsed && typeof parsed === "object" && parsed.models) {
-      merged.source = `${merged.source}+${parsed.source ?? "overrides"}`
-      merged.models = { ...merged.models, ...parsed.models }
-    }
-  } catch {
-    // Pricing overrides are advisory. Unknown or unreadable pricing leaves
-    // events loggable and summaries render cost as unknown where needed.
+    const parsed = validatePricingOverrideTable(
+      JSON.parse(await readFile(overridePath, "utf-8"))
+    )
+    merged.source = `${merged.source}+${parsed.source ?? "overrides"}`
+    merged.models = { ...merged.models, ...parsed.models }
+  } catch (err) {
+    warnInvalidPricingOverride(overridePath, err)
   }
   return merged
+}
+
+export function validatePricingTable(value: unknown): PricingTable {
+  return builtinPricingTableSchema.parse(value)
+}
+
+function validateBuiltinPricingTable(name: string, value: unknown): PricingTable {
+  try {
+    return validatePricingTable(value)
+  } catch (err) {
+    throw new Error(`Invalid builtin cost pricing table "${name}"`, { cause: err })
+  }
+}
+
+function lookupBuiltinPricingTable(name: string): PricingTable | undefined {
+  return Object.hasOwn(BUILTIN_PRICING_TABLES, name)
+    ? BUILTIN_PRICING_TABLES[name]
+    : undefined
+}
+
+function validatePricingOverrideTable(value: unknown): Omit<PricingTable, "source"> & {
+  source?: string
+} {
+  return pricingTableSchema.parse(value)
+}
+
+function warnInvalidPricingOverride(path: string, err: unknown): void {
+  process.stderr.write(
+    `[lore] cost-tracking: ignored invalid pricing overrides at ${displayPath(
+      path
+    )}: ${pricingOverrideWarningReason(err)}\n`
+  )
+}
+
+function pricingOverrideWarningReason(err: unknown): string {
+  if (err instanceof SyntaxError) return "invalid JSON"
+  if (err instanceof z.ZodError) return "schema validation failed"
+  return redactDebugError(err)
 }
 
 export function estimateModelCost(
