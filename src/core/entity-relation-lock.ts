@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
 import {
   mkdirSync,
@@ -19,6 +20,10 @@ interface LockRecord {
   pid: number
   createdAt: number
 }
+
+// Reentrancy is scoped to the current async call chain. Unrelated concurrent
+// callers in the same process still compete for the filesystem lock.
+const heldEntityRelationLocks = new AsyncLocalStorage<ReadonlySet<string>>()
 
 function lockDir(): string {
   return join(process.env["HOME"] ?? tmpdir(), ".lore", "entity-relation-locks")
@@ -157,20 +162,31 @@ export async function withEntityRelationLocks<T>(
   ].sort()
   if (ids.length === 0) return fn()
 
+  const heldInContext = heldEntityRelationLocks.getStore()
+  const idsToAcquire = heldInContext ? ids.filter((id) => !heldInContext.has(id)) : ids
+  if (heldInContext && idsToAcquire.length > 0) {
+    throw new Error(
+      "Cannot acquire additional entity relation locks from a nested context; acquire the full lock set before entering the critical section"
+    )
+  }
+  if (idsToAcquire.length === 0) return fn()
+
   const acquired: Array<{
     path: string
     record: LockRecord
     heartbeat: ReturnType<typeof setInterval>
   }> = []
   try {
-    for (const id of ids) {
+    for (const id of idsToAcquire) {
       const path = lockPath(id)
       const record = await acquireLock(path)
       const heartbeat = setInterval(() => refreshLock(path, record), LOCK_HEARTBEAT_MS)
       heartbeat.unref?.()
       acquired.push({ path, record, heartbeat })
     }
-    return await fn()
+    const nextHeld = new Set(heldInContext ?? [])
+    for (const id of ids) nextHeld.add(id)
+    return await heldEntityRelationLocks.run(nextHeld, fn)
   } finally {
     for (const lock of acquired.reverse()) {
       clearInterval(lock.heartbeat)

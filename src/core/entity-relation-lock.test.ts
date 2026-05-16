@@ -103,6 +103,31 @@ describe("withEntityRelationLocks", () => {
     ).resolves.toBe("ok")
   })
 
+  it("allows nested acquisition from the same async context", async () => {
+    const order: string[] = []
+
+    const result = await withEntityRelationLocks(["ent-nested"], async () => {
+      order.push("outer-start")
+      const nested = await withEntityRelationLocks(["ent-nested"], async () => {
+        order.push("inner")
+        return "ok"
+      })
+      order.push("outer-end")
+      return nested
+    })
+
+    expect(result).toBe("ok")
+    expect(order).toEqual(["outer-start", "inner", "outer-end"])
+  })
+
+  it("rejects nested expansion beyond the locks already held", async () => {
+    await expect(
+      withEntityRelationLocks(["ent-a"], async () =>
+        withEntityRelationLocks(["ent-a", "ent-b"], async () => "unreachable")
+      )
+    ).rejects.toThrow(/Cannot acquire additional entity relation locks/)
+  })
+
   it("serializes a storm of contenders for the same entity id", async () => {
     let active = 0
     let maxActive = 0

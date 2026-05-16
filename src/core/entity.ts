@@ -56,6 +56,7 @@ import {
   logRunToolFallback,
 } from "../notion/runtool/error-helpers.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
+import { withEntityRelationLocks } from "./entity-relation-lock.js"
 
 /**
  * Cache TTL is short on purpose. Aliases are mutable (a `merge` or
@@ -759,26 +760,28 @@ export class EntityService {
    * present.
    */
   async addAliases(id: string, aliases: string[]): Promise<Entity> {
-    const existing = await this.getById(id)
-    const existingKeys = new Set(existing.aliases.map((a) => normalizeEntityKey(a)))
-    const newAliases = aliases.filter(
-      (a) => a.trim().length > 0 && !existingKeys.has(normalizeEntityKey(a))
-    )
-    if (newAliases.length === 0) return existing
+    return withEntityRelationLocks([id], async () => {
+      const existing = await this.getById(id)
+      const existingKeys = new Set(existing.aliases.map((a) => normalizeEntityKey(a)))
+      const newAliases = aliases.filter(
+        (a) => a.trim().length > 0 && !existingKeys.has(normalizeEntityKey(a))
+      )
+      if (newAliases.length === 0) return existing
 
-    const merged = [...existing.aliases, ...newAliases]
-    await this.client.pages.update({
-      page_id: id,
-      properties: buildEntityProps({
-        name: existing.name,
-        aliases: merged,
-      }),
+      const merged = [...existing.aliases, ...newAliases]
+      await this.client.pages.update({
+        page_id: id,
+        properties: buildEntityProps({
+          name: existing.name,
+          aliases: merged,
+        }),
+      })
+
+      const updated: Entity = { ...existing, aliases: merged }
+      this.invalidateAllKeys(existing)
+      this.cacheEntity(updated)
+      return updated
     })
-
-    const updated: Entity = { ...existing, aliases: merged }
-    this.invalidateAllKeys(existing)
-    this.cacheEntity(updated)
-    return updated
   }
 
   /**
@@ -790,10 +793,10 @@ export class EntityService {
    * (the multi-project canonical-handle case).
    *
    * Pass an in-memory `existing` snapshot (typically the entity that
-   * just came out of `findByName` / `findByAlias`) to skip the
-   * `pages.retrieve` round-trip — the resolver already has it. Cache
-   * mutates fall through `cacheEntity` so the next lookup sees the
-   * unioned ids without paying a Notion read.
+   * just came out of `findByName` / `findByAlias`) for the no-op fast path.
+   * When a write may be needed, the method refreshes the entity after
+   * acquiring the per-entity relation lock so concurrent callers merge
+   * against the latest persisted relation.
    *
    * **No body audit trail.** Unlike `MemoryService.upsertByTopicKey`'s
    * `## Revision N (date)` blocks or `MemoryService.rekeyTopicKey`'s
@@ -815,33 +818,93 @@ export class EntityService {
    * Entity (test fixture, adapter mock) doesn't crash the helper.
    */
   async addProjectIds(existing: Entity, projectIds: string[]): Promise<Entity> {
-    // Walk via a single Set seeded with the existing list so we drop both
-    // ids already on the entity AND duplicates within `projectIds` itself.
-    // `filter` alone would keep intra-input duplicates and produce a
-    // merged list with repeats — silently breaking the union contract.
-    const existingIds = existing.projectIds ?? []
-    const seen = new Set(existingIds)
-    const fresh: string[] = []
-    for (const id of projectIds) {
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      fresh.push(id)
+    type LockedResult = { entity: Entity } | { retryWith: Entity }
+    const mergeProjectIds = (entity: Entity): string[] | null => {
+      const existingIds = entity.projectIds ?? []
+      const seen = new Set(existingIds)
+      const fresh: string[] = []
+      for (const id of projectIds) {
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        fresh.push(id)
+      }
+      return fresh.length === 0 ? null : [...existingIds, ...fresh]
     }
-    if (fresh.length === 0) return existing
 
-    const merged = [...existingIds, ...fresh]
-    await this.client.pages.update({
-      page_id: existing.id,
-      properties: buildEntityProps({
-        name: existing.name,
-        projectIds: merged,
-      }),
-    })
+    if (mergeProjectIds(existing) === null) return existing
 
-    const updated: Entity = { ...existing, projectIds: merged }
+    const lockedResult = await withEntityRelationLocks(
+      [existing.id],
+      async (): Promise<LockedResult> => {
+        const current = await this.getActiveProjectUnionTarget(existing)
+        if (current === null) return { entity: existing }
+        if (current.id !== existing.id) return { retryWith: current }
+
+        const merged = mergeProjectIds(current)
+        if (merged === null) {
+          this.invalidateAllKeys(existing)
+          this.cacheEntity(current)
+          return { entity: current }
+        }
+
+        await this.client.pages.update({
+          page_id: current.id,
+          properties: buildEntityProps({
+            name: current.name,
+            projectIds: merged,
+          }),
+        })
+
+        const updated: Entity = { ...current, projectIds: merged }
+        this.invalidateAllKeys(existing)
+        this.invalidateAllKeys(current)
+        this.cacheEntity(updated)
+        return { entity: updated }
+      }
+    )
+    if ("retryWith" in lockedResult) {
+      return await this.addProjectIds(lockedResult.retryWith, projectIds)
+    }
+    return lockedResult.entity
+  }
+
+  private async getActiveProjectUnionTarget(existing: Entity): Promise<Entity | null> {
+    try {
+      return await this.getById(existing.id)
+    } catch (err) {
+      if (
+        !(err instanceof Error) ||
+        err.message !== `Entity ${existing.id} is archived`
+      ) {
+        throw err
+      }
+
+      return await this.findActiveReplacementForArchivedEntity(existing)
+    }
+  }
+
+  private async findActiveReplacementForArchivedEntity(
+    existing: Entity
+  ): Promise<Entity | null> {
     this.invalidateAllKeys(existing)
-    this.cacheEntity(updated)
-    return updated
+
+    const byName = await this.findByName(existing.name)
+    if (byName && byName.id !== existing.id) return byName
+
+    const seen = new Set<string>()
+    for (const alias of [existing.name, ...existing.aliases]) {
+      const key = normalizeEntityKey(alias)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+
+      const matches = (await this.findByAlias(alias)).filter(
+        (entity) => entity.id !== existing.id
+      )
+      if (matches.length === 1) return matches[0]
+      if (matches.length > 1) return null
+    }
+
+    return null
   }
 
   /**

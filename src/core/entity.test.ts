@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
 import {
@@ -13,6 +15,18 @@ const DB: DatabaseRef = {
   databaseId: "ent-db-id",
   dataSourceId: "ent-ds-id",
 }
+
+let testHomeDir: string
+
+beforeEach(() => {
+  testHomeDir = mkdtempSync(join(process.env["TMPDIR"] ?? "/tmp", "lore-entity-test-"))
+  vi.stubEnv("HOME", testHomeDir)
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(testHomeDir, { recursive: true, force: true })
+})
 
 interface EntityPageOverrides {
   id?: string
@@ -677,6 +691,13 @@ describe("EntityService.resolveOrCreateEntity", () => {
       has_more: false,
       next_cursor: null,
     })
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({
+        id: "ent-existing",
+        name: "AuthService",
+        projectIds: ["proj-a"],
+      })
+    )
 
     const service = new EntityService(client, DB)
     const resolution = await service.resolveOrCreateEntity("AuthService", {
@@ -718,6 +739,80 @@ describe("EntityService.resolveOrCreateEntity", () => {
     expect(client.pages.update).not.toHaveBeenCalled()
   })
 
+  it("re-resolves a merged loser archived while waiting to union project ids", async () => {
+    const client = createMockClient()
+    const loser = entityPage({
+      id: "ent-loser",
+      name: "AuthLegacy",
+      aliases: "LegacyAuth",
+      projectIds: ["proj-a"],
+    })
+    const winner = entityPage({
+      id: "ent-winner",
+      name: "AuthService",
+      aliases: "AuthLegacy, LegacyAuth",
+      projectIds: ["proj-a"],
+    })
+
+    client.dataSources.query
+      .mockResolvedValueOnce({
+        results: [loser],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: [winner],
+        has_more: false,
+        next_cursor: null,
+      })
+    client.pages.retrieve
+      .mockResolvedValueOnce(
+        entityPage({
+          id: "ent-loser",
+          name: "AuthLegacy",
+          aliases: "LegacyAuth",
+          projectIds: ["proj-a"],
+          archived: true,
+        })
+      )
+      .mockResolvedValueOnce(
+        entityPage({
+          id: "ent-winner",
+          name: "AuthService",
+          aliases: "AuthLegacy, LegacyAuth",
+          projectIds: ["proj-a"],
+        })
+      )
+
+    const service = new EntityService(client, DB)
+    const resolution = await service.resolveOrCreateEntity("AuthLegacy", {
+      projectIds: ["proj-b"],
+    })
+
+    expect(resolution.created).toBe(false)
+    expect(resolution.entity?.id).toBe("ent-winner")
+    expect(resolution.entity?.projectIds).toEqual(["proj-a", "proj-b"])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const updateArg = client.pages.update.mock.calls[0][0] as {
+      page_id: string
+      properties: Record<string, unknown>
+    }
+    expect(updateArg.page_id).toBe("ent-winner")
+    expect(updateArg.properties.Project).toEqual({
+      relation: [{ id: "proj-a" }, { id: "proj-b" }],
+    })
+  })
+
   it("byAlias single match unions options.projectIds into the existing entity", async () => {
     const client = createMockClient()
     // findByName: equals miss, contains miss.
@@ -744,6 +839,14 @@ describe("EntityService.resolveOrCreateEntity", () => {
       has_more: false,
       next_cursor: null,
     })
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({
+        id: "ent-aliased",
+        name: "AuthService",
+        aliases: "AuthSvc",
+        projectIds: ["proj-a"],
+      })
+    )
 
     const service = new EntityService(client, DB)
     const resolution = await service.resolveOrCreateEntity("AuthSvc", {
@@ -841,6 +944,13 @@ describe("EntityService.addProjectIds", () => {
 
   it("dedupes duplicates within the requested ids", async () => {
     const client = createMockClient()
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({
+        id: "ent-dedupe",
+        name: "AuthService",
+        projectIds: ["proj-a"],
+      })
+    )
     const service = new EntityService(client, DB)
     const existing = {
       id: "ent-dedupe",
@@ -862,6 +972,9 @@ describe("EntityService.addProjectIds", () => {
     // (see `types.ts`). The service must read the missing field as
     // `[]` rather than throw on `[...undefined]` or `new Set(undefined)`.
     const client = createMockClient()
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({ id: "ent-partial", name: "PartialEntity" })
+    )
     const service = new EntityService(client, DB)
     const partial = {
       id: "ent-partial",
@@ -880,6 +993,48 @@ describe("EntityService.addProjectIds", () => {
     expect(updateArg.properties.Project).toEqual({
       relation: [{ id: "proj-x" }],
     })
+  })
+
+  it("preserves the full project union across concurrent stale snapshots", async () => {
+    const client = createMockClient()
+    const service = new EntityService(client, DB)
+    const expectedProjectIds = ["proj-a", "proj-b", "proj-c", "proj-d"]
+    let persistedProjectIds: string[] = []
+
+    client.pages.retrieve.mockImplementation(async ({ page_id }: { page_id: string }) =>
+      entityPage({
+        id: page_id,
+        name: "ConcurrentService",
+        projectIds: persistedProjectIds,
+      })
+    )
+    client.pages.update.mockImplementation(
+      async ({ properties }: { properties: Record<string, unknown> }) => {
+        const project = properties.Project as { relation: Array<{ id: string }> }
+        persistedProjectIds = project.relation.map((relation) => relation.id)
+        return {}
+      }
+    )
+
+    await Promise.all(
+      expectedProjectIds.map((projectId) =>
+        service.addProjectIds(
+          {
+            id: "ent-concurrent",
+            name: "ConcurrentService",
+            aliases: [],
+            kind: null,
+            description: "",
+            projectIds: [],
+          },
+          [projectId]
+        )
+      )
+    )
+
+    expect(new Set(persistedProjectIds)).toEqual(new Set(expectedProjectIds))
+    expect(persistedProjectIds).toHaveLength(expectedProjectIds.length)
+    expect(client.pages.update).toHaveBeenCalledTimes(expectedProjectIds.length)
   })
 })
 
@@ -922,6 +1077,38 @@ describe("EntityService.addAliases", () => {
     // should be appended a second time.
     expect(updated.aliases.filter((a) => a.toLowerCase() === "auth")).toHaveLength(1)
     expect(client.pages.update).toHaveBeenCalledTimes(1)
+  })
+
+  it("preserves the full alias union across concurrent additions", async () => {
+    const client = createMockClient()
+    const service = new EntityService(client, DB)
+    const expectedAliases = ["AuthSvc", "Identity API", "Login Component"]
+    let persistedAliases: string[] = []
+
+    client.pages.retrieve.mockImplementation(async ({ page_id }: { page_id: string }) =>
+      entityPage({
+        id: page_id,
+        name: "Auth",
+        aliases: persistedAliases.join(", "),
+      })
+    )
+    client.pages.update.mockImplementation(
+      async ({ properties }: { properties: Record<string, unknown> }) => {
+        const aliases = properties.Aliases as {
+          rich_text: Array<{ text: { content: string } }>
+        }
+        persistedAliases = parseAliases(aliases.rich_text[0]?.text.content ?? "")
+        return {}
+      }
+    )
+
+    await Promise.all(
+      expectedAliases.map((alias) => service.addAliases("ent-alias-concurrent", [alias]))
+    )
+
+    expect(new Set(persistedAliases)).toEqual(new Set(expectedAliases))
+    expect(persistedAliases).toHaveLength(expectedAliases.length)
+    expect(client.pages.update).toHaveBeenCalledTimes(expectedAliases.length)
   })
 })
 
