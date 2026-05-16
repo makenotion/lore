@@ -39,6 +39,50 @@ function oneLine(value: string): string {
   return value.replace(LOG_CONTROL_CHARS, " ")
 }
 
+class NearDuplicateHydrationFallbackError extends Error {
+  constructor(readonly inner: unknown) {
+    super("RunTool near-duplicate candidate hydration failed.")
+    this.name = "NearDuplicateHydrationFallbackError"
+  }
+}
+
+function errorStatus(err: unknown): number | undefined {
+  return typeof err === "object" && err !== null
+    ? (err as { status?: number }).status
+    : undefined
+}
+
+function errorCode(err: unknown): string | undefined {
+  return typeof err === "object" && err !== null
+    ? (err as { code?: string }).code
+    : undefined
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === "object" && err !== null) {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === "string") return message
+  }
+  return typeof err === "string" ? err : ""
+}
+
+function isKnownAbsentHydrationError(err: unknown): boolean {
+  return (
+    errorStatus(err) === 404 ||
+    errorCode(err) === "object_not_found" ||
+    /archived/i.test(errorMessage(err))
+  )
+}
+
+function logNearDuplicateHydrationPartialFailure(id: string, err: unknown): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] partial-failure: source=near-duplicate-hydrate ` +
+      `pageId=${oneLine(id)} error=${oneLine(redactDebugError(err))}\n`
+  )
+}
+
 /**
  * Filter / pagination / sort options accepted by `MemoryService.list`.
  * Extracted to a named type so the method's overload signatures can
@@ -167,18 +211,11 @@ export class MemoryList {
         const memories = await Promise.all(
           pageIds.map((id) =>
             this.getPropertiesById(id).catch((err: unknown) => {
-              // A single failed id should not collapse the SQL
-              // branch — drop it and continue. Hydration failures
-              // are typically archived-after-query races; the row
-              // would have been filtered out by the REST path's
-              // `is_full_page` + `archived` filter anyway.
-              if (process.env["LORE_DEBUG"] === "1") {
-                process.stderr.write(
-                  `[lore] partial-failure: source=near-duplicate-hydrate ` +
-                    `pageId=${oneLine(id)} error=${oneLine(redactDebugError(err))}\n`
-                )
+              if (isKnownAbsentHydrationError(err)) {
+                logNearDuplicateHydrationPartialFailure(id, err)
+                return null
               }
-              return null
+              throw new NearDuplicateHydrationFallbackError(err)
             })
           )
         )
@@ -200,7 +237,11 @@ export class MemoryList {
           // fall back per call.
           throw err
         }
-        logRunToolFallback("near-duplicate-candidates", err)
+        if (err instanceof NearDuplicateHydrationFallbackError) {
+          logRunToolFallback("near-duplicate-hydrate", err.inner)
+        } else {
+          logRunToolFallback("near-duplicate-candidates", err)
+        }
         // fall through to REST path
       }
     }
