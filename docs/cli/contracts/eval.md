@@ -23,3 +23,5 @@ Contracts:
 - `eval vaults` and `eval bench` are operator surfaces for live-vault and
   benchmark workflows; keep their token, network, and fixture needs documented
   in the eval docs and CI guide.
+- `eval bench cleanup-orphans --older-than` must parse as a strict positive
+  decimal integer before live cleanup work can run.

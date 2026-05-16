@@ -38,10 +38,10 @@ describe("runBenchCleanupOrphans", () => {
     ).rejects.toThrow(/LORE_EVAL_BENCH_REAL/)
   })
 
-  it("rejects non-positive --older-than", async () => {
+  it.each([0, 1.5, Number.NaN])("rejects invalid --older-than %j", async (value) => {
     await expect(
       runBenchCleanupOrphans({
-        olderThanHours: 0,
+        olderThanHours: value,
         dryRun: false,
         services: {
           sandboxParentPath: ".",

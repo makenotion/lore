@@ -996,9 +996,21 @@ benchCommand.addCommand(
     .option("--older-than <hours>", "Minimum age in hours; defaults to 24", "24")
     .action(async (opts: { dryRun?: boolean; olderThan?: string }) => {
       try {
+        const parsedOlderThan = parsePositiveDecimalInteger(
+          "--older-than",
+          opts.olderThan ?? "24"
+        )
+        if (!parsedOlderThan.ok) {
+          console.error(
+            "lore eval bench cleanup-orphans failed:",
+            parsedOlderThan.message
+          )
+          process.exit(1)
+          return
+        }
         const { runBenchCleanupOrphans } = await import("../../eval/bench-cleanup.js")
         const result = await runBenchCleanupOrphans({
-          olderThanHours: Number.parseInt(opts.olderThan ?? "24", 10),
+          olderThanHours: parsedOlderThan.value,
           dryRun: opts.dryRun === true,
         })
         console.log(

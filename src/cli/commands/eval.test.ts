@@ -13,6 +13,12 @@ import {
 } from "./eval.js"
 import type { EvalRunArtifact } from "../../eval/runner.js"
 import type { LongitudinalTaskArtifact } from "../../eval/task-runner.js"
+import { runBenchCleanupOrphans } from "../../eval/bench-cleanup.js"
+import { trapProcessExit } from "../test-helpers.js"
+
+vi.mock("../../eval/bench-cleanup.js", () => ({
+  runBenchCleanupOrphans: vi.fn(),
+}))
 
 describe("parseEvalRunCliOptions", () => {
   it("leaves runner undefined when --runner is not passed (suite YAML wins)", () => {
@@ -292,6 +298,84 @@ describe("eval vaults command", () => {
     const output = logSpy.mock.calls.flat().join("\n")
     expect(output).toContain("Eval vaults (evals/vaults.yaml):")
     expect(output).toContain("lore-dev-sandbox")
+  })
+})
+
+describe("eval bench cleanup-orphans command", () => {
+  let errorSpy: ReturnType<typeof vi.fn>
+  let logSpy: ReturnType<typeof vi.fn>
+  let exitTrap: ReturnType<typeof trapProcessExit>
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function setupSpies() {
+    vi.mocked(runBenchCleanupOrphans).mockReset()
+    exitTrap = trapProcessExit()
+    errorSpy = vi.fn()
+    logSpy = vi.fn()
+    vi.spyOn(console, "error").mockImplementation(errorSpy)
+    vi.spyOn(console, "log").mockImplementation(logSpy)
+  }
+
+  it.each(["1abc", "1.5"])(
+    "exits 1 before cleanup runs for malformed --older-than %j",
+    async (raw) => {
+      setupSpies()
+
+      await evalCommand.parseAsync(["bench", "cleanup-orphans", "--older-than", raw], {
+        from: "user",
+      })
+
+      expect(runBenchCleanupOrphans).not.toHaveBeenCalled()
+      expect(errorSpy.mock.calls.flat().join("\n")).toContain(
+        "lore eval bench cleanup-orphans failed:"
+      )
+      expect(errorSpy.mock.calls.flat().join("\n")).toContain("--older-than")
+      expect(exitTrap.exitCodes).toEqual([1])
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it("exits 1 before cleanup runs for blank --older-than", async () => {
+    setupSpies()
+
+    await evalCommand.parseAsync(["bench", "cleanup-orphans", "--older-than", ""], {
+      from: "user",
+    })
+
+    expect(runBenchCleanupOrphans).not.toHaveBeenCalled()
+    expect(errorSpy.mock.calls.flat().join("\n")).toContain(
+      "lore eval bench cleanup-orphans failed:"
+    )
+    expect(errorSpy.mock.calls.flat().join("\n")).toContain("--older-than")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("passes a strict positive integer through to cleanup", async () => {
+    setupSpies()
+    vi.mocked(runBenchCleanupOrphans).mockResolvedValue({
+      archivedCount: 0,
+      skippedCount: 0,
+      archived: [],
+      skipped: [],
+    })
+
+    await evalCommand.parseAsync(
+      ["bench", "cleanup-orphans", "--older-than", "7", "--dry-run"],
+      { from: "user" }
+    )
+
+    expect(runBenchCleanupOrphans).toHaveBeenCalledWith({
+      olderThanHours: 7,
+      dryRun: true,
+    })
+    expect(logSpy.mock.calls.flat().join("\n")).toContain(
+      "Cleanup-orphans: 0 archived, 0 skipped"
+    )
+    expect(exitTrap.exitCodes).toEqual([])
   })
 })
 
