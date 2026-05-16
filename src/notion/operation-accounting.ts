@@ -31,6 +31,7 @@ const WRITE_PATHS = new Set([
 
 const RUNTOOL_READ_TOOLS = new Set(["query_data_sources", "search"])
 const RUNTOOL_WRITE_TOOLS = new Set(["create_pages", "update_page", "update_content"])
+const ACCOUNTED_PATHS = new Set(["request", ...READ_PATHS, ...WRITE_PATHS])
 
 export function classifyNotionOperation(path: string, args: unknown[]): OperationKind {
   if (path === "request") return classifyRequest(args[0])
@@ -78,6 +79,18 @@ function runToolName(body: Record<string, unknown>): string {
   return ""
 }
 
+function shouldWrapFunction(path: string): boolean {
+  return ACCOUNTED_PATHS.has(path)
+}
+
+function shouldWrapObject(path: string): boolean {
+  const prefix = `${path}.`
+  for (const accountedPath of ACCOUNTED_PATHS) {
+    if (accountedPath.startsWith(prefix)) return true
+  }
+  return false
+}
+
 export function createOperationAccountingClient(client: Client): Client {
   const seen = new WeakMap<object, object>()
 
@@ -93,6 +106,7 @@ export function createOperationAccountingClient(client: Client): Client {
         const value = Reflect.get(target, prop, receiver)
         const nextPath = path === "" ? prop : `${path}.${prop}`
         if (typeof value === "function") {
+          if (!shouldWrapFunction(nextPath)) return value
           return async (...args: unknown[]): Promise<unknown> => {
             const kind = classifyNotionOperation(nextPath, args)
             try {
@@ -110,6 +124,7 @@ export function createOperationAccountingClient(client: Client): Client {
           }
         }
         if (typeof value === "object" && value !== null) {
+          if (!shouldWrapObject(nextPath)) return value
           return wrapLevel(value as object, nextPath)
         }
         return value

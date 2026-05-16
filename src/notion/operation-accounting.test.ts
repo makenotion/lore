@@ -38,6 +38,95 @@ describe("Notion operation accounting", () => {
     ).toBe("write")
   })
 
+  it("leaves unknown helper functions unwrapped", async () => {
+    type HelperClient = Client & {
+      helper: (value: string) => string
+      list: () => string
+      helpers: {
+        helper: (this: { prefix: string }, value: string) => string
+        prefix: string
+      }
+    }
+
+    const raw = {
+      helper: vi.fn((value: string) => `helper:${value}`),
+      list: vi.fn(() => "list"),
+      helpers: {
+        helper: vi.fn(function (this: { prefix: string }, value: string) {
+          return `${this.prefix}:${value}`
+        }),
+        prefix: "nested",
+      },
+    } as unknown as HelperClient
+    const client = createOperationAccountingClient(raw) as HelperClient
+
+    expect(client.helper).toBe(raw.helper)
+    expect(client.list).toBe(raw.list)
+    expect(client.helpers).toBe(raw.helpers)
+    expect(client.helpers.helper).toBe(raw.helpers.helper)
+
+    const tracked = await captureCostAccounting(async () => {
+      expect(client.helper("value")).toBe("helper:value")
+      expect(client.list()).toBe("list")
+      expect(client.helpers.helper("value")).toBe("nested:value")
+    })
+
+    expect(tracked.ok).toBe(true)
+    expect(tracked.context.notion).toEqual({
+      reads: 0,
+      writes: 0,
+      failures: 0,
+      rateLimitBackoffs: 0,
+    })
+    expect(raw.helper).toHaveBeenCalledWith("value")
+    expect(raw.list).toHaveBeenCalled()
+    expect(raw.helpers.helper).toHaveBeenCalledWith("value")
+  })
+
+  it("still instruments known nested SDK methods", async () => {
+    const raw = {
+      dataSources: {
+        query: vi.fn(async () => ({ results: [] })),
+      },
+    } as unknown as Client
+    const client = createOperationAccountingClient(raw)
+
+    const tracked = await captureCostAccounting(async () => {
+      await client.dataSources.query({ data_source_id: "ds" })
+    })
+
+    expect(tracked.ok).toBe(true)
+    expect(tracked.context.notion).toEqual({
+      reads: 1,
+      writes: 0,
+      failures: 0,
+      rateLimitBackoffs: 0,
+    })
+  })
+
+  it("still instruments top-level RunTool requests", async () => {
+    const raw = {
+      request: vi.fn(async () => ({})),
+    } as unknown as Client
+    const client = createOperationAccountingClient(raw)
+
+    const tracked = await captureCostAccounting(async () => {
+      await client.request({
+        method: "post",
+        path: "tools/run",
+        body: { type: "query_data_sources", query_data_sources: {} },
+      })
+    })
+
+    expect(tracked.ok).toBe(true)
+    expect(tracked.context.notion).toEqual({
+      reads: 1,
+      writes: 0,
+      failures: 0,
+      rateLimitBackoffs: 0,
+    })
+  })
+
   it("attributes reads, writes, failures, and rate-limit backoffs to active context", async () => {
     const raw = {
       dataSources: {
