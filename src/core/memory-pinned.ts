@@ -138,15 +138,21 @@ export class MemoryReadOnlyError extends LoreError<"memory-read-only"> {
   readonly memoryId: string
   readonly memoryTitle: string
 
-  constructor(memoryId: string, memoryTitle: string) {
+  constructor(
+    memoryId: string,
+    memoryTitle: string,
+    options: { readonly recovery?: string } = {}
+  ) {
     const safeTitle = sanitizeMemoryTitleForMessage(memoryTitle)
-    super(
-      "memory-read-only",
+    const baseMessage =
       `MemoryReadOnlyError: cannot modify pinned block "${safeTitle}" (${memoryId}): ` +
-        `Mutability is read-only. Pass force=true on lore-pinned action='update' ` +
-        `(or allowReadOnlyUpdate=true at the service layer) to override.`,
-      { memoryId, memoryTitle }
-    )
+      `Mutability is read-only. Pass force=true on lore-pinned action='update' ` +
+      `(or allowReadOnlyUpdate=true at the service layer) to override.`
+    const recovery = options.recovery?.trim()
+    super("memory-read-only", recovery ? `${baseMessage} ${recovery}` : baseMessage, {
+      memoryId,
+      memoryTitle,
+    })
     this.name = "MemoryReadOnlyError"
     this.memoryId = memoryId
     this.memoryTitle = memoryTitle

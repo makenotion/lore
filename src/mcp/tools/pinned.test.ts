@@ -1149,3 +1149,16 @@ describe("MemoryReadOnlyError title scrub (issue #282)", () => {
     expect(err.message).toContain("…")
   })
 })
+
+describe("MemoryReadOnlyError recovery guidance", () => {
+  it("builds optional recovery guidance during construction", () => {
+    const err = new MemoryReadOnlyError("mem-1", "Team policies", {
+      recovery: "Try `lore-pinned action='update' force=true` first.",
+    })
+    expect(err).toBeInstanceOf(MemoryReadOnlyError)
+    expect(err.memoryId).toBe("mem-1")
+    expect(err.memoryTitle).toBe("Team policies")
+    expect(err.message).toContain("Mutability is read-only")
+    expect(err.message).toContain("Try `lore-pinned action='update' force=true` first.")
+  })
+})

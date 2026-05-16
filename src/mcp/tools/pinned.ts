@@ -692,24 +692,13 @@ async function handleUnpin(services: LoreServices, args: UnpinArgs): Promise<Too
       }
     }
     if (memory.pinned.mutability === "read-only") {
-      // surface the two-step recovery
-      // sequence inline so operators don't have to chase the
-      // generic `MemoryReadOnlyError` message into docs.
-      // Unpinning a read-only pin requires flipping mutability
-      // first (via `lore-pinned action='update' force=true
-      // mutability=mutable`) and then re-issuing the `unpin`.
-      // The thrown error inherits the standard MemoryReadOnlyError
-      // typing for instanceof-branching downstream callers, but
-      // its message points specifically at the unpin recovery
-      // sequence.
-      const err = new MemoryReadOnlyError(args.memoryId, memory.title)
-      err.message =
-        err.message +
-        " To unpin a read-only block: first run `lore-pinned " +
-        "action='update' memoryId='<id>' mutability='mutable' " +
-        "force=true` to flip mutability, then re-issue " +
-        "`lore-pinned action='unpin'`."
-      throw err
+      throw new MemoryReadOnlyError(args.memoryId, memory.title, {
+        recovery:
+          "To unpin a read-only block: first run `lore-pinned " +
+          "action='update' memoryId='<id>' mutability='mutable' " +
+          "force=true` to flip mutability, then re-issue " +
+          "`lore-pinned action='unpin'`.",
+      })
     }
     await services.memories.update(args.memoryId, {
       pinned: {
