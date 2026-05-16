@@ -1,3 +1,6 @@
+// ABOUTME: Owns FactService create and dedup writes, including batch creation, entity relations, and retries.
+// ABOUTME: Edit when fact write idempotency, scope matching, or create-path warnings change.
+
 import type {
   Client,
   PageObjectResponse,

@@ -1,3 +1,6 @@
+// ABOUTME: Owns normalized vault topology references for primary, upstream, and promotion-target vaults.
+// ABOUTME: Edit when config roles, defaults, or topology validation rules change.
+
 import type { LoreConfig } from "../types.js"
 
 export const DEFAULT_UPSTREAM_PRIORITY = 100

@@ -1,3 +1,6 @@
+// ABOUTME: Owns FactService invalidation writes, confidence decrement, and invalidated-by provenance.
+// ABOUTME: Edit when transaction-time invalidation or missing-column retry semantics change.
+
 import type { Client, PageObjectResponse, UpdatePageParameters } from "@notionhq/client"
 import type { Fact } from "../types.js"
 import { FACT_PROPS } from "../notion/schema.js"

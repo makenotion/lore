@@ -1,3 +1,6 @@
+// ABOUTME: Owns health probing, cache freshness, and status aggregation for configured vault topology.
+// ABOUTME: Edit when topology health states, probe concurrency, or status cache behavior change.
+
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { join } from "node:path"

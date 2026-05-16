@@ -1,3 +1,6 @@
+// ABOUTME: Owns conversion from Notion memory pages into Memory domain objects and relation hydration.
+// ABOUTME: Edit when memory schema fields, scope extraction, or materialization shape change.
+
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import type {
   Memory,

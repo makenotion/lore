@@ -1,3 +1,6 @@
+// ABOUTME: Owns the Commander root and complete top-level `lore` command registration.
+// ABOUTME: Edit when a command becomes part of or leaves the public CLI surface.
+
 import { Command } from "commander"
 import { initCommand } from "./commands/init.js"
 import { authCommand } from "./commands/auth.js"

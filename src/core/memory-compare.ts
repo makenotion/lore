@@ -1,3 +1,6 @@
+// ABOUTME: Owns compare-note audit writes and retry ledgers for memory conflict and supersession verdicts.
+// ABOUTME: Edit when compare NDJSON shape, per-side idempotency, or actionable verdict dispatch changes.
+
 import type { Client } from "@notionhq/client"
 import type { Memory, MemoryScopeInput } from "../types.js"
 import { pairScopeForFactEmission } from "../types.js"

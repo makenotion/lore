@@ -1,3 +1,6 @@
+// ABOUTME: Owns FactService maintenance for touch-on-read, source repair, expiration, and backfills.
+// ABOUTME: Edit when fact confidence, scoped status, or review-extension maintenance changes.
+
 import type {
   Client,
   PageObjectResponse,

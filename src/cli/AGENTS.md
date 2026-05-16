@@ -25,6 +25,11 @@ debugging, manual search, vault maintenance, and operator workflows.
 
 ## Command Inventory
 
+This inventory is routing guidance for the public CLI surface, not a
+single-file ownership map. Keep it when commands are added or removed; put
+file-local edit triggers in the owning file's `ABOUTME` comment or module
+JSDoc when the filename is not enough.
+
 The registered commands in [`index.ts`](index.ts) and the user-facing overview
 in [`../../docs/cli.md`](../../docs/cli.md) must stay in sync.
 

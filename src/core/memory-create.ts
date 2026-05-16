@@ -1,3 +1,6 @@
+// ABOUTME: Owns the fresh memory creation pipeline behind MemoryService, including duplicate guards and body writes.
+// ABOUTME: Edit when create-time writes, pinned preflight, or partial-failure cleanup change.
+
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import type {
   CreateMemoryInput,

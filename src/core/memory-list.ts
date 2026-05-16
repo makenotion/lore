@@ -1,3 +1,6 @@
+// ABOUTME: Owns MemoryService list/read queries, pagination, scope filters, and optional body materialization.
+// ABOUTME: Edit when live-memory listing semantics or near-duplicate candidate fetching change.
+
 import type {
   Client,
   PageObjectResponse,

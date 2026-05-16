@@ -1,3 +1,6 @@
+// ABOUTME: Owns partial memory property/content updates behind MemoryService and title/pinned cache repair.
+// ABOUTME: Edit when update sequencing, rich-text decoding, or partial-failure semantics change.
+
 import type { Client, CreatePageParameters } from "@notionhq/client"
 import type { Memory, UpdateMemoryInput } from "../types.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
