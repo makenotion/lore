@@ -6,6 +6,32 @@ import { COST_LEDGER_SCHEMA_VERSION, payloadSummary } from "../../core/cost-ledg
 import { trapProcessExit } from "../test-helpers.js"
 import { costsCommand } from "./costs.js"
 
+const COST_EXPORT_CSV_HEADER = [
+  "timestamp",
+  "eventType",
+  "source",
+  "status",
+  "projectName",
+  "agentName",
+  "sessionId",
+  "tool",
+  "action",
+  "durationMs",
+  "inputBytes",
+  "outputBytes",
+  "estimatedInputTokens",
+  "estimatedOutputTokens",
+  "notionReads",
+  "notionWrites",
+  "notionFailures",
+  "notionRateLimitBackoffs",
+  "modelProvider",
+  "model",
+  "modelUsageEstimated",
+  "estimatedUsd",
+  "costUnknownReason",
+].join(",")
+
 describe("costs command", () => {
   let dir: string
   let logSpy: ReturnType<typeof vi.fn>
@@ -26,6 +52,37 @@ describe("costs command", () => {
     vi.restoreAllMocks()
     rmSync(dir, { recursive: true, force: true })
   })
+
+  function writeCostTrackingConfig(): void {
+    mkdirSync(join(dir, "state"))
+    writeFileSync(
+      join(dir, ".lore.yaml"),
+      `
+vault:
+  pageId: abc123
+costTracking:
+  enabled: true
+  ledgerPath: state/costs.jsonl
+`
+    )
+  }
+
+  function writeMcpLedgerEvent(timestamp: string): void {
+    writeFileSync(
+      join(dir, "state", "costs.jsonl"),
+      JSON.stringify({
+        schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+        timestamp,
+        eventType: "mcp.invocation",
+        source: "host_agent",
+        status: "success",
+        tool: "lore-query",
+        action: "search",
+        payload: payloadSummary("{}", "ok"),
+        notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+      }) + "\n"
+    )
+  }
 
   it("renders a summary from the configured ledger and skips invalid rows", async () => {
     mkdirSync(join(dir, "state"))
@@ -111,6 +168,32 @@ costTracking:
     expect(output).toContain("timestamp,eventType,source,status")
     expect(output).toContain("lore-query,search")
     expect(output).not.toContain("SECRET_INVALID_ROW")
+    expect(exitTrap.exitCodes).toEqual([])
+  })
+
+  it("exports no JSONL stdout when no ledger rows match", async () => {
+    writeCostTrackingConfig()
+    writeMcpLedgerEvent("2026-04-15T12:00:00.000Z")
+
+    await costsCommand.parseAsync(["export", "--month", "2026-05"], {
+      from: "user",
+    })
+
+    expect(logSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(exitTrap.exitCodes).toEqual([])
+  })
+
+  it("exports only the CSV header when no ledger rows match", async () => {
+    writeCostTrackingConfig()
+    writeMcpLedgerEvent("2026-04-15T12:00:00.000Z")
+
+    await costsCommand.parseAsync(["export", "--format", "csv", "--month", "2026-05"], {
+      from: "user",
+    })
+
+    expect(logSpy.mock.calls.flat()).toEqual([COST_EXPORT_CSV_HEADER])
+    expect(errorSpy).not.toHaveBeenCalled()
     expect(exitTrap.exitCodes).toEqual([])
   })
 

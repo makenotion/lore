@@ -14,7 +14,9 @@ summarize or export existing local usage rows.
 - Disabled tracking prints a short status message for `summary` and exits
   non-zero for `export`, because export scripts expect data on stdout.
 - JSONL export writes the original redacted ledger lines that match the range.
-  CSV export writes stable columns with missing values as empty cells.
+  When no rows match, JSONL export exits successfully and writes no stdout.
+- CSV export writes stable columns with missing values as empty cells. When no
+  rows match, CSV export exits successfully and writes only the header row.
 - Summary output distinguishes exact, estimated, and unknown model cost, reports
   wake-up tokens as cost unknown by default, and groups MCP usage by tool/action
   and success/error.
