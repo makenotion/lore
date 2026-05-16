@@ -10,10 +10,14 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { LoreError } from "../errors.js"
 
 const LOCK_STALE_MS = 10 * 60 * 1000
 const LOCK_HEARTBEAT_MS = 30_000
 const LOCK_POLL_MS = 50
+const LOCK_ACQUIRE_MAX_ATTEMPTS = Math.ceil(LOCK_STALE_MS / LOCK_POLL_MS)
+const LOCK_ACQUIRE_TIMEOUT_MS = LOCK_ACQUIRE_MAX_ATTEMPTS * LOCK_POLL_MS
+let lockAcquireMaxAttemptsForTests: number | null = null
 
 interface LockRecord {
   token: string
@@ -40,6 +44,25 @@ function lockDir(): string {
 
 function lockDigest(lockKey: string): string {
   return createHash("sha256").update(lockKey).digest("hex")
+}
+
+export class AutosaveLearningLockTimeoutError extends LoreError<"autosave-learning-lock-timeout"> {
+  constructor(lockKey: string, attempts: number, timeoutMs = LOCK_ACQUIRE_TIMEOUT_MS) {
+    super(
+      "autosave-learning-lock-timeout",
+      `Timed out acquiring autosave learning lock after ${attempts} attempts.`,
+      {
+        lockKeyDigest: lockDigest(lockKey),
+        attempts,
+        timeoutMs,
+      }
+    )
+    this.name = "AutosaveLearningLockTimeoutError"
+  }
+}
+
+function lockAcquireMaxAttempts(): number {
+  return lockAcquireMaxAttemptsForTests ?? LOCK_ACQUIRE_MAX_ATTEMPTS
 }
 
 function lockPath(lockKey: string): string {
@@ -193,24 +216,38 @@ async function acquireLock(lockKey: string): Promise<HeldLock> {
     throw err
   }
   let nextRefreshAt = Date.now() + LOCK_HEARTBEAT_MS
+  const maxAttempts = lockAcquireMaxAttempts()
+  let attempts = 0
 
-  while (true) {
-    const now = Date.now()
-    if (now >= nextRefreshAt) {
-      refreshLock(ownPath, record)
-      nextRefreshAt = Date.now() + LOCK_HEARTBEAT_MS
-    }
-
-    // Do not enter during the creation millisecond; a same-ms contender could
-    // still appear with a lower token and reorder ahead of an active holder.
-    if (now > record.createdAt && !hasFreshLegacyLock(oldPath)) {
-      const { contenders, hasFreshUnknown } = listActiveContenders(path)
-      if (!hasFreshUnknown && contenders[0]?.record.token === record.token) {
-        return { path: ownPath, record }
+  try {
+    while (attempts < maxAttempts) {
+      attempts += 1
+      const now = Date.now()
+      if (now >= nextRefreshAt) {
+        refreshLock(ownPath, record)
+        nextRefreshAt = Date.now() + LOCK_HEARTBEAT_MS
       }
+
+      // Do not enter during the creation millisecond; a same-ms contender could
+      // still appear with a lower token and reorder ahead of an active holder.
+      if (now > record.createdAt && !hasFreshLegacyLock(oldPath)) {
+        const { contenders, hasFreshUnknown } = listActiveContenders(path)
+        if (!hasFreshUnknown && contenders[0]?.record.token === record.token) {
+          return { path: ownPath, record }
+        }
+      }
+
+      await sleep(now <= record.createdAt ? 1 : LOCK_POLL_MS)
     }
 
-    await sleep(now <= record.createdAt ? 1 : LOCK_POLL_MS)
+    throw new AutosaveLearningLockTimeoutError(
+      lockKey,
+      attempts,
+      maxAttempts * LOCK_POLL_MS
+    )
+  } catch (err) {
+    removeIfExists(ownPath)
+    throw err
   }
 }
 
@@ -245,4 +282,13 @@ export async function withAutosaveLearningLock<T>(
 
 export function __autosaveLearningLockPathForTests(lockKey: string): string {
   return lockPath(lockKey)
+}
+
+export function __setAutosaveLearningLockMaxAttemptsForTests(
+  maxAttempts: number | null
+): void {
+  if (maxAttempts !== null && (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1)) {
+    throw new Error("maxAttempts must be a positive integer or null")
+  }
+  lockAcquireMaxAttemptsForTests = maxAttempts
 }

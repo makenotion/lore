@@ -21,6 +21,11 @@ export interface LoreErrorDetailsByKind {
   "autosave-learning-duplicate-probe": {
     readonly causeMessage: string
   }
+  "autosave-learning-lock-timeout": {
+    readonly lockKeyDigest: string
+    readonly attempts: number
+    readonly timeoutMs: number
+  }
   "transient-project-resolution": {
     readonly names: readonly string[]
     readonly scopeFields: string
@@ -202,6 +207,7 @@ const USER_ERROR_KINDS = new Set<LoreErrorKind>([
 
 const TEMPORARY_FAILURE_KINDS = new Set<LoreErrorKind>([
   "autosave-learning-duplicate-probe",
+  "autosave-learning-lock-timeout",
   "transient-project-resolution",
   "write-budget-exceeded",
 ])

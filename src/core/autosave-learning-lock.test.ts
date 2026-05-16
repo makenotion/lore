@@ -14,6 +14,8 @@ import { tmpdir } from "node:os"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   __autosaveLearningLockPathForTests,
+  __setAutosaveLearningLockMaxAttemptsForTests,
+  AutosaveLearningLockTimeoutError,
   withAutosaveLearningLock,
 } from "./autosave-learning-lock.js"
 
@@ -43,8 +45,10 @@ describe("withAutosaveLearningLock", () => {
   })
 
   afterEach(() => {
+    __setAutosaveLearningLockMaxAttemptsForTests(null)
     vi.unstubAllEnvs()
     vi.restoreAllMocks()
+    vi.useRealTimers()
     rmSync(stateDir, { recursive: true, force: true })
   })
 
@@ -204,5 +208,38 @@ describe("withAutosaveLearningLock", () => {
 
     unlinkSync(freshPath)
     await expect(waiter).resolves.toBe("waiter")
+  })
+
+  it("times out cleanly and removes its contender when acquisition stays blocked", async () => {
+    __setAutosaveLearningLockMaxAttemptsForTests(3)
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+
+    const dir = __autosaveLearningLockPathForTests("timeout-key")
+    mkdirSync(dir, { recursive: true })
+    const placeholderPath = join(dir, "placeholder.json")
+    writeFileSync(placeholderPath, "", { mode: 0o600 })
+    const freshTime = new Date()
+    utimesSync(placeholderPath, freshTime, freshTime)
+
+    let entered = false
+    const result = withAutosaveLearningLock("timeout-key", async () => {
+      entered = true
+      return "waiter"
+    }).catch((err: unknown) => err)
+
+    await vi.advanceTimersByTimeAsync(200)
+
+    const err = await result
+    expect(err).toBeInstanceOf(AutosaveLearningLockTimeoutError)
+    expect(err).toMatchObject({
+      kind: "autosave-learning-lock-timeout",
+      details: {
+        attempts: 3,
+        timeoutMs: 150,
+      },
+    })
+    expect(entered).toBe(false)
+    expect(readdirSync(dir).sort()).toEqual(["placeholder.json"])
   })
 })
