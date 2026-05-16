@@ -181,6 +181,7 @@ interface CompareResultInput {
    * than silently treating the recovery like a fresh judgment).
    */
   recoveredSide?: "A" | "B" | null
+  memoriesUpdated: number
 }
 
 /**
@@ -202,6 +203,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     alreadyJudged,
     affectedMemoryId,
     recoveredSide,
+    memoriesUpdated,
   } = input
   if (alreadyJudged) {
     return {
@@ -221,6 +223,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
       // See `withWakeUpCacheBump`'s docstring for the marker
       // contract.
       noopWrite: true,
+      costOutputs: { memoriesReturned: 2 },
     }
   }
 
@@ -260,6 +263,10 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
   }
   return {
     content: [{ type: "text", text: lines.join("\n") }],
+    costOutputs: {
+      ...(memoriesUpdated > 0 ? { memoriesUpdated } : {}),
+      ...(factId ? { factsCreated: 1 } : {}),
+    },
   }
 }
 
@@ -358,6 +365,7 @@ export async function handleCompare(
         memoryB,
         affectedMemoryId: args.affectedMemoryId,
         alreadyJudged: true,
+        memoriesUpdated: 0,
       })
     }
 
@@ -522,6 +530,7 @@ export async function handleCompare(
         ? { ...memoryB, compareNotes: dispatchResult.affectedCompareNotes }
         : memoryB
     let recordResult: RecordComparedResult
+    const writtenSides = { wroteA: false, wroteB: false }
     try {
       recordResult = await services.memories.recordCompared({
         memoryA: memoryAForRecord,
@@ -534,6 +543,8 @@ export async function handleCompare(
         forceWriteA: forceRecordA,
         forceWriteB: forceRecordB,
       })
+      writtenSides.wroteA ||= recordResult.wroteA
+      writtenSides.wroteB ||= recordResult.wroteB
     } catch (err) {
       // Single-shot self-heal for partial-success on the symmetric
       // audit-marker write: one side's `pages.update` landed, the
@@ -562,6 +573,8 @@ export async function handleCompare(
         err instanceof RecordComparedPartialWriteError &&
         !legacyPartialAuditWithoutLedger
       ) {
+        writtenSides.wroteA ||= err.result.wroteA
+        writtenSides.wroteB ||= err.result.wroteB
         try {
           const [freshA, freshB] = await Promise.all([
             services.memories.getById(args.memoryIdA),
@@ -586,6 +599,8 @@ export async function handleCompare(
             forceWriteA: false,
             forceWriteB: false,
           })
+          writtenSides.wroteA ||= recordResult.wroteA
+          writtenSides.wroteB ||= recordResult.wroteB
         } catch (retryErr) {
           // Reload or retry rejected. Fall through to the structured
           // inconsistent-state error so the operator can manually
@@ -640,6 +655,7 @@ export async function handleCompare(
       factId: dispatchResult.factId,
       decremented: dispatchResult.decremented,
       alreadyJudged: false,
+      memoriesUpdated: Number(writtenSides.wroteA) + Number(writtenSides.wroteB),
       recoveredSide:
         recordResult.wroteA && recordResult.wroteB
           ? null

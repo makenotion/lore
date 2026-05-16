@@ -238,6 +238,9 @@ describe("lore-pinned action='pin'", () => {
 
     expect(calls.updateSpy).not.toHaveBeenCalled()
     expect(extractText(result)).toContain("already pinned")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesReturned: 1,
+    })
   })
 
   it("retry-recovers a missing audit line when a prior pin landed but the audit append failed", async () => {
@@ -336,6 +339,9 @@ describe("lore-pinned action='unpin'", () => {
 
     expect(calls.updateSpy).not.toHaveBeenCalled()
     expect(extractText(result)).toContain("not pinned")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesReturned: 1,
+    })
   })
 
   it("retry-recovers a missing audit line when a prior unpin landed but the audit append failed", async () => {
@@ -490,6 +496,9 @@ describe("lore-pinned action='list'", () => {
     expect(text).toContain("audience: code-reviewers")
     expect(text).toContain("Project invariants")
     expect(text).toContain("audience: all")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesReturned: 2,
+    })
   })
 
   it("renders a friendly empty message when no blocks match", async () => {
@@ -500,6 +509,9 @@ describe("lore-pinned action='list'", () => {
 
     const result = await handler({ action: "list" } as never)
     expect(extractText(result)).toContain("No pinned context blocks")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesReturned: 0,
+    })
   })
 
   it("threads includeAllAudiences through to listPinnedBlocks", async () => {

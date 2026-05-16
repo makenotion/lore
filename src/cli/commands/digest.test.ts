@@ -158,6 +158,8 @@ describe("digestCommand", () => {
       raw: "## activity\n- did a thing",
       lastDigestDate: null,
       recentMemoryCount: 3,
+      renderedMemoryCount: 3,
+      renderedTaskCount: 0,
     })
     // `binary-missing` is a genuine failure (not a benign race) so the
     // command must exit non-zero. A future SpawnResult variant added to
@@ -208,6 +210,8 @@ describe("digestCommand", () => {
       raw: "## activity\n- did a thing",
       lastDigestDate: null,
       recentMemoryCount: 3,
+      renderedMemoryCount: 3,
+      renderedTaskCount: 0,
     })
     vi.mocked(spawnBackgroundSave).mockReturnValue({
       kind: "lock-path-too-long",
@@ -252,6 +256,8 @@ describe("digestCommand", () => {
       raw: "## activity\n- did a thing",
       lastDigestDate: null,
       recentMemoryCount: 3,
+      renderedMemoryCount: 3,
+      renderedTaskCount: 0,
     })
     vi.mocked(spawnBackgroundSave).mockReturnValue({ kind: "lock-held" })
 

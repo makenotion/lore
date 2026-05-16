@@ -35,7 +35,13 @@ export async function handleDigest(
         '`lore-memory` with `action: "save"` and `source: "digest"`.'
     )
 
-    return { content: [{ type: "text", text: parts.join("\n") }] }
+    return {
+      content: [{ type: "text", text: parts.join("\n") }],
+      costOutputs: {
+        memoriesReturned: digest.renderedMemoryCount,
+        tasksReturned: digest.renderedTaskCount,
+      },
+    }
   } catch (err) {
     return toolError(err)
   }

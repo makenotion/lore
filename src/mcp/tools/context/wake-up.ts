@@ -1165,8 +1165,28 @@ export async function handleWakeUp(
       sections.push(`\`${formatWakeUpCoverage(renderedCoverage, coverageCaps)}\`\n`)
     }
 
+    const inheritedMemoryRows = inheritedMemories.reduce(
+      (sum, section) => sum + (section.error === null ? section.memories.length : 0),
+      0
+    )
+    const renderedMemoryRows =
+      renderedCoverageCounts.digest +
+      renderedCoverageCounts.currentTaskMemories +
+      renderedCoverageCounts.recentMemories +
+      renderedCoverageCounts.relatedMemories +
+      proposedMemories.length +
+      renderedCoverageCounts.staleConfidence +
+      pinnedBlocks.length +
+      inheritedMemoryRows
+
     const response: ToolResult = {
       content: [{ type: "text", text: sections.join("\n") }],
+      costOutputs: {
+        memoriesReturned: renderedMemoryRows,
+        factsReturned: renderedCoverageCounts.knowledgeFacts,
+        decisionsReturned: renderedCoverageCounts.decisions,
+        tasksReturned: renderedCoverageCounts.tasks,
+      },
     }
 
     // Resolve surfaced IDs to Memory shapes from the input pool. A

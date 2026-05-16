@@ -89,6 +89,8 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
       raw: "# Digest Data — Widget Backend\n",
       lastDigestDate: null,
       recentMemoryCount: 5,
+      renderedMemoryCount: 5,
+      renderedTaskCount: 0,
     })),
     age: vi.fn(async () => Infinity),
     touch: vi.fn(async () => {}),
@@ -288,6 +290,8 @@ describe("fireDigestIfStale", () => {
         raw: "# Digest Data — Widget Backend\n",
         lastDigestDate: null,
         recentMemoryCount: 0,
+        renderedMemoryCount: 0,
+        renderedTaskCount: 0,
       })),
     })
     const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)

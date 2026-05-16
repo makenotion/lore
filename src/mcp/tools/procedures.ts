@@ -39,10 +39,12 @@ import type { LoreServices } from "../../services.js"
 import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.js"
 import { nonBlankString } from "./text-schema.js"
 import { notionPageIdSchema } from "../../notion/page-id-schema.js"
+import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 const PROCEDURE_BUILDER_SNIPPET = [
@@ -132,6 +134,7 @@ async function handleScanCandidates(
   })
   return {
     content: [{ type: "text", text: formatCandidatesMarkdown(candidates) }],
+    costOutputs: { proceduresReturned: candidates.length },
   }
 }
 
@@ -210,7 +213,10 @@ async function handlePropose(
         "`lore-memory action='reject'`. Update the body / steps via",
         "`lore-memory action='update'`.",
       ]
-      return { content: [{ type: "text", text: reuseLines.join("\n") }] }
+      return {
+        content: [{ type: "text", text: reuseLines.join("\n") }],
+        costOutputs: { memoriesReturned: 1 },
+      }
     }
   } catch (err) {
     if (err instanceof ProcedureTopicKeyConflictError) {
@@ -302,7 +308,10 @@ async function handlePropose(
     lines.push("", "Warnings:")
     for (const warning of resolved.warnings) lines.push(`- ${warning}`)
   }
-  return { content: [{ type: "text", text: lines.join("\n") }] }
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    costOutputs: { memoriesCreated: 1 },
+  }
 }
 
 interface DeprecateArgs {
@@ -339,6 +348,7 @@ async function handleDeprecate(
           text: `Procedure already deprecated: "${existing.title}" (${args.memoryId})`,
         },
       ],
+      costOutputs: { memoriesReturned: 1 },
     }
   }
   // Status-boundary gate: a `Status: proposed` procedure must leave
@@ -393,6 +403,7 @@ async function handleDeprecate(
         text: `Deprecated procedure: "${existing.title}" (${args.memoryId}). Status: ${existing.status} → deprecated.`,
       },
     ],
+    costOutputs: { memoriesUpdated: 1 },
   }
 }
 

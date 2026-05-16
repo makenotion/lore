@@ -41,6 +41,7 @@ import { RICH_TEXT_PROPERTY_MAX_LEN } from "../../core/rich-text-schema.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.js"
 import { LoreError, errorCauseMessage } from "../../errors.js"
+import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
 /**
  * Soft cap on the user-supplied audit `reason` field.
@@ -56,6 +57,7 @@ const PIN_AUDIT_REASON_MAX = 500
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: CostOutputCounts
 }
 
 interface PinArgs {
@@ -571,6 +573,7 @@ async function handlePin(services: LoreServices, args: PinArgs): Promise<ToolRes
                 "audit line. Use action='update' to change priority, audience, or mutability.",
             },
           ],
+          costOutputs: { memoriesUpdated: 1 },
         }
       }
       return {
@@ -580,6 +583,7 @@ async function handlePin(services: LoreServices, args: PinArgs): Promise<ToolRes
             text: `Memory "${memory.title}" (${args.memoryId}) is already pinned. Use action='update' to change priority, audience, or mutability.`,
           },
         ],
+        costOutputs: { memoriesReturned: 1 },
       }
     }
     // Hard active-pin cap at the write boundary. Closes the
@@ -649,7 +653,10 @@ async function handlePin(services: LoreServices, args: PinArgs): Promise<ToolRes
       "",
       "The block now renders in `lore-context action='wake-up'` under `## Pinned Context` for every session that matches its audience."
     )
-    return { content: [{ type: "text", text: lines.join("\n") }] }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { memoriesUpdated: 1 },
+    }
   } catch (err) {
     return toolError(err)
   }
@@ -680,6 +687,7 @@ async function handleUnpin(services: LoreServices, args: UnpinArgs): Promise<Too
                 "audit line.",
             },
           ],
+          costOutputs: { memoriesUpdated: 1 },
         }
       }
       return {
@@ -689,6 +697,7 @@ async function handleUnpin(services: LoreServices, args: UnpinArgs): Promise<Too
             text: `Memory "${memory.title}" (${args.memoryId}) is not pinned. Nothing to unpin.`,
           },
         ],
+        costOutputs: { memoriesReturned: 1 },
       }
     }
     if (memory.pinned.mutability === "read-only") {
@@ -715,6 +724,7 @@ async function handleUnpin(services: LoreServices, args: UnpinArgs): Promise<Too
           text: `Unpinned: "${memory.title}" (${args.memoryId})`,
         },
       ],
+      costOutputs: { memoriesUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -851,6 +861,7 @@ async function handleUpdate(
           text: `Updated pinned block: "${memory.title}" (${args.memoryId})`,
         },
       ],
+      costOutputs: { memoriesUpdated: 1 },
     }
   } catch (err) {
     return toolError(err)
@@ -901,6 +912,7 @@ async function handleList(
             text: "No pinned context blocks active for the requested scope.",
           },
         ],
+        costOutputs: { memoriesReturned: 0 },
       }
     }
     const lines: string[] = [`## Pinned Context Blocks (${blocks.length})`, ""]
@@ -917,7 +929,10 @@ async function handleList(
       if (block.synopsis.length > 0) lines.push(block.synopsis)
       lines.push("")
     }
-    return { content: [{ type: "text", text: lines.join("\n") }] }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { memoriesReturned: blocks.length },
+    }
   } catch (err) {
     return toolError(err)
   }

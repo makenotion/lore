@@ -989,6 +989,30 @@ describe("lore-wake-up — Part C: UUID → title resolution", () => {
 })
 
 describe("lore-wake-up — Part D: per-section limits", () => {
+  it("reports cost outputs for rendered memory rows after wake-up caps", async () => {
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", { title: "Rendered memory" }),
+        makeMemory("m2", { title: "Fetched but hidden memory" }),
+      ],
+    })
+    const mockServer = createMockServer()
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const result = await wake({ limit: 1 })
+    const text = extractText(result)
+
+    expect(text).toContain("Rendered memory")
+    expect(text).not.toContain("Fetched but hidden memory")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesReturned: 1,
+      factsReturned: 0,
+      decisionsReturned: 0,
+      tasksReturned: 0,
+    })
+  })
+
   it("forwards knowledgeFactLimit to the listRecent query", async () => {
     const mockServer = createMockServer()
     const services = makeWakeServices({ facts: [] })

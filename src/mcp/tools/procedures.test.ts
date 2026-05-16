@@ -6,6 +6,7 @@ import type { Memory } from "../../types.js"
 type Handler = (...args: unknown[]) => Promise<{
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  costOutputs?: Record<string, number>
 }>
 
 function createMockServer() {
@@ -215,6 +216,7 @@ describe("lore-procedure action='scan-candidates'", () => {
     const result = await mock.get("lore-procedure")({ action: "scan-candidates" })
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("No procedure candidates surfaced")
+    expect(result.costOutputs).toEqual({ proceduresReturned: 0 })
   })
 
   it("surfaces ranked clusters when source memories pass the threshold", async () => {
@@ -247,6 +249,7 @@ describe("lore-procedure action='scan-candidates'", () => {
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("Procedure candidates (1)")
     expect(result.content[0]!.text).toContain("pr-1234")
+    expect(result.costOutputs).toEqual({ proceduresReturned: 1 })
   })
 
   it("returns an error when no project is resolved", async () => {
@@ -306,6 +309,7 @@ describe("lore-procedure action='propose'", () => {
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("Proposed procedure:")
     expect(result.content[0]!.text).toContain("Status: proposed")
+    expect(result.costOutputs).toEqual({ memoriesCreated: 1 })
     const callArg = (services.memories.create as ReturnType<typeof vi.fn>).mock
       .calls[0]![0] as {
       kind: string
@@ -588,6 +592,7 @@ describe("lore-procedure action='propose'", () => {
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("Reused existing proposed procedure")
     expect(result.content[0]!.text).toContain(existingProposed.id)
+    expect(result.costOutputs).toEqual({ memoriesReturned: 1 })
     // No create on the reuse path.
     expect(services.memories.create).not.toHaveBeenCalled()
   })
@@ -775,6 +780,7 @@ describe("lore-procedure action='deprecate'", () => {
     })
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("Deprecated procedure")
+    expect(result.costOutputs).toEqual({ memoriesUpdated: 1 })
     const updateMock = services.memories.update as ReturnType<typeof vi.fn>
     expect(updateMock).toHaveBeenCalledTimes(1)
     const [id, input] = updateMock.mock.calls[0]!
@@ -930,6 +936,7 @@ describe("lore-procedure action='deprecate'", () => {
     })
     expect(result.isError).toBeFalsy()
     expect(result.content[0]!.text).toContain("already deprecated")
+    expect(result.costOutputs).toEqual({ memoriesReturned: 1 })
     expect(services.memories.update).not.toHaveBeenCalled()
   })
 })

@@ -97,7 +97,10 @@ export async function handleStatus(services: LoreServices): Promise<ToolResult> 
       }
     }
 
-    return { content: [{ type: "text", text: lines.join("\n") }] }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { projectsReturned: services.config.projects?.length ?? 0 },
+    }
   } catch (err) {
     return toolError(err)
   }

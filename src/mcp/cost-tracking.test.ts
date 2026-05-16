@@ -282,6 +282,36 @@ describe("MCP cost tracking", () => {
     expect(rows[0]!.event).not.toHaveProperty("sessionId")
   })
 
+  it("records wake-up rendered memory counts in ledger outputs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
+      root
+    )
+    const services = makeWakeUpServices(costTracking)
+    const mockServer = createMockServer()
+
+    installCostTrackingToolWrapper(mockServer.server, services)
+    registerContextTools(mockServer.server, services)
+
+    const result = await mockServer.handler("lore-context")({
+      action: "wake-up",
+      limit: 1,
+    } as never)
+
+    expect(extractText(result)).toContain("Wake-up cost fixture")
+    const rows = await readLedgerEvents(costTracking)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event).toMatchObject({
+      eventType: "mcp.invocation",
+      tool: "lore-context",
+      action: "wake-up",
+      status: "success",
+      outputs: { memoriesReturned: 1 },
+    })
+  })
+
   it("does not copy raw MCP metadata into error rows", async () => {
     const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
     dirs.push(root)
@@ -354,6 +384,92 @@ describe("MCP cost tracking", () => {
   })
 })
 
+function extractText(result: unknown): string {
+  return (result as { content: Array<{ text: string }> }).content[0]!.text
+}
+
+function makeWakeUpServices(costTracking: LoreServices["costTracking"]): LoreServices {
+  const memory = {
+    id: "mem-1",
+    title: "Wake-up cost fixture",
+    projectIds: ["project-1"],
+    topicId: null,
+    source: "manual",
+    kind: "note",
+    status: "informational",
+    confidence: "certain",
+    confidenceScore: null,
+    reviewBy: null,
+    doneAt: null,
+    decidedAt: null,
+    lastReferencedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    synopsis: "Rendered by wake-up.",
+    session: "",
+    content: "",
+    taskState: null,
+    blockedBy: "",
+    entity: "",
+    topicKey: "",
+    revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
+    createdAt: "2026-05-16T00:00:00.000Z",
+    updatedAt: "2026-05-16T00:00:00.000Z",
+  }
+  return {
+    costTracking,
+    context: {
+      project: {
+        id: "project-1",
+        name: "Fixture",
+        path: "fixture",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      vault: { pageId: "vault-1" },
+    },
+    config: { vault: { pageId: "vault-1" }, projects: [] },
+    projects: { findByName: vi.fn(async () => null) },
+    memories: {
+      list: vi.fn(async (opts?: { source?: string; status?: string }) => {
+        if (opts?.source === "digest" || opts?.status === "proposed") {
+          return { items: [] }
+        }
+        return { items: [memory] }
+      }),
+      search: vi.fn(async () => []),
+      getTitleById: vi.fn(async () => null),
+      queryStaleConfidence: vi.fn(async () => []),
+      countProposed: vi.fn(async () => ({ total: 0, bySource: {}, byAgent: {} })),
+      listPinnedBlocks: vi.fn(async () => []),
+      countPinnedBlocks: vi.fn(async () => 0),
+      touchOnRead: vi.fn(async () => undefined),
+    },
+    facts: {
+      listRecent: vi.fn(async () => ({ items: [], hasMore: false })),
+      touchOnRead: vi.fn(async () => undefined),
+    },
+    decisions: {
+      list: vi.fn(async () => ({ items: [] })),
+      queryOverdue: vi.fn(async () => []),
+      queryOverdueWindow: vi.fn(async () => ({ items: [], capped: false })),
+    },
+    tasks: {
+      list: vi.fn(async () => ({ items: [] })),
+    },
+    scopeContext: {},
+    upstreams: [],
+  } as unknown as LoreServices
+}
+
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) {
     delete process.env[name]
@@ -381,6 +497,11 @@ function createMockServer() {
   } as unknown as McpServer
   return {
     server,
+    handler(name: string): Handler {
+      const handler = handlers.get(name)
+      if (!handler) throw new Error(`missing handler for ${name}`)
+      return handler
+    },
     names(): string[] {
       return Array.from(handlers.keys())
     },

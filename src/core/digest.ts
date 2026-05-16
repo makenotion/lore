@@ -90,6 +90,10 @@ export interface DigestData {
   lastDigestDate: string | null
   /** Number of memories in the window — useful for "nothing to digest" checks. */
   recentMemoryCount: number
+  /** Number of memory rows rendered into the raw digest payload. */
+  renderedMemoryCount: number
+  /** Number of open-work task rows rendered into the raw digest payload. */
+  renderedTaskCount: number
 }
 
 function computeWindow(
@@ -212,9 +216,11 @@ export async function gatherDigestData(
     sections.push("## Activity\nNo memories found in this window.\n")
   }
 
+  let renderedTaskCount = 0
   if (openTasks.length > 0) {
     const today = isoDate(now)
     const visible = openTasks.slice(0, MAX_OPEN_WORK_TASKS)
+    renderedTaskCount = visible.length
     // Two truncation signals: a local one (more rows fetched than
     // displayed) and Notion's `nextCursor` / `has_more` (the
     // open-task population exceeds the local probe of
@@ -257,5 +263,7 @@ export async function gatherDigestData(
     raw: sections.join("\n"),
     lastDigestDate,
     recentMemoryCount: recentMemories.length,
+    renderedMemoryCount: recentMemories.length + (lastDigest ? 1 : 0),
+    renderedTaskCount,
   }
 }

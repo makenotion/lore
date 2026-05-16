@@ -112,6 +112,7 @@ export async function handlePromote(
       ]
       return {
         content: [{ type: "text", text: lines.join("\n") }],
+        costOutputs: { memoriesReturned: 1 },
       }
     }
 
@@ -130,6 +131,7 @@ export async function handlePromote(
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
+      costOutputs: { memoriesCreated: 1 },
     }
   } catch (err) {
     return toolError(err)

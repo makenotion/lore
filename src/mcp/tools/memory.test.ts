@@ -8376,6 +8376,10 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("conflicts_with")
     expect(text).toContain("Auth model B")
     expect(text).toContain("fact-1")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesUpdated: 2,
+      factsCreated: 1,
+    })
   })
 
   it("flips the affected side: same pair with affectedMemoryId=memoryIdA halves memoryA, NOT memoryB", async () => {
@@ -9212,6 +9216,9 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("Audit recovery")
     expect(text).toContain("only side B")
     expect(text).toContain("page-b")
+    expect((result as { costOutputs?: unknown }).costOutputs).toEqual({
+      memoriesUpdated: 1,
+    })
   })
 
   it("symmetric idempotent retry where BOTH sides carry the entry: zero pages.update calls, alreadyJudged response", async () => {

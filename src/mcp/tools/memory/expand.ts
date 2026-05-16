@@ -50,6 +50,7 @@ export async function handleExpand(
 
     const response: ToolResult = {
       content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n---\n\n")}` }],
+      costOutputs: { memoriesReturned: fulfilled.length },
     }
 
     // Citation-as-evidence. `expand` fetches a
