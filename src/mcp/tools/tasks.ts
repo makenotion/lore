@@ -48,6 +48,7 @@ import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
+import { notionPageIdSchema } from "../../notion/page-id-schema.js"
 import { nonBlankBody, nonBlankString } from "./text-schema.js"
 import type { CostOutputCounts } from "../../core/cost-ledger.js"
 
@@ -908,14 +909,40 @@ async function handleReconcile(
  * handler so unsupported action+param combinations surface as clean
  * errors via `formatDispatchError`.
  */
-const closeManyIdsSchema = z.array(z.string()).superRefine((ids, ctx) => {
+const closeManyIdsSchema = z.array(z.string()).transform((ids, ctx) => {
+  const parsedIds: string[] = []
+  let hasInvalidId = false
+
+  for (const [index, raw] of ids.entries()) {
+    if (raw.trim() === "") continue
+
+    const parsed = notionPageIdSchema.safeParse(raw)
+    if (!parsed.success) {
+      hasInvalidId = true
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({
+          ...issue,
+          path: [index, ...issue.path],
+        })
+      }
+      continue
+    }
+
+    parsedIds.push(parsed.data)
+  }
+
+  if (hasInvalidId) {
+    return z.NEVER
+  }
+
   try {
-    normalizeCloseManyTaskIds(ids)
+    return normalizeCloseManyTaskIds(parsedIds)
   } catch (err) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: err instanceof Error ? err.message : String(err),
     })
+    return z.NEVER
   }
 })
 
@@ -929,7 +956,7 @@ function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema
       state: z.enum(TASK_STATES).optional(),
       blockedBy: z.string().optional(),
       dueDate: ymdDateSchema.optional(),
-      affectsIds: z.array(z.string()).optional(),
+      affectsIds: z.array(notionPageIdSchema).optional(),
       projectName: z.string().optional(),
       projectNames: z.array(z.string()).optional(),
       topicName: z.string().optional(),
@@ -946,7 +973,7 @@ function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema
     }),
     z.object({
       action: z.literal("update"),
-      taskId: z.string(),
+      taskId: notionPageIdSchema,
       state: z.enum(TASK_STATES).optional(),
       blockedBy: z.string().optional(),
       entity: z.string().optional(),
@@ -960,7 +987,7 @@ function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema
     }),
     z.object({
       action: z.literal("close"),
-      taskId: z.string(),
+      taskId: notionPageIdSchema,
       state: z.enum(CLOSE_STATES).optional(),
       reason: nonBlankBody.optional(),
     }),
@@ -1058,12 +1085,12 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
             "(action='create' | 'update') Description / context. Becomes the page body (markdown supported)."
           ),
         // create | update | close
-        taskId: z
-          .string()
+        taskId: notionPageIdSchema
           .optional()
           .describe("(action='update' | 'close') The task ID to mutate."),
         ids: z
           .array(z.string())
+          .pipe(closeManyIdsSchema)
           .optional()
           .describe(
             `(action='close-many') Explicit task IDs to close. Blank IDs are ignored, ` +
@@ -1108,7 +1135,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
               "(action='update') New due date; pass null or empty string to clear."
           ),
         affectsIds: z
-          .array(z.string())
+          .array(notionPageIdSchema)
           .optional()
           .describe(
             "(action='create') Memory IDs this task is sourced from / affects. Migrated tasks " +

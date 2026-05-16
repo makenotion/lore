@@ -32,6 +32,9 @@ import { registerProcedureTools } from "./procedures.js"
 import { HELP_RECIPES } from "../help.js"
 import { resolveProfileFromConfig } from "../../profile/index.js"
 
+const TASK_PAGE_ID = "11111111-1111-1111-1111-111111111111"
+const TASK_PAGE_ID_2 = "22222222-2222-2222-2222-222222222222"
+
 type Handler = (...args: never[]) => Promise<unknown>
 
 type ToolConfig = {
@@ -1377,11 +1380,11 @@ describe("lore-task polymorphic dispatcher", () => {
     registerTaskTools(mock.server, makeServices({ tasksUpdate }) as never)
     await mock.get("lore-task")({
       action: "update",
-      taskId: "t-1",
+      taskId: TASK_PAGE_ID,
       state: "in-progress",
     } as never)
     expect(tasksUpdate).toHaveBeenCalledWith(
-      "t-1",
+      TASK_PAGE_ID,
       expect.objectContaining({ state: "in-progress" })
     )
   })
@@ -1392,10 +1395,10 @@ describe("lore-task polymorphic dispatcher", () => {
     registerTaskTools(mock.server, makeServices({ tasksClose }) as never)
     const result = await mock.get("lore-task")({
       action: "close",
-      taskId: "t-1",
+      taskId: TASK_PAGE_ID,
     } as never)
-    expect(tasksClose).toHaveBeenCalledWith("t-1", "done")
-    expect(extractText(result)).toContain("Closed task t-1")
+    expect(tasksClose).toHaveBeenCalledWith(TASK_PAGE_ID, "done")
+    expect(extractText(result)).toContain(`Closed task ${TASK_PAGE_ID}`)
   })
 
   it("dispatches action='close-many' to tasks.closeMany", async () => {
@@ -1425,11 +1428,11 @@ describe("lore-task polymorphic dispatcher", () => {
     registerTaskTools(mock.server, makeServices({ tasksCloseMany }) as never)
     const result = await mock.get("lore-task")({
       action: "close-many",
-      ids: ["t-1", "t-2"],
+      ids: [TASK_PAGE_ID, TASK_PAGE_ID_2],
       reason: "Parent PR merged",
     } as never)
     expect(tasksCloseMany).toHaveBeenCalledWith({
-      ids: ["t-1", "t-2"],
+      ids: [TASK_PAGE_ID, TASK_PAGE_ID_2],
       state: "done",
       reason: "Parent PR merged",
     })
@@ -1503,7 +1506,7 @@ describe("lore-task polymorphic dispatcher", () => {
     registerTaskTools(mock.server, makeServices({ tasksUpdate }) as never)
     const result = await mock.get("lore-task")({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_PAGE_ID,
       state: "blocked",
     } as never)
     expect(tasksUpdate).not.toHaveBeenCalled()
@@ -1521,7 +1524,7 @@ describe("lore-task polymorphic dispatcher", () => {
     registerTaskTools(mock.server, makeServices({ tasksUpdate }) as never)
     const result = await mock.get("lore-task")({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_PAGE_ID,
       state: "blocked",
       blockedBy: "",
     } as never)
@@ -2222,11 +2225,11 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
 
     await mock.get("lore-task")({
       action: "update",
-      taskId: "t1",
+      taskId: TASK_PAGE_ID,
       synopsis: "Updated synopsis",
     } as never)
     expect(tasksUpdate).toHaveBeenCalledWith(
-      "t1",
+      TASK_PAGE_ID,
       expect.objectContaining({ synopsis: "Updated synopsis" })
     )
   })
@@ -2257,7 +2260,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
       },
       {
         tool: "lore-task",
-        args: { action: "update", taskId: "t1", synopsis: overCap },
+        args: { action: "update", taskId: TASK_PAGE_ID, synopsis: overCap },
       },
     ]
     const mock = createMockServer()

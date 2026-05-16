@@ -70,8 +70,8 @@ export function createMemoryDispatchSchema(
       confidence: z.enum(CONFIDENCES).optional(),
       reviewBy: clearableYmdDateSchema.optional(),
       decidedAt: clearableYmdDateSchema.optional(),
-      supersedesIds: z.array(z.string()).optional(),
-      affectsIds: z.array(z.string()).optional(),
+      supersedesIds: z.array(notionPageIdSchema).optional(),
+      affectsIds: z.array(notionPageIdSchema).optional(),
       alternatives: richTextPropertySchema("alternatives").optional(),
       consequences: richTextPropertySchema("consequences").optional(),
       // Same kebab-case regex as `lore-memory action='save'`'s

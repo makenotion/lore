@@ -8,6 +8,7 @@ import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "../../core/rich-text-schema.js"
 import { SYNOPSIS_MAX } from "../../types.js"
 import { clearableYmdDateSchema } from "./date-schema.js"
+import { notionPageIdSchema } from "../../notion/page-id-schema.js"
 import { scopeInputSchema } from "./scope-schema.js"
 import { createTagsSchema, keywordsSchema } from "./tag-schema.js"
 import { handleArchive } from "./memory/archive.js"
@@ -202,13 +203,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           ),
         // update only
         supersedesIds: z
-          .array(z.string())
+          .array(notionPageIdSchema)
           .optional()
           .describe(
             "(action='update') Replace the Supersedes relation with these decision IDs."
           ),
         affectsIds: z
-          .array(z.string())
+          .array(notionPageIdSchema)
           .optional()
           .describe(
             "(action='update') Replace the Affects relation with these memory IDs."

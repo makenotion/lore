@@ -8,6 +8,12 @@ import {
 } from "../../core/task.js"
 import type { Task, TaskSummary } from "../../types.js"
 
+const TASK_ID = "11111111-1111-1111-1111-111111111111"
+const TASK_ID_2 = "22222222-2222-2222-2222-222222222222"
+const TASK_ID_3 = "33333333-3333-3333-3333-333333333333"
+const TASK_ID_UNDASHED = "44444444444444444444444444444444"
+const TASK_ID_UNDASHED_CANONICAL = "44444444-4444-4444-4444-444444444444"
+
 function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary {
   return {
     id,
@@ -247,6 +253,51 @@ describe("lore-task-create", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("Created task")
     expect(text).toContain("State: open")
+  })
+
+  it("rejects malformed affectsIds before TaskService.create", async () => {
+    const svc = services()
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Follow source memory",
+      affectsIds: ["not-a-page-id"],
+    } as never)
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("affectsIds.0")
+    expect(text).toContain("must be a Notion page id")
+  })
+
+  it("accepts undashed affectsIds and forwards canonical values", async () => {
+    const created: Task = {
+      ...makeTask("t1", { entity: "AuthService" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Follow source memory",
+      affectsIds: [TASK_ID_UNDASHED],
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        affectsIds: [TASK_ID_UNDASHED_CANONICAL],
+      })
+    )
   })
 
   it("warns when topicName is skipped because no project scope resolved", async () => {
@@ -1204,7 +1255,7 @@ describe("lore-task-update blocked-state guard", () => {
 
     const result = await handler({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_ID,
       state: "blocked",
     } as never)
 
@@ -1222,7 +1273,7 @@ describe("lore-task-update blocked-state guard", () => {
 
     const result = await handler({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_ID,
       state: "blocked",
       blockedBy: "",
     } as never)
@@ -1250,7 +1301,7 @@ describe("lore-task-update blocked-state guard", () => {
 
     const result = await handler({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_ID,
       state: "blocked",
       blockedBy: "   ",
     } as never)
@@ -1273,27 +1324,45 @@ describe("lore-task-update blocked-state guard", () => {
 
     await handler({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_ID,
       state: "in-progress",
     } as never)
 
     expect(svc.tasks.update).toHaveBeenCalledWith(
-      "task-id",
+      TASK_ID,
       expect.objectContaining({ state: "in-progress" })
     )
   })
 })
 
 describe("lore-task-close", () => {
+  it("rejects malformed taskId before TaskService.close", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "close",
+      taskId: "not-a-page-id",
+    } as never)
+
+    expect(svc.tasks.close).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0].text).toContain(
+      "must be a Notion page id"
+    )
+  })
+
   it("calls TaskService.close with default state=done", async () => {
     const svc = services()
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    await handler({ action: "close", taskId: "task-id" } as never)
+    await handler({ action: "close", taskId: TASK_ID } as never)
 
-    expect(svc.tasks.close).toHaveBeenCalledWith("task-id", "done")
+    expect(svc.tasks.close).toHaveBeenCalledWith(TASK_ID, "done")
   })
 
   it("supports state=cancelled for dropped-without-completion path", async () => {
@@ -1302,9 +1371,9 @@ describe("lore-task-close", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    await handler({ action: "close", taskId: "task-id", state: "cancelled" } as never)
+    await handler({ action: "close", taskId: TASK_ID, state: "cancelled" } as never)
 
-    expect(svc.tasks.close).toHaveBeenCalledWith("task-id", "cancelled")
+    expect(svc.tasks.close).toHaveBeenCalledWith(TASK_ID, "cancelled")
   })
 
   it("threads a closure reason into TaskService.close", async () => {
@@ -1323,11 +1392,11 @@ describe("lore-task-close", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "close",
-      taskId: "task-id",
+      taskId: TASK_ID,
       reason: "Parent PR merged",
     } as never)
 
-    expect(svc.tasks.close).toHaveBeenCalledWith("task-id", "done", {
+    expect(svc.tasks.close).toHaveBeenCalledWith(TASK_ID, "done", {
       reason: "Parent PR merged",
     })
     const closeResult = result as {
@@ -1336,7 +1405,7 @@ describe("lore-task-close", () => {
     }
     expect(closeResult.content[0].text).toContain("Closure note appended")
     expect(closeResult.structuredContent).toEqual({
-      id: "task-id",
+      id: TASK_ID,
       state: "done",
       doneAt: "2026-05-03",
       closureNote: "## Closed (2026-05-03) - done\n\nParent PR merged",
@@ -1366,7 +1435,7 @@ describe("lore-task-close", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = (await handler({
       action: "close",
-      taskId: "task-id",
+      taskId: TASK_ID,
       reason: "Parent PR merged",
     } as never)) as { isError?: boolean; content: Array<{ text: string }> }
 
@@ -1410,12 +1479,12 @@ describe("lore-task-close", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "close-many",
-      ids: ["t1", "t2", "t3"],
+      ids: [TASK_ID, TASK_ID_2, TASK_ID_3],
       reason: "Parent PR merged",
     } as never)
 
     expect(svc.tasks.closeMany).toHaveBeenCalledWith({
-      ids: ["t1", "t2", "t3"],
+      ids: [TASK_ID, TASK_ID_2, TASK_ID_3],
       state: "done",
       reason: "Parent PR merged",
     })
@@ -1443,9 +1512,88 @@ describe("lore-task-close", () => {
       "non-blank"
     )
   })
+
+  it("rejects malformed close-many IDs before TaskService.closeMany", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "close-many",
+      ids: [TASK_ID, "not-a-page-id"],
+    } as never)
+
+    expect(svc.tasks.closeMany).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("ids.1")
+    expect(text).toContain("must be a Notion page id")
+  })
+
+  it("accepts undashed close-many IDs and forwards canonical dashed IDs", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "close-many",
+      ids: [TASK_ID_UNDASHED],
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(svc.tasks.closeMany).toHaveBeenCalledWith({
+      ids: [TASK_ID_UNDASHED_CANONICAL],
+      state: "done",
+      reason: undefined,
+    })
+  })
 })
 
 describe("lore-task-update", () => {
+  it("rejects malformed taskId before TaskService.update", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "update",
+      taskId: "not-a-page-id",
+      subject: "rename",
+    } as never)
+
+    expect(svc.tasks.update).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0].text).toContain(
+      "must be a Notion page id"
+    )
+  })
+
+  it("accepts undashed taskId and forwards the canonical dashed ID", async () => {
+    const svc = services()
+    svc.tasks.update = vi.fn().mockResolvedValue({
+      ...makeTask("t1"),
+      content: "",
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "update",
+      taskId: TASK_ID_UNDASHED,
+      subject: "rename",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(svc.tasks.update).toHaveBeenCalledWith(
+      TASK_ID_UNDASHED_CANONICAL,
+      expect.objectContaining({ subject: "rename" })
+    )
+  })
+
   it("translates empty dueDate string into null (clear the date)", async () => {
     const svc = services()
     svc.tasks.update = vi.fn().mockResolvedValue({
@@ -1456,10 +1604,10 @@ describe("lore-task-update", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    await handler({ action: "update", taskId: "task-id", dueDate: "" } as never)
+    await handler({ action: "update", taskId: TASK_ID, dueDate: "" } as never)
 
     expect(svc.tasks.update).toHaveBeenCalledWith(
-      "task-id",
+      TASK_ID,
       expect.objectContaining({ dueDate: null })
     )
   })
@@ -1474,10 +1622,10 @@ describe("lore-task-update", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    await handler({ action: "update", taskId: "task-id", dueDate: null } as never)
+    await handler({ action: "update", taskId: TASK_ID, dueDate: null } as never)
 
     expect(svc.tasks.update).toHaveBeenCalledWith(
-      "task-id",
+      TASK_ID,
       expect.objectContaining({ dueDate: null })
     )
   })
@@ -1502,7 +1650,7 @@ describe("lore-task-update", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = (await handler({
       action: "update",
-      taskId: "task-id",
+      taskId: TASK_ID,
       state: "in-progress",
       description: "Updated description",
     } as never)) as { isError?: boolean; content: Array<{ text: string }> }
@@ -1562,7 +1710,7 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "update",
-      taskId: "t-active",
+      taskId: TASK_ID,
       state: "in-progress",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1583,7 +1731,7 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "update",
-      taskId: "t-done",
+      taskId: TASK_ID,
       state: "done",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1605,7 +1753,7 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     const handler = mockServer.getHandler("lore-task")
     const result = await handler({
       action: "update",
-      taskId: "t-cx",
+      taskId: TASK_ID,
       state: "cancelled",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1619,7 +1767,7 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const result = await handler({ action: "close", taskId: TASK_ID } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).not.toContain(CTA_PREFIX)
@@ -1634,10 +1782,10 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const result = await handler({ action: "close", taskId: TASK_ID } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain("Closed task t-id (state: done)")
+    expect(text).toContain(`Closed task ${TASK_ID} (state: done)`)
     expect(text).toContain("Done at: 2026-04-28")
   })
 
@@ -1651,10 +1799,10 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const result = await handler({ action: "close", taskId: TASK_ID } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toBe("Closed task t-id (state: done)")
+    expect(text).toBe(`Closed task ${TASK_ID} (state: done)`)
   })
 
   it("returns the close confirmation even when the post-close re-read fails", async () => {
@@ -1667,10 +1815,10 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     registerTaskTools(mockServer.server, svc as never)
 
     const handler = mockServer.getHandler("lore-task")
-    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const result = await handler({ action: "close", taskId: TASK_ID } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toBe("Closed task t-id (state: done)")
+    expect(text).toBe(`Closed task ${TASK_ID} (state: done)`)
   })
 
   it("leads the lore-task description with the CRITICAL CLOSURE RULE", async () => {
@@ -1828,7 +1976,7 @@ describe("optional-string Zod boundary", () => {
   })
 
   describe("action='update'", () => {
-    const baseInput = { action: "update", taskId: "task-id" }
+    const baseInput = { action: "update", taskId: TASK_ID }
 
     it("accepts empty string on every empty-able field", async () => {
       const { ok } = await run({
@@ -2381,11 +2529,11 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
     // Update — explicit value lands.
     await handler({
       action: "update",
-      taskId: "t-1",
+      taskId: TASK_ID,
       synopsis: "Updated synopsis",
     } as never)
     expect(svc.tasks.update).toHaveBeenCalledWith(
-      "t-1",
+      TASK_ID,
       expect.objectContaining({ synopsis: "Updated synopsis" })
     )
 
@@ -2393,11 +2541,11 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
     ;(svc.tasks.update as ReturnType<typeof vi.fn>).mockClear()
     await handler({
       action: "update",
-      taskId: "t-1",
+      taskId: TASK_ID,
       synopsis: "",
     } as never)
     expect(svc.tasks.update).toHaveBeenCalledWith(
-      "t-1",
+      TASK_ID,
       expect.objectContaining({ synopsis: "" })
     )
 
@@ -2405,7 +2553,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
     ;(svc.tasks.update as ReturnType<typeof vi.fn>).mockClear()
     await handler({
       action: "update",
-      taskId: "t-1",
+      taskId: TASK_ID,
       subject: "rename",
     } as never)
     const [, args] = (svc.tasks.update as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -2440,7 +2588,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
 
     const result = await handler({
       action: "update",
-      taskId: "t-1",
+      taskId: TASK_ID,
       synopsis: overCap,
     } as never)
 

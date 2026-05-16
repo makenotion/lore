@@ -5097,6 +5097,40 @@ describe("lore-memory action='update' Alternatives/Consequences rich_text cap (#
     expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
     expect(update).not.toHaveBeenCalled()
   })
+
+  it("rejects malformed relation IDs before memories.update", async () => {
+    const { handler, update } = setUpUpdateHarness()
+
+    const result = await handler({
+      memoryId: "mem-1",
+      supersedesIds: ["not-a-page-id"],
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("supersedesIds.0")
+    expect(wrapped.content[0].text).toContain("must be a Notion page id")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("accepts dashed and undashed relation IDs and forwards canonical values", async () => {
+    const { handler, update } = setUpUpdateHarness()
+
+    const result = await handler({
+      memoryId: "mem-1",
+      supersedesIds: ["1f1e2d3c4b5a69788796a5b4c3d2e1f0"],
+      affectsIds: ["AaBbCcDd-1234-5678-9aBc-DeF012345678"],
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({
+        supersedesIds: ["1f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"],
+        affectsIds: ["aabbccdd-1234-5678-9abc-def012345678"],
+      })
+    )
+  })
 })
 
 describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
