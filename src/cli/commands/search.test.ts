@@ -1,11 +1,50 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { initServices } from "../../services.js"
+import type { Memory } from "../../types.js"
 import { parseSearchCliOptions, searchCommand, type SearchCliOptions } from "./search.js"
 import { INVALID_LIMIT_STRINGS, trapProcessExit } from "../test-helpers.js"
 
 vi.mock("../../services.js", () => ({
   initServices: vi.fn(),
 }))
+
+const searchMemory: Memory = {
+  id: "m-1",
+  title: "Memory 1",
+  projectIds: ["p-widget"],
+  topicId: null,
+  source: "manual",
+  kind: "note",
+  status: "informational",
+  confidence: "certain",
+  confidenceScore: null,
+  reviewBy: null,
+  doneAt: null,
+  decidedAt: null,
+  lastReferencedAt: null,
+  supersedesIds: [],
+  affectsIds: [],
+  alternatives: "",
+  consequences: "",
+  author: "",
+  agent: "",
+  tags: ["cli"],
+  keywords: "",
+  synopsis: "",
+  session: null,
+  content: "A matching memory",
+  createdAt: "2026-05-03T00:00:00.000Z",
+  updatedAt: "2026-05-03T00:00:00.000Z",
+  taskState: null,
+  blockedBy: "",
+  entity: "",
+  topicKey: "",
+  revisionCount: 1,
+  comparedWith: [],
+  compareNotes: "",
+  scope: null,
+  pinned: null,
+}
 
 function makeServices() {
   return {
@@ -16,16 +55,7 @@ function makeServices() {
       project: { id: "p-widget", name: "Widget", path: "." },
     },
     memories: {
-      search: vi.fn().mockResolvedValue([
-        {
-          id: "m-1",
-          title: "Memory 1",
-          tags: ["cli"],
-          source: "manual",
-          updatedAt: "2026-05-03T00:00:00.000Z",
-          content: "A matching memory",
-        },
-      ]),
+      search: vi.fn().mockResolvedValue([searchMemory]),
     },
   }
 }
@@ -36,6 +66,7 @@ describe("parseSearchCliOptions", () => {
       project: "Widget",
       tags: "cli, validation",
       limit: "10",
+      json: false,
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
@@ -43,6 +74,7 @@ describe("parseSearchCliOptions", () => {
         projectName: "Widget",
         tags: ["cli", "validation"],
         limit: 10,
+        json: false,
       })
     }
   })
@@ -82,6 +114,46 @@ describe("searchCommand", () => {
         limit: 10,
       })
     )
+  })
+
+  it("emits populated search results as JSON when --json is passed", async () => {
+    const services = makeServices()
+    vi.mocked(initServices).mockResolvedValue(services as never)
+
+    await searchCommand.parseAsync(["needle", "--tags", "cli, validation", "--json"], {
+      from: "user",
+    })
+
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    const output = JSON.parse(logSpy.mock.calls[0]?.[0] as string)
+    expect(output).toEqual({
+      query: "needle",
+      projectId: "p-widget",
+      tags: ["cli", "validation"],
+      results: [searchMemory],
+    })
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it("emits empty search results as JSON when --json is passed", async () => {
+    const search = vi.fn().mockResolvedValue([])
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn() },
+      memories: { search },
+      context: { project: { id: "proj-context", name: "Context" } },
+    } as never)
+
+    await searchCommand.parseAsync(["auth", "--json"], { from: "user" })
+
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(logSpy.mock.calls[0]?.[0] as string)).toEqual({
+      query: "auth",
+      projectId: "proj-context",
+      tags: null,
+      results: [],
+    })
+    expect(logSpy.mock.calls[0]?.[0]).not.toContain("No memories found")
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 
   it.each(INVALID_LIMIT_STRINGS)(
