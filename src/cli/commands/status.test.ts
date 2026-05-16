@@ -911,6 +911,7 @@ describe("loadCostStatusLines", () => {
       const lines = await loadCostStatusLines({ costTracking } as LoreServices)
       const output = lines.join("\n")
       expect(output).toContain("Cost tracking: enabled")
+      expect(output).toContain("~<$0.01 prompt-estimated Lore-owned model")
       expect(output).toContain("prompt-estimated Lore-owned model")
       expect(output).toContain("skipped 2 malformed cost ledger lines")
       expect(output).toContain("1 MCP calls")

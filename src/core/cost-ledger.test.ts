@@ -30,6 +30,7 @@ import {
   eventsToCsv,
   formatCostSummary,
   formatMalformedLedgerWarning,
+  formatUsd,
   loadPricingTable,
   payloadSummary,
   readCostLedgerAppendErrorMarker,
@@ -694,6 +695,13 @@ describe("cost ledger", () => {
     expect(formatCostSummary(summary)).toContain(
       "Lore-owned model cost: $0.01 exact agent usage, ~$0.02 background prompt estimates"
     )
+  })
+
+  it("formats non-zero sub-cent costs without rounding them to zero", () => {
+    expect(formatUsd(0)).toBe("$0.00")
+    expect(formatUsd(0.00175)).toBe("<$0.01")
+    expect(formatUsd(0.01)).toBe("$0.01")
+    expect(formatUsd(12.345)).toBe("$12.35")
   })
 
   it("merges schema-valid pricing overrides with the builtin table", async () => {
