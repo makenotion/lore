@@ -101,3 +101,5 @@ Cost tracking:
   as a background prompt estimate; it may exclude completion tokens,
   cached-input billing, and provider-side rounding.
 - Missing, empty, or malformed ledger rows must not fail status output.
+  Malformed or schema-invalid non-blank rows render a redacted warning with only
+  the skipped-line count.

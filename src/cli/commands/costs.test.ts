@@ -36,14 +36,17 @@ describe("costs command", () => {
   let dir: string
   let logSpy: ReturnType<typeof vi.fn>
   let errorSpy: ReturnType<typeof vi.fn>
+  let warnSpy: ReturnType<typeof vi.fn>
   let exitTrap: ReturnType<typeof trapProcessExit>
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "lore-costs-command-"))
     logSpy = vi.fn()
     errorSpy = vi.fn()
+    warnSpy = vi.fn()
     vi.spyOn(console, "log").mockImplementation(logSpy)
     vi.spyOn(console, "error").mockImplementation(errorSpy)
+    vi.spyOn(console, "warn").mockImplementation(warnSpy)
     vi.spyOn(process, "cwd").mockReturnValue(dir)
     exitTrap = trapProcessExit()
   })
@@ -136,15 +139,19 @@ costTracking:
           status: "success",
           projectName: "SECRET_INVALID_ROW",
         }),
+        "{not json",
       ].join("\n") + "\n"
     )
 
     await costsCommand.parseAsync(["summary"], { from: "user" })
 
     const output = logSpy.mock.calls.flat().join("\n")
+    const warning = warnSpy.mock.calls.flat().join("\n")
     expect(output).toContain("MCP calls: 1 total")
     expect(output).toContain("background prompt estimates")
     expect(output).not.toContain("SECRET_INVALID_ROW")
+    expect(warning).toContain("skipped 2 malformed cost ledger lines")
+    expect(warning).not.toContain("SECRET_INVALID_ROW")
     expect(exitTrap.exitCodes).toEqual([])
   })
 
@@ -189,6 +196,64 @@ costTracking:
     expect(output).toContain("timestamp,eventType,source,status")
     expect(output).toContain("lore-query,search")
     expect(output).not.toContain("SECRET_INVALID_ROW")
+    expect(warnSpy.mock.calls.flat().join("\n")).toContain(
+      "skipped 1 malformed cost ledger line"
+    )
+    expect(exitTrap.exitCodes).toEqual([])
+  })
+
+  it("keeps JSONL export stdout parseable and writes malformed-row warnings to stderr", async () => {
+    mkdirSync(join(dir, "state"))
+    writeFileSync(
+      join(dir, ".lore.yaml"),
+      `
+vault:
+  pageId: abc123
+costTracking:
+  enabled: true
+  ledgerPath: state/costs.jsonl
+`
+    )
+    writeFileSync(
+      join(dir, "state", "costs.jsonl"),
+      [
+        JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp: new Date().toISOString(),
+          eventType: "mcp.invocation",
+          source: "host_agent",
+          status: "success",
+          tool: "lore-query",
+          action: "search",
+          payload: payloadSummary("{}", "ok"),
+          notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+        }),
+        "",
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          eventType: "mcp.invocation",
+          status: "success",
+          projectName: "SECRET_INVALID_ROW",
+        }),
+        "{not json",
+      ].join("\n") + "\n"
+    )
+
+    await costsCommand.parseAsync(["export", "--format", "jsonl"], { from: "user" })
+
+    const output = logSpy.mock.calls.flat().join("\n")
+    const warning = warnSpy.mock.calls.flat().join("\n")
+    const exported = output
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(exported).toHaveLength(1)
+    expect(exported[0]?.["tool"]).toBe("lore-query")
+    expect(output).not.toContain("Warning:")
+    expect(output).not.toContain("SECRET_INVALID_ROW")
+    expect(warning).toContain("skipped 2 malformed cost ledger lines")
+    expect(warning).not.toContain("SECRET_INVALID_ROW")
+    expect(errorSpy).not.toHaveBeenCalled()
     expect(exitTrap.exitCodes).toEqual([])
   })
 

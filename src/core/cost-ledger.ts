@@ -811,8 +811,23 @@ export async function readLedgerEvents(
   costTracking: ResolvedCostTracking,
   range?: CostRange
 ): Promise<Array<{ line: string; event: CostLedgerEvent }>> {
-  if (!costTracking.enabled) return []
+  return (await readLedgerEventsWithDiagnostics(costTracking, range)).rows
+}
+
+export interface CostLedgerReadDiagnostics {
+  rows: Array<{ line: string; event: CostLedgerEvent }>
+  malformedLineCount: number
+}
+
+export async function readLedgerEventsWithDiagnostics(
+  costTracking: ResolvedCostTracking,
+  range?: CostRange
+): Promise<CostLedgerReadDiagnostics> {
+  if (!costTracking.enabled) {
+    return { rows: [], malformedLineCount: 0 }
+  }
   const rows: Array<{ line: string; event: CostLedgerEvent }> = []
+  let malformedLineCount = 0
 
   try {
     const lines = createInterface({
@@ -827,16 +842,22 @@ export async function readLedgerEvents(
         if (event && (!range || eventInRange(event, range))) {
           rows.push({ line: JSON.stringify(event), event })
         }
+        if (!event) malformedLineCount += 1
       } catch {
-        // A malformed line cannot validate independently, so omit it from
-        // summaries/exports rather than inventing partial values.
+        malformedLineCount += 1
       }
     }
   } catch (err) {
-    if (isFileNotFoundError(err)) return []
+    if (isFileNotFoundError(err)) return { rows: [], malformedLineCount: 0 }
     throw err
   }
-  return rows
+  return { rows, malformedLineCount }
+}
+
+export function formatMalformedLedgerWarning(malformedLineCount: number): string | null {
+  if (malformedLineCount <= 0) return null
+  const noun = malformedLineCount === 1 ? "line" : "lines"
+  return `Warning: skipped ${malformedLineCount} malformed cost ledger ${noun}; only valid redacted rows were included.`
 }
 
 function isFileNotFoundError(err: unknown): boolean {

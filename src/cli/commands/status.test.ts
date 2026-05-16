@@ -871,6 +871,8 @@ describe("loadCostStatusLines", () => {
             status: "success",
             projectName: "SECRET_INVALID_STATUS_ROW",
           }),
+          "",
+          "{not json",
           JSON.stringify({
             schemaVersion: COST_LEDGER_SCHEMA_VERSION,
             timestamp: new Date().toISOString(),
@@ -909,6 +911,7 @@ describe("loadCostStatusLines", () => {
       const output = lines.join("\n")
       expect(output).toContain("Cost tracking: enabled")
       expect(output).toContain("prompt-estimated Lore-owned model")
+      expect(output).toContain("skipped 2 malformed cost ledger lines")
       expect(output).toContain("1 MCP calls")
       expect(output).not.toContain("SECRET_INVALID_STATUS_ROW")
     } finally {

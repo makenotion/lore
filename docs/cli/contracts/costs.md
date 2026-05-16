@@ -17,6 +17,9 @@ summarize or export existing local usage rows.
   When no rows match, JSONL export exits successfully and writes no stdout.
 - CSV export writes stable columns with missing values as empty cells. When no
   rows match, CSV export exits successfully and writes only the header row.
+- Malformed or schema-invalid non-blank ledger rows are skipped with a redacted
+  warning that reports only the skipped-line count. Export warnings go to stderr
+  so stdout stays parseable as JSONL or CSV.
 - Summary output distinguishes exact agent model usage, background prompt
   estimates, and unknown-cost background model events. Autosave and digest
   background model rows must keep `modelUsage.source: "prompt_estimate"`;

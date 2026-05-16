@@ -26,9 +26,11 @@ import {
   estimateModelCost,
   eventsToCsv,
   formatCostSummary,
+  formatMalformedLedgerWarning,
   loadPricingTable,
   payloadSummary,
   readLedgerEvents,
+  readLedgerEventsWithDiagnostics,
   resolveCostTracking,
   summarizeCostEvents,
   validatePricingTable,
@@ -337,6 +339,60 @@ describe("cost ledger", () => {
     expect(summarizeCostEvents(events, "today").mcpTotal).toBe(1)
     expect(eventsToCsv(events)).toContain("lore-query,search")
     expect(eventsToCsv(events)).not.toContain("SECRET")
+  })
+
+  it("reports malformed ledger diagnostics without counting blank lines", async () => {
+    const root = tempDir()
+    const costTracking = resolveCostTracking(
+      {
+        costTracking: {
+          enabled: true,
+          ledgerPath: "state/costs.jsonl",
+        },
+      },
+      root
+    )
+    if (!costTracking.enabled) throw new Error("expected cost tracking to be enabled")
+
+    const timestamp = new Date().toISOString()
+    mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
+    writeFileSync(
+      costTracking.ledgerPath,
+      [
+        "",
+        JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp,
+          eventType: "mcp.invocation",
+          source: "host_agent",
+          status: "success",
+          tool: "lore-query",
+          action: "search",
+          payload: payloadSummary("{}", "ok"),
+          notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+        }),
+        "{not json",
+        JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp: "not-a-date",
+          eventType: "mcp.invocation",
+          source: "host_agent",
+          status: "success",
+          tool: "lore-query",
+          payload: payloadSummary("{}", "ok"),
+          notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+        }),
+        "   ",
+      ].join("\n") + "\n"
+    )
+
+    const diagnostics = await readLedgerEventsWithDiagnostics(costTracking)
+    expect(diagnostics.rows).toHaveLength(1)
+    expect(diagnostics.malformedLineCount).toBe(2)
+    expect(await readLedgerEvents(costTracking)).toHaveLength(1)
+    expect(formatMalformedLedgerWarning(diagnostics.malformedLineCount)).toBe(
+      "Warning: skipped 2 malformed cost ledger lines; only valid redacted rows were included."
+    )
   })
 
   it("uses the builtin pricing table and excludes skipped spawns from cost totals", async () => {

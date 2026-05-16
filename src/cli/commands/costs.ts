@@ -4,8 +4,9 @@ import {
   defaultTodayRange,
   eventsToCsv,
   formatCostSummary,
+  formatMalformedLedgerWarning,
   monthRange,
-  readLedgerEvents,
+  readLedgerEventsWithDiagnostics,
   resolveCostTracking,
   sinceRange,
   summarizeCostEvents,
@@ -16,6 +17,11 @@ import {
 interface RangeOpts {
   since?: string
   month?: string
+}
+
+function warnForMalformedLedgerLines(malformedLineCount: number): void {
+  const warning = formatMalformedLedgerWarning(malformedLineCount)
+  if (warning) console.warn(warning)
 }
 
 async function loadCostTracking(): Promise<ResolvedCostTracking> {
@@ -54,7 +60,11 @@ costsCommand
         return
       }
       const range = parseRange(opts, defaultTodayRange())
-      const rows = await readLedgerEvents(costTracking, range)
+      const { rows, malformedLineCount } = await readLedgerEventsWithDiagnostics(
+        costTracking,
+        range
+      )
+      warnForMalformedLedgerLines(malformedLineCount)
       console.log(
         formatCostSummary(
           summarizeCostEvents(
@@ -89,7 +99,11 @@ costsCommand
         return
       }
       const range = parseRange(opts, null)
-      const rows = await readLedgerEvents(costTracking, range)
+      const { rows, malformedLineCount } = await readLedgerEventsWithDiagnostics(
+        costTracking,
+        range
+      )
+      warnForMalformedLedgerLines(malformedLineCount)
       if (opts.format === "csv") {
         console.log(eventsToCsv(rows.map((row) => row.event)))
       } else if (rows.length > 0) {

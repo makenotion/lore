@@ -31,9 +31,11 @@ import {
 } from "../../hooks/background-failure-status.js"
 import {
   defaultTodayRange,
+  eventInRange,
+  formatMalformedLedgerWarning,
   formatUsd,
   monthRange,
-  readLedgerEvents,
+  readLedgerEventsWithDiagnostics,
   summarizeCostEvents,
 } from "../../core/cost-ledger.js"
 import { defaultProfileSelector } from "../../profile/index.js"
@@ -348,10 +350,12 @@ export async function loadCostStatusLines(services: LoreServices): Promise<strin
   const todayRange = defaultTodayRange()
   const now = new Date()
   const monthLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-  const [todayRows, monthRows] = await Promise.all([
-    readLedgerEvents(costTracking, todayRange),
-    readLedgerEvents(costTracking, monthRange(monthLabel)),
-  ])
+  const currentMonthRange = monthRange(monthLabel)
+  const ledger = await readLedgerEventsWithDiagnostics(costTracking)
+  const todayRows = ledger.rows.filter((row) => eventInRange(row.event, todayRange))
+  const monthRows = ledger.rows.filter((row) =>
+    eventInRange(row.event, currentMonthRange)
+  )
   const today = summarizeCostEvents(
     todayRows.map((row) => row.event),
     todayRange.label
@@ -362,6 +366,8 @@ export async function loadCostStatusLines(services: LoreServices): Promise<strin
   )
 
   const lines = [`Cost tracking: enabled (ledger: ${costTracking.displayLedgerPath})`]
+  const warning = formatMalformedLedgerWarning(ledger.malformedLineCount)
+  if (warning) lines.push(warning)
   if (today.eventCount === 0) {
     lines.push("Today: no cost events yet")
   } else {
