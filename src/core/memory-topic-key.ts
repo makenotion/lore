@@ -1,3 +1,263 @@
+/**
+ * Topic-key ownership for recurring memory chains.
+ *
+ * `MemoryTopicKey` owns the behavior behind the `MemoryService` topic-key
+ * facade: lookup, save-time upsert, re-key validation, re-key mutation,
+ * revision append mechanics, promotion advisories, and re-key audit errors.
+ * The contracts below are the authoritative behavior notes for this module.
+ *
+ * ## Topic-key upsert (`MemoryService.upsertByTopicKey`)
+ *
+ * `upsertByTopicKey` is the save-time upsert path. When an agent passes
+ * `topicKey` to `lore-memory action='save'`, the handler dispatches here
+ * instead of the ordinary create path. The match key is `(Topic Key,
+ * Project-set)`, and project equality is set-equal: `[A]` does not match
+ * `[A, B]`. `findByTopicKey` is the shared lookup helper that resolves the
+ * match.
+ *
+ * Two paths share one return shape:
+ *
+ * | Branch | Behavior | `upserted` |
+ * | --- | --- | --- |
+ * | No existing match | `create` with `revisionCount: 1` and the topic key seeded onto the new row | `false` |
+ * | Existing match | Append a `## Revision N (YYYY-MM-DD)` block to the page body via `replace_content`, then update title and revision count properties | `true` |
+ *
+ * Kind-mismatch validation runs before any Notion write. The kind check fires
+ * immediately after `findByTopicKey` returns, before markdown retrieval or
+ * body replacement. A kind-mismatched upsert must leave the existing page body
+ * untouched, and the tests pin that ordering.
+ *
+ * Project-set equality is enforced by `findByTopicKey`, not by a defensive
+ * recheck in the write branch. The lookup post-filters candidates to exact set
+ * equality:
+ *
+ * ```text
+ * existing.projectIds.length === input.projectIds.length
+ * && existing.projectIds.every(id => inputSet.has(id))
+ * ```
+ *
+ * A returned row is therefore set-equal to the input by construction. A second
+ * JavaScript-side recheck against the same returned value would be
+ * tautological. Detecting a true race where another writer mutates the project
+ * relation between lookup and write would require another `pages.retrieve`
+ * round trip; the worst expected outcome is one revision landing on a row
+ * whose project set expanded concurrently, which is not worth the added
+ * latency and complexity.
+ *
+ * Field policy on upsert:
+ *
+ * - Throw on mismatch: Kind. Project-set is handled by the lookup contract, not
+ *   as a separate throw here.
+ * - Preserve silently: Status and Topic relation. State transitions belong on
+ *   `lore-memory action='update'`; the upsert path treats these as
+ *   forgotten-to-omit envelope fields.
+ * - Replace on every save: Title, Synopsis, Keywords, Source. Confidence
+ *   (categorical) bumps if input provides one; otherwise the existing
+ *   categorical value is written back.
+ * - Leave untouched: Confidence Score and Last Referenced At. Confidence Score
+ *   is system-managed. Last Referenced At is a read-citation signal; bumping it
+ *   on writes would conflate saves with reads and break stale-confidence
+ *   analysis.
+ *
+ * Title-cache write-through is load-bearing. Upsert always bumps Title, so it
+ * uses the same delete -> pages.update -> set discipline as general memory
+ * update. The pre-write `titleCache.delete(existing.id)` clears the stored
+ * value and drops any in-flight `getOrLoad` pending slot. The post-write
+ * `titleCache.set(existing.id, decodedTitle || null)` installs the
+ * authoritative new title and drops any pending slot again. A reader whose
+ * loader was in flight across either boundary has its post-loader commit
+ * suppressed by the pending-slot identity guard. Without this, render-layer
+ * resolvers could keep returning the pre-upsert title from cache until TTL
+ * expiry after the new title had landed in Notion.
+ *
+ * The MCP save boundary rejects `topicKey` when the resolved kind is `note`,
+ * including the omitted-kind path where `kind` defaults to `note`. Notes are
+ * the catch-all default and do not form recurring topics, matching the topic
+ * key suggester's no-suggestion verdict for note/task. The service layer
+ * accepts any kind because internal migrations may bypass the agent-facing
+ * contract; the kind vocabulary gate lives at the agent boundary.
+ *
+ * An upsert with `projectIds: []` is structurally undefined. Set-equality on
+ * the empty set matches every other empty-project memory in the vault. Lore
+ * allows projectless saves through the create path, but those saves must not
+ * participate in topic-key upsert. `findByTopicKey` returns null for empty
+ * projects; `upsertByTopicKey` throws for a clearer caller error.
+ *
+ * The Notion markdown API has no append mode. It exposes `insert_content` for
+ * fresh writes on a page with no body and `replace_content` for full-body edits
+ * to an existing body. The upsert path reads existing markdown via
+ * `retrieveMarkdown` before any append decision. When a new revision is needed,
+ * it writes back the concatenated body via `replace_content` with
+ * `allow_deleting_content: true`.
+ *
+ * Retry idempotency: calling upsert twice with identical effective inputs does
+ * not append a second revision. The service compares the caller input against
+ * the current row properties plus the latest stored body or revision block.
+ * When title/content and replace-on-save metadata already match, it returns
+ * the existing revision without `pages.updateMarkdown` or `pages.update`, but
+ * only when the body is not ahead of row properties. If a prior attempt landed
+ * the markdown append but failed before the property update, the body can be
+ * ahead of the `Revision Count` column. New revision blocks include a SHA-256
+ * fingerprint of effective kind, title/content, synopsis, keywords, source,
+ * confidence, and author. A retry repairs row properties only when that
+ * fingerprint matches the incoming effective input. Only fingerprinted
+ * revision blocks may advance the append base beyond the stored `Revision
+ * Count`; legacy unfingerprinted blocks are parsed at the stored count for
+ * no-op compatibility but cannot make the count jump. Otherwise, body-ahead
+ * saves append from the markdown revision count, not the stale property count.
+ * Body, title, synopsis, keywords, source, confidence, or author changes on a
+ * complete chain still append a revision and preserve promotion-advisory
+ * behavior. Upsert does not throw a structured partial-state error like update
+ * and re-key paths do because retry repairs landed markdown state
+ * idempotently.
+ *
+ * The returned memory shape carries post-write title, synopsis, keywords,
+ * source, confidence, and author. The MCP auto-mentions emitter reads those
+ * fields from `memory` to extract entities, so the returned shape spreads the
+ * existing row's untouched fields and overlays the new metadata before entity
+ * extraction runs against the post-upsert content.
+ *
+ * Per-revision auto-mentions facts collapse through `FactService.createWithDedup`.
+ * Each revision re-runs the entity tokenizer over the new content and attempts
+ * a `mentions` fact create per surfaced entity. The dedup key hashes
+ * `normalize(subject)`, predicate, and `normalize(object)`, so a stable entity
+ * re-extracted across revisions does not create duplicate fact rows. Later
+ * attempts merge metadata onto the existing fact. Fresh entities introduced by
+ * a revision land as new fact rows; entities dropped by a revision leave their
+ * previously emitted fact in place.
+ *
+ * Concurrent upserts remain a single-agent serial workflow. Two parallel saves
+ * with the same `topicKey` can both find no existing match and both create
+ * fresh rows with `Revision Count: 1`; Notion provides no per-key uniqueness
+ * enforcement.
+ *
+ * Promotion advisory is returned only from the append-revision branch. The
+ * return shape carries `promotionAdvisory: PromotionAdvisory | null`, computed
+ * from the post-write revision count, body length, and kind with no extra
+ * Notion calls. `PROMOTE_REVISION_THRESHOLD` and
+ * `PROMOTE_BODY_LENGTH_THRESHOLD` can each add a reason. The advisory is
+ * informational: it never blocks the save and never auto-promotes. Fresh-create
+ * upserts and non-`topicKey` saves return `promotionAdvisory: null` regardless
+ * of body length because a one-shot long body is a different signal from
+ * revision-chain accumulation. The body threshold is a human-readability
+ * heuristic, not a Notion structural cap.
+ *
+ * Promotion-advisory suggestion wording is kind-aware. Topic-key chains are
+ * valid for `decision`, `runbook`, `incident`, `postmortem`, and `policy`.
+ * Only decision memories can be referenced by `lore-decision action='create'`
+ * with `supersedesIds`, because the decision service resolver rejects
+ * non-decision kinds. Decision chains get supersede-and-split wording with a
+ * `<this-memory-id>` placeholder for boundary rendering. Non-decision chains
+ * get the universally valid split/archive wording with no placeholder. The
+ * upsert flow forwards `input.kind` to the helper; the kind-mismatch guard
+ * guarantees `input.kind === existing.kind` for existing chains.
+ *
+ * The MCP response boundary substitutes the just-saved memory id into the
+ * `<this-memory-id>` placeholder. For non-decision suggestions the replacement
+ * is a safe no-op because no placeholder appears. The service-layer return is
+ * id-agnostic by design: kind-specific value computation stays in core, and
+ * id-specific response formatting stays at the boundary.
+ *
+ * ## Topic-key re-keying (`MemoryService.rekeyTopicKey`)
+ *
+ * `rekeyTopicKey` is the conservative repair path for the topic-key upsert
+ * chain. An agent that picks the wrong topic key on first save can switch to
+ * the canonical key without abandoning the row. Re-keying is identity surgery,
+ * not content evolution, and the implementation preserves three distinctions:
+ *
+ * - `Revision Count` is not bumped. Revision Count tracks topic content
+ *   evolution across upsert saves. Re-keying changes the row's identity slot,
+ *   not its content.
+ * - `Last Referenced At` is not touched. Re-keying is a write, not a read
+ *   citation. A later recall should bump the read clock; the re-key alone
+ *   should not.
+ * - The audit block prefix is `## Re-keyed (date)`, distinct from revision
+ *   blocks shaped as `## Revision N (date)`. The two prefixes are the
+ *   parseable signal that separates identity events from content events.
+ *
+ * Validation is fail-fast and single-call atomic. Three guards fire before any
+ * Notion mutation, so a rejected call leaves the row entirely untouched:
+ *
+ * 1. No-op short-circuit. Re-keying to the existing value is a user error, not
+ *    an invariant violation. The helper responds truthfully
+ *    (`oldTopicKey === newTopicKey` in the return shape) and issues zero
+ *    Notion calls: no collision query, no markdown write, no property update.
+ * 2. Empty-set guard. A memory with no projects has no `(Topic Key,
+ *    Project-set)` identity slot to re-key into. Topic-key identity mirrors
+ *    the upsert path and requires at least one project.
+ * 3. Collision check. The new key must not already map to another live memory
+ *    in the same project set. The check delegates to `findByTopicKey`, which
+ *    is deliberately kind-agnostic, so a re-key onto a slot held by another
+ *    task or decision is rejected. The error names the colliding memory id so
+ *    the operator can act directly. Lore does not auto-merge topic chains; the
+ *    surviving revision count, title, confidence, and audit policy are
+ *    operator decisions.
+ *
+ * A skip-self guard protects the collision check. A memory whose `Topic Key`
+ * already equals `newTopicKey` would otherwise self-collide. The no-op
+ * short-circuit catches the case where the old key already matches, and the
+ * `collision.id !== input.memoryId` guard catches an eventual-consistency
+ * window where lookup surfaces the same row after a property write.
+ *
+ * Property write comes before audit-block append. The reverse order creates a
+ * worse partial state: audit success followed by property failure leaves the
+ * body claiming a re-key while the property holds the old key, and a retry
+ * would append another audit block before the property write could succeed.
+ * With property-first, the failure modes are:
+ *
+ * 1. Property write fails. Nothing was written. The memory is unchanged, a
+ *    retry can run the full pipeline, and the thrown error is the underlying
+ *    Notion error.
+ * 2. Property write succeeds, audit append fails. The structural identity
+ *    change persisted; only the audit trail is missing. A retry observes
+ *    `oldTopicKey === newTopicKey` and short-circuits as a no-op, so the audit
+ *    block cannot be recovered automatically. The thrown `RekeyAuditError`
+ *    carries `memoryId`, `oldTopicKey`, `newTopicKey`, and `cause`.
+ *
+ * `RekeyAuditError` is exported alongside the memory service facade. Boundary
+ * rendering surfaces the message verbatim, and operator tooling can branch on
+ * the class to distinguish "re-key persisted but audit is missing" from
+ * "re-key did not happen."
+ *
+ * Body writes use `replace_content` with `new_str`. The markdown is read first
+ * via `pages.retrieveMarkdown` inside `getById`, the audit block is
+ * concatenated, then the full body is rewritten through the same path as
+ * general memory content edits. Concurrent re-keys against the same memory can
+ * race and clobber audit blocks, matching the concurrent-upsert posture.
+ *
+ * The property update is partial. `pages.update` writes only `Topic Key`, not
+ * `Revision Count`, `Last Referenced At`, or `Title`. A direct property update
+ * keeps the title cache undisturbed and leaves system-managed columns alone;
+ * tests pin the exact key set.
+ *
+ * The MCP update boundary owns details that do not belong in the service
+ * helper:
+ *
+ * - Reject `topicKey + kind` before any I/O. Re-keying preserves the upsert
+ *   chain identity; a combined update would smuggle a kind change through the
+ *   residual update path and split the chain across kinds.
+ * - Preflight re-key before applying any content delta. `validateRekey` loads
+ *   the memory and checks empty-project and collision failures against the
+ *   pre-update state so common rejections do not leave content half-persisted.
+ *   The authoritative `rekeyTopicKey` call still re-runs validation.
+ * - Apply content delta before re-key when both are present. General memory
+ *   update performs a full-body `replace_content`; running re-key first would
+ *   let the later content write clobber the audit block. The audit append must
+ *   be the last body write in the combined operation.
+ * - Wrap post-update re-key failures in `PartialUpdateError`. A race,
+ *   transient property-write failure, or content delta that changed project
+ *   scope can still make the authoritative re-key fail after content has
+ *   landed. The wrapper names the partial state explicitly: content update
+ *   persisted, re-key did not.
+ * - Skip the general update path on a pure re-key. A topicKey-only update must
+ *   call the re-key path directly instead of paying for a no-op retrieve/update
+ *   cycle.
+ *
+ * When preflight reports `willRekey: false`, the boundary skips
+ * `rekeyTopicKey` and surfaces `Topic key unchanged: '<key>' (no-op).` This
+ * explicit acknowledgment tells the operator the request was understood
+ * without writing to Notion.
+ */
 import { createHash } from "node:crypto"
 import type {
   Client,
