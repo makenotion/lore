@@ -1,5 +1,6 @@
 import { mkdir, open, readFile } from "node:fs/promises"
-import { existsSync } from "node:fs"
+import { createReadStream } from "node:fs"
+import { createInterface } from "node:readline"
 import { dirname, isAbsolute, relative, resolve } from "node:path"
 import { homedir } from "node:os"
 import type { CostTrackingConfig, LoreConfig } from "../types.js"
@@ -748,22 +749,36 @@ export async function readLedgerEvents(
   costTracking: ResolvedCostTracking,
   range?: CostRange
 ): Promise<Array<{ line: string; event: CostLedgerEvent }>> {
-  if (!costTracking.enabled || !existsSync(costTracking.ledgerPath)) return []
-  const raw = await readFile(costTracking.ledgerPath, "utf-8")
+  if (!costTracking.enabled) return []
   const rows: Array<{ line: string; event: CostLedgerEvent }> = []
-  for (const line of raw.split(/\n/)) {
-    if (!line.trim()) continue
-    try {
-      const event = parseCostLedgerEvent(JSON.parse(line))
-      if (event && (!range || eventInRange(event, range))) {
-        rows.push({ line: JSON.stringify(event), event })
+
+  try {
+    const lines = createInterface({
+      input: createReadStream(costTracking.ledgerPath, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    })
+
+    for await (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const event = parseCostLedgerEvent(JSON.parse(line))
+        if (event && (!range || eventInRange(event, range))) {
+          rows.push({ line: JSON.stringify(event), event })
+        }
+      } catch {
+        // A malformed line cannot validate independently, so omit it from
+        // summaries/exports rather than inventing partial values.
       }
-    } catch {
-      // A malformed line cannot validate independently, so omit it from
-      // summaries/exports rather than inventing partial values.
     }
+  } catch (err) {
+    if (isFileNotFoundError(err)) return []
+    throw err
   }
   return rows
+}
+
+function isFileNotFoundError(err: unknown): boolean {
+  return isRecord(err) && err["code"] === "ENOENT"
 }
 
 export interface CostSummary {

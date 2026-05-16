@@ -6,9 +6,19 @@ import {
   existsSync,
   writeFileSync,
 } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+  }
+})
+
 import {
   appendCostEvent,
   COST_LEDGER_SCHEMA_VERSION,
@@ -93,6 +103,95 @@ describe("cost ledger", () => {
       outputs: { memoriesCreated: 1 },
     })
     expect(rows[0]!.line).not.toContain("Saved memory")
+  })
+
+  it("streams multiple ledger rows and preserves range filtering without readFile", async () => {
+    const root = tempDir()
+    const costTracking = resolveCostTracking(
+      {
+        costTracking: {
+          enabled: true,
+          ledgerPath: "state/costs.jsonl",
+        },
+      },
+      root
+    )
+    if (!costTracking.enabled) throw new Error("expected cost tracking to be enabled")
+
+    mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
+    writeFileSync(
+      costTracking.ledgerPath,
+      [
+        JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp: "2026-04-30T23:59:59.000Z",
+          eventType: "mcp.invocation",
+          source: "host_agent",
+          status: "success",
+          tool: "lore-query",
+          action: "before-range",
+          payload: payloadSummary("{}", "old"),
+          notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+        }),
+        JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp: "2026-05-01T00:00:00.000Z",
+          eventType: "mcp.invocation",
+          source: "host_agent",
+          status: "success",
+          tool: "lore-query",
+          action: "in-range",
+          payload: payloadSummary("{}", "ok"),
+          notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+        }),
+        JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp: "2026-05-15T12:00:00.000Z",
+          eventType: "hook.wakeup_context",
+          source: "hook",
+          status: "success",
+          payload: payloadSummary(undefined, "wake context"),
+          estimatedCost: { estimated: false, unknownReason: "not_applicable" },
+        }),
+      ].join("\n") + "\n"
+    )
+
+    const readFileMock = vi.mocked(readFile)
+    readFileMock.mockClear()
+
+    const rows = await readLedgerEvents(costTracking, {
+      label: "may",
+      start: new Date("2026-05-01T00:00:00.000Z"),
+      end: new Date("2026-06-01T00:00:00.000Z"),
+    })
+
+    expect(readFileMock).not.toHaveBeenCalled()
+    expect(rows).toHaveLength(2)
+    expect(rows.map((row) => row.event.eventType)).toEqual([
+      "mcp.invocation",
+      "hook.wakeup_context",
+    ])
+    expect(rows[0]!.event).toMatchObject({
+      eventType: "mcp.invocation",
+      action: "in-range",
+    })
+  })
+
+  it("returns no rows when cost tracking is disabled or the ledger file is missing", async () => {
+    const root = tempDir()
+    const disabled = resolveCostTracking({}, root)
+    expect(await readLedgerEvents(disabled)).toEqual([])
+
+    const costTracking = resolveCostTracking(
+      {
+        costTracking: {
+          enabled: true,
+          ledgerPath: "state/missing.jsonl",
+        },
+      },
+      root
+    )
+    expect(await readLedgerEvents(costTracking)).toEqual([])
   })
 
   it("summarizes and exports range-filtered ledger events", async () => {
