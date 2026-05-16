@@ -11,18 +11,16 @@
  */
 
 import { createHash } from "node:crypto"
-import {
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs"
+import { readdirSync, readFileSync, renameSync, unlinkSync } from "node:fs"
 import { readdir, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { getStateDir } from "./lock.js"
-import { configKey, safeFilenameSegment } from "./marker-key.js"
+import {
+  configKey,
+  ensureHookStateDirSync,
+  safeFilenameSegment,
+  writeHookStateFileSync,
+} from "./marker-key.js"
 
 export const BACKGROUND_FAILURE_MARKER_VERSION = 1
 // Two weeks gives operators one missed weekly digest window plus slack to run
@@ -180,10 +178,9 @@ export function recordBackgroundFailure(
   try {
     // Synchronous writes are deliberate: Stop hooks may exit immediately after
     // emitting `{}`, so the diagnostic breadcrumb has to land before return.
-    mkdirSync(getStateDir(), { recursive: true })
-    writeFileSync(tmpPath, `${JSON.stringify(marker)}\n`, {
+    ensureHookStateDirSync(getStateDir())
+    writeHookStateFileSync(tmpPath, `${JSON.stringify(marker)}\n`, {
       encoding: "utf-8",
-      mode: 0o600,
     })
     // Same-key concurrent writers are last-writer-wins. The marker represents
     // the most recent observed failure for this recoverable scope, and POSIX

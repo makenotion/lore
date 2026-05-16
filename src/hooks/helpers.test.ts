@@ -20,7 +20,14 @@
  * `handleSessionEnd`, and `handleAutoDigest` directly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -55,12 +62,16 @@ const {
   spawnMock,
   execFileSyncMock,
   fireDigestIfStaleMock,
+  initServicesFromConfigMock,
   scheduleAutoDigestSpawnMock,
   buildBackgroundSavePromptMock,
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileSyncMock: vi.fn(() => "/mock/bin/claude\n"),
   fireDigestIfStaleMock: vi.fn(async () => "no-project" as const),
+  initServicesFromConfigMock: vi.fn(async () => {
+    throw new Error("mock init disabled")
+  }),
   scheduleAutoDigestSpawnMock: vi.fn<(cwd: string, opts?: unknown) => void>(),
   buildBackgroundSavePromptMock: vi.fn(),
 }))
@@ -79,6 +90,14 @@ vi.mock("./digest-scheduler.js", async () => {
     ...actual,
     fireDigestIfStale: fireDigestIfStaleMock,
     scheduleAutoDigestSpawn: scheduleAutoDigestSpawnMock,
+  }
+})
+
+vi.mock("../services.js", async () => {
+  const actual = await vi.importActual<typeof import("../services.js")>("../services.js")
+  return {
+    ...actual,
+    initServicesFromConfig: initServicesFromConfigMock,
   }
 })
 
@@ -117,9 +136,11 @@ import {
   parseWakeupEventMetadata,
   parseUserQueryFromEvent,
   statePath,
+  wakeup,
   wakeupStatePath,
 } from "./helpers.js"
 import { HOSTILE_SESSION_IDS } from "./path-injection-fixtures.js"
+import { HOOK_STATE_DIR_MODE, HOOK_STATE_FILE_MODE } from "./marker-key.js"
 import {
   listBackgroundFailures,
   recordBackgroundFailure,
@@ -190,6 +211,19 @@ function writeFiles(dir: string, files: Record<string, string>): void {
     const path = join(dir, rel)
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, content)
+  }
+}
+
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
+
+async function withUmask<T>(mask: number, fn: () => Promise<T>): Promise<T> {
+  const previous = process.umask(mask)
+  try {
+    return await fn()
+  } finally {
+    process.umask(previous)
   }
 }
 
@@ -735,6 +769,25 @@ describe("handleStop", () => {
     expect(existsSync(escapePath)).toBe(false)
   })
 
+  it("creates the save counter private even under umask 000", async () => {
+    writeTranscript(transcriptPath, 3)
+    const sessionId = "sess-count-mode"
+
+    await withUmask(0o000, async () => {
+      await handleStop(
+        {
+          session_id: sessionId,
+          transcript_path: transcriptPath,
+          cwd: tmpDir,
+        },
+        defaultConfig()
+      )
+    })
+
+    expect(modeBits(statSync(getStateDir()).mode)).toBe(HOOK_STATE_DIR_MODE)
+    expect(modeBits(statSync(statePath(sessionId)).mode)).toBe(HOOK_STATE_FILE_MODE)
+  })
+
   it("schedules the detached auto-digest helper with the event cwd", async () => {
     // 0.6.0: auto-digest moved off SessionEnd to a detached node child
     // spawned from Stop. The parent process must NOT init Notion or gather
@@ -1145,6 +1198,53 @@ hooks:
     } finally {
       rmSync(noConfigDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("wakeup state", () => {
+  const FIXTURE_YAML = `vault:
+  pageId: vault-fixture-id
+projects:
+  - name: Widget
+    path: .
+hooks:
+  wakeUp: true
+`
+  const originalCwd = process.cwd()
+  let tmpDir: string
+  let stderrSpy: { mockRestore: () => void }
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "lore-wakeup-mode-"))
+    writeFileSync(join(tmpDir, ".lore.yaml"), FIXTURE_YAML)
+    rmSync(getStateDir(), { recursive: true, force: true })
+    initServicesFromConfigMock.mockReset()
+    initServicesFromConfigMock.mockRejectedValue(new Error("mock init disabled"))
+    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    process.chdir(tmpDir)
+  })
+
+  afterEach(() => {
+    process.chdir(originalCwd)
+    stderrSpy.mockRestore()
+    rmSync(tmpDir, { recursive: true, force: true })
+    rmSync(getStateDir(), { recursive: true, force: true })
+  })
+
+  it("creates the wakeup debounce marker private even under umask 000", async () => {
+    const sessionId = "sess-wakeup-mode"
+    const event = JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      prompt: "load relevant context",
+    })
+
+    await withUmask(0o000, async () => {
+      await wakeup({ event })
+    })
+
+    expect(modeBits(statSync(getStateDir()).mode)).toBe(HOOK_STATE_DIR_MODE)
+    expect(modeBits(statSync(wakeupStatePath(sessionId)).mode)).toBe(HOOK_STATE_FILE_MODE)
   })
 })
 

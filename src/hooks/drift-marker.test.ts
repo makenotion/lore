@@ -17,6 +17,20 @@ import {
   touchDriftMarker,
 } from "./drift-marker.js"
 import { getStateDir } from "./lock.js"
+import { HOOK_STATE_DIR_MODE, HOOK_STATE_FILE_MODE } from "./marker-key.js"
+
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
+
+async function withUmask<T>(mask: number, fn: () => Promise<T>): Promise<T> {
+  const previous = process.umask(mask)
+  try {
+    return await fn()
+  } finally {
+    process.umask(previous)
+  }
+}
 
 const TEST_MARKERS: string[] = []
 function uniqueRoot(label: string): string {
@@ -75,6 +89,19 @@ describe("drift-marker", () => {
     await expect(stat(stateDir)).resolves.toMatchObject({
       isDirectory: expect.any(Function),
     })
+  })
+
+  it("creates the state dir and marker file private even under umask 000", async () => {
+    const root = uniqueRoot("mode")
+    const stateDir = getStateDir()
+    await rm(stateDir, { recursive: true, force: true })
+
+    await withUmask(0o000, async () => {
+      await touchDriftMarker(root)
+    })
+
+    expect(modeBits((await stat(stateDir)).mode)).toBe(HOOK_STATE_DIR_MODE)
+    expect(modeBits((await stat(driftMarkerPath(root))).mode)).toBe(HOOK_STATE_FILE_MODE)
   })
 
   it("DRIFT_DEBOUNCE_DAYS matches the auto-digest cadence so the two filesystem markers behave the same", () => {

@@ -1,6 +1,49 @@
 import { describe, expect, it } from "vitest"
+import {
+  chmodSync,
+  closeSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
+import { mkdtemp, rm, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { configKey, safeFilenameSegment } from "./marker-key.js"
+import {
+  configKey,
+  ensureHookStateDir,
+  ensureHookStateDirSync,
+  HOOK_STATE_DIR_MODE,
+  HOOK_STATE_FILE_MODE,
+  openHookStateFileSync,
+  safeFilenameSegment,
+  writeHookStateFile,
+  writeHookStateFileSync,
+} from "./marker-key.js"
+
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
+
+async function withUmask<T>(mask: number, fn: () => Promise<T>): Promise<T> {
+  const previous = process.umask(mask)
+  try {
+    return await fn()
+  } finally {
+    process.umask(previous)
+  }
+}
+
+function withUmaskSync<T>(mask: number, fn: () => T): T {
+  const previous = process.umask(mask)
+  try {
+    return fn()
+  } finally {
+    process.umask(previous)
+  }
+}
 
 describe("marker-key", () => {
   describe("configKey", () => {
@@ -162,6 +205,64 @@ describe("marker-key", () => {
       const longest = "a".repeat(300)
       const result = safeFilenameSegment(longest)
       expect(result.length + ".count".length).toBeLessThanOrEqual(255)
+    })
+  })
+
+  describe("hook state modes", () => {
+    it("creates async hook state dirs and files private even under umask 000", async () => {
+      const root = await mkdtemp(join(tmpdir(), "lore-marker-key-mode-"))
+      try {
+        await withUmask(0o000, async () => {
+          const stateDir = join(root, "state")
+          await ensureHookStateDir(stateDir)
+          await writeHookStateFile(join(stateDir, "marker.last"), "")
+
+          expect(modeBits((await stat(stateDir)).mode)).toBe(HOOK_STATE_DIR_MODE)
+          expect(modeBits((await stat(join(stateDir, "marker.last"))).mode)).toBe(
+            HOOK_STATE_FILE_MODE
+          )
+        })
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    })
+
+    it("creates sync hook state dirs and files private even under umask 000", () => {
+      const root = mkdtempSync(join(tmpdir(), "lore-marker-key-mode-"))
+      try {
+        withUmaskSync(0o000, () => {
+          const stateDir = join(root, "state")
+          ensureHookStateDirSync(stateDir)
+          writeHookStateFileSync(join(stateDir, "marker.lock"), "1", {
+            flag: "wx",
+          })
+
+          expect(modeBits(statSync(stateDir).mode)).toBe(HOOK_STATE_DIR_MODE)
+          expect(modeBits(statSync(join(stateDir, "marker.lock")).mode)).toBe(
+            HOOK_STATE_FILE_MODE
+          )
+        })
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
+    it("chmods existing sync-opened hook state files after truncating", () => {
+      const root = mkdtempSync(join(tmpdir(), "lore-marker-key-mode-"))
+      try {
+        const stateDir = join(root, "state")
+        ensureHookStateDirSync(stateDir)
+        const path = join(stateDir, "marker.log")
+        writeFileSync(path, "old diagnostics")
+        chmodSync(path, 0o666)
+
+        const fd = openHookStateFileSync(path, "w")
+        closeSync(fd)
+
+        expect(modeBits(statSync(path).mode)).toBe(HOOK_STATE_FILE_MODE)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
     })
   })
 })

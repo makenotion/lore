@@ -17,10 +17,16 @@
  * isolation) flow through automatically.
  */
 
-import { stat, writeFile, utimes, mkdir, rm } from "node:fs/promises"
+import { stat, utimes, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { getStateDir } from "./lock.js"
-import { configKey, safeFilenameSegment } from "./marker-key.js"
+import {
+  configKey,
+  ensureHookStateDir,
+  ensureHookStateFileMode,
+  safeFilenameSegment,
+  writeHookStateFile,
+} from "./marker-key.js"
 
 export function digestMarkerPath(configRoot: string, projectName: string): string {
   return join(
@@ -50,13 +56,14 @@ export async function touchDigestMarker(
   configRoot: string,
   projectName: string
 ): Promise<void> {
-  await mkdir(getStateDir(), { recursive: true })
+  await ensureHookStateDir(getStateDir())
   const path = digestMarkerPath(configRoot, projectName)
   try {
     const now = new Date()
     await utimes(path, now, now)
+    await ensureHookStateFileMode(path)
   } catch {
-    await writeFile(path, "")
+    await writeHookStateFile(path, "")
   }
 }
 

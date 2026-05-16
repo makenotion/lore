@@ -24,7 +24,7 @@
  * hook.
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -69,7 +69,11 @@ import {
   recordWakeupContextCostEvent,
 } from "./cost-events.js"
 import { getStateDir, logPath } from "./lock.js"
-import { safeFilenameSegment } from "./marker-key.js"
+import {
+  ensureHookStateDir,
+  safeFilenameSegment,
+  writeHookStateFile,
+} from "./marker-key.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
 import {
   clearBackgroundFailure,
@@ -154,7 +158,7 @@ export function deriveAuthorName(_event: HookEvent): string | undefined {
 // ---------------------------------------------------------------------------
 
 async function ensureStateDir(): Promise<void> {
-  await mkdir(getStateDir(), { recursive: true })
+  await ensureHookStateDir(getStateDir())
 }
 
 /**
@@ -196,14 +200,14 @@ async function writeSaveCount(
 ): Promise<void> {
   if (!sessionId) return
   await ensureStateDir()
-  await writeFile(statePath(sessionId), count.toString())
+  await writeHookStateFile(statePath(sessionId), count.toString())
 }
 
 async function tryMarkWakeupRun(sessionId: string | undefined): Promise<boolean> {
   if (!sessionId) return true
   await ensureStateDir()
   try {
-    await writeFile(wakeupStatePath(sessionId), "1", { flag: "wx", mode: 0o600 })
+    await writeHookStateFile(wakeupStatePath(sessionId), "1", { flag: "wx" })
     return true
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") return false

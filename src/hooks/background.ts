@@ -44,6 +44,7 @@ import {
   DEFAULT_BACKGROUND_COMMAND,
   type BackgroundAgentConfig,
 } from "./config.js"
+import { HOOK_STATE_FILE_MODE, openHookStateFileSync } from "./marker-key.js"
 
 /**
  * Tool allowlist for the catch-all background save agent. Broad on purpose
@@ -280,7 +281,7 @@ export function spawnBackgroundSave(
   let openFd: number | null = null
   let needsUnlink = false
   try {
-    openFd = openSync(promptFile, "wx+", 0o600)
+    openFd = openSync(promptFile, "wx+", HOOK_STATE_FILE_MODE)
     needsUnlink = true
     writeSync(openFd, prompt)
     closeSync(openFd)
@@ -337,7 +338,7 @@ export function spawnBackgroundSave(
   let stderrSink: "ignore" | number = "ignore"
   if (lockKey) {
     try {
-      stderrSink = openSync(logPath(lockKey), "w", 0o600)
+      stderrSink = openHookStateFileSync(logPath(lockKey), "w")
     } catch {
       // Fall back to ignore — logging is best-effort, the save must still run.
     }

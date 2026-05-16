@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { basename } from "node:path"
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 
 vi.hoisted(() => {
   process.env["LORE_HOOK_STATE_DIR"] =
@@ -14,9 +21,22 @@ import {
   recordBackgroundFailure,
 } from "./background-failure-marker.js"
 import { getStateDir } from "./lock.js"
-import { configKey } from "./marker-key.js"
+import { configKey, HOOK_STATE_DIR_MODE, HOOK_STATE_FILE_MODE } from "./marker-key.js"
 
 const CONFIG_ROOT = "/repo/lore"
+
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
+
+function withUmaskSync<T>(mask: number, fn: () => T): T {
+  const previous = process.umask(mask)
+  try {
+    return fn()
+  } finally {
+    process.umask(previous)
+  }
+}
 
 describe("background-failure-marker", () => {
   // Pin Date so the 14-day staleness window in `listBackgroundFailures` /
@@ -61,6 +81,24 @@ describe("background-failure-marker", () => {
     expect(marker?.message.endsWith("...")).toBe(true)
     expect(marker?.configRootKey).toBe(configKey(CONFIG_ROOT))
     expect(marker?.logPath).toBe("/tmp/lore-hook-state/sess-123.log")
+  })
+
+  it("creates the state dir and marker JSON private even under umask 000", () => {
+    const scope = { projectName: "Widget Backend", sessionId: "sess-mode" }
+
+    withUmaskSync(0o000, () => {
+      recordBackgroundFailure(CONFIG_ROOT, {
+        kind: "autosave",
+        ...scope,
+        code: "spawn-error",
+        message: "spawn failed",
+      })
+    })
+
+    expect(modeBits(statSync(getStateDir()).mode)).toBe(HOOK_STATE_DIR_MODE)
+    expect(
+      modeBits(statSync(backgroundFailureMarkerPath(CONFIG_ROOT, "autosave", scope)).mode)
+    ).toBe(HOOK_STATE_FILE_MODE)
   })
 
   it("keeps raw project and session values out of marker filenames", () => {

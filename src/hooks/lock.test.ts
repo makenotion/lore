@@ -7,7 +7,14 @@
  * alive) and a synthetic dead PID.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 
 // Isolate from sibling test files that also touch the lock dir. See
 // helpers.test.ts for the rationale — `vi.hoisted` is required because ES
@@ -29,6 +36,7 @@ import {
   MAX_CONCURRENT_SAVES,
 } from "./lock.js"
 import { HOSTILE_SESSION_IDS } from "./path-injection-fixtures.js"
+import { HOOK_STATE_DIR_MODE, HOOK_STATE_FILE_MODE } from "./marker-key.js"
 
 // PIDs above 4 million are effectively never alive on Linux/macOS — the
 // kernel recycles well below this ceiling. Use it to simulate a stale lock
@@ -46,6 +54,19 @@ function cleanStateDir(): void {
   mkdirSync(getStateDir(), { recursive: true })
 }
 
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
+
+function withUmaskSync<T>(mask: number, fn: () => T): T {
+  const previous = process.umask(mask)
+  try {
+    return fn()
+  } finally {
+    process.umask(previous)
+  }
+}
+
 describe("tryAcquireSessionLock", () => {
   beforeEach(cleanStateDir)
   afterEach(cleanStateDir)
@@ -56,6 +77,17 @@ describe("tryAcquireSessionLock", () => {
     expect(path).toBe(lockPath(sessionId))
     expect(existsSync(path!)).toBe(true)
     expect(readFileSync(path!, "utf-8").trim()).toBe(process.pid.toString())
+  })
+
+  it("creates the state dir and lock file private even under umask 000", () => {
+    rmSync(getStateDir(), { recursive: true, force: true })
+    const sessionId = `mode-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+    const path = withUmaskSync(0o000, () => tryAcquireSessionLock(sessionId, process.pid))
+
+    expect(path).toBe(lockPath(sessionId))
+    expect(modeBits(statSync(getStateDir()).mode)).toBe(HOOK_STATE_DIR_MODE)
+    expect(modeBits(statSync(path!).mode)).toBe(HOOK_STATE_FILE_MODE)
   })
 
   it("returns null when a live lock already exists for the same session", () => {

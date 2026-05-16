@@ -12,17 +12,14 @@
  * is dead. Every acquire call performs a PID liveness probe to
  * garbage-collect stale locks left behind by crashed or killed children.
  */
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs"
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { safeFilenameSegment } from "./marker-key.js"
+import {
+  ensureHookStateDirSync,
+  safeFilenameSegment,
+  writeHookStateFileSync,
+} from "./marker-key.js"
 import { LoreError } from "../errors.js"
 
 /**
@@ -49,7 +46,7 @@ export function getStateDir(): string {
 export const MAX_CONCURRENT_SAVES = 5
 
 function ensureStateDirSync(): void {
-  mkdirSync(getStateDir(), { recursive: true })
+  ensureHookStateDirSync(getStateDir())
 }
 
 /**
@@ -231,7 +228,7 @@ export function tryAcquireSessionLock(
   if (activeSaveCount() >= MAX_CONCURRENT_SAVES) return null
   const path = lockPath(sessionId)
   try {
-    writeFileSync(path, ownerPid.toString(), { flag: "wx", mode: 0o600 })
+    writeHookStateFileSync(path, ownerPid.toString(), { flag: "wx" })
     return path
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code

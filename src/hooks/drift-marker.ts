@@ -17,10 +17,15 @@
  * (parallel test files) flow through automatically.
  */
 
-import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
+import { stat, utimes } from "node:fs/promises"
 import { join } from "node:path"
 import { getStateDir } from "./lock.js"
-import { configKey } from "./marker-key.js"
+import {
+  configKey,
+  ensureHookStateDir,
+  ensureHookStateFileMode,
+  writeHookStateFile,
+} from "./marker-key.js"
 
 /**
  * Days between debounced drift checks. A week is the same window as the
@@ -52,12 +57,13 @@ export async function driftMarkerAgeDays(
 }
 
 export async function touchDriftMarker(configRoot: string): Promise<void> {
-  await mkdir(getStateDir(), { recursive: true })
+  await ensureHookStateDir(getStateDir())
   const path = driftMarkerPath(configRoot)
   try {
     const now = new Date()
     await utimes(path, now, now)
+    await ensureHookStateFileMode(path)
   } catch {
-    await writeFile(path, "")
+    await writeHookStateFile(path, "")
   }
 }

@@ -31,7 +31,15 @@
  * writeSync / closeSync / unlinkSync mocks per-test.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, realpathSync, rmSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -84,7 +92,8 @@ vi.mock("node:child_process", async () => {
 import * as fs from "node:fs"
 import { RUNTIME_FORWARDED_KEYS } from "../auth/forwarded-env.js"
 import { spawnBackgroundSave } from "./background.js"
-import { getStateDir } from "./lock.js"
+import { getStateDir, logPath } from "./lock.js"
+import { HOOK_STATE_FILE_MODE } from "./marker-key.js"
 import { withClearedRuntimeEnv } from "./test-utils.js"
 
 const openSyncMock = fs.openSync as unknown as ReturnType<typeof vi.fn>
@@ -111,6 +120,10 @@ function lastSpawnEnv(): Record<string, string> {
     | undefined
   expect(call, "expected spawn to have been invoked").toBeDefined()
   return call![2].env
+}
+
+function modeBits(mode: number): number {
+  return mode & 0o777
 }
 
 describe("spawnBackgroundSave safeEnv (#188)", () => {
@@ -394,6 +407,42 @@ describe("spawnBackgroundSave authSource partition (#475)", () => {
     const env = lastSpawnEnv()
     expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
     expect(env["LORE_NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
+  })
+})
+
+describe("spawnBackgroundSave hook-state log modes", () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    rmSync(getStateDir(), { recursive: true, force: true })
+    mkdirSync(getStateDir(), { recursive: true })
+    tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "lore-bg-log-mode-")))
+
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => fakeLiveChild())
+    execFileSyncMock.mockReset()
+    execFileSyncMock.mockImplementation(() => "/mock/bin/claude\n")
+    openSyncMock.mockImplementation(realFs.openSync)
+    writeSyncMock.mockImplementation(realFs.writeSync)
+    closeSyncMock.mockImplementation(realFs.closeSync)
+    unlinkSyncMock.mockImplementation(realFs.unlinkSync)
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+    rmSync(getStateDir(), { recursive: true, force: true })
+  })
+
+  it("chmods an existing per-session stderr log before reusing it", () => {
+    const sessionId = "sess-log-mode"
+    const path = logPath(sessionId)
+    writeFileSync(path, "old diagnostics")
+    chmodSync(path, 0o666)
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", sessionId)
+
+    expect(result.kind).toBe("spawned")
+    expect(modeBits(statSync(path).mode)).toBe(HOOK_STATE_FILE_MODE)
   })
 })
 

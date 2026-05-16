@@ -33,7 +33,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process"
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs"
+import { closeSync, existsSync, readFileSync } from "node:fs"
 import { buildSafeEnv } from "../auth/forwarded-env.js"
 import type { AuthSource } from "../config.js"
 import {
@@ -46,6 +46,7 @@ import {
   DEFAULT_BACKGROUND_COMMAND,
   type BackgroundAgentConfig,
 } from "./config.js"
+import { openHookStateFileSync } from "./marker-key.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
 import type { ResolvedPromptRegistry } from "../profile/index.js"
 
@@ -237,7 +238,7 @@ function closeStderrSinkSafely(fd: number | null): void {
  */
 function openStderrSink(path: string): number | null {
   try {
-    return openSync(path, "w", 0o600)
+    return openHookStateFileSync(path, "w")
   } catch (err) {
     process.stderr.write(
       `[lore] conversation-mining: failed to open stderrSinkPath ` +

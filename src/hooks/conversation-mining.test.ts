@@ -23,7 +23,7 @@
  * assertions here would just create a drift surface.
  */
 import { EventEmitter } from "node:events"
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -39,17 +39,30 @@ vi.mock("node:child_process", async () => {
   return { ...actual, spawn: spawnMock, execFileSync: execFileSyncMock }
 })
 
-const { openSyncMock, closeSyncMock } = vi.hoisted(() => ({
+const realFs = vi.hoisted(() => {
+  return {
+    openSync: undefined as unknown as typeof import("node:fs").openSync,
+    closeSync: undefined as unknown as typeof import("node:fs").closeSync,
+    fchmodSync: undefined as unknown as typeof import("node:fs").fchmodSync,
+  }
+})
+
+const { openSyncMock, closeSyncMock, fchmodSyncMock } = vi.hoisted(() => ({
   openSyncMock: vi.fn(),
   closeSyncMock: vi.fn(),
+  fchmodSyncMock: vi.fn(),
 }))
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+  realFs.openSync = actual.openSync
+  realFs.closeSync = actual.closeSync
+  realFs.fchmodSync = actual.fchmodSync
   return {
     ...actual,
     openSync: openSyncMock,
     closeSync: closeSyncMock,
+    fchmodSync: fchmodSyncMock,
   }
 })
 
@@ -59,6 +72,10 @@ import {
   TIMEOUT_KILL_GRACE_MS,
   runConversationMining,
 } from "./conversation-mining.js"
+
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
 
 interface FakeChildHandle {
   emit: (event: "exit" | "error", ...args: unknown[]) => void
@@ -109,6 +126,8 @@ describe("runConversationMining", () => {
     execFileSyncMock.mockReturnValue("/mock/bin/claude\n")
     openSyncMock.mockReset()
     closeSyncMock.mockReset()
+    fchmodSyncMock.mockReset()
+    fchmodSyncMock.mockImplementation(() => undefined)
     tmpDir = mkdtempSync(join(tmpdir(), "lore-mining-test-"))
   })
 
@@ -348,6 +367,7 @@ describe("runConversationMining", () => {
       "w",
       0o600
     )
+    expect(fchmodSyncMock).toHaveBeenCalledWith(FAKE_FD, 0o600)
     expect(closeSyncMock).toHaveBeenCalledWith(FAKE_FD)
   })
 
@@ -372,7 +392,31 @@ describe("runConversationMining", () => {
     ).rejects.toThrow(/EAGAIN/)
 
     expect(openSyncMock).toHaveBeenCalledTimes(1)
+    expect(fchmodSyncMock).toHaveBeenCalledWith(FAKE_FD, 0o600)
     expect(closeSyncMock).toHaveBeenCalledWith(FAKE_FD)
+  })
+
+  it("chmods an existing caller stderr sink before reusing it", async () => {
+    const path = join(tmpDir, "child-stderr.log")
+    writeFileSync(path, "old diagnostics")
+    chmodSync(path, 0o666)
+    openSyncMock.mockImplementation(realFs.openSync)
+    fchmodSyncMock.mockImplementation(realFs.fchmodSync)
+    closeSyncMock.mockImplementation(realFs.closeSync)
+    const { child, handle } = fakeChild()
+    spawnMock.mockReturnValue(child)
+
+    const promise = runConversationMining("transcript", {
+      cwd: tmpDir,
+      subProjects: [],
+      catchAllName: null,
+      stderrSinkPath: path,
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    handle.emit("exit", 0, null)
+    await promise
+
+    expect(modeBits(statSync(path).mode)).toBe(0o600)
   })
 
   it("does not call closeSync when no stderrSinkPath was passed", async () => {

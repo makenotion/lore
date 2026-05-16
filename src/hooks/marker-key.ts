@@ -17,14 +17,99 @@
  * Keeping both helpers here means a future change to the truncation length or
  * the sanitization charset lands in one place.
  *
- * The module intentionally depends only on `node:crypto` and `node:path` so
- * it never creates an import cycle with the marker / lock modules that
- * consume it, and so it stays orthogonal to the state-dir resolution that
- * lives.
+ * Filesystem helpers for hook state also live here so marker, lock, log,
+ * prompt, and count writers inherit the same private-mode policy instead of
+ * relying on the process umask.
  */
 
 import { createHash } from "node:crypto"
+import {
+  chmodSync,
+  closeSync,
+  fchmodSync,
+  mkdirSync,
+  openSync,
+  writeFileSync,
+  type Mode,
+  type ObjectEncodingOptions,
+} from "node:fs"
+import { chmod, mkdir, writeFile } from "node:fs/promises"
 import { resolve as resolvePath } from "node:path"
+
+export const HOOK_STATE_DIR_MODE = 0o700
+export const HOOK_STATE_FILE_MODE = 0o600
+
+type HookStateWriteOptions =
+  | BufferEncoding
+  | (ObjectEncodingOptions & {
+      mode?: Mode | undefined
+      flag?: string | undefined
+      flush?: boolean | undefined
+    })
+  | null
+  | undefined
+
+function withHookStateFileMode(
+  options: HookStateWriteOptions
+): Exclude<HookStateWriteOptions, null | undefined> {
+  if (typeof options === "string") {
+    return { encoding: options, mode: HOOK_STATE_FILE_MODE }
+  }
+  return { ...(options ?? {}), mode: HOOK_STATE_FILE_MODE }
+}
+
+export async function ensureHookStateDir(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: HOOK_STATE_DIR_MODE })
+  await chmod(path, HOOK_STATE_DIR_MODE)
+}
+
+export function ensureHookStateDirSync(path: string): void {
+  mkdirSync(path, { recursive: true, mode: HOOK_STATE_DIR_MODE })
+  chmodSync(path, HOOK_STATE_DIR_MODE)
+}
+
+export async function ensureHookStateFileMode(path: string): Promise<void> {
+  await chmod(path, HOOK_STATE_FILE_MODE)
+}
+
+export async function writeHookStateFile(
+  path: string,
+  data: string | NodeJS.ArrayBufferView,
+  options?: HookStateWriteOptions
+): Promise<void> {
+  await writeFile(path, data, withHookStateFileMode(options))
+  await ensureHookStateFileMode(path)
+}
+
+export function writeHookStateFileSync(
+  path: string,
+  data: string | NodeJS.ArrayBufferView,
+  options?: HookStateWriteOptions
+): void {
+  writeFileSync(path, data, withHookStateFileMode(options))
+  chmodSync(path, HOOK_STATE_FILE_MODE)
+}
+
+type HookStateOpenPath = Parameters<typeof openSync>[0]
+type HookStateOpenFlags = Parameters<typeof openSync>[1]
+
+export function openHookStateFileSync(
+  path: HookStateOpenPath,
+  flags: HookStateOpenFlags
+): number {
+  const fd = openSync(path, flags, HOOK_STATE_FILE_MODE)
+  try {
+    fchmodSync(fd, HOOK_STATE_FILE_MODE)
+    return fd
+  } catch (err) {
+    try {
+      closeSync(fd)
+    } catch {
+      // Best-effort cleanup; the chmod failure is the useful error.
+    }
+    throw err
+  }
+}
 
 /**
  * Short, stable, filesystem-safe key derived from a config root.

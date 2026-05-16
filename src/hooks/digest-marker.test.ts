@@ -18,6 +18,20 @@ import {
   touchDigestMarker,
 } from "./digest-marker.js"
 import { getStateDir } from "./lock.js"
+import { HOOK_STATE_DIR_MODE, HOOK_STATE_FILE_MODE } from "./marker-key.js"
+
+function modeBits(mode: number): number {
+  return mode & 0o777
+}
+
+async function withUmask<T>(mask: number, fn: () => Promise<T>): Promise<T> {
+  const previous = process.umask(mask)
+  try {
+    return await fn()
+  } finally {
+    process.umask(previous)
+  }
+}
 
 // Each test uses a unique project name so individual tests within the file
 // don't collide on the same marker file path.
@@ -69,6 +83,20 @@ describe("digest-marker", () => {
     await touchDigestMarker(configRoot, name)
     const refreshed = await digestMarkerAgeDays(configRoot, name)
     expect(refreshed).toBeLessThan(1)
+  })
+
+  it("creates the state dir and marker file private even under umask 000", async () => {
+    const { configRoot, name } = uniqueProject("mode")
+    await rm(getStateDir(), { recursive: true, force: true })
+
+    await withUmask(0o000, async () => {
+      await touchDigestMarker(configRoot, name)
+    })
+
+    expect(modeBits((await stat(getStateDir())).mode)).toBe(HOOK_STATE_DIR_MODE)
+    expect(modeBits((await stat(digestMarkerPath(configRoot, name))).mode)).toBe(
+      HOOK_STATE_FILE_MODE
+    )
   })
 
   it("clearDigestMarker removes the marker so callers can roll back an optimistic touch", async () => {

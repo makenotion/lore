@@ -14,9 +14,9 @@
  * messaging all see the genuine-failure shape.
  *
  * These tests live in their own file because they mock `node:fs`'s
- * `writeFileSync` / `mkdirSync` to deterministically inject the syscall
- * error — `lock.test.ts` exercises the lock against a real state dir
- * and must not be globally fs-mocked.
+ * `writeFileSync` / `mkdirSync` / `chmodSync` to deterministically inject
+ * the syscall error — `lock.test.ts` exercises the lock against a real
+ * state dir and must not be globally fs-mocked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -25,9 +25,10 @@ vi.hoisted(() => {
     `${process.env["TMPDIR"] ?? "/tmp"}/lore-lock-name-too-long-${process.pid}-${Date.now()}`
 })
 
-const { writeFileSyncMock, mkdirSyncMock } = vi.hoisted(() => ({
+const { writeFileSyncMock, mkdirSyncMock, chmodSyncMock } = vi.hoisted(() => ({
   writeFileSyncMock: vi.fn(),
   mkdirSyncMock: vi.fn(),
+  chmodSyncMock: vi.fn(),
 }))
 
 vi.mock("node:fs", async () => {
@@ -36,6 +37,7 @@ vi.mock("node:fs", async () => {
     ...actual,
     writeFileSync: writeFileSyncMock,
     mkdirSync: mkdirSyncMock,
+    chmodSync: chmodSyncMock,
   }
 })
 
@@ -78,10 +80,12 @@ describe("tryAcquireSessionLock — LockPathTooLongError defense (#485)", () => 
   beforeEach(() => {
     writeFileSyncMock.mockReset()
     mkdirSyncMock.mockReset()
+    chmodSyncMock.mockReset()
     // mkdirSync is called via `ensureStateDirSync` at the top of every
     // acquire attempt; default to a benign no-op so only the test under
     // test gets to inject failure modes.
     mkdirSyncMock.mockImplementation(() => undefined)
+    chmodSyncMock.mockImplementation(() => undefined)
   })
 
   afterEach(() => {
