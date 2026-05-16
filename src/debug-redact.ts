@@ -123,9 +123,13 @@ const PAGE_ID_UUID = /\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]
  * here a dev PAT would pass through unredacted. All three pin the
  * `[A-Za-z0-9_-]{20,}` body to keep the match precise enough that a
  * field name like `secret_field_id` isn't mistaken for a token. The
- * minimum length is conservative (real tokens are >40 characters).
+ * trailing lookahead treats the full token alphabet as non-delimiters
+ * so terminal `-` / `_` characters are consumed rather than exposed by
+ * a word-boundary backtrack. The minimum length is conservative (real
+ * tokens are >40 characters).
  */
-const BEARER_TOKEN = /\b(?:development_ntn_|ntn_|secret_)[A-Za-z0-9_-]{20,}\b/g
+const BEARER_TOKEN =
+  /\b(?:development_ntn_|ntn_|secret_)[A-Za-z0-9_-]{20,}(?=$|[^A-Za-z0-9_-])/g
 
 /**
  * Single source of truth for SDK field names treated as sensitive

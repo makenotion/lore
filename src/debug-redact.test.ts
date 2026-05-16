@@ -278,6 +278,18 @@ describe("redactDebugMessage (issue #488)", () => {
     expect(out).toBe("leaked: <redacted-token> in trace")
   })
 
+  it("redacts bearer tokens whose body ends with a hyphen", () => {
+    expect(redactDebugMessage("secret_abcdefghijklmnopqrst-")).toBe("<redacted-token>")
+    expect(redactDebugMessage("ntn_abcdefghijklmnopqrst-")).toBe("<redacted-token>")
+    expect(redactDebugMessage("development_ntn_abcdefghijklmnopqrst-")).toBe(
+      "<redacted-token>"
+    )
+  })
+
+  it("redacts bearer tokens whose body ends with an underscore", () => {
+    expect(redactDebugMessage("secret_abcdefghijklmnopqrst_")).toBe("<redacted-token>")
+  })
+
   it("does NOT redact short ntn-prefixed identifiers (≥20-char body bound)", () => {
     // The `[A-Za-z0-9_-]{20,}` body bound keeps the match narrow
     // enough that a field name like `ntn_short` or `secret_field_id`
