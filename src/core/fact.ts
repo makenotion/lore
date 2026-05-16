@@ -38,6 +38,7 @@ import type {
 export { scopesMatchForMerge } from "./fact-scope.js"
 export { clampNotionPageSize } from "./fact-queries.js"
 export {
+  __resetDedupDuplicateScopeMatchWarnedForTests,
   __resetFactCreateMissingColumnWarningForTests,
   __resetProbeFailureLogForTests,
   __resetRunToolBatchCreatesAuthFallbackLogForTests,

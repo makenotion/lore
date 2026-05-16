@@ -75,6 +75,11 @@ function logDedupDuplicateScopeMatchOnce(dedupKey: string): void {
   )
 }
 
+/** Reset between tests. Not exported on the public API surface. */
+export function __resetDedupDuplicateScopeMatchWarnedForTests(): void {
+  dedupDuplicateScopeMatchWarned = false
+}
+
 /**
  * On an unmigrated vault every `lore-fact action='create'` probe fails with the same
  * "DedupKey column missing" error. Autosave fires every 5 messages, so

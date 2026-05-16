@@ -3,6 +3,7 @@ import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   FactService,
   REPOINT_ENTITY_CONCURRENCY,
+  __resetDedupDuplicateScopeMatchWarnedForTests,
   __resetProbeFailureLogForTests,
   clampNotionPageSize,
 } from "./fact.js"
@@ -1056,6 +1057,46 @@ describe("FactService.createWithDedup", () => {
         { property: "Expires At", date: { is_empty: true } },
       ],
     })
+  })
+
+  it("resets the duplicate scope-match warning between tests", async () => {
+    __resetDedupDuplicateScopeMatchWarnedForTests()
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      client.dataSources.query.mockResolvedValue({
+        results: [factPage({ id: "first" }), factPage({ id: "second" })],
+        has_more: false,
+        next_cursor: null,
+      })
+
+      await service.createWithDedup({
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+      })
+      await service.createWithDedup({
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+      })
+
+      expect(stderrSpy).toHaveBeenCalledTimes(1)
+      expect(String(stderrSpy.mock.calls[0][0])).toContain(
+        "scope-constrained probe found multiple live"
+      )
+
+      __resetDedupDuplicateScopeMatchWarnedForTests()
+      await service.createWithDedup({
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+      })
+
+      expect(stderrSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      stderrSpy.mockRestore()
+      __resetDedupDuplicateScopeMatchWarnedForTests()
+    }
   })
 
   it("issues exactly one pages.update bundling review, project, and source merges", async () => {
