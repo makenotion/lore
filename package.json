@@ -17,10 +17,21 @@
     }
   },
   "files": [
+    ".lore.example.yaml",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "dist",
+    "docs",
     "evals/vaults.yaml",
     "hooks",
-    "profiles"
+    "profiles",
+    "src/auth/AGENTS.md",
+    "src/cli/AGENTS.md",
+    "src/core/AGENTS.md",
+    "src/hooks/AGENTS.md",
+    "src/mcp/AGENTS.md",
+    "src/notion/AGENTS.md"
   ],
   "scripts": {
     "build": "tsup",
