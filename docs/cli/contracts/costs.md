@@ -17,8 +17,17 @@ summarize or export existing local usage rows.
   When no rows match, JSONL export exits successfully and writes no stdout.
 - CSV export writes stable columns with missing values as empty cells. When no
   rows match, CSV export exits successfully and writes only the header row.
-- Summary output distinguishes exact, estimated, and unknown model cost, reports
-  wake-up tokens as cost unknown by default, and groups MCP usage by tool/action
-  and success/error.
+- Summary output distinguishes exact agent model usage, background prompt
+  estimates, and unknown-cost background model events. Autosave and digest
+  background model rows must keep `modelUsage.source: "prompt_estimate"`;
+  those rows estimate prompt-side input only and may exclude completion tokens,
+  cached-input billing, and provider-side rounding.
+- JSONL and CSV export schema compatibility is stable. Export consumers should
+  treat `autosave.background_model` and `digest.background_model` rows with
+  `modelUsage.source: "prompt_estimate"` as prompt-side estimates; CSV keeps the
+  existing `modelUsageEstimated` / `estimatedUsd` columns instead of adding a
+  source column.
+- Summary output reports wake-up tokens as cost unknown by default and groups
+  MCP usage by tool/action and success/error.
 - The command must never print raw prompts, MCP arguments, MCP results, memory
   content, fact content, Notion page bodies, or Notion response payloads.

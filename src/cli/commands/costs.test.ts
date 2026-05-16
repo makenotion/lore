@@ -111,6 +111,26 @@ costTracking:
           notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
         }),
         JSON.stringify({
+          schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+          timestamp: new Date().toISOString(),
+          eventType: "autosave.background_model",
+          source: "hook",
+          status: "success",
+          payload: payloadSummary("autosave prompt"),
+          modelUsage: {
+            provider: "openai",
+            model: "gpt-5.2-codex",
+            inputTokens: 1000,
+            estimated: true,
+            source: "prompt_estimate",
+          },
+          estimatedCost: {
+            usd: 0.00175,
+            pricingSource: "builtin-openai-2026-05",
+            estimated: true,
+          },
+        }),
+        JSON.stringify({
           timestamp: new Date().toISOString(),
           eventType: "mcp.invocation",
           status: "success",
@@ -123,6 +143,7 @@ costTracking:
 
     const output = logSpy.mock.calls.flat().join("\n")
     expect(output).toContain("MCP calls: 1 total")
+    expect(output).toContain("background prompt estimates")
     expect(output).not.toContain("SECRET_INVALID_ROW")
     expect(exitTrap.exitCodes).toEqual([])
   })

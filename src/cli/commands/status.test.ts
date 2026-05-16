@@ -882,12 +882,33 @@ describe("loadCostStatusLines", () => {
             payload: payloadSummary("{}", "ok"),
             notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
           }),
+          JSON.stringify({
+            schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+            timestamp: new Date().toISOString(),
+            eventType: "digest.background_model",
+            source: "hook",
+            status: "success",
+            payload: payloadSummary("digest prompt"),
+            modelUsage: {
+              provider: "openai",
+              model: "gpt-5.2-codex",
+              inputTokens: 1000,
+              estimated: true,
+              source: "prompt_estimate",
+            },
+            estimatedCost: {
+              usd: 0.00175,
+              pricingSource: "builtin-openai-2026-05",
+              estimated: true,
+            },
+          }),
         ].join("\n") + "\n"
       )
 
       const lines = await loadCostStatusLines({ costTracking } as LoreServices)
       const output = lines.join("\n")
       expect(output).toContain("Cost tracking: enabled")
+      expect(output).toContain("prompt-estimated Lore-owned model")
       expect(output).toContain("1 MCP calls")
       expect(output).not.toContain("SECRET_INVALID_STATUS_ROW")
     } finally {

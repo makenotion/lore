@@ -868,7 +868,8 @@ export function formatCostSummary(summary: CostSummary): string {
   const lines = [
     `Lore Costs (${summary.rangeLabel})`,
     "-------------------------",
-    `Lore-owned model work: ${formatUsd(summary.modelExactUsd)} exact, ~${formatUsd(summary.modelEstimatedUsd)} estimated, ${summary.modelUnknownEvents} events with unknown cost`,
+    `Lore-owned model cost: ${formatUsd(summary.modelExactUsd)} exact agent usage, ~${formatUsd(summary.modelEstimatedUsd)} background prompt estimates, ${summary.modelUnknownEvents} background events with unknown cost`,
+    "Background prompt estimates may exclude completion tokens, cached-input billing, and provider-side rounding.",
     `Wake-up context: ${summary.wakeupEstimatedTokens.toLocaleString()} estimated tokens, cost unknown`,
     `MCP calls: ${summary.mcpTotal} total, ${summary.mcpSuccess} success, ${summary.mcpError} error`,
     `Notion operations: ${summary.notion.reads} reads, ${summary.notion.writes} writes, ${summary.notion.failures} failures, ${summary.notion.rateLimitBackoffs} rate-limit backoffs`,

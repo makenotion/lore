@@ -377,10 +377,8 @@ function formatCompactCostLine(
   summary: ReturnType<typeof summarizeCostEvents>,
   opts: { omitNotionWrites?: boolean } = {}
 ): string {
-  const modelCost = summary.modelExactUsd + summary.modelEstimatedUsd
-  const modelPrefix = summary.modelEstimatedUsd > 0 ? "~" : ""
   const parts = [
-    `${modelPrefix}${formatUsd(modelCost)} Lore-owned`,
+    formatCompactModelCost(summary),
     `${summary.wakeupEstimatedTokens.toLocaleString()} wake-up tokens (cost unknown)`,
     `${summary.mcpTotal} MCP calls`,
   ]
@@ -391,6 +389,19 @@ function formatCompactCostLine(
     parts.push(`${summary.modelUnknownEvents} model events with unknown cost`)
   }
   return parts.join(", ")
+}
+
+function formatCompactModelCost(summary: ReturnType<typeof summarizeCostEvents>): string {
+  if (summary.modelExactUsd > 0 && summary.modelEstimatedUsd > 0) {
+    return `${formatUsd(summary.modelExactUsd)} exact + ~${formatUsd(summary.modelEstimatedUsd)} prompt-estimated Lore-owned model`
+  }
+  if (summary.modelEstimatedUsd > 0) {
+    return `~${formatUsd(summary.modelEstimatedUsd)} prompt-estimated Lore-owned model`
+  }
+  if (summary.modelExactUsd > 0) {
+    return `${formatUsd(summary.modelExactUsd)} exact Lore-owned model`
+  }
+  return `${formatUsd(0)} Lore-owned model`
 }
 
 // ---------------------------------------------------------------------------

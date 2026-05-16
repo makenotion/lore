@@ -15,6 +15,7 @@ import {
   defaultTodayRange,
   estimateModelCost,
   eventsToCsv,
+  formatCostSummary,
   loadPricingTable,
   payloadSummary,
   readLedgerEvents,
@@ -22,6 +23,11 @@ import {
   summarizeCostEvents,
   type CostLedgerEvent,
 } from "./cost-ledger.js"
+
+type BackgroundModelEvent = Extract<
+  CostLedgerEvent,
+  { eventType: "autosave.background_model" | "digest.background_model" }
+>
 
 describe("cost ledger", () => {
   const dirs: string[] = []
@@ -214,6 +220,59 @@ describe("cost ledger", () => {
     })
 
     const now = new Date().toISOString()
+    const backgroundRows: BackgroundModelEvent[] = [
+      {
+        schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+        timestamp: now,
+        eventType: "digest.background_model",
+        source: "hook",
+        status: "success",
+        payload: payloadSummary("digest prompt"),
+        modelUsage: {
+          provider: "openai",
+          model: "gpt-5.2-codex",
+          inputTokens: 1000,
+          estimated: true,
+          source: "prompt_estimate",
+        },
+        estimatedCost,
+      },
+      {
+        schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+        timestamp: now,
+        eventType: "autosave.background_model",
+        source: "hook",
+        status: "skipped",
+        payload: payloadSummary("autosave prompt"),
+        modelUsage: {
+          provider: "unknown",
+          inputTokens: 1000,
+          estimated: true,
+          source: "prompt_estimate",
+        },
+        estimatedCost: { estimated: true, unknownReason: "unknown_model" },
+      },
+    ]
+
+    expect(
+      backgroundRows
+        .filter(
+          (event) =>
+            event.eventType === "autosave.background_model" ||
+            event.eventType === "digest.background_model"
+        )
+        .map((event) => event.modelUsage.source)
+    ).toEqual(["prompt_estimate", "prompt_estimate"])
+
+    const summary = summarizeCostEvents(backgroundRows, "today")
+
+    expect(summary.modelEstimatedUsd).toBe(0.01575)
+    expect(summary.modelUnknownEvents).toBe(0)
+    expect(formatCostSummary(summary)).toContain("background prompt estimates")
+  })
+
+  it("summarizes exact model usage separately from background prompt estimates", () => {
+    const now = new Date().toISOString()
     const summary = summarizeCostEvents(
       [
         {
@@ -230,28 +289,41 @@ describe("cost ledger", () => {
             estimated: true,
             source: "prompt_estimate",
           },
-          estimatedCost,
+          estimatedCost: {
+            usd: 0.02,
+            pricingSource: "test",
+            estimated: true,
+          },
         },
         {
           schemaVersion: COST_LEDGER_SCHEMA_VERSION,
           timestamp: now,
           eventType: "autosave.background_model",
           source: "hook",
-          status: "skipped",
-          payload: payloadSummary("autosave prompt"),
+          status: "success",
+          payload: payloadSummary("autosave prompt", "provider usage"),
           modelUsage: {
-            provider: "unknown",
+            provider: "openai",
+            model: "gpt-5.2-codex",
             inputTokens: 1000,
-            estimated: true,
-            source: "prompt_estimate",
+            outputTokens: 500,
+            estimated: false,
+            source: "exact_agent_usage",
           },
-          estimatedCost: { estimated: true, unknownReason: "unknown_model" },
+          estimatedCost: {
+            usd: 0.01,
+            pricingSource: "test",
+            estimated: false,
+          },
         },
       ],
       "today"
     )
 
-    expect(summary.modelEstimatedUsd).toBe(0.01575)
-    expect(summary.modelUnknownEvents).toBe(0)
+    expect(summary.modelEstimatedUsd).toBe(0.02)
+    expect(summary.modelExactUsd).toBe(0.01)
+    expect(formatCostSummary(summary)).toContain(
+      "Lore-owned model cost: $0.01 exact agent usage, ~$0.02 background prompt estimates"
+    )
   })
 })

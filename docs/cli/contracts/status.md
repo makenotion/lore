@@ -97,5 +97,7 @@ Cost tracking:
   Notion clients beyond the status probes already running for the command.
 - The line reports today's Lore-owned model spend, wake-up estimated tokens,
   MCP call count, and Notion writes. A month-to-date line appears only when the
-  current month has ledger entries.
+  current month has ledger entries. Autosave and digest model spend is labeled
+  as a background prompt estimate; it may exclude completion tokens,
+  cached-input billing, and provider-side rounding.
 - Missing, empty, or malformed ledger rows must not fail status output.
