@@ -72,10 +72,12 @@ projects:
 #   exclude: ["node_modules"]
 
 # Local cost and usage ledger (optional, disabled by default).
-# Writes redacted JSONL rows only: byte/token counts, operation counts,
-# model metadata when known, and aggregate cost estimates. It does not
-# store raw prompts, transcripts, MCP arguments/results, memory content,
-# Notion page bodies, or response payloads.
+# The ledger is local-only and opt-in. Rows may include project, agent,
+# session, tool, and action identifiers; redacted payload byte/token
+# estimates; Notion operation counts; and model usage/cost estimates when
+# known. Rows must not include raw prompts, transcripts, MCP argument bodies,
+# MCP result bodies, memory/fact text, Notion page bodies, or Notion response
+# payloads.
 # costTracking:
 #   enabled: true
 #   ledgerPath: ~/.local/share/lore/cost-ledger.jsonl

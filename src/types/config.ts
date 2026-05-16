@@ -142,7 +142,10 @@ export interface CostTrackingPricingConfig {
 export interface CostTrackingConfig {
   /**
    * Opt-in switch for the local JSONL cost ledger. Defaults to false when the
-   * block or field is omitted.
+   * block or field is omitted. Enabled ledger rows may include local project,
+   * agent, session, tool, and action identifiers alongside redacted payload
+   * byte/token estimates, Notion operation counts, and model usage/cost
+   * estimates when known.
    */
   enabled?: boolean
   /**
@@ -177,8 +180,9 @@ export interface LoreConfig {
    */
   features?: LoreFeatureConfig
   /**
-   * Local-only cost and usage ledger. Disabled by default and writes only
-   * redacted numeric summaries when explicitly enabled.
+   * Local-only cost and usage ledger. Disabled by default and must not store
+   * raw prompts, MCP argument bodies, MCP result bodies, memory/fact text,
+   * Notion page bodies, or Notion response payloads.
    */
   costTracking?: CostTrackingConfig
   /**

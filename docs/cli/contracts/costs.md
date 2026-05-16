@@ -11,6 +11,13 @@ summarize or export existing local usage rows.
   configured basename.
 - New cost events are appended to the current process shard, not the legacy
   root file. Existing root-file rows are never migrated or rewritten.
+
+Ledger rows may include project, agent, session, tool, and action identifiers;
+redacted payload byte/token estimates; Notion operation counts; and model
+usage/cost estimates when known. They must not include raw prompts, MCP argument
+bodies, MCP result bodies, memory/fact text, Notion page bodies, or Notion
+response payloads.
+
 - `summary` defaults to the local calendar day `today`; `export` defaults to all
   ledger rows.
 - `--since` accepts only `Nh`, `Nd`, or `Nw` with a positive integer. `--month`
@@ -18,8 +25,9 @@ summarize or export existing local usage rows.
   reading the ledger.
 - Disabled tracking prints a short status message for `summary` and exits
   non-zero for `export`, because export scripts expect data on stdout.
-- JSONL export writes the original redacted ledger lines that match the range.
-  When no rows match, JSONL export exits successfully and writes no stdout.
+- JSONL export writes validated matching ledger events with redacted payload
+  summaries. Unknown fields from raw ledger lines are not preserved. When no
+  rows match, JSONL export exits successfully and writes no stdout.
 - CSV export writes stable columns with missing values as empty cells. When no
   rows match, CSV export exits successfully and writes only the header row.
 - Summary and export rows are ordered by event timestamp across the merged
@@ -39,5 +47,5 @@ summarize or export existing local usage rows.
   source column.
 - Summary output reports wake-up tokens as cost unknown by default and groups
   MCP usage by tool/action and success/error.
-- The command must never print raw prompts, MCP arguments, MCP results, memory
-  content, fact content, Notion page bodies, or Notion response payloads.
+- The command must never print raw prompts, MCP argument bodies, MCP result
+  bodies, memory/fact text, Notion page bodies, or Notion response payloads.

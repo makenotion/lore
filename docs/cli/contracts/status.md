@@ -102,6 +102,11 @@ Cost tracking:
   current month has ledger entries. Autosave and digest model spend is labeled
   as a background prompt estimate; it may exclude completion tokens,
   cached-input billing, and provider-side rounding.
+- The local ledger rows backing the section may include project, agent, session,
+  tool, and action identifiers; redacted payload byte/token estimates; Notion
+  operation counts; and model usage/cost estimates when known. The section must
+  not expose raw prompts, MCP argument bodies, MCP result bodies, memory/fact
+  text, Notion page bodies, or Notion response payloads.
 - Missing, empty, or malformed ledger rows must not fail status output.
   Malformed or schema-invalid non-blank rows render a redacted warning with only
   the skipped-line count.

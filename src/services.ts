@@ -379,8 +379,8 @@ export interface LoreServices {
   features: LoreFeatureFlags
   /**
    * Resolved local cost-tracking ledger config. Disabled by default; when
-   * enabled, interface layers append redacted usage summaries through this
-   * single shared resolver.
+   * enabled, interface layers append local identifiers plus redacted usage
+   * summaries through this single shared resolver.
    */
   costTracking: ResolvedCostTracking
   /**
