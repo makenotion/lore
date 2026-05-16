@@ -34,11 +34,9 @@ export async function runFactEncodingFix(
   services: LoreServices,
   options: { apply: boolean; dryRun?: boolean; projectId?: string }
 ): Promise<void> {
-  // Plan-only means the underlying helper must not write. `apply` is the
-  // single-truth bit for the write path; `dryRun` is a caller-intent
-  // signal the helper still honors to keep the report shape consistent
-  // with every other `--dry-run` surface.
-  const planOnly = !options.apply
+  // Direct helper callers can pass both `apply` and `dryRun`; dry-run
+  // always wins so the service call and rendered report stay read-only.
+  const planOnly = !options.apply || options.dryRun === true
   const report = await services.facts.fixEncoding({
     dryRun: planOnly,
     ...(options.projectId ? { projectId: options.projectId } : {}),
@@ -124,7 +122,7 @@ export async function runMemoryEncodingFix(
   services: LoreServices,
   options: { apply: boolean; dryRun?: boolean; projectId?: string }
 ): Promise<void> {
-  const planOnly = !options.apply
+  const planOnly = !options.apply || options.dryRun === true
   printDiscoveryBreadcrumb("memories with HTML-encoded Title or body")
   const report = await services.memories.fixEncoding({
     dryRun: planOnly,

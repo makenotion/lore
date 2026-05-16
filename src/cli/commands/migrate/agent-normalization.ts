@@ -14,7 +14,7 @@ export async function runAgentNormalization(
   services: LoreServices,
   options: { apply: boolean; dryRun?: boolean; projectId?: string }
 ): Promise<void> {
-  const planOnly = !options.apply
+  const planOnly = !options.apply || options.dryRun === true
   printDiscoveryBreadcrumb("memories with non-canonical Agent strings")
   const report = await services.memories.normalizeAgents({
     dryRun: planOnly,

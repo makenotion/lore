@@ -140,9 +140,9 @@ export async function runSimilarTopicsMigration(
   services: LoreServices,
   options: { apply: boolean; dryRun?: boolean }
 ): Promise<void> {
-  const planOnly = !options.apply
+  const planOnly = !options.apply || options.dryRun === true
   const { groups, mergeResults } = await services.vault.migrateSimilarTopics({
-    dryRun: planOnly || options.dryRun === true,
+    dryRun: planOnly,
   })
 
   if (groups.length === 0) {

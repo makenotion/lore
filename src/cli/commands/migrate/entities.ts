@@ -31,10 +31,10 @@ export async function runBuildEntitiesMigration(
   const ownsLock = options.lock === undefined
   const lock = options.lock ?? acquireBuildEntitiesMigrationLock(services, options)
   try {
-    const planOnly = !options.apply
+    const planOnly = !options.apply || options.dryRun === true
     const result = await buildEntities(services.facts, services.entities, {
-      apply: options.apply,
-      dryRun: options.dryRun,
+      apply: !planOnly,
+      dryRun: planOnly || options.dryRun,
       projectId: options.projectId,
     })
 

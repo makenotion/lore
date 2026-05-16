@@ -27,7 +27,11 @@ import {
   parseSynopsisBatchSize,
   runSynopsisBackfill,
 } from "./migrate/synopsis.js"
-import { loadTopicAliasMerges, printAliasMergeResults } from "./migrate/topic-merge.js"
+import {
+  loadTopicAliasMerges,
+  printAliasMergeResults,
+  runSimilarTopicsMigration,
+} from "./migrate/topic-merge.js"
 import { migrationLockPath } from "../migration-lock.js"
 import type { BuildConfidenceScoresPlan } from "../../core/confidence-migration.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
@@ -527,6 +531,42 @@ describe("runFactEncodingFix", () => {
     expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
   })
 
+  it("dry-run wins over apply for direct callers", async () => {
+    const encoded = [
+      {
+        id: "f1",
+        rawSubject: "A &amp; B",
+        rawObject: "x",
+        decodedSubject: "A & B",
+        decodedObject: "x",
+        rawDedupKey: "",
+        decodedDedupKey: "abc",
+        predicate: "uses",
+      },
+    ]
+    const services = {
+      facts: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          collisions: [],
+          fixes: [encoded[0]],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runFactEncodingFix(services as never, { apply: true, dryRun: true })
+    log.mockRestore()
+
+    expect(services.facts.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
+    const joined = logs.join("\n")
+    expect(joined).toContain("Would decode 1 HTML-encoded fact")
+    expect(joined).not.toContain("Decoded 1 HTML-encoded fact")
+  })
+
   it("--yes forwards dryRun=false and labels the output as applied", async () => {
     const encoded = [
       {
@@ -666,6 +706,52 @@ describe("runMemoryEncodingFix", () => {
     expect(services.memories.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
     expect(logs.some((l) => l.includes("Would decode 1 HTML-encoded memory"))).toBe(true)
     expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
+  })
+
+  it("dry-run wins over apply for direct callers", async () => {
+    const encoded = [
+      {
+        id: "m1",
+        rawTitle: "Build &amp; Tooling",
+        decodedTitle: "Build & Tooling",
+        titleNeedsFix: true,
+        contentNeedsFix: false,
+        contentBytes: 0,
+        contentTooLargeToFix: false,
+        rawContent: null,
+        decodedContent: null,
+        contentFetchFailed: false,
+      },
+    ]
+    const services = {
+      memories: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          oversizedSkipped: [],
+          oversizedAnchoredPlanned: [],
+          contentFetchFailures: [],
+          fixes: [
+            {
+              ...encoded[0],
+              titleFixed: true,
+              contentFixed: false,
+            },
+          ],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: true, dryRun: true })
+    log.mockRestore()
+
+    expect(services.memories.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
+    const joined = logs.join("\n")
+    expect(joined).toContain("Would decode 1 HTML-encoded memory")
+    expect(joined).not.toContain("Decoded 1 HTML-encoded memory")
   })
 
   it("reports nothing-to-do on a clean vault", async () => {
@@ -1022,6 +1108,35 @@ describe("runAgentNormalization", () => {
     })
   })
 
+  it("dry-run wins over apply for direct callers", async () => {
+    const row = {
+      id: "m1",
+      rawAgent: "Claude",
+      canonicalAgent: "Claude Code",
+    }
+    const services = {
+      memories: {
+        normalizeAgents: vi.fn().mockResolvedValue({
+          encoded: [row],
+          fixes: [row],
+          errors: [],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runAgentNormalization(services as never, { apply: true, dryRun: true })
+    log.mockRestore()
+
+    expect(services.memories.normalizeAgents).toHaveBeenCalledWith({ dryRun: true })
+    const joined = logs.join("\n")
+    expect(joined).toContain("Would normalize 1 memory")
+    expect(joined).not.toContain("Normalized 1 memory")
+  })
+
   it("emits the discovery breadcrumb on stderr before the (potentially long-blocking) normalizeAgents call", async () => {
     // Same hang risk as the synopsis and memory-encoding paths:
     // `findNormalizableAgents` paginates the Memories DS without
@@ -1314,6 +1429,73 @@ describe("printAliasMergeResults", () => {
   })
 })
 
+describe("runSimilarTopicsMigration", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "))
+    })
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+  })
+
+  function makeServices() {
+    return {
+      vault: {
+        migrateSimilarTopics: vi.fn(async () => ({
+          groups: [
+            {
+              normalizedKey: "build-tools",
+              canonicalName: "Build Tools",
+              canonicalId: "topic-canonical",
+              siblingIds: ["topic-sibling"],
+              siblings: [{ id: "topic-sibling", name: "Build & Tools" }],
+            },
+          ],
+          mergeResults: [
+            {
+              normalizedKey: "build-tools",
+              canonicalName: "Build Tools",
+              canonicalId: "topic-canonical",
+              canonicalProjectIds: ["project-1"],
+              archivedIds: ["topic-sibling"],
+              reassignedMemoryIds: ["memory-1"],
+            },
+          ],
+        })),
+      },
+    }
+  }
+
+  it("dry-run wins over apply for direct callers", async () => {
+    const services = makeServices()
+
+    await runSimilarTopicsMigration(services as never, {
+      apply: true,
+      dryRun: true,
+    })
+
+    expect(services.vault.migrateSimilarTopics).toHaveBeenCalledWith({
+      dryRun: true,
+    })
+    expect(services.vault.migrateSimilarTopics).not.toHaveBeenCalledWith({
+      dryRun: false,
+    })
+    const joined = logs.join("\n")
+    expect(joined).toContain("Would merge 1 normalized-equivalent topic group")
+    expect(joined).toContain("1 sibling row would be archived")
+    expect(joined).toContain("would re-point 1 memory")
+    expect(joined).toContain("Plan only")
+    expect(joined).not.toContain("Merged 1 normalized-equivalent topic group")
+    expect(joined).not.toContain("re-pointed 1 memory")
+  })
+})
+
 describe("runBuildEntitiesMigration", () => {
   let logs: string[]
   let logSpy: ReturnType<typeof vi.spyOn>
@@ -1473,6 +1655,44 @@ describe("runBuildEntitiesMigration", () => {
       (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
         .queryBySubject
     ).toHaveBeenCalled()
+  })
+
+  it("dry-run wins over apply for direct callers", async () => {
+    const lockPath = seedEntityLock(process.pid)
+    const services = addLockFields({
+      entities: {
+        listAll: vi.fn().mockResolvedValue([]),
+        create: vi.fn(async () => {
+          throw new Error("should not create entities")
+        }),
+        addAliases: vi.fn(async () => {
+          throw new Error("should not add aliases")
+        }),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([makeFact("f1")]),
+        setEntityRelations: vi.fn(async () => {
+          throw new Error("should not repoint facts")
+        }),
+      },
+      vault: {
+        getClient: vi.fn(),
+      },
+    }) as never
+
+    await runBuildEntitiesMigration(services, { apply: true, dryRun: true })
+
+    expect(existsSync(lockPath)).toBe(true)
+    expect(
+      (services as { entities: { create: ReturnType<typeof vi.fn> } }).entities.create
+    ).not.toHaveBeenCalled()
+    expect(
+      (services as { facts: { setEntityRelations: ReturnType<typeof vi.fn> } }).facts
+        .setEntityRelations
+    ).not.toHaveBeenCalled()
+    const joined = logs.join("\n")
+    expect(joined).toContain("Would canonicalize")
+    expect(joined).not.toContain("Canonicalized")
   })
 })
 
@@ -2118,6 +2338,29 @@ describe("runBuildConfidenceScores", () => {
     expect(joined).toContain("wrote 2 rows")
   })
 
+  it("dry-run wins over apply for direct callers", async () => {
+    const services = makeServices({
+      memories: [
+        fakeMemory({
+          id: "m1",
+          confidence: "certain",
+          confidenceScore: null,
+          createdAt: "2026-04-29T00:00:00.000Z",
+        }),
+      ],
+    })
+    const result = await runBuildConfidenceScores(services as never, {
+      apply: true,
+      dryRun: true,
+    })
+
+    expect(result.written).toBe(0)
+    expect(services.memories.applyBackfillScore).not.toHaveBeenCalled()
+    const joined = logs.join("\n")
+    expect(joined).toContain("dry-run: no writes performed")
+    expect(joined).not.toContain("wrote 1 row")
+  })
+
   it("emits the no-rows-to-seed message when every row is already scored", async () => {
     const services = makeServices({
       memories: [fakeMemory({ id: "m1", confidenceScore: 0.85 })],
@@ -2270,5 +2513,139 @@ describe("runBuildConfidenceScores", () => {
     expect(captured.filter((c) => c.includes("Discovering memories"))).toHaveLength(0)
     expect(services.memories.listAllForBackfill).not.toHaveBeenCalled()
     expect(services.memories.applyBackfillScore).not.toHaveBeenCalled()
+  })
+})
+
+describe("runBuildFactConfidenceScores", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+  let originalStderrWrite: typeof process.stderr.write
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "))
+    })
+    originalStderrWrite = process.stderr.write
+    process.stderr.write = (() => true) as typeof process.stderr.write
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+    process.stderr.write = originalStderrWrite
+  })
+
+  async function* iter(facts: Fact[]) {
+    for (const fact of facts) yield fact
+  }
+
+  function makeServices(args: {
+    facts: Fact[]
+    applyBackfillScore?: (id: string, score: number, date: string) => Promise<void>
+  }) {
+    return {
+      config: { notion: { rateLimit: { concurrency: 5 } } },
+      facts: {
+        listAllForBackfill: vi.fn(() => iter(args.facts)),
+        applyBackfillScore: vi.fn(args.applyBackfillScore ?? (async () => undefined)),
+      },
+      projects: {
+        findByName: vi.fn(async () => null),
+      },
+    }
+  }
+
+  it("dry-run wins over apply for direct callers", async () => {
+    const services = makeServices({
+      facts: [
+        makeFact("f1", {
+          confidence: "certain",
+          confidenceScore: null,
+          createdAt: "2026-04-29T00:00:00.000Z",
+        }),
+      ],
+    })
+    const result = await runBuildFactConfidenceScores(services as never, {
+      apply: true,
+      dryRun: true,
+    })
+
+    expect(result.written).toBe(0)
+    expect(services.facts.applyBackfillScore).not.toHaveBeenCalled()
+    const joined = logs.join("\n")
+    expect(joined).toContain("dry-run: no writes performed")
+    expect(joined).not.toContain("wrote 1 row")
+  })
+})
+
+describe("runBackfillFactObservedAt", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+  let originalStderrWrite: typeof process.stderr.write
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "))
+    })
+    originalStderrWrite = process.stderr.write
+    process.stderr.write = (() => true) as typeof process.stderr.write
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+    process.stderr.write = originalStderrWrite
+  })
+
+  async function* iter(facts: Fact[]) {
+    for (const fact of facts) yield fact
+  }
+
+  function makeServices(args: {
+    facts: Fact[]
+    applyObservedAtBackfill?: (
+      id: string,
+      values: { observedAt: string | null; invalidatedAt: string | null }
+    ) => Promise<void>
+  }) {
+    return {
+      config: { notion: { rateLimit: { concurrency: 5 } } },
+      facts: {
+        listAllForBackfill: vi.fn(() => iter(args.facts)),
+        applyObservedAtBackfill: vi.fn(
+          args.applyObservedAtBackfill ?? (async () => undefined)
+        ),
+      },
+      projects: {
+        findByName: vi.fn(async () => null),
+      },
+    }
+  }
+
+  it("dry-run wins over apply for direct callers", async () => {
+    const services = makeServices({
+      facts: [
+        makeFact("f1", {
+          createdAt: "2026-04-29T00:00:00.000Z",
+          observedAt: null,
+          invalidatedAt: null,
+        }),
+      ],
+    })
+    const result = await runBackfillFactObservedAt(services as never, {
+      apply: true,
+      dryRun: true,
+    })
+
+    expect(result.written).toBe(0)
+    expect(result.failures).toEqual([])
+    expect(services.facts.applyObservedAtBackfill).not.toHaveBeenCalled()
+    expect(services.facts.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: undefined,
+      includeInvalidated: true,
+    })
+    const joined = logs.join("\n")
+    expect(joined).toContain("dry-run: no writes performed")
+    expect(joined).not.toContain("wrote 1 row")
   })
 })

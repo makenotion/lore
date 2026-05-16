@@ -29,7 +29,7 @@ export async function runBuildConfidenceScores(
     includeArchived?: boolean
   }
 ): Promise<BuildConfidenceScoresResult> {
-  const planOnly = !options.apply
+  const planOnly = !options.apply || options.dryRun === true
   const scope = await resolveMigrationProjectScope(services, {
     buildConfidenceScores: true,
     project: options.projectName,
@@ -46,8 +46,8 @@ export async function runBuildConfidenceScores(
 
   const result = await runBuildConfidenceScoresMigration({
     services,
-    apply: options.apply,
-    dryRun: options.dryRun,
+    apply: !planOnly,
+    dryRun: planOnly || options.dryRun,
     projectName,
     projectId: scope.projectId,
   })
@@ -126,7 +126,7 @@ export async function runBuildFactConfidenceScores(
     includeArchived?: boolean
   }
 ): Promise<BuildFactConfidenceScoresResult> {
-  const planOnly = !options.apply
+  const planOnly = !options.apply || options.dryRun === true
   const scope = await resolveMigrationProjectScope(services, {
     buildFactConfidenceScores: true,
     project: options.projectName,
@@ -143,8 +143,8 @@ export async function runBuildFactConfidenceScores(
 
   const result = await runBuildFactConfidenceScoresMigration({
     services,
-    apply: options.apply,
-    dryRun: options.dryRun,
+    apply: !planOnly,
+    dryRun: planOnly || options.dryRun,
     projectName,
     projectId: scope.projectId,
   })

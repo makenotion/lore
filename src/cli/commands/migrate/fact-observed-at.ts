@@ -24,7 +24,7 @@ export async function runBackfillFactObservedAt(
     includeArchived?: boolean
   }
 ): Promise<BackfillFactObservedAtResult> {
-  const planOnly = !options.apply
+  const planOnly = !options.apply || options.dryRun === true
   const scope = await resolveMigrationProjectScope(services, {
     backfillFactObservedAt: true,
     project: options.projectName,
@@ -41,8 +41,8 @@ export async function runBackfillFactObservedAt(
 
   const result = await runBackfillFactObservedAtMigration({
     services,
-    apply: options.apply,
-    dryRun: options.dryRun,
+    apply: !planOnly,
+    dryRun: planOnly || options.dryRun,
     projectName,
     projectId: scope.projectId,
   })
