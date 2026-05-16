@@ -134,13 +134,17 @@ The redaction taxonomy for those diagnostics lives in the top-of-file JSDoc in
 
 Do not bump versions unless the human lead explicitly asks for a version bump in
 this turn. When a requested agent-observable MCP change requires a release bump,
-update these four literals in the same commit:
+update these version sources in the same commit:
 
 1. `package.json#version`
-2. The `version` string passed to `new McpServer({ name, version }, ...)` in
+2. `package-lock.json#version` and `package-lock.json#packages[""].version`
+3. The `version` string passed to `new McpServer({ name, version }, ...)` in
    `src/mcp/server.ts`
-3. The `.version(...)` argument in `src/cli/index.ts`
-4. `USER_AGENT` in `src/notion/client.ts`
+4. The `.version(...)` argument in `src/cli/index.ts`
+5. `USER_AGENT` in `src/notion/client.ts`
+
+The version-sync guard (`npm run version:check`, CI, and the staged pre-commit
+hook) fails if these literals diverge.
 
 Add the corresponding historical note to
 [docs/archive/mcp-tool-history.md](../../docs/archive/mcp-tool-history.md) so

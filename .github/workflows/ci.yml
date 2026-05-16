@@ -90,6 +90,9 @@ jobs:
       - name: Format check
         run: npm run format:check
 
+      - name: Version sync check
+        run: npm run version:check
+
       - name: Lint
         run: npm run lint
 
