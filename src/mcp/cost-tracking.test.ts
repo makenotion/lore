@@ -1,11 +1,24 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { recordNotionRead, recordNotionWrite } from "../core/cost-accounting.js"
 import { readLedgerEvents, resolveCostTracking } from "../core/cost-ledger.js"
 import type { LoreServices } from "../services.js"
 import { runMcpInvocationWithCostTracking } from "./cost-tracking.js"
+
+const appendCostEventMock = vi.hoisted(() => vi.fn())
+
+vi.mock("../core/cost-ledger.js", async () => {
+  const actual = await vi.importActual<typeof import("../core/cost-ledger.js")>(
+    "../core/cost-ledger.js"
+  )
+  appendCostEventMock.mockImplementation(actual.appendCostEvent)
+  return {
+    ...actual,
+    appendCostEvent: appendCostEventMock,
+  }
+})
 
 describe("MCP cost tracking", () => {
   const dirs: string[] = []
@@ -18,6 +31,50 @@ describe("MCP cost tracking", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
     restoreEnv("LORE_AGENT_NAME", originalEnv.agentName)
     restoreEnv("LORE_SESSION_ID", originalEnv.sessionId)
+    appendCostEventMock.mockClear()
+  })
+
+  it("runs disabled invocations without appending ledger rows or touching ledger files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const ledgerPath = join(root, "state", "ledger.jsonl")
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: false, ledgerPath: "state/ledger.jsonl" } },
+      root
+    )
+    const services = {
+      costTracking,
+      context: { project: { name: "Project" } },
+    } as unknown as LoreServices
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    try {
+      const result = await runMcpInvocationWithCostTracking(
+        services,
+        "lore-memory",
+        { action: "save", title: "ignored while disabled" },
+        async () => {
+          recordNotionRead()
+          recordNotionWrite()
+          return {
+            content: [{ type: "text", text: "visible response" }],
+            costOutputs: { memoriesCreated: 1 },
+          }
+        }
+      )
+
+      expect(result).toEqual({
+        content: [{ type: "text", text: "visible response" }],
+        costOutputs: { memoriesCreated: 1 },
+      })
+      expect(await readLedgerEvents(costTracking)).toEqual([])
+      expect(appendCostEventMock).not.toHaveBeenCalled()
+      expect(existsSync(join(root, "state"))).toBe(false)
+      expect(existsSync(ledgerPath)).toBe(false)
+      expect(stderr).not.toHaveBeenCalled()
+    } finally {
+      stderr.mockRestore()
+    }
   })
 
   it("logs redacted invocation metrics without changing tool results", async () => {
