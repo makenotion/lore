@@ -70,10 +70,6 @@ export const statusCommand = new Command("status")
   .option("--project <name>", "Scope project-dependent status sections to a project")
   .action(async (opts: { project?: string }) => {
     try {
-      // `lore status` is the canonical operator-facing surface for drift
-      // warnings — always run the check, bypass the debounce marker.
-      const services = await initServices(undefined, { driftCheck: true })
-      const stats = await services.vault.stats()
       const explicitProjectName = validateExplicitProjectScopeName(
         opts.project,
         "--project",
@@ -81,6 +77,10 @@ export const statusCommand = new Command("status")
           listHint: "run `lore status projects` to list configured projects",
         }
       )
+      // `lore status` is the canonical operator-facing surface for drift
+      // warnings — always run the check, bypass the debounce marker.
+      const services = await initServices(undefined, { driftCheck: true })
+      const stats = await services.vault.stats()
       const project =
         explicitProjectName !== undefined
           ? await resolveProjectScopeName(

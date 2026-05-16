@@ -69,12 +69,6 @@ export const digestCommand = new Command("digest")
       dryRun?: boolean
     }) => {
       try {
-        const services = await initServices()
-
-        let projectId: string | undefined
-        let projectLabel: string | null = null
-        let projectConfigPath: string | undefined
-
         const explicitProjectName = validateExplicitProjectScopeName(
           opts.project,
           "--project",
@@ -82,6 +76,12 @@ export const digestCommand = new Command("digest")
             listHint: "run `lore status projects` to list configured projects",
           }
         )
+        const services = await initServices()
+
+        let projectId: string | undefined
+        let projectLabel: string | null = null
+        let projectConfigPath: string | undefined
+
         if (explicitProjectName !== undefined) {
           const found = await resolveProjectScopeName(
             services.projects,

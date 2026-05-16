@@ -82,6 +82,18 @@ describe("statusCommand", () => {
     )
   })
 
+  it("rejects blank --project before service init", async () => {
+    await expect(
+      statusCommand.parseAsync(["--project", ""], { from: "user" })
+    ).rejects.toThrow("__process_exit_1__")
+
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Status failed:")
+    expect(errorText).toContain('Project "" could not be resolved')
+    expect(errorText).toContain("Fix the project scope")
+  })
+
   it("exits with archived-specific wording for archived topic scopes", async () => {
     const findByName = vi.fn(
       async (name: string, options?: { includeArchived?: boolean }) =>

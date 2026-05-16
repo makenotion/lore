@@ -104,6 +104,20 @@ describe("digestCommand", () => {
     vi.restoreAllMocks()
   })
 
+  it("exits 1 before initializing services when --project is blank", async () => {
+    await digestCommand.parseAsync(["--project", ""], { from: "user" })
+
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+    expect(vi.mocked(gatherDigestData)).not.toHaveBeenCalled()
+    expect(vi.mocked(spawnBackgroundSave)).not.toHaveBeenCalled()
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Digest failed:")
+    expect(errorText).toContain('Project "" could not be resolved')
+    expect(errorText).toContain("Fix the project scope")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+  })
+
   it("exits 1 with the no-project diagnostic when neither --project nor context resolves a project", async () => {
     vi.mocked(initServices).mockResolvedValue({
       config: { projects: [] },

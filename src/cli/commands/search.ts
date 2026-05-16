@@ -46,9 +46,6 @@ export const searchCommand = new Command("search")
           return
         }
 
-        const services = await initServices()
-        let projectId: string | undefined
-
         const explicitProjectName = validateExplicitProjectScopeName(
           parsed.value.projectName,
           "--project",
@@ -56,6 +53,9 @@ export const searchCommand = new Command("search")
             listHint: "run `lore status projects` to list configured projects",
           }
         )
+        const services = await initServices()
+        let projectId: string | undefined
+
         if (explicitProjectName !== undefined) {
           const found = await resolveProjectScopeName(
             services.projects,

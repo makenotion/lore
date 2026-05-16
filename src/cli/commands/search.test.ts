@@ -197,21 +197,16 @@ describe("searchCommand", () => {
     expect(exitTrap.exitCodes).toEqual([1])
   })
 
-  it("exits non-zero and skips search when --project is blank", async () => {
-    const findByName = vi.fn()
-    const search = vi.fn()
-    vi.mocked(initServices).mockResolvedValue({
-      projects: { findByName },
-      memories: { search },
-      context: { project: { id: "proj-ambient", name: "Ambient" } },
-    } as never)
-
+  it("exits non-zero before initializing services when --project is blank", async () => {
     await searchCommand.parseAsync(["auth", "--project", ""], { from: "user" })
 
-    expect(findByName).not.toHaveBeenCalled()
-    expect(search).not.toHaveBeenCalled()
-    expect(errorSpy.mock.calls.join("\n")).toContain('Project "" could not be resolved')
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Search failed:")
+    expect(errorText).toContain('Project "" could not be resolved')
+    expect(errorText).toContain("Fix the project scope")
     expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
   })
 
   it("uses the auto-detected project when --project is omitted", async () => {
