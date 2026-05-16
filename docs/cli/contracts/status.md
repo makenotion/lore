@@ -112,5 +112,9 @@ Cost tracking:
   the skipped-line count.
 - If a previous ledger append failed, `lore status` shows a warning while the
   append-error marker exists. A later successful append clears the marker.
+- The append-error marker only reflects append operations that threw. It does
+  not prove successful appends were forced to stable storage; a host crash or
+  power loss may still drop the most recent accepted cost events without a
+  marker.
 - Unreadable ledger files must not fail status output. They render a warning
   and status still surfaces any append-error marker.

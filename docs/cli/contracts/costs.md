@@ -6,6 +6,11 @@
 does not initialize Notion services and must never require vault reachability to
 summarize or export existing local usage rows.
 
+The ledger is advisory telemetry, not an authoritative billing or audit log.
+Successful appends are not forced to stable storage with fsync/fdatasync, so a
+host crash or power loss may drop a small tail of recently accepted events
+without producing an append-error marker.
+
 - `costTracking.ledgerPath` is the ledger family root. Readers include the
   legacy root file and same-directory per-process shard files derived from the
   configured basename.

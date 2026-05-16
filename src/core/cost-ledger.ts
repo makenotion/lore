@@ -1,3 +1,13 @@
+/**
+ * Local advisory cost accounting for Lore-owned model and Notion usage.
+ *
+ * The ledger is not a crash-durable log. A successful append means the write
+ * call completed and no append error was observed; it does not mean the event
+ * was forced to stable storage with fsync/fdatasync. A host crash or power loss
+ * can drop a small tail of recently accepted events without leaving an
+ * append-error marker, so callers must treat totals as best-effort telemetry
+ * rather than authoritative billing or audit data.
+ */
 import { mkdir, open, readFile, readdir, unlink, writeFile } from "node:fs/promises"
 import { createReadStream } from "node:fs"
 import { createInterface } from "node:readline"
