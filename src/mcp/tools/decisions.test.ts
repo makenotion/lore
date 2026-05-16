@@ -908,6 +908,26 @@ describe("lore-decision date validation", () => {
     expect(reviewCompleted).toHaveBeenCalledWith("dec-1", null)
   })
 
+  it("defaults reviewBy to exactly +90 UTC calendar days across time zones", async () => {
+    const cases = ["UTC", "America/Los_Angeles", "Asia/Tokyo"] as const
+
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      for (const timeZone of cases) {
+        vi.stubEnv("TZ", timeZone)
+        vi.setSystemTime(new Date("2026-01-01T00:30:00.000Z"))
+        const { review, reviewCompleted } = setUpReviewHarness()
+
+        await review({ decisionId: "dec-1" } as never)
+
+        expect(reviewCompleted).toHaveBeenCalledWith("dec-1", "2026-04-01")
+      }
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllEnvs()
+    }
+  })
+
   it("rejects malformed review dates before marking reviewed", async () => {
     const { review, reviewCompleted } = setUpReviewHarness()
 

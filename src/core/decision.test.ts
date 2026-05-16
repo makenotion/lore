@@ -882,19 +882,28 @@ describe("DecisionService.reviewCompleted", () => {
     expect(updateArgs.properties["Review By"]).toEqual({ date: null })
   })
 
-  it("defaults to +90 days when no date is given", async () => {
-    const client = createMockClient()
-    const service = new DecisionService(client, DB)
+  it("defaults to exactly +90 UTC calendar days across time zones", async () => {
+    const cases = ["UTC", "America/Los_Angeles", "Asia/Tokyo"] as const
 
-    await service.reviewCompleted("dec-1")
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      for (const timeZone of cases) {
+        vi.stubEnv("TZ", timeZone)
+        vi.setSystemTime(new Date("2026-01-01T00:30:00.000Z"))
+        const client = createMockClient()
+        const service = new DecisionService(client, DB)
 
-    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    const pushed = new Date(updateArgs.properties["Review By"].date.start)
-    const now = new Date()
-    const diffDays = Math.round((pushed.getTime() - now.getTime()) / 86_400_000)
-    // Allow ±1 day slack for clock boundaries / DST.
-    expect(diffDays).toBeGreaterThanOrEqual(89)
-    expect(diffDays).toBeLessThanOrEqual(91)
+        await service.reviewCompleted("dec-1")
+
+        const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock
+          .calls[0][0]
+        expect(updateArgs.properties["Review By"]).toEqual({
+          date: { start: "2026-04-01" },
+        })
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

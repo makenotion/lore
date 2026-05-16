@@ -266,7 +266,7 @@ function todayISO(): string {
 
 function addDaysISO(base: Date, days: number): string {
   const next = new Date(base)
-  next.setDate(next.getDate() + days)
+  next.setUTCDate(next.getUTCDate() + days)
   return next.toISOString().split("T")[0]
 }
 
