@@ -14,6 +14,7 @@ vi.hoisted(() => {
 })
 
 const serviceClientUsersMe = vi.hoisted(() => vi.fn())
+const operationAccountingClient = vi.hoisted(() => vi.fn((client: unknown) => client))
 
 // Mock config.js so initServices' loadConfig / findConfigFile calls
 // route through controllable stubs. The resolveDriftCheck tests don't
@@ -36,6 +37,10 @@ vi.mock("./notion/client.js", async () => {
     createClient: vi.fn(() => ({ users: { me: serviceClientUsersMe } })),
   }
 })
+
+vi.mock("./notion/operation-accounting.js", () => ({
+  createOperationAccountingClient: operationAccountingClient,
+}))
 
 vi.mock("./core/context.js", async () => {
   const actual =
@@ -339,6 +344,64 @@ describe("initServicesFromConfig — lazy author identity", () => {
     vi.mocked(resolveAuth).mockReset()
     vi.mocked(resolveProject).mockReset()
     serviceClientUsersMe.mockReset()
+    operationAccountingClient.mockClear()
+  })
+
+  it("does not install operation accounting when cost tracking is disabled", async () => {
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "init-token",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+
+      expect(services.costTracking.enabled).toBe(false)
+      expect(operationAccountingClient).not.toHaveBeenCalled()
+    } finally {
+      loadSpy.mockRestore()
+    }
+  })
+
+  it("installs operation accounting when cost tracking is enabled", async () => {
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "init-token",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", {
+        ...config,
+        costTracking: { enabled: true, ledgerPath: "costs.jsonl" },
+      })
+
+      expect(services.costTracking.enabled).toBe(true)
+      expect(operationAccountingClient).toHaveBeenCalledOnce()
+    } finally {
+      loadSpy.mockRestore()
+    }
   })
 
   it("does not call users.me during read-only service initialization", async () => {

@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   registerTaskTools: vi.fn(),
   registerProcedureTools: vi.fn(),
   registerHelpResources: vi.fn(),
+  installCostTrackingToolWrapper: vi.fn(),
   servers: [] as MockServer[],
   transports: [] as Array<{ kind: "stdio" }>,
 }))
@@ -69,6 +70,10 @@ vi.mock("./tools/procedures.js", () => ({
 
 vi.mock("./help.js", () => ({
   registerHelpResources: mocks.registerHelpResources,
+}))
+
+vi.mock("./cost-tracking.js", () => ({
+  installCostTrackingToolWrapper: mocks.installCostTrackingToolWrapper,
 }))
 
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
@@ -121,11 +126,42 @@ afterEach(() => {
   mocks.registerTaskTools.mockReset()
   mocks.registerProcedureTools.mockReset()
   mocks.registerHelpResources.mockReset()
+  mocks.installCostTrackingToolWrapper.mockReset()
   mocks.servers.length = 0
   mocks.transports.length = 0
 })
 
 describe("startServer", () => {
+  it("does not install the cost tracking wrapper when cost tracking is disabled", async () => {
+    mocks.initServices.mockResolvedValue({
+      costTracking: { enabled: false },
+    } as never)
+
+    await startServer()
+
+    expect(mocks.installCostTrackingToolWrapper).not.toHaveBeenCalled()
+    expect(mocks.registerContextTools).toHaveBeenCalledWith(mocks.servers[0], {
+      costTracking: { enabled: false },
+    })
+    expect(mocks.registerHelpResources).toHaveBeenCalledWith(mocks.servers[0])
+    expect(mocks.servers[0]?.connect).toHaveBeenCalledWith(mocks.transports[0])
+  })
+
+  it("installs the cost tracking wrapper when cost tracking is enabled", async () => {
+    const services = { costTracking: { enabled: true } }
+    mocks.initServices.mockResolvedValue(services as never)
+
+    await startServer()
+
+    expect(mocks.installCostTrackingToolWrapper).toHaveBeenCalledOnce()
+    expect(mocks.installCostTrackingToolWrapper).toHaveBeenCalledWith(
+      mocks.servers[0],
+      services
+    )
+    expect(mocks.registerContextTools).toHaveBeenCalledWith(mocks.servers[0], services)
+    expect(mocks.servers[0]?.connect).toHaveBeenCalledWith(mocks.transports[0])
+  })
+
   it("starts diagnostic tools when service initialization fails", async () => {
     mocks.initServices.mockRejectedValue(
       new Error(
@@ -405,7 +441,7 @@ describe("startServer", () => {
   })
 
   it("does not convert tool registration failures into setup diagnostics", async () => {
-    mocks.initServices.mockResolvedValue({} as never)
+    mocks.initServices.mockResolvedValue({ costTracking: { enabled: false } } as never)
     mocks.registerMemoryTools.mockImplementation(() => {
       throw new Error("registration boom")
     })
@@ -435,7 +471,7 @@ describe("startServer", () => {
   it("does not convert transport connection failures into setup diagnostics", async () => {
     mocks.initServices.mockImplementation(async () => {
       mocks.servers[0]!.connect.mockRejectedValue(new Error("connect boom"))
-      return {} as never
+      return { costTracking: { enabled: false } } as never
     })
     const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const stdoutLog = vi.spyOn(console, "log").mockImplementation(() => undefined)

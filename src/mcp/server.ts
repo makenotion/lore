@@ -110,7 +110,9 @@ export async function startServer(): Promise<void> {
   }
 
   if (services) {
-    installCostTrackingToolWrapper(server, services)
+    if (services.costTracking.enabled) {
+      installCostTrackingToolWrapper(server, services)
+    }
     // Register every polymorphic dispatcher. Each register* call below
     // adds exactly one `lore-*` tool name to the agent-visible surface;
     // the polymorphic dispatch pattern multiplexes per-tool actions

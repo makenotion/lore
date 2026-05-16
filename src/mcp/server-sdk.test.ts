@@ -153,7 +153,10 @@ describe("diagnostic MCP SDK schema", () => {
 
 describe("MCP help resources", () => {
   it("lists and reads the help index and action recipes on initialized startup", async () => {
-    mocks.initServices.mockResolvedValue({ profile: undefined } as never)
+    mocks.initServices.mockResolvedValue({
+      profile: undefined,
+      costTracking: { enabled: false },
+    } as never)
 
     await startServer()
 

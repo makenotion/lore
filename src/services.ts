@@ -547,10 +547,14 @@ export async function initServicesFromConfig(
       defaultOnBackoff(ms, source)
     },
   }
-  const wrapRuntimeClient = (raw: Client): Client =>
-    createOperationAccountingClient(
-      createLimitedClient(installWriteBudget(raw), rateLimitOptions, rateLimitDeps)
+  const wrapRuntimeClient = (raw: Client): Client => {
+    const limited = createLimitedClient(
+      installWriteBudget(raw),
+      rateLimitOptions,
+      rateLimitDeps
     )
+    return costTracking.enabled ? createOperationAccountingClient(limited) : limited
+  }
   const client = authRefresh
     ? createAuthRefreshingClient(authSnapshotRef.current, authRefresh, {
         createClient: (token, baseUrl) => wrapRuntimeClient(createClient(token, baseUrl)),
