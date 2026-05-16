@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
-import type { Client, PageObjectResponse } from "@notionhq/client"
+import type {
+  Client,
+  GetPagePropertyResponse,
+  PageObjectResponse,
+} from "@notionhq/client"
 import {
   FactService,
   REPOINT_ENTITY_CONCURRENCY,
@@ -36,9 +40,19 @@ function factPage(overrides: {
   projectIds?: string[]
   sourceMemoryId?: string | null
   subjectEntityId?: string | null
+  subjectEntityIds?: string[]
+  subjectEntityHasMore?: boolean
   objectEntityId?: string | null
+  objectEntityIds?: string[]
+  objectEntityHasMore?: boolean
   archived?: boolean
 }): PageObjectResponse {
+  const subjectEntityIds =
+    overrides.subjectEntityIds ??
+    (overrides.subjectEntityId ? [overrides.subjectEntityId] : [])
+  const objectEntityIds =
+    overrides.objectEntityIds ??
+    (overrides.objectEntityId ? [overrides.objectEntityId] : [])
   return {
     object: "page",
     id: overrides.id ?? "fact-id",
@@ -95,15 +109,40 @@ function factPage(overrides: {
         rich_text: overrides.dedupKey ? [{ plain_text: overrides.dedupKey }] : [],
       } as unknown,
       SubjectEntity: {
+        id: "subject-entity-prop",
         type: "relation",
-        relation: overrides.subjectEntityId ? [{ id: overrides.subjectEntityId }] : [],
+        relation: subjectEntityIds.map((id) => ({ id })),
+        has_more: overrides.subjectEntityHasMore ?? false,
       } as unknown,
       ObjectEntity: {
+        id: "object-entity-prop",
         type: "relation",
-        relation: overrides.objectEntityId ? [{ id: overrides.objectEntityId }] : [],
+        relation: objectEntityIds.map((id) => ({ id })),
+        has_more: overrides.objectEntityHasMore ?? false,
       } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
+}
+
+function relationListResponse(ids: string[]): GetPagePropertyResponse {
+  return {
+    object: "list",
+    type: "property_item",
+    property_item: {
+      id: "relation-prop",
+      type: "relation",
+      relation: {},
+      next_url: null,
+    },
+    results: ids.map((id) => ({
+      object: "property_item",
+      id: "relation-prop",
+      type: "relation",
+      relation: { id },
+    })),
+    has_more: false,
+    next_cursor: null,
+  } as GetPagePropertyResponse
 }
 
 function createMockClient() {
@@ -112,11 +151,17 @@ function createMockClient() {
   )
   return {
     dataSources: { query: vi.fn() },
-    pages: { create: vi.fn(), retrieve, update: vi.fn() },
+    pages: {
+      create: vi.fn(),
+      properties: { retrieve: vi.fn() },
+      retrieve,
+      update: vi.fn(),
+    },
   } as unknown as Client & {
     dataSources: { query: ReturnType<typeof vi.fn> }
     pages: {
       create: ReturnType<typeof vi.fn>
+      properties: { retrieve: ReturnType<typeof vi.fn> }
       retrieve: ReturnType<typeof vi.fn>
       update: ReturnType<typeof vi.fn>
     }
@@ -299,6 +344,120 @@ describe("FactService.repointEntity", () => {
       properties: {
         SubjectEntity: { relation: [{ id: "ent-winner" }] },
         ObjectEntity: { relation: [{ id: "ent-winner" }] },
+      },
+    })
+  })
+
+  it("repoints loser ids in multi-valued relations and preserves unrelated ids", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-multi",
+          subjectEntityIds: ["ent-stale", "ent-loser"],
+          objectEntityIds: ["ent-loser", "ent-other"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.plans).toEqual([{ factId: "fact-multi", subject: true, object: true }])
+    expect(result.factsRepointed).toBe(1)
+    expect(result.subjectRelationsRepointed).toBe(1)
+    expect(result.objectRelationsRepointed).toBe(1)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-multi",
+      properties: {
+        SubjectEntity: {
+          relation: [{ id: "ent-stale" }, { id: "ent-winner" }],
+        },
+        ObjectEntity: {
+          relation: [{ id: "ent-winner" }, { id: "ent-other" }],
+        },
+      },
+    })
+  })
+
+  it("does not duplicate the winner when a multi-valued relation already has it", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-winner-present",
+          subjectEntityIds: ["ent-winner", "ent-other", "ent-loser"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.plans).toEqual([
+      { factId: "fact-winner-present", subject: true, object: false },
+    ])
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-winner-present",
+      properties: {
+        SubjectEntity: {
+          relation: [{ id: "ent-winner" }, { id: "ent-other" }],
+        },
+      },
+    })
+  })
+
+  it("hydrates truncated relation properties before planning and preserving repoints", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-truncated",
+          subjectEntityIds: ["ent-inline"],
+          subjectEntityHasMore: true,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.properties.retrieve.mockResolvedValueOnce(
+      relationListResponse(["ent-inline", "ent-hidden", "ent-loser"])
+    )
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.plans).toEqual([
+      { factId: "fact-truncated", subject: true, object: false },
+    ])
+    expect(client.pages.properties.retrieve).toHaveBeenCalledWith({
+      page_id: "fact-truncated",
+      property_id: "subject-entity-prop",
+      page_size: 100,
+      start_cursor: undefined,
+    })
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-truncated",
+      properties: {
+        SubjectEntity: {
+          relation: [{ id: "ent-inline" }, { id: "ent-hidden" }, { id: "ent-winner" }],
+        },
       },
     })
   })
@@ -2061,7 +2220,7 @@ describe("FactService.pageToFacts — batched relation hydration (issue #498)", 
     expect(batchedSpy).toHaveBeenCalledTimes(1)
     const [, callPages, callPropertyNames] = batchedSpy.mock.calls[0]
     expect(callPages).toHaveLength(5)
-    expect(callPropertyNames).toEqual(["Project"])
+    expect(callPropertyNames).toEqual(["Project", "SubjectEntity", "ObjectEntity"])
 
     batchedSpy.mockRestore()
   })

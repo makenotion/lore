@@ -15,10 +15,14 @@ import {
 } from "../notion/relation-properties.js"
 import { extractFactScope } from "./fact-scope.js"
 
-// Only multi-relation columns belong here. Source/SubjectEntity/ObjectEntity
-// are 0-or-1 relation columns, so they cannot be truncated by Notion's
-// inline relation limit.
-const FACT_RELATION_PROPERTIES = [FACT_PROPS.PROJECT] as const
+// Hydrate relation columns that can legitimately exceed Notion's inline
+// relation limit. Fact keeps scalar entity ids on the public shape, but
+// repair paths may encounter multi-valued SubjectEntity/ObjectEntity rows.
+const FACT_RELATION_PROPERTIES = [
+  FACT_PROPS.PROJECT,
+  FACT_PROPS.SUBJECT_ENTITY,
+  FACT_PROPS.OBJECT_ENTITY,
+] as const
 
 /**
  * Map a Notion page to the `Fact` domain type, or `null` for rows

@@ -26,6 +26,7 @@ import {
 } from "./fact-create.js"
 import { fixFactEncoding, type FactEncodingReport } from "./fact-encoding.js"
 import { isFullPage, extractRelationIds } from "../notion/extractors.js"
+import { hydrateRelationPropertiesForPages } from "../notion/relation-properties.js"
 import { pageToFact as mapPageToFact } from "./fact-mapper.js"
 import { FactQueries, NOTION_MAX_PAGE_SIZE } from "./fact-queries.js"
 import type {
@@ -74,6 +75,24 @@ async function mapWithConcurrency<T, R>(
   return results
 }
 
+function repointRelationIds(
+  ids: string[],
+  fromEntityId: string,
+  toEntityId: string
+): string[] {
+  const next: string[] = []
+  let emittedToEntityId = false
+  for (const id of ids) {
+    const relationId = id === fromEntityId ? toEntityId : id
+    if (relationId === toEntityId) {
+      if (emittedToEntityId) continue
+      emittedToEntityId = true
+    }
+    next.push(relationId)
+  }
+  return next
+}
+
 export interface FactEntityRepointPlan {
   factId: string
   subject: boolean
@@ -103,11 +122,20 @@ export interface RepointEntityOptions {
 }
 
 export const REPOINT_ENTITY_CONCURRENCY = 8
+const RAW_ENTITY_REPOINT_RELATION_PROPERTIES = [
+  FACT_PROPS.SUBJECT_ENTITY,
+  FACT_PROPS.OBJECT_ENTITY,
+] as const
 
 interface RawEntityRelationHit {
   factId: string
-  subjectEntityId: string | null
-  objectEntityId: string | null
+  subjectEntityIds: string[]
+  objectEntityIds: string[]
+}
+
+interface EntityRelationRepointPlan extends FactEntityRepointPlan {
+  subjectEntityIds: string[]
+  objectEntityIds: string[]
 }
 
 /** Reset between tests. Not exported on the public API surface. */
@@ -183,15 +211,35 @@ export class FactService {
     id: string,
     relations: { subjectEntityId?: string | null; objectEntityId?: string | null }
   ): Promise<void> {
+    await this.setEntityRelationIds(id, {
+      subjectEntityIds:
+        relations.subjectEntityId === undefined
+          ? undefined
+          : relations.subjectEntityId
+            ? [relations.subjectEntityId]
+            : [],
+      objectEntityIds:
+        relations.objectEntityId === undefined
+          ? undefined
+          : relations.objectEntityId
+            ? [relations.objectEntityId]
+            : [],
+    })
+  }
+
+  private async setEntityRelationIds(
+    id: string,
+    relations: { subjectEntityIds?: string[]; objectEntityIds?: string[] }
+  ): Promise<void> {
     const properties: Record<string, unknown> = {}
-    if (relations.subjectEntityId !== undefined) {
+    if (relations.subjectEntityIds !== undefined) {
       properties[FACT_PROPS.SUBJECT_ENTITY] = {
-        relation: relations.subjectEntityId ? [{ id: relations.subjectEntityId }] : [],
+        relation: relations.subjectEntityIds.map((relationId) => ({ id: relationId })),
       }
     }
-    if (relations.objectEntityId !== undefined) {
+    if (relations.objectEntityIds !== undefined) {
       properties[FACT_PROPS.OBJECT_ENTITY] = {
-        relation: relations.objectEntityId ? [{ id: relations.objectEntityId }] : [],
+        relation: relations.objectEntityIds.map((relationId) => ({ id: relationId })),
       }
     }
     if (Object.keys(properties).length === 0) return
@@ -224,18 +272,27 @@ export class FactService {
     const facts = await this.queryRawEntityRelationHits(options.fromEntityId, {
       includeInvalidated: options.includeInvalidated ?? true,
     })
-    const plans = facts
+    const repointPlans = facts
       .map(
-        (fact): FactEntityRepointPlan => ({
+        (fact): EntityRelationRepointPlan => ({
           factId: fact.factId,
-          subject: fact.subjectEntityId === options.fromEntityId,
-          object: fact.objectEntityId === options.fromEntityId,
+          subject: fact.subjectEntityIds.includes(options.fromEntityId),
+          object: fact.objectEntityIds.includes(options.fromEntityId),
+          subjectEntityIds: fact.subjectEntityIds,
+          objectEntityIds: fact.objectEntityIds,
         })
       )
       .filter((plan) => plan.subject || plan.object)
+    const plans: FactEntityRepointPlan[] = repointPlans.map(
+      ({ factId, subject, object }) => ({
+        factId,
+        subject,
+        object,
+      })
+    )
 
-    const plannedSubject = plans.filter((p) => p.subject).length
-    const plannedObject = plans.filter((p) => p.object).length
+    const plannedSubject = repointPlans.filter((p) => p.subject).length
+    const plannedObject = repointPlans.filter((p) => p.object).length
 
     if (!options.apply) {
       return {
@@ -250,18 +307,30 @@ export class FactService {
     }
 
     const outcomes = await mapWithConcurrency(
-      plans,
+      repointPlans,
       REPOINT_ENTITY_CONCURRENCY,
       async (plan) => {
         const updates: {
-          subjectEntityId?: string
-          objectEntityId?: string
+          subjectEntityIds?: string[]
+          objectEntityIds?: string[]
         } = {}
-        if (plan.subject) updates.subjectEntityId = options.toEntityId
-        if (plan.object) updates.objectEntityId = options.toEntityId
+        if (plan.subject) {
+          updates.subjectEntityIds = repointRelationIds(
+            plan.subjectEntityIds,
+            options.fromEntityId,
+            options.toEntityId
+          )
+        }
+        if (plan.object) {
+          updates.objectEntityIds = repointRelationIds(
+            plan.objectEntityIds,
+            options.fromEntityId,
+            options.toEntityId
+          )
+        }
 
         try {
-          await this.setEntityRelations(plan.factId, updates)
+          await this.setEntityRelationIds(plan.factId, updates)
           return { plan, error: null }
         } catch (err) {
           return { plan, error: err }
@@ -335,13 +404,19 @@ export class FactService {
         page_size: NOTION_MAX_PAGE_SIZE,
         start_cursor: cursor,
       })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+      const hydratedPages = await hydrateRelationPropertiesForPages(
+        this.client,
+        pages,
+        RAW_ENTITY_REPOINT_RELATION_PROPERTIES
+      )
+      for (const page of hydratedPages) {
         hits.push({
           factId: page.id,
-          subjectEntityId:
-            extractRelationIds(page.properties[FACT_PROPS.SUBJECT_ENTITY])[0] ?? null,
-          objectEntityId:
-            extractRelationIds(page.properties[FACT_PROPS.OBJECT_ENTITY])[0] ?? null,
+          subjectEntityIds: extractRelationIds(
+            page.properties[FACT_PROPS.SUBJECT_ENTITY]
+          ),
+          objectEntityIds: extractRelationIds(page.properties[FACT_PROPS.OBJECT_ENTITY]),
         })
       }
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
