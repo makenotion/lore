@@ -59,15 +59,9 @@ unbackfilled rows that need the SubjectKey substring fallback.
 
 ## Notion SDK v5
 
-This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
-
-| Operation           | Correct v5                                                  | Wrong v4                                  |
-| ------------------- | ----------------------------------------------------------- | ----------------------------------------- |
-| Query a database    | `client.dataSources.query({ data_source_id })`              | `client.databases.query({ database_id })` |
-| Create a database   | `databases.create({ initial_data_source: { properties } })` | `databases.create({ properties })`        |
-| Read page content   | `client.pages.retrieveMarkdown({ page_id })`                | Block children iteration                  |
-| Write page content  | `client.pages.updateMarkdown({ page_id, ... })`             | Append block children                     |
-| Parent discriminant | `{ type: "page_id", page_id }`                              | `{ page_id }`                             |
+This project uses `@notionhq/client` v5.x. Do not use v4 patterns. See
+[`docs/notion-sdk-v5.md`](notion-sdk-v5.md) for the canonical request shapes
+and migration differences.
 
 ## Configuration
 
@@ -185,9 +179,12 @@ AGENTS files are living documents. Update them when you discover undocumented
 conventions, missing workflows, gotchas that cost time, or outdated
 instructions.
 
-- Put knowledge in the right file: MCP-specific in `src/mcp/AGENTS.md`,
-  Notion SDK details in `src/notion/AGENTS.md`, cross-cutting guidance in root
-  `AGENTS.md` or this docs tree.
+- Put knowledge in the right file: MCP-specific guidance in
+  `src/mcp/AGENTS.md`, durable Notion SDK shape guidance in
+  [`docs/notion-sdk-v5.md`](notion-sdk-v5.md), Notion rate-limit internals and
+  call-site checklists in [`docs/notion-rate-limit.md`](notion-rate-limit.md),
+  short Notion-layer routing and local invariants in `src/notion/AGENTS.md`,
+  and cross-cutting guidance in root `AGENTS.md` or this docs tree.
 - Make small factual corrections directly.
 - Propose structural rule changes to the human lead first.
 - Never remove or weaken existing rules without approval.
@@ -197,12 +194,12 @@ instructions.
 
 | Symptom                                    | Cause                                         | Fix                                                                                                  |
 | ------------------------------------------ | --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `dataSources is undefined`                 | Using v4 SDK patterns                         | Use `client.dataSources.query()`                                                                     |
+| `dataSources is undefined`                 | Using v4 SDK patterns                         | Use the data-source query shape in [`docs/notion-sdk-v5.md`](notion-sdk-v5.md)                       |
 | `pages.retrieveMarkdown is not a function` | Notion SDK before v5                          | Ensure `@notionhq/client` is `^5.1.0`                                                                |
-| `initial_data_source` type error           | Missing cast or wrong create shape            | Use `createDbArgs()` from `setup.ts` as a reference                                                  |
+| `initial_data_source` type error           | Missing cast or wrong create shape            | Use `createDbArgs()` and the database-create shape in [`docs/notion-sdk-v5.md`](notion-sdk-v5.md)    |
 | Import without `.js` extension             | ESM requires explicit extensions              | Add `.js` to relative imports                                                                        |
 | `No .lore.yaml found`                      | Config search failed                          | Ensure `.lore.yaml` exists in cwd or an ancestor                                                     |
-| `filter` type errors in queries            | Complex filter needs cast                     | Cast to `QueryDataSourceParameters["filter"]`                                                        |
+| `filter` type errors in queries            | Complex filter needs cast                     | Cast as described in [`docs/notion-sdk-v5.md`](notion-sdk-v5.md)                                     |
 | `Vault already initialized`                | Running `lore init` twice                     | Use `lore status` to verify, or `VaultManager.load()`                                                |
 | Codex does not load Lore tools             | Project not trusted or hooks feature disabled | Trust the project and ensure `.codex/config.toml` sets `features.hooks = true`                       |
 | `No Notion auth configured`                | Every auth source returned empty              | Run `lore auth --login` or set `NOTION_API_TOKEN`; see [`docs/authentication.md`](authentication.md) |

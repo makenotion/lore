@@ -5,208 +5,53 @@
 
 ## Purpose
 
-This directory contains everything that directly touches the Notion API:
-client configuration, database schemas, property extractors, and vault setup.
-No domain logic lives here -- that belongs in `src/core/`.
+This directory contains the code that directly touches the Notion API: client
+configuration, database schemas, property extractors, vault setup, relation
+hydration, and RunTool adapters. Domain logic belongs in `src/core/`.
+
+## Documentation Map
+
+| Need                                                          | Read                                                                                                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| SDK v5 request and response shapes                            | [`docs/notion-sdk-v5.md`](../../docs/notion-sdk-v5.md)                                                 |
+| Rate-limit gates, endpoint overrides, and call-site checklist | [`docs/notion-rate-limit.md`](../../docs/notion-rate-limit.md)                                         |
+| RunTool routing and rollback entry point                      | [`runtool/README.md`](runtool/README.md)                                                               |
+| RunTool API contract                                          | [`runtool/contract.md`](runtool/contract.md)                                                           |
+| RunTool consumer behavior and fallbacks                       | [`runtool/consumers.md`](runtool/consumers.md)                                                         |
+| RunTool historical evidence and phase logs                    | [`docs/archive/runtool-evidence.md`](../../docs/archive/runtool-evidence.md)                           |
+| Auth token resolution before this layer receives a bearer     | [`src/auth/AGENTS.md`](../auth/AGENTS.md) and [`docs/authentication.md`](../../docs/authentication.md) |
+| Service behavior built on these primitives                    | [`src/core/AGENTS.md`](../core/AGENTS.md)                                                              |
 
 ## Files
 
-| File                     | Responsibility                                                                                                                                                                                                                                           |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `client.ts`              | Creates a configured `Client` instance with custom timeout and User-Agent                                                                                                                                                                                |
-| `rate-limit.ts`          | Proxy wrapper that caps outbound concurrency via `p-limit`                                                                                                                                                                                               |
-| `schema.ts`              | Database property definitions + page property builder functions                                                                                                                                                                                          |
-| `extractors.ts`          | Type-safe property value extractors for `PageObjectResponse`                                                                                                                                                                                             |
-| `query-response.ts`      | Guards `dataSources.query` response shape and preserves validation payload errors                                                                                                                                                                        |
-| `relation-properties.ts` | Paginates relation property values when page responses are truncated                                                                                                                                                                                     |
-| `setup.ts`               | Creates and verifies the five-database vault structure                                                                                                                                                                                                   |
-| `runtool/`               | Quarantined RunTool integration. `runtool/README.md` routes current docs; `runtool/contract.md` owns the API contract; `runtool/consumers.md` owns per-consumer fallback behavior; `docs/archive/runtool-evidence.md` preserves old phase/evidence logs. |
+| File                     | Responsibility                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------------- |
+| `client.ts`              | Creates a configured `Client` instance with custom timeout and User-Agent.              |
+| `rate-limit.ts`          | Wraps the Notion client in request-rate, concurrency, and shared-backoff gates.         |
+| `schema.ts`              | Defines database property configs, property name constants, and page property builders. |
+| `extractors.ts`          | Provides typed property value extractors for `PageObjectResponse`.                      |
+| `query-response.ts`      | Guards data-source query response shape and preserves validation payload errors.        |
+| `relation-properties.ts` | Paginates relation property values when page responses are truncated.                   |
+| `setup.ts`               | Creates and verifies the five-database vault structure.                                 |
+| `runtool/`               | Hosts the quarantined RunTool integration, public wrappers, feature flags, and tests.   |
 
 ## RunTool quarantine
 
 `runtool/` is the home for Lore's quarantined integration with Notion's
-internal `POST /v1/tools/run` API. Current behavior is split by audience:
+internal `POST /v1/tools/run` API. Keep this guide to routing pointers:
 
-- `runtool/README.md` is the routing and operator rollback entry point.
-- `runtool/contract.md` owns the endpoint, envelope, auth/capability,
-  rate-limit, response-shape, pin, and error-vocabulary contract.
-- `runtool/consumers.md` owns the per-consumer surfaces and fallback behavior
-  for `create_pages`, `update_page`, `query_data_sources`, and `search`.
-- `docs/archive/runtool-evidence.md` preserves phase logs, old open questions,
-  manual verification runs, and default-on evidence.
-
-Files:
-
-| File               | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `README.md`        | Routing, current default-on summary, rollback entry points, and links to the contract / consumer / archive docs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `contract.md`      | Pinned upstream contract (commit + blob SHAs), endpoint, request/response envelopes, auth / capability, rate-limit, RunTool tool shapes, and error vocabulary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `consumers.md`     | Per-consumer surfaces, flags, fallback behavior, and relevant test coverage for block edit, SQL filters, search, aggregate, and batch creates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `flag.ts`          | Backward-compatible env parser for `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags: `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534), `LORE_USE_RUNTOOL_FILTER_SQL` (#535), `LORE_USE_RUNTOOL_SEARCH` (#541), `LORE_USE_RUNTOOL_AGGREGATE` (#542), `LORE_USE_RUNTOOL_BATCH_CREATES` (#533, does NOT inherit from parent — see file). Runtime services consume `LoreFeatureFlags` resolved in `src/feature-flags.ts`; `.lore.yaml features.runTool` may set the same values, and explicit env vars remain the rollback override layer. Each sub-flag (other than the batch-creates security-review carve-out) defaults to the value of `LORE_USE_RUNTOOL`. **Default ON** as of #543 Phase 4 (2026-05-06); see `src/notion/runtool/README.md` for rollback and `docs/archive/runtool-evidence.md` for the recorded default-on evidence. |
-| `client.ts`        | Shared `runTool<T>(client, tool, params)` dispatcher over `client.request`. Hosts `runUpdatePageContent` and the `RunToolBlockEditError` (`no_match` / `multiple_matches` / `deletion_warning` / `restricted_resource`) shape consumed by #534 callers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `types.ts`         | Pinned subset of `RunToolParams` plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535), `search` (#541).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `update-page.ts`   | `updatePageContentViaRunTool` high-level wrapper used by domain code. Pre-call validation rejects empty / duplicate `oldStr` and malformed `pageId`; deletion warnings without an explicit opt-in raise `RunToolBlockEditError`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `create-pages.ts`  | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission (#533).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `query.ts`         | SQL filter helpers (#535) — `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, plus `comparedPairKey`. SQL aggregate helper (#542) — `querySubjectGroupCountsViaRunTool` plus `extractFirstRelationId` for relation-column id rehydration. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback.                                                                                                                                                                                                                                                                                                                                                                                        |
-| `search.ts`        | `searchViaRunTool(client, { query, dataSourceId, pageSize? })` (#541) — narrow wrapper used by `MemoryService.fetchSemanticPages`. Builds `collection://<id>` URL, clamps `page_size <= 25`, narrows hits to Notion-internal page ids, returns `saturated` flag. Throws `RunToolSearchRestrictedError` on 403 (once-per-process stderr warning fires via the shared `error-helpers.ts` latch); propagates 401 / 429 / 5xx / 400 / malformed verbatim.                                                                                                                                                                                                                                                                                                                                                                                     |
-| `error-helpers.ts` | `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (#535 F5 once-per-process integration-secret warning).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `index.ts`         | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, the #541 search consumer, and the per-consumer flag accessors.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `*.test.ts`        | Mocked HTTP success / no-match / multiple-matches / deletion-warning / restricted-resource / 401 / 429 / 5xx / malformed coverage; #535 query helpers' SQL-shape, has_more, kebab-case validation, F5/F6 + envelope-rejection contracts; #541 search wire-envelope, page_size clamp, external-connector-hit drop, saturation flag, A/B page-id-set equivalence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-
-Why dispatch through `client.request`: the Notion v5 SDK's public
-`request<T>({ path, method, body })` API inherits the SDK's auth header,
-retry, timeout, `User-Agent`, and (because `createLimitedClient` /
-`createAuthRefreshingClient` recursively Proxy any callable property on
-the underlying client) the rate-limit + 401-refresh gates. Standing up a
-parallel `fetch` path would require re-implementing all of those —
-issue #532's "compose with the existing request pacing/backoff"
-non-goal pins this.
-
-Default-on contract for the block-edit path (#543 Phase 4 flip,
-2026-05-06):
-
-- `LORE_USE_RUNTOOL_BLOCK_EDIT` defaults to the value of
-  `LORE_USE_RUNTOOL`, which itself defaults ON. If neither is set,
-  every flagged-on consumer attempts the RunTool block-edit path
-  first and falls back per-call to the existing REST/SDK path on
-  any classified `RunToolBlockEditError` (`no_match` /
-  `multiple_matches` / `deletion_warning` / `restricted_resource`).
-  Pre-#543 default-off semantics are recoverable via
-  `LORE_USE_RUNTOOL=0` (parent disable, cascades to every inheriting
-  sub-flag) or `LORE_USE_RUNTOOL_BLOCK_EDIT=0` (per-consumer
-  disable). See `src/notion/runtool/README.md` for the rollback
-  recipe and `docs/archive/runtool-evidence.md` for the recorded
-  default-on decision.
-- A flagged-on consumer that hits `RunToolBlockEditError` falls back
-  to the REST/SDK path **per call**, not per process — a stale anchor
-  in one save has no effect on the next.
-- **401 Unauthorized** propagates verbatim so the auth-refreshing
-  proxy gets its one-shot retry attempt before the error reaches user
-  code. **429 / 5xx** propagate so `createLimitedClient`'s shared
-  `Retry-After` backoff governs client-side pacing — the rate-limit
-  `extractRetryAfterMs` parser stays the single-source 429 path.
-- **403 RestrictedResource** is the deliberate exception in the
-  non-validation class: the auth-refresh proxy CANNOT repair it (it
-  refreshes only on 401), and the integration-secret legacy auth path
-  cannot pass RunTool's actor-type check by construction. Classifying
-  it as fall-back-able lets the REST/SDK path keep working for those
-  operators, with a once-per-process stderr warning so the silent
-  degrade is observable. Pinned by `runtool/contract.md`'s
-  `restricted_resource` recovery contract.
-
-### Cross-PR vocabulary contract
+- `runtool/README.md` owns the current default, operator rollback path, and
+  doc index.
+- `runtool/contract.md` owns endpoint, envelope, auth/capability, rate-limit,
+  response-shape, pin, and error-vocabulary contracts.
+- `runtool/consumers.md` owns per-consumer surfaces and fallback behavior for
+  `create_pages`, `update_page`, `query_data_sources`, and `search`.
+- `docs/archive/runtool-evidence.md` preserves old phase logs, verification
+  runs, and default-on evidence.
 
 The canonical name for the 403 capability-rejection kind is
-`restricted_resource` (matches `APIErrorCode.RestrictedResource`).
-Every shipped consumer (`update_page`'s `RunToolBlockEditError`,
-`search.ts`'s `RunToolSearchRestrictedError`, the SQL helpers'
-silent fallback) keys on this exact spelling. Future RunTool
-consumer PRs (any new write-tool consumer, aggregate wrappers from
-#532's Phase 4) MUST use the same name. A different spelling on a
-sibling PR is a normalization debt that must be resolved IN that
-PR before it merges — not a follow-up.
-
-## Notion SDK v5.x Specifics
-
-This project targets `@notionhq/client` ^5.1.0. The v5 SDK introduced
-breaking changes that affect nearly every file in this directory. If you have
-experience with the v4 SDK, pay close attention to the differences below.
-
-### dataSources.query (not databases.query)
-
-The v5 SDK renamed the query endpoint:
-
-```typescript
-// CORRECT -- v5
-const response = await client.dataSources.query({
-  data_source_id: databaseId,
-  filter: { ... },
-  sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
-  page_size: 20,
-})
-
-// WRONG -- v4 (will not compile)
-const response = await client.databases.query({
-  database_id: databaseId,
-  ...
-})
-```
-
-The response type is `QueryDataSourceResponse`. Filter and sort parameters use
-`QueryDataSourceParameters`.
-
-### initial_data_source (not top-level properties)
-
-Database creation in v5 puts property definitions inside `initial_data_source`:
-
-```typescript
-// CORRECT -- v5
-await client.databases.create({
-  parent: { type: "page_id", page_id: pageId },
-  title: [{ text: { content: "My Database" } }],
-  initial_data_source: {
-    properties: { Name: { title: {} }, Status: { select: { options: [...] } } }
-  },
-})
-
-// WRONG -- v4
-await client.databases.create({
-  parent: { page_id: pageId },
-  properties: { ... }
-})
-```
-
-### Parent type discriminant
-
-The v5 SDK requires an explicit `type` field on parent objects:
-
-```typescript
-// CORRECT -- v5
-{ parent: { type: "page_id", page_id: pageId } }
-{ parent: { type: "database_id", database_id: dbId } }
-
-// WRONG -- v4
-{ parent: { page_id: pageId } }
-```
-
-### Markdown API for page content
-
-Page bodies are read and written via the markdown API, not block children:
-
-```typescript
-// Read content
-const md = await client.pages.retrieveMarkdown({ page_id: id })
-const content = md.markdown
-
-// Write content (new page)
-await client.pages.updateMarkdown({
-  page_id: id,
-  type: "insert_content",
-  insert_content: { content: markdownString },
-})
-
-// Replace content (existing page)
-await client.pages.updateMarkdown({
-  page_id: id,
-  type: "replace_content",
-  replace_content: {
-    new_str: newMarkdown,
-    allow_deleting_content: true,
-  },
-})
-```
-
-### Bearer-token auth via the v5 SDK
-
-The `auth: token` parameter on `new Client({ auth, ... })` flows
-through to a `Bearer` header on every outbound request. For
-ntn-issued tokens, the token is the value read from `auth.json`'s
-workspace entry; for `NOTION_API_TOKEN`, the token is the explicit
-bearer supplied by the operator. Both are passed identically to the
-SDK; the SDK is auth-mode-blind.
-See the root `AGENTS.md` **Authentication** section and
-`src/auth/AGENTS.md` for how the token is resolved before reaching
-this layer.
+`restricted_resource`, matching `APIErrorCode.RestrictedResource`. RunTool
+consumers must use the same spelling.
 
 ## Property Extractors Pattern
 
@@ -230,20 +75,20 @@ page into a domain type. Batch hydration is concurrency-limited to mirror the
 Notion client rate-limit gate; avoid bypassing it with ad hoc `Promise.all`
 loops around `pages.properties.retrieve`.
 
-The `isFullPage()` type guard narrows `QueryDataSourceResponse` results to
+The `isFullPage()` type guard narrows data-source query results to
 `PageObjectResponse` before extraction.
 
-**Rule**: Always use these extractors. Do not write inline property access like
-`page.properties["Name"].title[0].plain_text` -- it is fragile and untyped.
+**Rule:** Always use these extractors. Do not write inline property access like
+`page.properties["Name"].title[0].plain_text`; it is fragile and untyped.
 
 ## Schema Definitions Pattern
 
 `schema.ts` defines three things per database:
 
-1. **Property name constants** (`PROJECT_PROPS`, `TOPIC_PROPS`, `MEMORY_PROPS`,
-   `ENTITY_PROPS`, `FACT_PROPS`) — `as const` named-tuple objects exporting
-   the canonical Notion property name for every column. **Always reference
-   the constant when accessing a property** — never inline a bare string
+1. **Property name constants** (`PROJECT_PROPS`, `TOPIC_PROPS`,
+   `MEMORY_PROPS`, `ENTITY_PROPS`, `FACT_PROPS`) are `as const` objects
+   exporting the canonical Notion property name for every column. Always
+   reference the constant when accessing a property; never inline a bare string
    literal in production code:
 
    ```typescript
@@ -251,30 +96,24 @@ The `isFullPage()` type guard narrows `QueryDataSourceResponse` results to
    const subject = extractTitle(props[FACT_PROPS.SUBJECT])
    filters.push({ property: MEMORY_PROPS.STATUS, select: { equals: "active" } })
 
-   // Wrong — bypasses the rename invariant
+   // Wrong
    const subject = extractTitle(props["Subject"])
    filters.push({ property: "Status", select: { equals: "active" } })
    ```
 
-   The `*_PROPS` constants are the single source of truth for Notion
-   property names. AGENTS.md's "do not rename database properties" rule
-   becomes a compile-time invariant when every read and write goes
-   through the constant: a future rename touches one declaration and
-   TypeScript flags every drifted call site. The schema-drift suite in
-   `schema.test.ts` keeps each constant aligned with the keys its
-   builder function emits, so a rename made only on one half cannot
-   silently land. Test fixtures may keep bare literals for
+   The `*_PROPS` constants are the single source of truth for Notion property
+   names. The schema-drift suite in `schema.test.ts` keeps each constant
+   aligned with the keys its builder function emits, so a rename made only on
+   one half cannot silently land. Test fixtures may keep bare literals for
    wire-format readability when that intent is explicit.
 
-2. **Property configuration** (`PropertyConfig`) — used by `setup.ts` when creating
-   databases via `initial_data_source.properties`. Builders compose the
-   `*_PROPS` constants as computed property keys
-   (`{ [PROJECT_PROPS.NAME]: { title: {} } }`) so the config and the
-   constants share one source.
+2. **Property configuration** (`PropertyConfig`) is used by `setup.ts` when
+   creating databases. Builders compose the `*_PROPS` constants as computed
+   property keys so config and constants share one source.
 
-3. **Property builder functions** (`buildProjectProps`, `buildMemoryProps`, etc.) --
-   used by core services when creating or updating pages. Same posture:
-   the builders write through `*_PROPS` constants.
+3. **Property builder functions** (`buildProjectProps`, `buildMemoryProps`,
+   etc.) are used by core services when creating or updating pages. The
+   builders also write through `*_PROPS` constants.
 
 Database schema configs are exposed as functions so relation IDs and the active
 profile can be passed explicitly:
@@ -283,8 +122,13 @@ profile can be passed explicitly:
 // No relations, but profile additives may still apply.
 export function projectsProperties(profile?: ResolvedProfile): PropertyConfig { ... }
 
-// Dynamic (needs related DB IDs)
-export function memoriesProperties(projectsDbId: string, topicsDbId: string, memoriesDsId?: string, profile?: ResolvedProfile): PropertyConfig { ... }
+// Dynamic: needs related DB IDs.
+export function memoriesProperties(
+  projectsDbId: string,
+  topicsDbId: string,
+  memoriesDsId?: string,
+  profile?: ResolvedProfile,
+): PropertyConfig { ... }
 ```
 
 ## Vault Setup
@@ -294,12 +138,8 @@ export function memoriesProperties(projectsDbId: string, topicsDbId: string, mem
 1. **Projects** -- no dependencies
 2. **Topics** -- relation to Projects
 3. **Memories** -- relations to Projects and Topics
-4. **Entities** (PF3-01) -- relations to Projects and Memories
+4. **Entities** -- relations to Projects and Memories
 5. **Facts** -- relations to Projects, Memories, and Entities
-
-The `createDbArgs()` helper handles the type casting needed for
-`initial_data_source.properties`. If you need to create a new database, follow
-this pattern.
 
 `verifyVaultDatabases()` reads the vault page's child blocks and matches
 database titles to the expected names. If a title is missing, it retrieves
@@ -307,178 +147,17 @@ unmatched child databases and identifies Lore databases by schema fingerprint
 so a renamed database still counts as present and `lore init` cannot duplicate
 a partial vault. This is used by `VaultManager.load()`.
 
-**Required databases.** Projects / Topics / Memories / Entities / Facts
-are mandatory — `verifyVaultDatabases` throws when any of them are absent.
-`migrateVaultSchema` always includes the Entities database and the Facts
-`SubjectEntity` / `ObjectEntity` relation columns. Row-level migration
-fallback is separate: existing Facts may still have empty entity relations
-until `lore migrate --build-entities` repoints them.
+Projects, Topics, Memories, Entities, and Facts are mandatory. Row-level
+migration fallback is separate: existing Facts may still have empty entity
+relations until `lore migrate --build-entities` repoints them.
 
 `verifyVaultDatabasesForEntityRepair()` is the narrow exception for the
-`lore vault ensure-entities` bootstrap command: it requires Projects / Topics /
-Memories / Facts but allows Entities to be absent so the repair command can run
-outside strict service initialization.
+`lore vault ensure-entities` bootstrap command: it requires Projects, Topics,
+Memories, and Facts but allows Entities to be absent so the repair command can
+run outside strict service initialization.
 
-## Rate Limiting
+## Things That Do Not Live Here
 
-`rate-limit.ts` exports `createLimitedClient(client, options)`. It returns
-a `Proxy` over the real client that routes every outbound method call
-through three composed gates so fan-out (decision-graph walks, batch
-fact fetches, render-layer title lookups) stays under Notion's per-token
-ceiling. The global gate aligns with Notion's published ~3 rps guidance;
-a small built-in table of endpoint-specific overrides
-(`DEFAULT_NOTION_ENDPOINT_OVERRIDES`) loosens individual endpoints whose
-server-side throughput has been measured against a real vault under
-`tools/`. Per-vault `notion.rateLimit.*` config knobs (including
-`endpointOverrides`) are the operator-side override.
-
-1. **Token bucket** (request rate) — paces sustained throughput. The
-   global gate's capacity is `burstSize` (`DEFAULT_NOTION_BURST_SIZE`)
-   and its refill is `requestsPerSecond`
-   (`DEFAULT_NOTION_REQUESTS_PER_SECOND`); each endpoint override
-   builds its own bucket sized to the operator-provided values. Short
-   fan-outs that fit under the burst fire instantly; longer fan-outs
-   pace at the refill rate. The endpoint-override table's docstring
-   carries the per-entry probe-derived sizing rationale.
-2. **`p-limit` slot** (concurrency) — bounds simultaneous in-flight
-   requests so a slow Notion call can't fan out memory under heavy
-   load. One slot pool per gate — the global pool sized by
-   `concurrency` (`DEFAULT_NOTION_CONCURRENCY`), each override its
-   own pool. At probed p50 latency the bucket binds before the slot
-   cap; concurrency matters under tail-latency spikes.
-3. **Shared 429 backoff** — when a 429 escapes the SDK's internal
-   retry budget (the v5 SDK retries 429s twice with `Retry-After`
-   parsing), the wrapper pauses **every** bucket — global plus every
-   endpoint override — for the surfaced `Retry-After` (or
-   `DEFAULT_RATE_LIMIT_BACKOFF_MS = 1000ms` when absent), clamped at
-   `MAX_RATE_LIMIT_BACKOFF_MS = 60_000ms` so a runaway header doesn't
-   freeze the entire client for hours. The Notion per-token
-   server-side bucket is shared across endpoints, so a throttling
-   signal on one endpoint means siblings on the same token are also
-   in the throttling window. Siblings already past the in-slot
-   `bucket.acquire()` (i.e. already-dispatched SDK calls) are NOT
-   affected — the pause governs the next dispatch, not in-flight
-   calls. Backoff events emit a `[lore] notion-sdk warn: 429 backoff
-<ms> (source=...)` stderr line by default; consumers wanting
-   telemetry replace `deps.onBackoff`.
-
-The Proxy **recurses through sub-namespaces at arbitrary depth**, so
-three-level paths like `client.blocks.children.list`,
-`client.blocks.children.append`, and `client.pages.properties.retrieve`
-are governed alongside the two-level paths (`client.pages.retrieve`,
-`client.dataSources.query`) and top-level methods (`client.search`). A
-non-recursive wrapper would leak these three-level calls — an earlier
-revision of this module did, and `setup.ts`'s `blocks.children.list`
-verification sweep was ungoverned until the fix.
-
-The proxy tracks the dot-joined path of every method invocation so the
-gate routing for an endpoint override is the same string the operator
-writes in `endpointOverrides` (e.g., `pages.retrieveMarkdown`,
-`dataSources.query`). Top-level methods (`search`, `request`) match
-the bare method name.
-
-`initServicesFromConfig` and `lore init` both wrap the raw client
-before handing it to services. `initServicesFromConfig` reads
-`config.notion.rateLimit` (with `concurrency` / `requestsPerSecond` /
-`burstSize` knobs plus `endpointOverrides`); `lore init` runs before
-`.lore.yaml` exists, so it uses defaults and picks up any custom
-values on subsequent commands.
-
-**Endpoint-override defaults are inherited unless the caller passes
-their own map.** Passing `endpointOverrides: {}` opts every endpoint
-back through the global gate — the operator escape hatch for a vault
-that throttles tighter than the probed reference. A caller-supplied
-map REPLACES the built-in table (no silent merge), so a single
-override entry doesn't quietly inherit unrelated built-in entries the
-operator didn't ask for. If the caller omits `endpointOverrides` but
-supplies any global `concurrency`, `requestsPerSecond`, or `burstSize`
-knob, the effective global values cap the inherited built-ins; this
-preserves existing process-wide throttles for operators who tuned the
-single-gate limiter.
-
-**Backwards-compatible signature**: a bare `number` second argument
-is interpreted as `{ concurrency: <n> }`. Legacy
-`createLimitedClient(client, 3)` call sites continue to work; they
-pick up the new rps + burst defaults transparently.
-
-**One-time setup flows share the same gate.** `lore init`,
-`lore install`, and `lore auth --status` route through
-`createLimitedClient` with the same defaults as long-running
-processes. These flows run once-per-vault and are not on the hot
-path. Operators who measure their workload and want to loosen the
-global or scope a specific endpoint set
-`notion.rateLimit.requestsPerSecond` or
-`notion.rateLimit.endpointOverrides` in `.lore.yaml`.
-
-**Bucket lifecycle.** The bucket only schedules a refill timer when
-its waiter queue is non-empty; the timer is NOT `unref`'d. An
-`unref`'d refill timer would let Node exit between an in-flight SDK
-call resolving and the next queued caller's token arriving, leaving
-the queued caller's Promise unresolved (Node treats top-level await
-on an unresolved Promise as a no-op exit). The natural lifecycle is
-"timer keeps the loop alive while the queue has work; queue drains;
-last issuance schedules no successor; loop exits."
-
-**`pauseFor` drains the bucket.** When a 429 surfaces, the wrapper
-calls `bucket.pauseFor(retryAfterMs)`, which sets `tokens = 0` AND
-`lastRefillMs = pausedUntilMs`. A caller queued during the pause
-therefore waits the pause window PLUS the first refill interval
-(`1/rps` seconds) before its token is issued — pinned by the
-`pauseFor + slow refill` test. Preserving any token at pause-expiry
-would let the next caller fire instantly back into the same
-throttling window the 429 signaled. The extra refill interval is the
-cost of "no bursting after backoff."
-
-Tests that inject their own mock client remain unaffected because the
-wrap happens inside `initServicesFromConfig` / `lore init`, not at
-construction of `ProjectService` / `TopicService` / etc. If a test wants
-to observe limiter behaviour with a mock, it should wrap the mock
-explicitly via `createLimitedClient`.
-
-**When adding a new SDK call site**, extend `rate-limit.test.ts` with a
-case that asserts the limiter governs the new path. The recursive wrap
-handles any depth automatically, but the invariant is easy to regress
-silently — for example, an SDK method that returns a function (deep
-promise chains, future higher-order factories) or a change to the
-SDK's property shape could bypass the wrap without any type-level
-signal. The scar tissue is: a one-line test per new top-level or
-nested method saves the next regression.
-
-**When the new path lands in a hot fan-out** (a paginated walk, a
-batch-fetch helper that issues many calls to the same SDK method),
-add a _pacing_ test alongside the _concurrency_ test — the existing
-"caps concurrency on top-level client methods" tests use the
-`RATE_GATE_DISABLED` options bag to bypass pacing for clean cap
-assertions, so a fan-out path that should respect rps needs its own
-test that exercises the bucket. See "paces a burst of calls beyond
-the bucket capacity" for the shape.
-
-**Per-token, not per-integration.** Notion enforces rate limits per
-access token. Under the ntn-first deployment, every operator's
-ntn-issued token has its own server-side bucket sized to the
-per-token public-API contract. The `p-limit` gate in
-`rate-limit.ts` keeps a single Lore process under the wrapper's
-own configured ceiling (see the `DEFAULT_NOTION_*` constants);
-cross-process contention within one operator's token is bounded
-by `DEFAULT_NOTION_CONCURRENCY` × number of concurrent processes
-and ultimately governed by the 429 shared-backoff path when the
-union exceeds the server bucket. A "lore proxy token" that
-aggregated requests across operators would re-collapse the
-per-token isolation — don't.
-
-## Filter Type Casting
-
-When building complex filters (compound `and`/`or`), the SDK types do not
-always infer correctly. Cast the filter object:
-
-```typescript
-const filter = filters.length > 1 ? { and: filters } : filters[0]
-
-const response = await client.dataSources.query({
-  data_source_id: this.databaseId,
-  filter: filter as QueryDataSourceParameters["filter"],
-})
-```
-
-This is an intentional pattern, not a hack. The SDK's discriminated union for
-filter types is too strict for dynamically composed filters.
+Do not add long-form SDK migration notes, rate-limit internals, or RunTool
+manuals to this file. Put durable reference content in the focused docs linked
+above and keep this guide short enough to route a contributor quickly.
