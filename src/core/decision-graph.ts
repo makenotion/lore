@@ -1,13 +1,8 @@
 import { settleAll } from "./settle.js"
+import type { QueryFactsOpts } from "./fact.js"
 import { computeSubjectKey } from "../notion/normalize.js"
 import { ACTIVE_DECISION_STATUSES, memoryScopeToInput } from "../types.js"
-import type {
-  CreateFactInput,
-  Decision,
-  Fact,
-  FactPredicate,
-  MemoryStatus,
-} from "../types.js"
+import type { CreateFactInput, Decision, Fact, MemoryStatus } from "../types.js"
 
 /**
  * Entity-aware identity key for a fact's Subject side. Used by the
@@ -34,16 +29,6 @@ import type {
 function factSubjectKey(fact: Fact): string {
   if (fact.subjectEntityId) return `entity:${fact.subjectEntityId}`
   return `subject:${computeSubjectKey(fact.subject)}`
-}
-
-type QueryFactsOpts = {
-  projectId?: string
-  includeInvalidated?: boolean
-  predicates?: FactPredicate[]
-  limit?: number
-  /** Issue #283 — opt out of the default scope filter for internal
-   *  reconciliation paths. */
-  includeOutOfScope?: boolean
 }
 
 export interface DecisionGraphServices {
