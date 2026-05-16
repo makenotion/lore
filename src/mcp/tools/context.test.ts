@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerContextTools, neutralizeLeadingBlockquote } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
+import { TransientProjectResolutionError } from "../../core/project-scope.js"
 import {
   backgroundFailureMarkerPath,
   recordBackgroundFailure,
@@ -536,6 +537,12 @@ function extractText(result: unknown): string {
   return content[0].text
 }
 
+function extractErrorMetadata(text: string): Record<string, unknown> {
+  const json = text.match(/```json\n([\s\S]*?)\n```/)?.[1]
+  expect(json).toBeDefined()
+  return JSON.parse(json ?? "{}") as Record<string, unknown>
+}
+
 async function withTempHookState<T>(fn: () => Promise<T>): Promise<T> {
   const originalStateDir = process.env["LORE_HOOK_STATE_DIR"]
   const stateDir = `${process.env["TMPDIR"] ?? "/tmp"}/lore-context-status-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -559,6 +566,36 @@ function extractBackgroundStatus(text: string): Record<string, unknown> {
 }
 
 describe("lore-wake-up — Part A: title-only by default", () => {
+  it("preserves retryable LoreError metadata on wake-up failures", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      findByName: async () => {
+        throw new TransientProjectResolutionError(
+          ["Overloaded"],
+          "projectName",
+          new Error("Notion rate limit")
+        )
+      },
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ projectName: "Overloaded" } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const metadata = extractErrorMetadata(extractText(result))
+    expect(metadata).toMatchObject({
+      kind: "transient-project-resolution",
+      code: "transient_project_resolution",
+      retryable: true,
+      details: {
+        names: ["Overloaded"],
+        scopeFields: "projectName",
+        causeMessage: "Notion rate limit",
+      },
+    })
+  })
+
   it("omits memory bodies from the default (non-expand) path", async () => {
     const mockServer = createMockServer()
     const services = makeWakeServices({

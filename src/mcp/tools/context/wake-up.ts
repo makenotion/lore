@@ -1207,9 +1207,6 @@ export async function handleWakeUp(
 
     return response
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return toolError(
-      new Error(`lore-context action='wake-up' failed to load context: ${message}`)
-    )
+    return toolError(err)
   }
 }
