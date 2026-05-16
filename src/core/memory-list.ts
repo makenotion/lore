@@ -17,6 +17,7 @@ import { MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
 import { collectLivePages } from "../notion/live-pages.js"
 import { fetchNearDuplicateCandidatePageIds } from "../notion/runtool/index.js"
+import { redactDebugError } from "../debug-redact.js"
 import {
   isSqlValidationError,
   logRunToolFallback,
@@ -30,6 +31,13 @@ import { reviewTerminalStatusExclusionFilters } from "./memory-review-state.js"
 
 type PageToMemory = (page: PageObjectResponse, content: string) => Promise<Memory>
 type GetMemoryPropertiesById = (id: string) => Promise<Memory>
+
+// eslint-disable-next-line no-control-regex -- stderr events must stay one line
+const LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
+
+function oneLine(value: string): string {
+  return value.replace(LOG_CONTROL_CHARS, " ")
+}
 
 /**
  * Filter / pagination / sort options accepted by `MemoryService.list`.
@@ -167,7 +175,7 @@ export class MemoryList {
               if (process.env["LORE_DEBUG"] === "1") {
                 process.stderr.write(
                   `[lore] partial-failure: source=near-duplicate-hydrate ` +
-                    `pageId=${id} error=${err instanceof Error ? err.message : "unknown"}\n`
+                    `pageId=${oneLine(id)} error=${oneLine(redactDebugError(err))}\n`
                 )
               }
               return null

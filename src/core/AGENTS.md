@@ -62,10 +62,11 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 
 ## Detailed Contract Docs
 
-| Area                           | Owner                                                     | Contract                                                                                                                                                                                              |
-| ------------------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Retrieval / memory search      | [`docs/core/retrieval.md`](../../docs/core/retrieval.md)  | Doc-owned contract for `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes, RRF, intent, explain traces, materialization, confidence-aware ranking, and search kill switches |
-| Topic-key upsert and re-keying | [`memory-topic-key.ts`](memory-topic-key.ts) module JSDoc | JSDoc-owned contract for `findByTopicKey`, `MemoryService.upsertByTopicKey`, `validateRekey`, `MemoryService.rekeyTopicKey`, promotion advisories, and re-key audit errors                            |
+| Area                           | Owner                                                                                  | Contract                                                                                                                                                                                              |
+| ------------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Retrieval / memory search      | [`docs/core/retrieval.md`](../../docs/core/retrieval.md)                               | Doc-owned contract for `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes, RRF, intent, explain traces, materialization, confidence-aware ranking, and search kill switches |
+| Topic-key upsert and re-keying | [`memory-topic-key.ts`](memory-topic-key.ts) module JSDoc                              | JSDoc-owned contract for `findByTopicKey`, `MemoryService.upsertByTopicKey`, `validateRekey`, `MemoryService.rekeyTopicKey`, promotion advisories, and re-key audit errors                            |
+| Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for `LORE_DEBUG=1` stderr line format, per-surface key divergence, and parser expectations for recoverable partial-result failures                                                 |
 
 ## Service Class Pattern
 

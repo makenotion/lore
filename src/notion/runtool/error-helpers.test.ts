@@ -81,6 +81,24 @@ describe("logRunToolFallback", () => {
     expect(line).toContain("status=unknown")
     expect(line).toContain("code=unknown")
   })
+
+  it("redacts and one-lines fallback errors", () => {
+    process.env["LORE_DEBUG"] = "1"
+    logRunToolFallback(
+      "entity-find-by-name\nretry",
+      new Error(
+        "lookup failed for 0123456789abcdef0123456789abcdef\n" +
+          "secret_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+      )
+    )
+    const line = stderrSpy.mock.calls[0]![0] as string
+    expect(line).toContain("source=entity-find-by-name retry")
+    expect(line).toContain("error=lookup failed for <page-id> <redacted-token>")
+    expect(line).not.toContain("0123456789abcdef0123456789abcdef")
+    expect(line).not.toContain("secret_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
+    expect(line.endsWith("\n")).toBe(true)
+    expect(line.slice(0, -1)).not.toContain("\n")
+  })
 })
 
 describe("SqlPartialResultError", () => {

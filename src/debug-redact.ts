@@ -17,10 +17,11 @@
  * Two threat classes the helper distinguishes:
  *
  * - **Must-redact (token-leak class).** Bearer tokens (`ntn_…`,
- *   `secret_…`) are full credentials. The current Notion SDK does not
- *   interpolate them into `Error.message`, but historical SDK regressions
- *   in adjacent ecosystems (axios pre-1.x echoing `Authorization` headers
- *   in retry traces) make a forward-compatible guard load-bearing.
+ *   `development_ntn_…`, `secret_…`) are full credentials. The current
+ *   Notion SDK does not interpolate them into `Error.message`, but historical
+ *   SDK regressions in adjacent ecosystems (axios pre-1.x echoing
+ *   `Authorization` headers in retry traces) make a forward-compatible guard
+ *   load-bearing.
  * - **Should-redact (recon class).** Page IDs are not bearer secrets,
  *   but they are access locators that let an outsider enumerate vault
  *   structure they would
@@ -68,11 +69,12 @@
  *    fell through to the bare-token fallback and leaked the tail. The
  *    scanner's depth counter resolves that by walking arbitrary nesting.
  *
- * 2. **Redact bearer-token-shaped substrings** (`ntn_…` / `secret_…`
- *    followed by ≥20 url-safe characters) to `<redacted-token>`. The
- *    threshold matches the shortest known Notion bearer prefix to avoid
- *    misfiring on unrelated identifiers; the upper bound is open because
- *    real tokens run >40 characters.
+ * 2. **Redact bearer-token-shaped substrings** (`ntn_…` /
+ *    `development_ntn_…` / `secret_…` followed by ≥20 url-safe
+ *    characters) to `<redacted-token>`. The threshold matches the
+ *    shortest known Notion bearer prefix to avoid misfiring on unrelated
+ *    identifiers; the upper bound is open because real tokens run >40
+ *    characters.
  * 3. **Redact Notion page-id-shaped substrings** (`[a-f0-9]{32}` and the
  *    dashed UUID form `8-4-4-4-12`) to the literal `<page-id>`.
  * 4. **Truncate to `MAX_DEBUG_MESSAGE_LENGTH` characters**, appending
@@ -81,6 +83,14 @@
  *    observed `InvalidPathParameterError` / `RequestTimeoutError` /
  *    `APIResponseError` shapes) with 1.5× headroom.
  *
+ * **Structured-payload key-aware redaction (extraInfo walker).**
+ * Structured SDK logger payloads use the same sensitive field list as the
+ * flat-string scrubber. `redactDebugExtraInfo` walks objects recursively,
+ * replaces non-Error values under sensitive keys with `<redacted>` wholesale,
+ * preserves Error diagnostics as `{ name, message, cause }` with scrubbed
+ * messages, and stops at a bounded recursion depth so hostile or malformed
+ * payloads cannot induce a stack overflow.
+ *
  * Control-character coercion (the one-event-per-line invariant log
  * aggregators rely on) is a separate concern handled at each call site
  * by `oneLine` / equivalent. The two responsibilities are orthogonal —
@@ -88,6 +98,12 @@
  * and lets the one-line discipline live alongside the other
  * interpolated-field guards (`rootId`, `memoryId`, `entity`) where it
  * applies.
+ *
+ * The lint backstop rejects direct stderr interpolation of common error
+ * message shapes. It is a defense-in-depth guard, not the full security
+ * boundary: review still has to ensure every debug-only stderr emitter
+ * routes unknown errors through this redactor and normalizes interpolated
+ * fields to one line.
  *
  * The redactor preserves the error category and the first sentence of
  * the message, since those carry the diagnostic value an operator

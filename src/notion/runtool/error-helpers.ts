@@ -27,6 +27,13 @@
 
 import { redactDebugError, redactDebugMessage } from "../../debug-redact.js"
 
+// eslint-disable-next-line no-control-regex -- stderr events must stay one line
+const LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
+
+function oneLine(value: string): string {
+  return value.replace(LOG_CONTROL_CHARS, " ")
+}
+
 /**
  * Notion page ids come in two wire forms: 32-character lowercase
  * hex (no separators) and dashed UUID (8-4-4-4-12). Either is
@@ -100,9 +107,10 @@ export function logRunToolFallback(source: string, err: unknown): void {
   const status = (err as { status?: number } | null | undefined)?.status
   const code = (err as { code?: string } | null | undefined)?.code
   process.stderr.write(
-    `[lore] partial-failure: source=${source} ` +
-      `status=${status ?? "unknown"} code=${code ?? "unknown"} ` +
-      `error=${redactDebugError(err)} runtool-fallback=1\n`
+    `[lore] partial-failure: source=${oneLine(source)} ` +
+      `status=${oneLine(String(status ?? "unknown"))} ` +
+      `code=${oneLine(code ?? "unknown")} ` +
+      `error=${oneLine(redactDebugError(err))} runtool-fallback=1\n`
   )
 }
 
