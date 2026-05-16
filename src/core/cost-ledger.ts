@@ -13,6 +13,8 @@ export const DEFAULT_COST_PRICING_TABLE = "openai-2026-05"
 export const COST_LEDGER_APPEND_ERROR_MARKER_VERSION = 1
 export const COST_LEDGER_APPEND_ERROR_MARKER_SUFFIX = ".append-error.json"
 export const TOKEN_ESTIMATOR = "chars_per_token_4"
+const LEDGER_METADATA_VALUE_MAX_LENGTH = 200
+const LEDGER_METADATA_TRUNCATION_MARKER = "…"
 
 export type CostEventType =
   | "mcp.invocation"
@@ -335,12 +337,13 @@ export async function appendCostEvent(
   event: CostLedgerEvent
 ): Promise<void> {
   if (!costTracking?.enabled) return
+  const sanitizedEvent = sanitizeCostLedgerEvent(event)
   const shardPath = costLedgerShardPath(costTracking.ledgerPath)
   try {
     await mkdir(dirname(shardPath), { recursive: true, mode: 0o700 })
     const handle = await open(shardPath, "a", 0o600)
     try {
-      await handle.write(`${JSON.stringify(event)}\n`)
+      await handle.write(`${JSON.stringify(sanitizedEvent)}\n`)
     } finally {
       await handle.close()
     }
@@ -359,6 +362,41 @@ export async function appendCostEvent(
       // accounting failure fatal to the caller.
     }
   }
+}
+
+function sanitizeCostLedgerEvent(event: CostLedgerEvent): CostLedgerEvent {
+  const { agentName: rawAgentName, sessionId: rawSessionId, ...rest } = event
+  const agentName = sanitizeLedgerMetadataValue(rawAgentName)
+  const sessionId = sanitizeLedgerMetadataValue(rawSessionId)
+  return {
+    ...rest,
+    ...(agentName ? { agentName } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  } as CostLedgerEvent
+}
+
+function sanitizeLedgerMetadataValue(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  let normalized = oneLine(value).trim()
+  if (!normalized) return undefined
+
+  if (normalized.length > LEDGER_METADATA_VALUE_MAX_LENGTH) {
+    normalized = `${normalized
+      .slice(
+        0,
+        LEDGER_METADATA_VALUE_MAX_LENGTH - LEDGER_METADATA_TRUNCATION_MARKER.length
+      )
+      .trimEnd()}${LEDGER_METADATA_TRUNCATION_MARKER}`.trim()
+  }
+
+  return normalized || undefined
+}
+
+// eslint-disable-next-line no-control-regex -- ledger metadata must stay one JSONL event per line
+const CONTROL_CHARS = /[\x00-\x1F\x7F-\x9F\u2028\u2029]/g
+
+function oneLine(value: string): string {
+  return value.replace(CONTROL_CHARS, " ")
 }
 
 export function resetCostLedgerWarningForTests(): void {

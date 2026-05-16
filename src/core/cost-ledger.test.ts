@@ -226,6 +226,41 @@ describe("cost ledger", () => {
     expect(rows[0]!.line).not.toContain("Saved memory")
   })
 
+  it("sanitizes shared event metadata before appending JSONL rows", async () => {
+    const root = tempDir()
+    const costTracking = enabledCostTracking(root, {
+      ledgerPath: "state/costs.jsonl",
+    })
+
+    await appendCostEvent(
+      costTracking,
+      sampleMcpEvent({
+        agentName: `Agent\t${"A".repeat(10_000)}\ntrailing`,
+        sessionId: "\u2028session\tvalue\u009f",
+      })
+    )
+    await appendCostEvent(
+      costTracking,
+      sampleMcpEvent({
+        action: "archive",
+        agentName: "\u0000\t\n\u007f\u009f\u2028",
+        sessionId: "\r\u2029",
+      })
+    )
+
+    const rows = await readLedgerEvents(costTracking)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.event.agentName).toBe(`Agent ${"A".repeat(193)}…`)
+    expect(rows[0]!.event.agentName).toHaveLength(200)
+    expect(rows[0]!.event.sessionId).toBe("session value")
+    // eslint-disable-next-line no-control-regex
+    expect(rows[0]!.event.agentName).not.toMatch(/[\x00-\x1F\x7F-\x9F\u2028\u2029]/)
+    // eslint-disable-next-line no-control-regex
+    expect(rows[0]!.event.sessionId).not.toMatch(/[\x00-\x1F\x7F-\x9F\u2028\u2029]/)
+    expect(rows[1]!.event).not.toHaveProperty("agentName")
+    expect(rows[1]!.event).not.toHaveProperty("sessionId")
+  })
+
   it("merges legacy ledger rows and multiple process shards on read", async () => {
     const root = tempDir()
     const costTracking = enabledCostTracking(root, {

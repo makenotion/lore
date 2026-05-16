@@ -219,6 +219,69 @@ describe("MCP cost tracking", () => {
     expect(rows[0]!.line).not.toContain("visible response")
   })
 
+  it("scrubs and caps env-sourced metadata before writing ledger rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
+      root
+    )
+    const services = {
+      costTracking,
+      context: { project: { name: "Project" } },
+    } as unknown as LoreServices
+    process.env["LORE_AGENT_NAME"] = `Agent\t${"A".repeat(10_000)}\ntrailing`
+    process.env["LORE_SESSION_ID"] = "\u2028session\tvalue\u009f"
+
+    await runMcpInvocationWithCostTracking(
+      services,
+      "lore-context",
+      { action: "status" },
+      async () => ({
+        content: [{ type: "text", text: "visible response" }],
+      })
+    )
+
+    const rows = await readLedgerEvents(costTracking)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event.agentName).toBe(`Agent ${"A".repeat(193)}…`)
+    expect(rows[0]!.event.agentName).toHaveLength(200)
+    expect(rows[0]!.event.sessionId).toBe("session value")
+    // eslint-disable-next-line no-control-regex
+    expect(rows[0]!.event.agentName).not.toMatch(/[\x00-\x1F\x7F-\x9F\u2028\u2029]/)
+    // eslint-disable-next-line no-control-regex
+    expect(rows[0]!.event.sessionId).not.toMatch(/[\x00-\x1F\x7F-\x9F\u2028\u2029]/)
+  })
+
+  it("omits env-sourced metadata that is empty after sanitization", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
+      root
+    )
+    const services = {
+      costTracking,
+      context: { project: { name: "Project" } },
+    } as unknown as LoreServices
+    process.env["LORE_AGENT_NAME"] = "\u0000\t\n\u007f\u009f\u2028"
+    process.env["LORE_SESSION_ID"] = "\r\u2029"
+
+    await runMcpInvocationWithCostTracking(
+      services,
+      "lore-context",
+      { action: "status" },
+      async () => ({
+        content: [{ type: "text", text: "visible response" }],
+      })
+    )
+
+    const rows = await readLedgerEvents(costTracking)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event).not.toHaveProperty("agentName")
+    expect(rows[0]!.event).not.toHaveProperty("sessionId")
+  })
+
   it("does not copy raw MCP metadata into error rows", async () => {
     const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
     dirs.push(root)
