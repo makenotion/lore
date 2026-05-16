@@ -15,7 +15,7 @@ debugging, manual search, vault maintenance, and operator workflows.
 | Work area                                   | Read                                                                                                                                                                                       |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Adding or changing command code             | [`../../docs/cli-authoring.md`](../../docs/cli-authoring.md)                                                                                                                               |
-| Command-specific implementation contracts   | [`../../docs/cli-command-contracts.md`](../../docs/cli-command-contracts.md)                                                                                                               |
+| Command-specific implementation contracts   | [`../../docs/cli-command-contracts.md`](../../docs/cli-command-contracts.md) and the per-command files linked from that index                                                              |
 | User-facing workflows and command reference | [`../../docs/cli.md`](../../docs/cli.md)                                                                                                                                                   |
 | Auth behavior used by `auth` / `install`    | [`../../docs/authentication.md`](../../docs/authentication.md), [`../auth/AGENTS.md`](../auth/AGENTS.md)                                                                                   |
 | Profiles                                    | [`../../docs/profiles.md`](../../docs/profiles.md)                                                                                                                                         |
@@ -84,7 +84,7 @@ When adding or changing a CLI command:
 1. Follow the commander, service initialization, error handling, output, and
    exit-path test conventions in
    [`../../docs/cli-authoring.md`](../../docs/cli-authoring.md).
-2. Update or add the relevant command contract in
+2. Update or add the relevant per-command contract linked from
    [`../../docs/cli-command-contracts.md`](../../docs/cli-command-contracts.md).
 3. Update [`../../docs/cli.md`](../../docs/cli.md) when the user-facing command
    surface, flags, output shape, or workflow changes.
