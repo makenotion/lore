@@ -91,7 +91,10 @@ and migration differences.
   topology. They are explicit, bounded status/read orchestration inputs; normal
   memory/fact/decision/task writes still target only `vault.pageId`. See
   [`topology.md`](topology.md) for the `lore status` topology section, every
-  health state the surface emits, and the recovery workflow for each.
+  health state the surface emits, and the recovery workflow for each;
+  [`topology-inheritance.md`](topology-inheritance.md) for read-upstream
+  wake-up behavior; and [`topology-promotion.md`](topology-promotion.md) for
+  promotion targets.
 - Runtime feature flags resolve once in `src/feature-flags.ts` from
   `.lore.yaml` `features:` plus backward-compatible env vars. The feature
   taxonomy is: duplicate/advisory gates (`nearDuplicateProbe`,
