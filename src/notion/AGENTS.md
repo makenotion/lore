@@ -27,6 +27,7 @@ hydration, and RunTool adapters. Domain logic belongs in `src/core/`.
 | File                     | Responsibility                                                                          |
 | ------------------------ | --------------------------------------------------------------------------------------- |
 | `client.ts`              | Creates a configured `Client` instance with custom timeout and User-Agent.              |
+| `page-id-schema.ts`      | Shared Zod schema for Notion page IDs, including undashed URL-form normalization.       |
 | `rate-limit.ts`          | Wraps the Notion client in request-rate, concurrency, and shared-backoff gates.         |
 | `schema.ts`              | Defines database property configs, property name constants, and page property builders. |
 | `extractors.ts`          | Provides typed property value extractors for `PageObjectResponse`.                      |

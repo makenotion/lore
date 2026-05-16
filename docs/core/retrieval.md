@@ -243,7 +243,7 @@ source=hybrid-search` **unconditionally** — not gated on
   mitigation is the `LORE_DEBUG=1` stderr line; the production
   followup is an error-counter dashboard alert.
 
-  **Log-format divergence from `mcp/helpers.ts:debugLogPartialFailures`.**
+  **Log-format divergence from the shared partial-failure logger.**
   Both helpers share the `[lore] partial-failure:` prefix and the
   `error=` field — that is the stable contract for `grep`-based
   log aggregation. The key names diverge: hybrid search uses

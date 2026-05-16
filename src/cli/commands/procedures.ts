@@ -17,7 +17,7 @@ import {
   type ProcedureCandidate,
   type ProposeProcedureInput,
 } from "../../core/procedure.js"
-import { notionPageIdSchema } from "../../mcp/tools/notion-id-schema.js"
+import { notionPageIdSchema } from "../../notion/page-id-schema.js"
 import {
   resolveProjectScopeName,
   validateExplicitProjectScopeName,

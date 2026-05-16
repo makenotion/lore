@@ -1,5 +1,6 @@
 import type { LoreServices } from "../../server.js"
-import { debugLogPartialFailures, fireTouchOnRead, toolError } from "../../helpers.js"
+import { fireTouchOnRead, toolError } from "../../helpers.js"
+import { debugLogPartialFailures } from "../../../observability/partial-failure.js"
 import { settleAll } from "../../../core/settle.js"
 import type { Memory } from "../../../types.js"
 import type { ToolResult } from "./types.js"

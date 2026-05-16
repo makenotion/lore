@@ -25,7 +25,7 @@ import {
   findExactReuseTarget,
 } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
-import { debugLogPartialFailures } from "../../mcp/helpers.js"
+import { debugLogPartialFailures } from "../../observability/partial-failure.js"
 import { resolveFeatureFlags } from "../../feature-flags.js"
 import {
   ACTIVE_TASK_STATES,

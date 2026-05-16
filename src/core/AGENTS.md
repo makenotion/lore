@@ -978,9 +978,9 @@ reopens the silent-miss case where `"Café &amp;amp; Bar"` and
 `"Café & Bar"` fail to cluster.
 
 Probe failures flow through an `onError` callback which both tool
-handlers route to `debugLogPartialFailures` — probe failures become
-visible under `LORE_DEBUG=1` without adding noise to the default
-stderr stream.
+handlers route to the shared partial-failure logger — probe failures
+become visible under `LORE_DEBUG=1` without adding noise to the
+default stderr stream.
 
 **Kill-switch.** `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` skips the
 general probe entirely. Use for bulk-import, fixture setup, or

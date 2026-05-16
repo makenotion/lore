@@ -382,10 +382,10 @@ function buildAbortError(signal: AbortSignal): Error {
  *
  * Format: `[lore] partial-failure: branch=<contains|semantic> error=<message> source=hybrid-search`
  *
- * The format intentionally diverges from `debugLogPartialFailures`
- * (`root=<id> tool=<name>`): a hybrid branch isn't a Notion root id, and
- * `tool=hybrid-search` would be misleading because hybrid search is a core
- * service path, not an MCP tool. The shared contract is the
+ * The format intentionally diverges from the shared partial-failure logger:
+ * a hybrid branch isn't a Notion root id, and `tool=hybrid-search` would be
+ * misleading because hybrid search is a core service path, not an MCP tool.
+ * The shared contract is the
  * `[lore] partial-failure:` prefix and the `error=` field — downstream
  * parsers should match on those.
  */

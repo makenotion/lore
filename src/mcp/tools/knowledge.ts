@@ -5,12 +5,12 @@ import {
   formatDispatchError,
   paginationFooter,
   toolError,
-  debugLogPartialFailures,
   debugLogContradictionFailure,
   debugLogTouchFailure,
   debugLogFactTouchFailure,
   withWakeUpCacheBump,
 } from "../helpers.js"
+import { debugLogPartialFailures } from "../../observability/partial-failure.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { renderTrustLine } from "../render.js"
 import { clearableYmdDateSchema } from "./date-schema.js"

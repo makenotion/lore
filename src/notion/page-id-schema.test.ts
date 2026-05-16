@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { notionPageIdSchema } from "./notion-id-schema.js"
+import { notionPageIdSchema } from "./page-id-schema.js"
 
 describe("notionPageIdSchema", () => {
   it("accepts dashed UUID-shaped Notion page ids", () => {

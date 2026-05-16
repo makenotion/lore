@@ -170,45 +170,6 @@ export function paginationFooter(
   })}\n\`\`\``
 }
 
-/**
- * Opt-in operator observability for partial read-path failures. Partial
- * failures surface to the agent via the `Warnings:` footer, which is right
- * for the UX but leaves ops blind: one 429 on wake-up hydration and a
- * pathological corrupted-page situation both show up as an identical silent
- * partial response. When `LORE_DEBUG=1`, this helper emits one stderr line
- * per failing root so an operator running one session can see which shape
- * they're dealing with.
- *
- * Format: `[lore] partial-failure: root=<rootId> error=<message> tool=<toolName>`
- *
- * Only `error.message` is logged — not `error.stack`, `.body`, `.headers`, or
- * the full error object. The message is then routed through
- * `redactDebugError` which bounds length, strips
- * forward-compatible SDK leak shapes (`body=` / `headers=` / `payload=`),
- * and replaces Notion page-id-shaped substrings with `<page-id>`. The
- * explicit `root=<rootId>` field is NOT redacted — operators need it to
- * triage which root failed.
- *
- * Interpolated fields (`rootId`, `message`) have ASCII control characters
- * — newlines, carriage returns, tabs, and the 0x00-0x1F / 0x7F range —
- * replaced with spaces before the line is written. Under current callers
- * rootIds are Notion UUIDs and rejection messages are single-line, so this
- * is defensive: it preserves the one-event-per-line invariant that log
- * aggregators rely on when future callers (PF1-01 bounded retries,
- * wake-up parallel queries) stream through the same helper.
- */
-export function debugLogPartialFailures(
-  toolName: string,
-  failures: ReadonlyArray<{ rootId: string; error: unknown }>
-): void {
-  if (process.env["LORE_DEBUG"] !== "1") return
-  for (const { rootId, error } of failures) {
-    process.stderr.write(
-      `[lore] partial-failure: root=${oneLine(rootId)} error=${oneLine(redactDebugError(error))} tool=${toolName}\n`
-    )
-  }
-}
-
 // eslint-disable-next-line no-control-regex -- coercing to a single log line is the point
 const CONTROL_CHARS = /[\x00-\x1F\x7F]/g
 
@@ -233,7 +194,7 @@ function oneLine(value: string): string {
  *
  * Format: `[lore] auto-fact-failure: source=<save|update> kind=<create|invalidate> memoryId=<id> entity=<entity> error=<message>`
  *
- * Same narrowing as `debugLogPartialFailures`: only `error.message`
+ * Same narrowing as the shared partial-failure logger: only `error.message`
  * is logged. ASCII control characters in `memoryId` / `entity` /
  * `message` are replaced with spaces before the line is written so
  * the one-event-per-line invariant log aggregators rely on holds even
@@ -284,7 +245,7 @@ export function debugLogAutoFactFailure(
  * - `"decide-supersede"` — `lore-decision action='create'` with
  *   `supersedesIds` (the supersession is a side-effect of the create)
  *
- * Same `[lore]` prefix as `debugLogPartialFailures` and (forthcoming)
+ * Same `[lore]` prefix as the shared partial-failure logger and
  * `debugLogTouchFailure` so `grep "[lore]"` surfaces all three failure
  * classes together. Per-key naming diverges by surface — `source=` here
  * because there is no Notion `root` and `tool=` would alias the more
@@ -311,7 +272,7 @@ export function debugLogContradictionFailure(
  *
  * Format: `[lore] touch-failure: memory=<id> error=<message> tool=<toolName>`
  *
- * Sibling of `debugLogPartialFailures` and shares its operator-only
+ * Sibling of the shared partial-failure logger and shares its operator-only
  * posture: emits only when `LORE_DEBUG=1`, scrubs ASCII control
  * characters out of interpolated fields, logs `error.message` not
  * `error.stack`. The diverging key is `memory=<id>` rather than
@@ -320,8 +281,8 @@ export function debugLogContradictionFailure(
  * carries that scope. Downstream parsers should match on the
  * `[lore] touch-failure:` prefix and the `error=` field.
  *
- * **Per-row signature, not a batch.** Unlike `debugLogPartialFailures`
- * (which receives a `failures` array from `settleAll`), touch failures
+ * **Per-row signature, not a batch.** Unlike the shared partial-failure
+ * logger, touch failures
  * arrive one-at-a-time via `touchOnRead`'s per-row `onError` callback —
  * the data layer has already iterated the batch and isolated each
  * failure. Re-batching at this layer would either require accumulating

@@ -15,12 +15,12 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import {
-  debugLogPartialFailures,
   formatDispatchError,
   paginationFooter,
   toolError,
   withWakeUpCacheBump,
 } from "../helpers.js"
+import { debugLogPartialFailures } from "../../observability/partial-failure.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { createTagsSchema, keywordsSchema } from "./tag-schema.js"
 import { scopeInputSchema } from "./scope-schema.js"

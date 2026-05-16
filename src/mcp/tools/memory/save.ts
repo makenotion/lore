@@ -1,9 +1,6 @@
 import type { LoreServices } from "../../server.js"
-import {
-  debugLogAutoFactFailure,
-  debugLogPartialFailures,
-  toolError,
-} from "../../helpers.js"
+import { debugLogAutoFactFailure, toolError } from "../../helpers.js"
+import { debugLogPartialFailures } from "../../../observability/partial-failure.js"
 import { resolveProjectIds } from "../../resolve.js"
 import { resolveAuthorForWrite } from "../../../auth/identity.js"
 import { emitAutoMentions } from "../../../core/auto-mentions.js"

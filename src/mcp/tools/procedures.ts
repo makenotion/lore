@@ -38,7 +38,7 @@ import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import type { LoreServices } from "../../services.js"
 import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.js"
 import { nonBlankString } from "./text-schema.js"
-import { notionPageIdSchema } from "./notion-id-schema.js"
+import { notionPageIdSchema } from "../../notion/page-id-schema.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>

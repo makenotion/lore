@@ -4,7 +4,6 @@ import {
   debugLogAutoFactFailure,
   debugLogContradictionFailure,
   debugLogFactTouchFailure,
-  debugLogPartialFailures,
   debugLogTouchFailure,
   toolError,
 } from "./helpers.js"
@@ -124,7 +123,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     // The helper exists for opt-in operator observability — running
     // without `LORE_DEBUG=1` must not flood stderr on every save
     // because the auto-emit branch fans out per-entity. Same posture
-    // as `debugLogPartialFailures`.
+    // as the shared partial-failure logger.
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "")
     try {
@@ -330,53 +329,14 @@ describe("debugLogContradictionFailure", () => {
 })
 
 describe("LORE_DEBUG redaction routing (issue #488)", () => {
-  // Pins the contract that every LORE_DEBUG-gated stderr emitter in
+  // Pins the contract that LORE_DEBUG-gated stderr emitters in
   // this module routes its error message through `redactDebugError`
   // before writing. Page-id-shaped substrings and forward-compatible
   // SDK leak shapes (`body=`, `headers=`) are scrubbed; the
-  // `root=<id>` / `memoryId=<id>` / `entity=<id>` explicit fields are
+  // `memoryId=<id>` / `entity=<id>` explicit fields are
   // intentionally NOT redacted because operators need them for
   // triage. Coverage of one helper per shape is sufficient — the
   // routing is the contract, not the per-helper plumbing.
-
-  it("debugLogPartialFailures redacts page-id substrings in error messages but keeps explicit root id intact", () => {
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    process.env.LORE_DEBUG = "1"
-    try {
-      const id = "abcdef0123456789abcdef0123456789"
-      const rootId = "fedcba9876543210fedcba9876543210"
-      debugLogPartialFailures("lore-memory", [
-        { rootId, error: new Error(`Failed to load page ${id}`) },
-      ])
-      const line = String(stderr.mock.calls[0]![0])
-      // The 32-char hex inside the error message is redacted...
-      expect(line).toContain("error=Failed to load page <page-id>")
-      // ...but the explicit root field still carries the operator-actionable id.
-      expect(line).toContain(`root=${rootId}`)
-    } finally {
-      delete process.env.LORE_DEBUG
-      stderr.mockRestore()
-    }
-  })
-
-  it("debugLogPartialFailures strips forward-compatible SDK body= leaks", () => {
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    process.env.LORE_DEBUG = "1"
-    try {
-      debugLogPartialFailures("lore-memory", [
-        {
-          rootId: "root-id",
-          error: new Error('APIError body={"page":"secret"} status=500'),
-        },
-      ])
-      const line = String(stderr.mock.calls[0]![0])
-      expect(line).toContain("body=<redacted>")
-      expect(line).not.toContain('"secret"')
-    } finally {
-      delete process.env.LORE_DEBUG
-      stderr.mockRestore()
-    }
-  })
 
   it("debugLogAutoFactFailure routes through the redactor too (single-pass coverage)", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
@@ -454,8 +414,8 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
 
   describe("clean messages pass through unchanged; explicit fields remain readable", () => {
     // Negative coverage per routing site — a regression that
-    // accidentally over-redacts the explicit `root=` / `memoryId=` /
-    // `entity=` / `fact=` interpolations would silently break operator
+    // accidentally over-redacts the explicit `memoryId=` / `entity=` /
+    // `fact=` interpolations would silently break operator
     // triage. Pin the safe-passthrough contract per emitter.
     //
     // Each test saves the prior `LORE_DEBUG` value and restores it in
@@ -485,16 +445,6 @@ describe("LORE_DEBUG redaction routing (issue #488)", () => {
       } else {
         process.env["LORE_DEBUG"] = priorDebug
       }
-    })
-
-    it("debugLogPartialFailures with a clean message preserves rootId and tool", () => {
-      debugLogPartialFailures("lore-memory", [
-        { rootId: "root-id-1", error: new Error("notion 429") },
-      ])
-      const line = String(stderr.mock.calls[0]![0])
-      expect(line).toBe(
-        "[lore] partial-failure: root=root-id-1 error=notion 429 tool=lore-memory\n"
-      )
     })
 
     it("debugLogAutoFactFailure with a clean message preserves memoryId and entity", () => {

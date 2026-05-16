@@ -99,8 +99,7 @@ export function isSqlValidationError(err: unknown): boolean {
  *
  * Routes through `redactDebugError` so SDK-interpolated leak vectors
  * (page ids, headers, etc.) don't surface in the log line — same
- * defense-in-depth posture as `debugLogPartialFailures` on the MCP
- * tool helpers.
+ * defense-in-depth posture as the shared partial-failure logger.
  */
 export function logRunToolFallback(source: string, err: unknown): void {
   if (process.env["LORE_DEBUG"] !== "1") return

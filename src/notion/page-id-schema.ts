@@ -1,7 +1,7 @@
 import { z } from "zod"
 
 /**
- * Shared Zod schema for MCP fields that carry a Notion page id.
+ * Shared Zod schema for fields that carry a Notion page id.
  *
  * Accepts the two practical forms agents encounter in the wild:
  *
@@ -13,7 +13,7 @@ import { z } from "zod"
  *
  * Both round-trip into `client.pages.retrieve({ page_id })` cleanly —
  * Notion's SDK accepts either form, in any case. Normalizing at the
- * MCP boundary to a single canonical shape (lowercase, dashed) means
+ * input boundary to a single canonical shape (lowercase, dashed) means
  * downstream consumers — per-call dedup `Set<string>`s, the
  * `MemoryService.titleCache` keyed by id, the render layer's title-resolver
  * which already lowercases before lookup — see one shape regardless of
@@ -26,10 +26,8 @@ import { z } from "zod"
  * a Notion 404 / 400. Mirrors `nonBlankString`'s posture for
  * create-required text fields.
  *
- * `lore-memory action='archive'` and friends use bare `z.string()` for
- * historical reasons; new fields requiring a Notion page id should
- * prefer this schema for the better error message and the
- * undashed-form acceptance.
+ * New fields requiring a Notion page id should prefer this schema for the
+ * better error message and the undashed-form acceptance.
  */
 
 const DASHED_NOTION_PAGE_ID =
