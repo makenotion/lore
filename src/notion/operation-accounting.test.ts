@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import type { Client } from "@notionhq/client"
+import { APIErrorCode, APIResponseError, type Client } from "@notionhq/client"
 import {
   captureCostAccounting,
   recordNotionRateLimitBackoff,
 } from "../core/cost-accounting.js"
+import { createAuthRefreshingClient } from "./client.js"
 import {
   classifyNotionOperation,
   createOperationAccountingClient,
@@ -248,5 +249,55 @@ describe("Notion operation accounting", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("continues accounting after an auth refresh rebuilds the Notion client", async () => {
+    const oldQuery = vi.fn(async () => {
+      throw new APIResponseError({
+        code: APIErrorCode.Unauthorized,
+        status: 401,
+        message: "old token expired",
+        headers: new Headers(),
+        rawBodyText: '{"code":"unauthorized","message":"old token expired"}',
+        additional_data: undefined,
+        request_id: undefined,
+      })
+    })
+    const refreshedQuery = vi.fn(async () => ({ results: [{ id: "after-refresh" }] }))
+    const createClient = vi.fn((token: string) => {
+      const query = token === "old-token" ? oldQuery : refreshedQuery
+      return createOperationAccountingClient({
+        dataSources: { query },
+      } as unknown as Client)
+    })
+    const client = createAuthRefreshingClient(
+      { token: "old-token" },
+      async () => ({
+        kind: "refreshed" as const,
+        auth: { token: "new-token" },
+        source: "ntn-auth-json",
+      }),
+      { createClient, onRefresh: () => {} }
+    )
+
+    const tracked = await captureCostAccounting(async () => {
+      return await client.dataSources.query({ data_source_id: "ds" })
+    })
+
+    expect(tracked.ok).toBe(true)
+    if (tracked.ok) {
+      expect(tracked.result).toEqual({ results: [{ id: "after-refresh" }] })
+    }
+    expect(createClient).toHaveBeenCalledTimes(2)
+    expect(createClient).toHaveBeenNthCalledWith(1, "old-token", undefined)
+    expect(createClient).toHaveBeenNthCalledWith(2, "new-token", undefined)
+    expect(oldQuery).toHaveBeenCalledTimes(1)
+    expect(refreshedQuery).toHaveBeenCalledTimes(1)
+    expect(tracked.context.notion).toEqual({
+      reads: 1,
+      writes: 0,
+      failures: 1,
+      rateLimitBackoffs: 0,
+    })
   })
 })
