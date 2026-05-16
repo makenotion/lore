@@ -18,6 +18,7 @@ export interface MigrationScopeIntent {
   buildFactConfidenceScores?: boolean
   backfillFactObservedAt?: boolean
   project?: string
+  projectId?: string
   includeArchived?: boolean
 }
 
@@ -44,7 +45,7 @@ export async function resolveMigrationProjectScope(
   services: LoreServices,
   opts: MigrationScopeIntent
 ): Promise<MigrationProjectScope> {
-  if (!isProjectScopedMigrationRequested(opts) || opts.project === undefined) {
+  if (!isProjectScopedMigrationRequested(opts)) {
     return {}
   }
 
@@ -59,6 +60,9 @@ export async function resolveMigrationProjectScope(
       docsHint: PROJECT_SCOPE_MIGRATION_DOC,
     }
   )
+  if (opts.projectId !== undefined) {
+    return { projectId: opts.projectId, projectName: explicitProjectName }
+  }
   if (explicitProjectName === undefined) return {}
 
   const project = await resolveProjectScopeName(

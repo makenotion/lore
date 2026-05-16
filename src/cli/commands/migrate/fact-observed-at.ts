@@ -3,13 +3,8 @@ import {
   runBackfillFactObservedAtMigration,
   type BackfillFactObservedAtResult,
 } from "../../../core/fact-observed-at-migration.js"
-import {
-  PROJECT_SCOPE_MIGRATION_DOC,
-  resolveProjectScopeName,
-  validateExplicitProjectScopeName,
-} from "../../../core/project-scope.js"
 import { redactDebugMessage } from "../../../debug-redact.js"
-import { printDiscoveryBreadcrumb } from "./shared.js"
+import { printDiscoveryBreadcrumb, resolveMigrationProjectScope } from "./shared.js"
 
 /**
  * Driver for `--backfill-fact-observed-at`. Same
@@ -26,36 +21,21 @@ export async function runBackfillFactObservedAt(
     dryRun: boolean
     projectName?: string
     projectId?: string
+    includeArchived?: boolean
   }
 ): Promise<BackfillFactObservedAtResult> {
   const planOnly = !options.apply
-  const explicitProjectName = validateExplicitProjectScopeName(
-    options.projectName,
-    "--project",
-    {
-      listHint: "run `lore status projects` to list configured projects",
-      omittedScopeLabel: "vault-wide scope",
-      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
-    }
-  )
-  let projectId = options.projectId
-  if (explicitProjectName !== undefined && projectId === undefined) {
-    const project = await resolveProjectScopeName(
-      services.projects,
-      explicitProjectName,
-      "--project",
-      {
-        listHint: "run `lore status projects` to list configured projects",
-        omittedScopeLabel: "vault-wide scope",
-        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
-      }
-    )
-    projectId = project.id
-  }
+  const scope = await resolveMigrationProjectScope(services, {
+    backfillFactObservedAt: true,
+    project: options.projectName,
+    projectId: options.projectId,
+    includeArchived: options.includeArchived,
+  })
+  const projectName = scope.projectName ?? options.projectName
 
   printDiscoveryBreadcrumb(
-    options.projectName
-      ? `facts missing transaction-time provenance in project "${options.projectName}"`
+    projectName
+      ? `facts missing transaction-time provenance in project "${projectName}"`
       : "facts missing transaction-time provenance"
   )
 
@@ -63,8 +43,8 @@ export async function runBackfillFactObservedAt(
     services,
     apply: options.apply,
     dryRun: options.dryRun,
-    projectName: options.projectName,
-    projectId,
+    projectName,
+    projectId: scope.projectId,
   })
   const { plan, written, failures } = result
 

@@ -9,10 +9,12 @@ import { migrateCommand } from "./migrate.js"
 import { runAgentNormalization } from "./migrate/agent-normalization.js"
 import {
   runBuildConfidenceScores,
+  runBuildFactConfidenceScores,
   summarizeConfidenceScorePlan,
 } from "./migrate/confidence.js"
 import { runBuildEntitiesMigration } from "./migrate/entities.js"
 import { runFactEncodingFix, runMemoryEncodingFix } from "./migrate/encoding.js"
+import { runBackfillFactObservedAt } from "./migrate/fact-observed-at.js"
 import { backfillFactSources, proposeSourceMemory } from "./migrate/fact-sources.js"
 import { runOrphanRateReport } from "./migrate/orphan-rate.js"
 import {
@@ -152,6 +154,22 @@ describe("resolveMigrationProjectScope", () => {
     expect(services.projects.resolveByName).toHaveBeenCalledWith("Archive", {
       includeArchived: true,
     })
+  })
+
+  it("uses a pre-resolved projectId without resolving projectName again", async () => {
+    const services = makeScopeServices(async () => {
+      throw new Error("should not resolve again")
+    })
+
+    const scope = await resolveMigrationProjectScope(services, {
+      buildConfidenceScores: true,
+      project: "Archive",
+      projectId: "project-archive",
+      includeArchived: true,
+    })
+
+    expect(scope).toEqual({ projectId: "project-archive", projectName: "Archive" })
+    expect(services.projects.resolveByName).not.toHaveBeenCalled()
   })
 
   it("adds docs and include-archived recovery hints when project resolution misses", async () => {
@@ -2008,20 +2026,36 @@ describe("runBuildConfidenceScores", () => {
     return makeMemory(id, overrides)
   }
 
-  async function* iter(memories: Memory[]) {
-    for (const m of memories) yield m
+  async function* iter<T>(rows: T[]) {
+    for (const row of rows) yield row
   }
 
   function makeServices(args: {
     memories: Memory[]
-    findByName?: (name: string) => Promise<{ id: string; name: string } | null>
+    facts?: Fact[]
+    findByName?: (
+      name: string,
+      options?: { includeArchived?: boolean }
+    ) => Promise<{ id: string; name: string } | null>
     applyBackfillScore?: (id: string, score: number, date: string) => Promise<void>
+    applyFactBackfillScore?: (id: string, score: number, date: string) => Promise<void>
+    applyObservedAtBackfill?: (
+      id: string,
+      values: { observedAt: string | null; invalidatedAt: string | null }
+    ) => Promise<void>
   }) {
     const services = {
       config: { notion: { rateLimit: { concurrency: 5 } } },
       memories: {
         listAllForBackfill: vi.fn(() => iter(args.memories)),
         applyBackfillScore: vi.fn(args.applyBackfillScore ?? (async () => undefined)),
+      },
+      facts: {
+        listAllForBackfill: vi.fn(() => iter(args.facts ?? [])),
+        applyBackfillScore: vi.fn(args.applyFactBackfillScore ?? (async () => undefined)),
+        applyObservedAtBackfill: vi.fn(
+          args.applyObservedAtBackfill ?? (async () => undefined)
+        ),
       },
       projects: {
         findByName: vi.fn(args.findByName ?? (async () => null)),
@@ -2110,6 +2144,75 @@ describe("runBuildConfidenceScores", () => {
     expect(services.projects.findByName).toHaveBeenCalledWith("Widget")
     expect(services.memories.listAllForBackfill).toHaveBeenCalledWith({
       projectId: "project-widget",
+    })
+  })
+
+  it("threads includeArchived through direct memory confidence project resolution", async () => {
+    const services = makeServices({
+      memories: [],
+      findByName: async (name, options) =>
+        options?.includeArchived ? { id: "project-archive", name } : null,
+    })
+
+    await runBuildConfidenceScores(services as never, {
+      apply: false,
+      dryRun: false,
+      projectName: "Archive",
+      includeArchived: true,
+    })
+
+    expect(services.projects.findByName).toHaveBeenCalledWith("Archive", {
+      includeArchived: true,
+    })
+    expect(services.memories.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: "project-archive",
+    })
+  })
+
+  it("threads includeArchived through direct fact confidence project resolution", async () => {
+    const services = makeServices({
+      memories: [],
+      facts: [],
+      findByName: async (name, options) =>
+        options?.includeArchived ? { id: "project-archive", name } : null,
+    })
+
+    await runBuildFactConfidenceScores(services as never, {
+      apply: false,
+      dryRun: false,
+      projectName: "Archive",
+      includeArchived: true,
+    })
+
+    expect(services.projects.findByName).toHaveBeenCalledWith("Archive", {
+      includeArchived: true,
+    })
+    expect(services.facts.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: "project-archive",
+    })
+  })
+
+  it("threads includeArchived through direct fact observed-at project resolution", async () => {
+    const services = makeServices({
+      memories: [],
+      facts: [],
+      findByName: async (name, options) =>
+        options?.includeArchived ? { id: "project-archive", name } : null,
+    })
+
+    await runBackfillFactObservedAt(services as never, {
+      apply: false,
+      dryRun: false,
+      projectName: "Archive",
+      includeArchived: true,
+    })
+
+    expect(services.projects.findByName).toHaveBeenCalledWith("Archive", {
+      includeArchived: true,
+    })
+    expect(services.facts.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: "project-archive",
+      includeInvalidated: true,
     })
   })
 

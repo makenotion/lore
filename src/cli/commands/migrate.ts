@@ -414,6 +414,7 @@ export const migrateCommand = new Command("migrate")
             dryRun: Boolean(opts.dryRun),
             projectName: opts.project,
             projectId: migrationScope.projectId,
+            includeArchived: opts.includeArchived,
           })
         }
 
@@ -423,6 +424,7 @@ export const migrateCommand = new Command("migrate")
             dryRun: Boolean(opts.dryRun),
             projectName: opts.project,
             projectId: migrationScope.projectId,
+            includeArchived: opts.includeArchived,
           })
         }
 
@@ -432,6 +434,7 @@ export const migrateCommand = new Command("migrate")
             dryRun: Boolean(opts.dryRun),
             projectName: opts.project,
             projectId: migrationScope.projectId,
+            includeArchived: opts.includeArchived,
           })
         }
 

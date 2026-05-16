@@ -9,12 +9,7 @@ import {
   type BuildFactConfidenceScoresPlan,
   type BuildFactConfidenceScoresResult,
 } from "../../../core/fact-confidence-migration.js"
-import {
-  PROJECT_SCOPE_MIGRATION_DOC,
-  resolveProjectScopeName,
-  validateExplicitProjectScopeName,
-} from "../../../core/project-scope.js"
-import { printDiscoveryBreadcrumb } from "./shared.js"
+import { printDiscoveryBreadcrumb, resolveMigrationProjectScope } from "./shared.js"
 
 /**
  * Drive the build-confidence-scores migration and render the report.
@@ -31,52 +26,21 @@ export async function runBuildConfidenceScores(
     dryRun: boolean
     projectName?: string
     projectId?: string
+    includeArchived?: boolean
   }
 ): Promise<BuildConfidenceScoresResult> {
   const planOnly = !options.apply
-  // Pre-resolve `--project <name>` so a typo'd / unknown name throws
-  // BEFORE the discovery breadcrumb prints. Without this preflight,
-  // the operator would see "Discovering memories without a Confidence
-  // Score in project X..." then immediately a "project X not found"
-  // error — the breadcrumb implies forward motion that didn't happen.
-  //
-  // The downstream `runBuildConfidenceScoresMigration` re-checks the
-  // same name as a defense-in-depth layer (so a future refactor that
-  // drops this preflight cannot accidentally break the safety AC).
-  // For the success path, `LruCache.getOrLoad` collapses the second
-  // resolve to a cache hit — one in-memory lookup. For the failure
-  // path, `findByName` returns `null` and the LRU explicitly does
-  // NOT cache negatives, so the duplicate query would
-  // re-run if reached — but it never is, because this preflight's
-  // throw aborts before the migration call. The redundant work is
-  // bounded to the success path only.
-  const explicitProjectName = validateExplicitProjectScopeName(
-    options.projectName,
-    "--project",
-    {
-      listHint: "run `lore status projects` to list configured projects",
-      omittedScopeLabel: "vault-wide scope",
-      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
-    }
-  )
-  let projectId = options.projectId
-  if (explicitProjectName !== undefined && projectId === undefined) {
-    const project = await resolveProjectScopeName(
-      services.projects,
-      explicitProjectName,
-      "--project",
-      {
-        listHint: "run `lore status projects` to list configured projects",
-        omittedScopeLabel: "vault-wide scope",
-        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
-      }
-    )
-    projectId = project.id
-  }
+  const scope = await resolveMigrationProjectScope(services, {
+    buildConfidenceScores: true,
+    project: options.projectName,
+    projectId: options.projectId,
+    includeArchived: options.includeArchived,
+  })
+  const projectName = scope.projectName ?? options.projectName
 
   printDiscoveryBreadcrumb(
-    options.projectName
-      ? `memories without a Confidence Score in project "${options.projectName}"`
+    projectName
+      ? `memories without a Confidence Score in project "${projectName}"`
       : "memories without a Confidence Score"
   )
 
@@ -84,8 +48,8 @@ export async function runBuildConfidenceScores(
     services,
     apply: options.apply,
     dryRun: options.dryRun,
-    projectName: options.projectName,
-    projectId,
+    projectName,
+    projectId: scope.projectId,
   })
   const { plan, written } = result
 
@@ -159,36 +123,21 @@ export async function runBuildFactConfidenceScores(
     dryRun: boolean
     projectName?: string
     projectId?: string
+    includeArchived?: boolean
   }
 ): Promise<BuildFactConfidenceScoresResult> {
   const planOnly = !options.apply
-  const explicitProjectName = validateExplicitProjectScopeName(
-    options.projectName,
-    "--project",
-    {
-      listHint: "run `lore status projects` to list configured projects",
-      omittedScopeLabel: "vault-wide scope",
-      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
-    }
-  )
-  let projectId = options.projectId
-  if (explicitProjectName !== undefined && projectId === undefined) {
-    const project = await resolveProjectScopeName(
-      services.projects,
-      explicitProjectName,
-      "--project",
-      {
-        listHint: "run `lore status projects` to list configured projects",
-        omittedScopeLabel: "vault-wide scope",
-        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
-      }
-    )
-    projectId = project.id
-  }
+  const scope = await resolveMigrationProjectScope(services, {
+    buildFactConfidenceScores: true,
+    project: options.projectName,
+    projectId: options.projectId,
+    includeArchived: options.includeArchived,
+  })
+  const projectName = scope.projectName ?? options.projectName
 
   printDiscoveryBreadcrumb(
-    options.projectName
-      ? `facts without a Confidence Score in project "${options.projectName}"`
+    projectName
+      ? `facts without a Confidence Score in project "${projectName}"`
       : "facts without a Confidence Score"
   )
 
@@ -196,8 +145,8 @@ export async function runBuildFactConfidenceScores(
     services,
     apply: options.apply,
     dryRun: options.dryRun,
-    projectName: options.projectName,
-    projectId,
+    projectName,
+    projectId: scope.projectId,
   })
   const { plan, written } = result
 
