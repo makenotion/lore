@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { z } from "zod"
 import { addCostOutputs, captureCostAccounting } from "../core/cost-accounting.js"
 import {
   appendCostEvent,
@@ -20,44 +21,39 @@ type ToolCallback = (
   extra?: unknown
 ) => Promise<CostTrackedToolResult>
 
-const SAFE_TOOL_ACTIONS: Record<string, ReadonlySet<string>> = {
-  "lore-context": new Set(["status", "wake-up", "digest"]),
-  "lore-decision": new Set(["create", "list", "get", "context", "supersede", "review"]),
-  "lore-fact": new Set(["create", "invalidate", "extend"]),
-  "lore-memory": new Set([
-    "save",
-    "update",
-    "archive",
-    "expand",
-    "suggest-topic-key",
-    "compare",
-    "approve",
-    "reject",
-    "promote",
-  ]),
-  "lore-pinned": new Set(["pin", "unpin", "update", "list"]),
-  "lore-procedure": new Set(["scan-candidates", "propose", "deprecate"]),
-  "lore-project": new Set(["list", "get"]),
-  "lore-query": new Set(["recall", "search", "ask", "audit"]),
-  "lore-task": new Set(["create", "update", "close", "close-many", "list", "reconcile"]),
-}
+type ToolActionSets = ReadonlyMap<string, ReadonlySet<string>>
+
+const EMPTY_TOOL_ACTIONS: ToolActionSets = new Map()
 
 export function installCostTrackingToolWrapper(
   server: McpServer,
   services: LoreServices
 ): void {
   const originalRegisterTool = server.registerTool.bind(server)
+  const toolActions = new Map<string, ReadonlySet<string>>()
   const wrappedRegisterTool = (
     name: string,
     config: Parameters<typeof server.registerTool>[1],
     callback: ToolCallback
   ) => {
+    const actions = safeToolActionsFromInputSchema(
+      (config as { inputSchema?: unknown }).inputSchema
+    )
+    if (actions) {
+      toolActions.set(name, actions)
+    } else {
+      toolActions.delete(name)
+    }
     return originalRegisterTool(name, config, (async (
       args: Record<string, unknown>,
       extra?: unknown
     ) =>
-      runMcpInvocationWithCostTracking(services, name, args, () =>
-        callback(args, extra)
+      runMcpInvocationWithCostTracking(
+        services,
+        name,
+        args,
+        () => callback(args, extra),
+        toolActions
       )) as never)
   }
   server.registerTool = wrappedRegisterTool as typeof server.registerTool
@@ -67,13 +63,14 @@ export async function runMcpInvocationWithCostTracking(
   services: LoreServices,
   tool: string,
   args: Record<string, unknown>,
-  run: () => Promise<CostTrackedToolResult>
+  run: () => Promise<CostTrackedToolResult>,
+  toolActions: ToolActionSets = EMPTY_TOOL_ACTIONS
 ): Promise<CostTrackedToolResult> {
   if (!services.costTracking.enabled) return run()
 
   const started = Date.now()
   const input = safeJsonStringify(args)
-  const action = safeActionValue(tool, args["action"])
+  const action = safeActionValue(tool, args["action"], toolActions)
   const projectName = services.context.project?.name
   const agentName = envStringValue("LORE_AGENT_NAME")
   const sessionId = envStringValue("LORE_SESSION_ID")
@@ -133,9 +130,49 @@ export async function runMcpInvocationWithCostTracking(
   throw tracked.error
 }
 
-function safeActionValue(tool: string, value: unknown): string | undefined {
+function safeToolActionsFromInputSchema(
+  inputSchema: unknown
+): ReadonlySet<string> | undefined {
+  const actionSchema = actionSchemaFromInputSchema(inputSchema)
+  const values = zodEnumValues(actionSchema)
+  return values.length > 0 ? new Set(values) : undefined
+}
+
+function actionSchemaFromInputSchema(inputSchema: unknown): unknown {
+  if (!inputSchema || typeof inputSchema !== "object") return undefined
+
+  if (inputSchema instanceof z.ZodObject) {
+    return inputSchema.shape["action"]
+  }
+
+  const rawShapeAction = (inputSchema as Record<string, unknown>)["action"]
+  if (rawShapeAction) return rawShapeAction
+
+  return undefined
+}
+
+function zodEnumValues(schema: unknown): string[] {
+  let cursor = schema
+  for (let i = 0; i < 8; i++) {
+    if (cursor instanceof z.ZodEnum) {
+      return [...cursor.options]
+    }
+    if (cursor instanceof z.ZodOptional || cursor instanceof z.ZodNullable) {
+      cursor = cursor.unwrap()
+      continue
+    }
+    return []
+  }
+  return []
+}
+
+function safeActionValue(
+  tool: string,
+  value: unknown,
+  toolActions: ToolActionSets
+): string | undefined {
   if (typeof value !== "string") return undefined
-  const safeActions = SAFE_TOOL_ACTIONS[tool]
+  const safeActions = toolActions.get(tool)
   return safeActions?.has(value) ? value : undefined
 }
 

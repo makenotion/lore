@@ -1,11 +1,24 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { recordNotionRead, recordNotionWrite } from "../core/cost-accounting.js"
 import { readLedgerEvents, resolveCostTracking } from "../core/cost-ledger.js"
 import type { LoreServices } from "../services.js"
-import { runMcpInvocationWithCostTracking } from "./cost-tracking.js"
+import {
+  installCostTrackingToolWrapper,
+  runMcpInvocationWithCostTracking,
+} from "./cost-tracking.js"
+import { registerContextTools } from "./tools/context.js"
+import { registerDecisionTools } from "./tools/decisions.js"
+import { registerKnowledgeTools } from "./tools/knowledge.js"
+import { registerMemoryTools } from "./tools/memory.js"
+import { registerPinnedTools } from "./tools/pinned.js"
+import { registerProcedureTools } from "./tools/procedures.js"
+import { registerProjectTools } from "./tools/project.js"
+import { registerQueryTools } from "./tools/query.js"
+import { registerTaskTools } from "./tools/tasks.js"
 
 const appendCostEventMock = vi.hoisted(() => vi.fn())
 
@@ -19,6 +32,13 @@ vi.mock("../core/cost-ledger.js", async () => {
     appendCostEvent: appendCostEventMock,
   }
 })
+
+type Handler = (args: Record<string, unknown>, extra?: unknown) => Promise<unknown>
+
+type ToolConfig = {
+  inputSchema?: Record<string, unknown>
+  [key: string]: unknown
+}
 
 describe("MCP cost tracking", () => {
   const dirs: string[] = []
@@ -77,6 +97,56 @@ describe("MCP cost tracking", () => {
     }
   })
 
+  it("records every registered MCP action enum value without a separate allowlist", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
+      root
+    )
+    const services = {
+      costTracking,
+      context: { project: { name: "Project" } },
+    } as unknown as LoreServices
+    const mock = createMockServer()
+
+    installCostTrackingToolWrapper(mock.server, services)
+    registerContextTools(mock.server, services)
+    registerMemoryTools(mock.server, services)
+    registerPinnedTools(mock.server, services)
+    registerQueryTools(mock.server, services)
+    registerProjectTools(mock.server, services)
+    registerKnowledgeTools(mock.server, services)
+    registerDecisionTools(mock.server, services)
+    registerTaskTools(mock.server, services)
+    registerProcedureTools(mock.server, services)
+
+    const expectedPairs: string[] = []
+    for (const name of mock.names()) {
+      const actions = enumValuesOf(mock.config(name).inputSchema?.["action"])
+      expect(actions, `${name} must expose a string action enum`).not.toEqual([])
+      for (const action of actions) {
+        expectedPairs.push(`${name}/${action}`)
+        await mock.invoke(name, { action }).catch(() => undefined)
+      }
+    }
+
+    const rows = await readLedgerEvents(costTracking)
+    const seenPairs = new Set(
+      rows.map((row) => {
+        expect(row.event.eventType).toBe("mcp.invocation")
+        const event = row.event as { tool: string; action?: string }
+        return `${event.tool}/${event.action ?? ""}`
+      })
+    )
+    expect(seenPairs).toEqual(new Set(expectedPairs))
+    expect(rows).toHaveLength(expectedPairs.length)
+    for (const row of rows) {
+      const event = row.event as { action?: unknown }
+      expect(event.action, row.line).toBeTypeOf("string")
+    }
+  })
+
   it("logs serialized argument-envelope byte metrics without changing tool results", async () => {
     const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
     dirs.push(root)
@@ -110,7 +180,8 @@ describe("MCP cost tracking", () => {
           content: [{ type: "text", text: "visible response" }],
           costOutputs: { memoriesCreated: 1 },
         }
-      }
+      },
+      actionSets({ "lore-memory": ["save"] })
     )
 
     expect(result.content[0]!.text).toBe("visible response")
@@ -172,7 +243,8 @@ describe("MCP cost tracking", () => {
         },
         async () => {
           throw new Error("validation failed")
-        }
+        },
+        actionSets({ "lore-memory": ["save"] })
       )
     ).rejects.toThrow("validation failed")
 
@@ -192,6 +264,31 @@ describe("MCP cost tracking", () => {
     expect(rows[0]!.line).not.toContain("secret agent prompt")
     expect(rows[0]!.line).not.toContain("secret session prompt")
   })
+
+  it("omits non-string action values from ledger rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
+      root
+    )
+    const services = {
+      costTracking,
+      context: { project: { name: "Project" } },
+    } as unknown as LoreServices
+
+    await runMcpInvocationWithCostTracking(
+      services,
+      "lore-memory",
+      { action: 123 },
+      async () => ({ content: [{ type: "text", text: "visible response" }] }),
+      actionSets({ "lore-memory": ["save"] })
+    )
+
+    const rows = await readLedgerEvents(costTracking)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event).not.toHaveProperty("action")
+  })
 })
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -200,4 +297,59 @@ function restoreEnv(name: string, value: string | undefined): void {
     return
   }
   process.env[name] = value
+}
+
+function actionSets(
+  valuesByTool: Record<string, readonly string[]>
+): ReadonlyMap<string, ReadonlySet<string>> {
+  return new Map(
+    Object.entries(valuesByTool).map(([tool, values]) => [tool, new Set(values)])
+  )
+}
+
+function createMockServer() {
+  const handlers = new Map<string, Handler>()
+  const configs = new Map<string, ToolConfig>()
+  const server = {
+    registerTool: vi.fn((name: string, config: ToolConfig, handler: Handler) => {
+      handlers.set(name, handler)
+      configs.set(name, config)
+    }),
+  } as unknown as McpServer
+  return {
+    server,
+    names(): string[] {
+      return Array.from(handlers.keys())
+    },
+    config(name: string): ToolConfig {
+      const config = configs.get(name)
+      if (!config) throw new Error(`missing config for ${name}`)
+      return config
+    },
+    invoke(name: string, args: Record<string, unknown>): Promise<unknown> {
+      const handler = handlers.get(name)
+      if (!handler) throw new Error(`missing handler for ${name}`)
+      return handler(args)
+    },
+  }
+}
+
+function enumValuesOf(schema: unknown): string[] {
+  let cursor = schema
+  for (let i = 0; i < 8; i++) {
+    if (!cursor || typeof cursor !== "object") return []
+    const def = (cursor as { _def?: { values?: unknown; innerType?: unknown } })._def
+    if (
+      Array.isArray(def?.values) &&
+      def.values.every((value) => typeof value === "string")
+    ) {
+      return [...def.values]
+    }
+    if (def?.innerType) {
+      cursor = def.innerType
+      continue
+    }
+    return []
+  }
+  return []
 }
