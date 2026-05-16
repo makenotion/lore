@@ -130,12 +130,10 @@ macOS Keychain. Lore does not read keychain-mode storage, so it
 relies on `NOTION_KEYRING=0` to force ntn to file-mode storage at
 `~/.config/notion/auth.json`, which Lore reads directly.
 
-The public `ntn` CLI does not expose a token-export command, so
-the `NOTION_KEYRING=0` + `auth.json` read pair is the contract
-rather than a temporary bridge. Operators who'd rather not rely on
-the on-disk read can export `NOTION_API_TOKEN` directly (the
-highest-priority auth source); ntn itself reads the same env var,
-so the keychain default is bypassed end-to-end.
+The auth reference owns the durable details for this storage contract and
+the PAT fallback path; see
+[`The auth.json read is the contract`](authentication.md#the-authjson-read-is-the-contract)
+and [`Fallback to PAT auth`](authentication.md#fallback-to-pat-auth).
 
 **Engineers don't need to set `NOTION_KEYRING=0` in their shell
 rc** for the Lore install path. Lore's `runNtnLogin()` and
@@ -145,9 +143,9 @@ mode regardless of the operator's shell setup. The "seamless
 onboarding" property holds.
 
 The exception is the **direct ntn login outside Lore** gotcha —
-see "Known gotcha" section below for the recovery paths
-(including the shell-rc setup for engineers who want
-bidirectional consistency).
+see [`docs/authentication.md`](authentication.md#known-gotcha-direct-ntn-login-outside-lore)
+for the recovery paths, including the shell-rc setup for engineers who want
+bidirectional consistency.
 
 ## Per-team onboarding
 
@@ -336,111 +334,14 @@ scripts and automation. For interactive engineer onboarding, the
 prompt-driven flow is the recommended UX — engineers see exactly
 what's about to happen.
 
-## Known gotcha: direct ntn login outside Lore
+## Auth reference
 
-Lore-spawned ntn invocations (via `lore install --ntn`,
-`lore auth --login`, `lore init` no-arg)
-force `NOTION_KEYRING=0` in their spawn env, so the resulting
-token lands in `~/.config/notion/auth.json` where Lore can read
-it. **Engineers don't need to set `NOTION_KEYRING=0` in their
-shell rc for the Lore install path.**
+The long-lived auth contract lives in
+[`docs/authentication.md`](authentication.md):
 
-The gotcha: if an engineer later runs `ntn login` _directly_
-(outside Lore — e.g., to switch workspaces or use ntn for other
-purposes) without `NOTION_KEYRING=0` in their shell, ntn falls
-back to the macOS Keychain (its default). Lore doesn't read
-keychain-mode storage, so subsequent `lore` commands fail to find
-a token.
-
-Two paths back to a working state:
-
-1. **Run `lore auth --login` again.** This re-spawns ntn login
-   with `NOTION_KEYRING=0` forced; the new token writes to
-   auth.json; Lore reads it.
-2. **Add `export NOTION_KEYRING=0` to shell rc and re-run
-   `ntn login` directly.** The token writes to auth.json
-   permanently; future direct ntn invocations stay
-   Lore-readable. Shell-rc commands:
-
-   ```bash
-   # zsh
-   echo 'export NOTION_KEYRING=0' >> ~/.zshrc
-   source ~/.zshrc
-
-   # bash
-   echo 'export NOTION_KEYRING=0' >> ~/.bashrc
-   source ~/.bashrc
-
-   # fish
-   set -Ux NOTION_KEYRING 0
-   ```
-
-   Verify with `echo $NOTION_KEYRING` — should print `0`. After
-   this, both Lore-spawned and direct ntn invocations write to
-   auth.json, and Lore can read either.
-
-Engineers who only run ntn through Lore never hit this gotcha.
-Engineers who use ntn for other purposes (workers, page
-management, etc.) and want bidirectional consistency should adopt
-path 2 as a one-time setup.
-
-## Fallback to PAT auth
-
-If ntn-first auth is blocked for an engineer or team, use
-per-operator PATs in `NOTION_API_TOKEN` with no Lore-side changes.
-
-### Recommended path: `NOTION_API_TOKEN` (highest-priority source, no ntn mutation)
-
-`NOTION_API_TOKEN` is the highest-priority source in Lore's auth
-priority chain, ahead of ntn-resolved auth. Setting it takes
-precedence over the ntn `auth.json` without touching ntn's private
-state, which keeps any other ntn-using tooling on the operator's
-machine working unchanged. Create one PAT per operator at
-`notion.so/developers/tokens`; do not use one shared `secret_` integration
-token as the fallback path:
-
-```bash
-# 1. Set the operator's PAT in shell rc:
-export NOTION_API_TOKEN=ntn_...
-
-# 2. New shell or source rc; verify with:
-lore auth --status
-# Should now show:
-#   Source: NOTION_API_TOKEN (env)
-#   Status: ✓ active
-```
-
-To restore ntn-first later: unset `NOTION_API_TOKEN`. ntn
-resolves again on the next `lore` invocation. No file moves,
-no auth.json surgery.
-
-## The `auth.json` read is the contract
-
-The public [`ntn` CLI](https://github.com/makenotion/skills) exposes
-only `ntn login` / `ntn logout` for the auth lifecycle and
-`NOTION_API_TOKEN` for injection — no token-export subcommand exists,
-and the maintainers have indicated none will ship. Earlier Lore
-releases framed the `~/.config/notion/auth.json` read as a "temporary
-coupling pending an official export command"; that framing is
-superseded.
-
-Lore therefore treats the `auth.json` read as the contract for the
-`ntn login` flow, not a bridge to anything. Operators who'd rather not
-rely on the on-disk read can export `NOTION_API_TOKEN`
-(highest-priority source), which `ntn` itself reads as well.
-
-Open follow-ups that would still benefit Lore if the ntn maintainers
-take them on later — kept here as a reference rather than a blocking
-ask:
-
-- **Stable `auth.json` shape**: if the format ever changes, an
-  explicit schema marker (e.g. a top-level `schema` field) lets the
-  reader detect mismatches and surface an upgrade hint instead of
-  failing as "malformed".
-- **Engineer-identity exposure**: per-user attribution on saved
-  memories currently requires Lore to round-trip `users.me` against
-  the active token. An env handoff like `NOTION_USER_EMAIL` from
-  `ntn login` would save the round-trip.
+- [Known gotcha: direct ntn login outside Lore](authentication.md#known-gotcha-direct-ntn-login-outside-lore)
+- [Fallback to PAT auth](authentication.md#fallback-to-pat-auth)
+- [The `auth.json` read is the contract](authentication.md#the-authjson-read-is-the-contract)
 
 ## Shared-vault hook configuration
 
