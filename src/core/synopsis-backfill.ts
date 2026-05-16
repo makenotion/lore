@@ -41,6 +41,7 @@ import {
   DEFAULT_BACKGROUND_COMMAND,
   type BackgroundAgentConfig,
 } from "../hooks/config.js"
+import { redactDebugError } from "../debug-redact.js"
 import { BODY_SIZE_CAP_BYTES } from "./memory-encoding.js"
 
 /**
@@ -201,6 +202,8 @@ const ARCHIVED_EXAMPLES_LIMIT = 1
  *  `synopsis-backfill` substituted for the `partial-failure:` token —
  *  the prefix already conveys the source so we don't repeat it. */
 const STDERR_PREFIX = "[lore] synopsis-backfill"
+// eslint-disable-next-line no-control-regex -- stderr events must stay one line
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/g
 
 function emptyReport(): BackfillReport {
   return {
@@ -747,6 +750,12 @@ function logPartialFailure(
   phase: "fetch" | "synthesize" | "sanitize" | "write",
   err: unknown
 ): void {
-  const message = err instanceof Error ? err.message : String(err)
-  process.stderr.write(`${STDERR_PREFIX}: id=${pageId} phase=${phase} error=${message}\n`)
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `${STDERR_PREFIX}: id=${oneLine(pageId)} phase=${phase} error=${oneLine(redactDebugError(err))}\n`
+  )
+}
+
+function oneLine(value: string): string {
+  return value.replace(CONTROL_CHARS, " ")
 }

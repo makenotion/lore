@@ -18,6 +18,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 
+import { redactDebugMessage } from "../debug-redact.js"
 import { type LoreServices, initServices } from "../services.js"
 
 import { registerContextTools } from "./tools/context.js"
@@ -31,6 +32,7 @@ import { registerTaskTools } from "./tools/tasks.js"
 import { registerProcedureTools } from "./tools/procedures.js"
 import { registerHelpResources } from "./help.js"
 import { installCostTrackingToolWrapper } from "./cost-tracking.js"
+import { formatFatalErrorLine } from "./fatal-error.js"
 import type { CostOutputCounts } from "../core/cost-ledger.js"
 
 // Re-export for consumers that already import from this module
@@ -202,16 +204,18 @@ function formatStartupDiagnostic(
 
 /**
  * Format a thrown error for the startup-diagnostic surface. Includes
- * `error.name`, `error.message`, the full stack, and any `cause` chain
- * so generic messages like `Invalid URL` carry a stack frame the
- * operator (or agent reading the diagnostic) can act on.
+ * `error.name`, `error.message`, the scrubbed stack, and any scrubbed
+ * `cause` chain so generic messages like `Invalid URL` carry a stack
+ * frame the operator (or agent reading the diagnostic) can act on.
  *
  * Falls back to `String(error)` for non-Error throwables. A `cause`
  * cycle is broken via a visited set so a self-referential chain
  * cannot loop forever.
  */
 function formatInitErrorDetails(error: unknown): string {
-  if (!(error instanceof Error)) return String(error)
+  if (!(error instanceof Error)) {
+    return redactDebugMessage(String(error), { truncate: false })
+  }
   const blocks: string[] = []
   const seen = new Set<unknown>()
   let current: unknown = error
@@ -232,7 +236,7 @@ function formatInitErrorDetails(error: unknown): string {
   if (current !== undefined && !(current instanceof Error)) {
     blocks.push(`Caused by: ${String(current)}`)
   }
-  return blocks.join("\n")
+  return redactDebugMessage(blocks.join("\n"), { truncate: false })
 }
 
 function fencedMarkdown(value: string): string {
@@ -254,7 +258,7 @@ function isEntryPoint(): boolean {
 
 if (isEntryPoint()) {
   startServer().catch((err) => {
-    console.error("[lore] Fatal error:", err)
+    process.stderr.write(formatFatalErrorLine(err))
     process.exit(1)
   })
 }

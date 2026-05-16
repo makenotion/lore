@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url"
+
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
@@ -360,6 +362,47 @@ describe("startServer", () => {
     }
   })
 
+  it("redacts startup diagnostic details before stderr and tool output", async () => {
+    const pageId = "1234567890abcdef1234567890abcdef"
+    const token = "secret_abcdefghijklmnopqrstuvwxyz"
+    const root = new Error(`fetch failed for ${pageId} with token ${token}`) as Error & {
+      cause?: unknown
+    }
+    root.stack =
+      `Error: fetch failed for ${pageId} with token ${token}\n` +
+      `    at load (/tmp/${pageId}.ts:1:1)`
+    root.cause = `plain cause for ${pageId} with token ${token}`
+    const wrapped = new Error(`init failed body={"page":"${pageId}"} token ${token}`, {
+      cause: root,
+    })
+    wrapped.stack =
+      `Error: init failed body={"page":"${pageId}"} token ${token}\n` +
+      `    at boot (/tmp/startup.ts:2:3)`
+    mocks.initServices.mockRejectedValue(wrapped)
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+    try {
+      await startServer()
+
+      const text =
+        (
+          await mocks.servers[0]!.tools.get("lore-context")!.handler({
+            action: "status",
+          })
+        ).content[0]?.text ?? ""
+      const stderrText = stderr.mock.calls.map((call) => String(call[0])).join("\n")
+      for (const surface of [text, stderrText]) {
+        expect(surface).toContain("<page-id>")
+        expect(surface).toContain("<redacted-token>")
+        expect(surface).toContain("body=<redacted>")
+        expect(surface).not.toContain(pageId)
+        expect(surface).not.toContain(token)
+      }
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
   it("surfaces invalid base URL diagnostics with source-specific recovery", async () => {
     mocks.initServices.mockRejectedValue(
       new InvalidNotionBaseUrlError(
@@ -436,6 +479,50 @@ describe("startServer", () => {
       expect(text).toContain("plain string failure")
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining("plain string failure"))
     } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("formats fatal entrypoint failures without dumping Error stacks", async () => {
+    const pageId = "abcdef0123456789abcdef0123456789"
+    const token = "ntn_abcdefghijklmnopqrstuvwxyz"
+    const err = new Error(`fatal startup failure for ${pageId} with ${token}\nretry`)
+    err.stack =
+      `Error: fatal startup failure for ${pageId} with ${token}\n` +
+      `    at secretFrame (/tmp/${pageId}.ts:1:1)`
+    mocks.initServices.mockRejectedValue(err)
+    const previousArgv1 = process.argv[1]
+    const previousBackgroundAgent = process.env["LORE_BACKGROUND_AGENT"]
+    process.argv[1] = fileURLToPath(new URL("./server.ts", import.meta.url))
+    process.env["LORE_BACKGROUND_AGENT"] = "true"
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
+
+    try {
+      vi.resetModules()
+      await import("./server.js" + "?fatal-entrypoint")
+
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1))
+      expect(stderr).toHaveBeenCalledWith(
+        "[lore] Fatal error: fatal startup failure for <page-id> with <redacted-token> retry\n"
+      )
+      const stderrText = stderr.mock.calls.map((call) => String(call[0])).join("\n")
+      expect(stderrText).not.toContain(pageId)
+      expect(stderrText).not.toContain(token)
+      expect(stderrText).not.toContain("secretFrame")
+      expect(stderrText.match(/\n/g)).toHaveLength(1)
+    } finally {
+      if (previousArgv1 === undefined) {
+        process.argv.splice(1, 1)
+      } else {
+        process.argv[1] = previousArgv1
+      }
+      if (previousBackgroundAgent === undefined) {
+        delete process.env["LORE_BACKGROUND_AGENT"]
+      } else {
+        process.env["LORE_BACKGROUND_AGENT"] = previousBackgroundAgent
+      }
+      exit.mockRestore()
       stderr.mockRestore()
     }
   })

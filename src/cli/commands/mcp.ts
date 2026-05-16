@@ -2,6 +2,8 @@ import { statSync } from "node:fs"
 import { dirname, isAbsolute } from "node:path"
 import { Command } from "commander"
 
+import { formatFatalErrorLine } from "../../mcp/fatal-error.js"
+
 /**
  * `lore mcp` — start the MCP stdio server.
  *
@@ -80,6 +82,12 @@ export const mcpCommand = new Command("mcp")
       process.env["LORE_MCP_WRITE_BUDGET"] = String(limit)
       process.env["LORE_MCP_BUDGET_STATE_FILE"] = opts.budgetStateFile
     }
-    const { startServer } = await import("../../mcp/server.js")
-    await startServer()
+    try {
+      const { startServer } = await import("../../mcp/server.js")
+      await startServer()
+    } catch (err) {
+      process.stderr.write(formatFatalErrorLine(err))
+      process.exit(1)
+      return
+    }
   })

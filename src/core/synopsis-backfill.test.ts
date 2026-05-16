@@ -95,6 +95,16 @@ function makeClient(
   } as unknown as Client & MockClient
 }
 
+function setLoreDebugForTest(value: string | undefined): () => void {
+  const previous = process.env["LORE_DEBUG"]
+  if (value === undefined) delete process.env["LORE_DEBUG"]
+  else process.env["LORE_DEBUG"] = value
+  return () => {
+    if (previous === undefined) delete process.env["LORE_DEBUG"]
+    else process.env["LORE_DEBUG"] = previous
+  }
+}
+
 describe("buildSynopsisSynthesisPrompt", () => {
   // Pin the prompt template literally per acceptance criterion: "Test
   // pins the prompt template literally." A future contributor who
@@ -440,6 +450,7 @@ describe("backfillSynopses — claude apply path", () => {
     // batch must complete and write successfully, the failed row
     // must be re-picked-up by a second run, and the second run's
     // synthesis succeeds (proving the failure was non-poisoning)."
+    const restoreDebug = setLoreDebugForTest("1")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const pages = [
@@ -479,9 +490,11 @@ describe("backfillSynopses — claude apply path", () => {
       )
     ).toBe(true)
     stderrSpy.mockRestore()
+    restoreDebug()
   })
 
   it("synthesis failure (synthesizer throws) is counted, logged, continues", async () => {
+    const restoreDebug = setLoreDebugForTest("1")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const client = makeClient([memoryPage({ id: "m1", title: "First" })])
@@ -507,9 +520,11 @@ describe("backfillSynopses — claude apply path", () => {
       )
     ).toBe(true)
     stderrSpy.mockRestore()
+    restoreDebug()
   })
 
   it("scaffolding leak in synthesizer output increments scaffoldingRejected", async () => {
+    const restoreDebug = setLoreDebugForTest("1")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const client = makeClient([memoryPage({ id: "m1", title: "First" })])
@@ -536,9 +551,11 @@ describe("backfillSynopses — claude apply path", () => {
       )
     ).toBe(true)
     stderrSpy.mockRestore()
+    restoreDebug()
   })
 
   it("write failure on the claude apply path increments writeFailed and continues", async () => {
+    const restoreDebug = setLoreDebugForTest("1")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     let updateCallCount = 0
@@ -575,6 +592,7 @@ describe("backfillSynopses — claude apply path", () => {
       )
     ).toBe(true)
     stderrSpy.mockRestore()
+    restoreDebug()
   })
 
   it("truncated synthesizer output increments the truncated counter", async () => {
@@ -710,6 +728,7 @@ describe("backfillSynopses — placeholder backend", () => {
     // placeholder fixture where one specific row's `pages.update`
     // rejects — surrounding 4 rows must complete with the sentinel
     // written, the failed row stays empty"
+    const restoreDebug = setLoreDebugForTest("1")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     let updateCallCount = 0
@@ -745,6 +764,7 @@ describe("backfillSynopses — placeholder backend", () => {
       )
     ).toBe(true)
     stderrSpy.mockRestore()
+    restoreDebug()
   })
 
   it("does not overwrite existing non-empty synopses (filter excludes them)", async () => {
@@ -820,6 +840,7 @@ describe("backfillSynopses — partial-failure log line shape", () => {
     // leaving the other three lulled into a false-pass. Pin all
     // four together with a deterministic id↔phase mapping so the
     // contract is enforced as a single set.
+    const restoreDebug = setLoreDebugForTest("1")
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const pages = [
@@ -897,6 +918,59 @@ describe("backfillSynopses — partial-failure log line shape", () => {
       }
     }
     stderrSpy.mockRestore()
+    restoreDebug()
+  })
+
+  it("stays silent on stderr when LORE_DEBUG is unset", async () => {
+    const restoreDebug = setLoreDebugForTest(undefined)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const client = makeClient([memoryPage({ id: "m-write", title: "Write fail" })], {
+      updateImpl: async () => {
+        throw new Error("Notion 429")
+      },
+    })
+
+    const report = await backfillSynopses(client, DB, {
+      apply: true,
+      backend: "placeholder",
+    })
+
+    expect(report.writeFailed).toBe(1)
+    expect(stderrSpy).not.toHaveBeenCalled()
+    stderrSpy.mockRestore()
+    restoreDebug()
+  })
+
+  it("redacts error details and normalizes fields when LORE_DEBUG is enabled", async () => {
+    const restoreDebug = setLoreDebugForTest("1")
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const pageId = "1234567890abcdef1234567890abcdef"
+    const token = "development_ntn_abcdefghijklmnopqrstuvwxyz"
+    const client = makeClient(
+      [memoryPage({ id: `${pageId}\nrow`, title: "Write fail" })],
+      {
+        updateImpl: async () => {
+          throw new Error(`body={"page":"${pageId}"} token ${token}\nsecond line`)
+        },
+      }
+    )
+
+    const report = await backfillSynopses(client, DB, {
+      apply: true,
+      backend: "placeholder",
+    })
+
+    expect(report.writeFailed).toBe(1)
+    expect(stderrSpy).toHaveBeenCalledTimes(1)
+    const line = String(stderrSpy.mock.calls[0][0])
+    expect(line).toContain(`id=${pageId} row`)
+    expect(line).toContain("phase=write")
+    expect(line).toContain(" error=body=<redacted> token <redacted-token> second line\n")
+    expect(line.slice(line.indexOf(" error="))).not.toContain(pageId)
+    expect(line).not.toContain(token)
+    expect(line.match(/\n/g)).toHaveLength(1)
+    stderrSpy.mockRestore()
+    restoreDebug()
   })
 })
 
