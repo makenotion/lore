@@ -16,9 +16,10 @@ you're external.
 
 New operators adopting Lore on a team should start at
 [`docs/team-rollout.md`](team-rollout.md), which covers per-engineer onboarding,
-the Entities-database cutover, and shared-vault hook configuration. This
-document is the reference for the auth contract itself, including the
-direct-`ntn login` keychain gotcha and its recovery.
+the Entities-database cutover, and shared vault setup. This document is the
+reference for the auth contract itself, including the direct-`ntn login`
+keychain gotcha and its recovery. See [`docs/hooks.md`](hooks.md) for
+shared-vault hook configuration.
 
 Below the persona walkthroughs, the [Priority chain](#priority-chain) section
 documents the two-source resolver for reference — operators rarely need to

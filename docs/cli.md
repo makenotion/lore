@@ -124,7 +124,7 @@ lore inbox archive <memory-id>
 Success signal: approved memories move to accepted, rejected memories carry a
 review audit block, archived rows leave the inbox, and an empty inbox exits 0
 with a single status line. See the `lore inbox ...` rows below and
-[team-rollout.md](team-rollout.md#shared-vault-hook-configuration)
+[hooks.md](hooks.md#shared-vault-hook-configuration)
 for rollout guidance.
 
 ### Repair or migrate a vault

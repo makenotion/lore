@@ -4,8 +4,8 @@
 > Status: Current operator guidance. Historical rollout evidence is archived in
 > [`docs/archive/team-rollout-0.10.0.md`](archive/team-rollout-0.10.0.md).
 
-This runbook covers the current team onboarding path for Lore's ntn-first
-auth flow, shared vault setup, and fallback auth options.
+This runbook covers the current team onboarding path for Lore's ntn-first auth
+flow, shared vault setup, and fallback auth options.
 
 ## Prerequisites
 
@@ -343,34 +343,8 @@ The long-lived auth contract lives in
 - [Fallback to PAT auth](authentication.md#fallback-to-pat-auth)
 - [The `auth.json` read is the contract](authentication.md#the-authjson-read-is-the-contract)
 
-## Shared-vault hook configuration
+## Hook setup reference
 
-For shared-vault deployments where many engineers share a single Lore
-workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml`.
-This routes every auto-extracted learning through the proposed-memory
-review inbox (`Status = proposed`) instead of writing it directly to
-accepted recall. The trust boundary keeps a noisy session from
-polluting recall for everyone before a human reviewer approves the
-learning. Reviewers act on the inbox via `lore inbox list` /
-`lore inbox approve <id>` / `lore inbox reject <id>` /
-`lore inbox archive <id>` (CLI), or `lore-memory action='approve'` /
-`lore-memory action='reject'` (MCP); both surfaces share the same
-`MemoryService.recordReview` service path and append a
-`## Reviewed (YYYY-MM-DD)` audit block with the reviewer + timestamp.
-Both terminal verdicts drop the row out of the proposed-memory
-inbox: `approve` makes it eligible for default recall, `reject`
-keeps it off default recall (the
-`reviewTerminalStatusExclusionFilters` default-exclude on
-`MemoryService.list` / `search` / `queryStaleConfidence` covers
-both `proposed` and `rejected`), so neither verdict pollutes
-shared recall with noisy auto-extractions. The inbox
-depth also surfaces in `lore status`'s **Proposed memories** line
-and the wake-up **Proposed Memories** section.
-
-Single-engineer / personal-vault deployments can leave the flag at
-its `false` default — the inbox surface still exists if the engineer
-manually saves with `status: "proposed"`, but autosave-learning
-saves go straight into recall.
-
-See [`hooks.md`](hooks.md) for the reference of the underlying
-`learningExtraction` / `proposeAutosaveLearnings` knobs.
+For shared-vault autosave review-inbox setup, see
+[`Shared-vault hook configuration`](hooks.md#shared-vault-hook-configuration)
+in the hook reference.

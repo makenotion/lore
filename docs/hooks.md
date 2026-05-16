@@ -39,8 +39,31 @@ each as its own `note` memory. Two `.lore.yaml` flags govern this behavior:
   Proposed memories line and the wake-up Proposed Memories section. Has no
   effect when `learningExtraction` is `false`.
 
-See [`team-rollout.md`](team-rollout.md) for shared-vault rollout
-guidance on which knob to set.
+## Shared-vault hook configuration
+
+For shared-vault deployments where many engineers share a single Lore
+workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml`. This
+routes every auto-extracted learning through the proposed-memory review inbox
+(`Status = proposed`) instead of writing it directly to accepted recall. The
+trust boundary keeps a noisy session from polluting recall for everyone before
+a human reviewer approves the learning. Reviewers act on the inbox via
+`lore inbox list` / `lore inbox approve <id>` /
+`lore inbox reject <id>` / `lore inbox archive <id>` (CLI), or
+`lore-memory action='approve'` / `lore-memory action='reject'` (MCP); both
+surfaces share the same `MemoryService.recordReview` service path and append a
+`## Reviewed (YYYY-MM-DD)` audit block with the reviewer + timestamp. Both
+terminal verdicts drop the row out of the proposed-memory inbox: `approve`
+makes it eligible for default recall, `reject` keeps it off default recall
+(the `reviewTerminalStatusExclusionFilters` default-exclude on
+`MemoryService.list` / `search` / `queryStaleConfidence` covers both
+`proposed` and `rejected`), so neither verdict pollutes shared recall with
+noisy auto-extractions. The inbox depth also surfaces in `lore status`'s
+**Proposed memories** line and the wake-up **Proposed Memories** section.
+
+Single-engineer / personal-vault deployments can leave the flag at its
+`false` default — the inbox surface still exists if the engineer manually
+saves with `status: "proposed"`, but autosave-learning saves go straight into
+recall.
 
 ## Wake-Up
 
