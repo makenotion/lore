@@ -105,11 +105,11 @@ export function isSqlValidationError(err: unknown): boolean {
 export function logRunToolFallback(source: string, err: unknown): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   const status = (err as { status?: number } | null | undefined)?.status
-  const code = (err as { code?: string } | null | undefined)?.code
+  const code = (err as { code?: unknown } | null | undefined)?.code
   process.stderr.write(
     `[lore] partial-failure: source=${oneLine(source)} ` +
       `status=${oneLine(String(status ?? "unknown"))} ` +
-      `code=${oneLine(code ?? "unknown")} ` +
+      `code=${oneLine(String(code ?? "unknown"))} ` +
       `error=${oneLine(redactDebugError(err))} runtool-fallback=1\n`
   )
 }

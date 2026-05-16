@@ -82,6 +82,16 @@ describe("logRunToolFallback", () => {
     expect(line).toContain("code=unknown")
   })
 
+  it("does not throw for non-string error codes", () => {
+    process.env["LORE_DEBUG"] = "1"
+    expect(() =>
+      logRunToolFallback("entity-find-by-name", { code: 123, status: 503 })
+    ).not.toThrow()
+    const line = (stderrSpy.mock.calls[0]![0] as string).trim()
+    expect(line).toContain("status=503")
+    expect(line).toContain("code=123")
+  })
+
   it("redacts and one-lines fallback errors", () => {
     process.env["LORE_DEBUG"] = "1"
     logRunToolFallback(
