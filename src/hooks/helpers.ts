@@ -1,3 +1,6 @@
+// ABOUTME: Owns the installed hook runtime for wake-up, autosave, digest, and background-save coordination.
+// ABOUTME: Edit when host hook payload handling or user-visible hook output changes.
+
 /**
  * Hook helper utilities.
  *

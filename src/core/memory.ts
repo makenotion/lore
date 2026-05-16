@@ -1,3 +1,6 @@
+// ABOUTME: Owns the MemoryService API for memory CRUD, search, review, topic keys, comparisons, and promotion.
+// ABOUTME: Edit when a memory capability crosses the service boundary or collaborator wiring changes.
+
 /**
  * Memory CRUD + search — the core content store.
  *

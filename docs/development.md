@@ -152,6 +152,24 @@ and migration differences.
 - Comments explain what or why, never obvious how. Do not remove existing
   comments unless they are provably false.
 
+### ABOUTME Comments
+
+`ABOUTME` comments are optional file-level owner notes for high-churn files
+where the right edit location or responsibility boundary is not obvious from
+imports and names alone.
+
+- Add them only when they reduce lookup friction for a future contributor.
+- Place them at the top of the file, after any shebang or license block and
+  before imports or executable code.
+- Use one or two short lines beginning `ABOUTME:`. The first line names the
+  file's current responsibility; the optional second line names common edit
+  triggers.
+- Keep them current-state only: no temporal phrasing, issue references,
+  reviewer references, phase names, or history.
+- Do not use them for broad subsystem routing or cross-file invariants. Routing
+  belongs in AGENTS files; cross-file contracts belong in focused docs or
+  subsystem guides.
+
 ## Testing
 
 - Run `npm run typecheck` before committing.

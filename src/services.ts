@@ -1,3 +1,6 @@
+// ABOUTME: Owns the shared service graph for config, auth, clients, profiles, topology readers, and domain services.
+// ABOUTME: Edit when a dependency must be available to MCP, CLI, and hook entry points together.
+
 /**
  * Shared service initialization.
  *

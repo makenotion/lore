@@ -112,6 +112,12 @@ permission from the human lead first.
 - Fix broken things immediately; do not paper over symptoms.
 - Names describe what code does, not implementation history or mechanism.
 - Comments explain what or why, never obvious how.
+- `ABOUTME` comments are optional top-of-file owner notes for high-churn files
+  where local responsibility is otherwise hard to infer. Keep them to one or
+  two `ABOUTME:` lines that describe the file's current responsibility and edit
+  triggers. Do not use them for history, issue links, reviewer context, phase
+  names, routing tables, or cross-file invariants; routing belongs in AGENTS
+  files, and cross-file contracts belong in focused docs or subsystem guides.
 - Comments must stand on their own. A reader landing on a comment with no
   outside context — no PR, no chat log, no calendar — must still understand
   it. Do not write:

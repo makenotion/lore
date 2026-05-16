@@ -1,3 +1,6 @@
+// ABOUTME: Owns the lore-memory MCP schema, public tool copy, and action routing.
+// ABOUTME: Edit when agent-facing memory inputs, validation hints, or dispatched actions change.
+
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
