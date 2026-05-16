@@ -524,6 +524,13 @@ describe("cost ledger", () => {
       },
     ],
     [
+      "NaN-like string rates",
+      {
+        source: "SECRET_SOURCE",
+        models: { "custom-model": { inputPer1K: "NaN" } },
+      },
+    ],
+    [
       "negative rates",
       {
         source: "SECRET_SOURCE",
