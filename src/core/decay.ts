@@ -1,17 +1,40 @@
 /**
- * Confidence-score algebra for the dynamic-confidence workstream.
+ * Confidence-score algebra for dynamic confidence.
  *
- * Pure functions only — no `Client`, no Notion calls, no I/O. The I/O
- * wrappers `MemoryService.touchOnRead` and
- * `MemoryService.decrementConfidence` call
- * these helpers, write the result via a single `pages.update`, and
- * route failures through a caller-supplied `onError`.
+ * Pure functions only: no `Client`, no Notion calls, no I/O. The I/O wrappers
+ * `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` call
+ * these helpers, write the result via a single `pages.update`, and route
+ * failures through the caller-defined error posture.
  *
- * Design contract: **write-realized lazy decay**. Every mutation of a
- * stored Confidence Score realizes the time-decay accrued since the
- * last touch, then applies its own bump or decrement. RRF reads
- * the stored value verbatim via `confidenceFactor` — no decay
- * computation at read time, no observable/stored divergence.
+ * ## Write-realized lazy decay
+ *
+ * Every mutation of a stored Confidence Score realizes the time decay accrued
+ * since the last touch before applying its own bump or decrement. RRF reads the
+ * stored value verbatim through `confidenceFactor`: no decay computation at
+ * read time and no divergence between the score visible in Notion and the
+ * score used in retrieval. Decay accrues only on touch, decrement, and the
+ * confidence backfill migration; a never-touched-after-creation memory keeps
+ * its post-migration value until something disturbs it.
+ *
+ * Decay-at-read is intentionally not the model. It would force retrieval to
+ * read `lastReferencedAt` and run time arithmetic per row per query, and it
+ * would let stored values diverge from observable ranking contributions.
+ *
+ * ## Algebra
+ *
+ * | Helper | Algebra | Where it fires |
+ * | --- | --- | --- |
+ * | `seedConfidenceScore(c)` | `CONFIDENCE_SEED[c]` (`certain -> 0.9`, `likely -> 0.6`, `speculative -> 0.3`) | First touch on a never-scored row; bulk migration |
+ * | `bumpConfidenceScore(s)` | `s + (1 - s) * BUMP_RATE` (`BUMP_RATE = 0.05`) | After decay realization on every read citation |
+ * | `decrementConfidenceScore(s)` | `s * DECREMENT_FACTOR` (`DECREMENT_FACTOR = 0.5`) | After decay realization on contradiction and supersession signals |
+ * | `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days - STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In flight on every touch, decrement, and migration |
+ * | `confidenceFactor(s)` | `CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * s`, `null -> 1` | Read-side, in the RRF accumulator |
+ *
+ * The asymmetry is deliberate: slow recovery, slow neglect decay, and
+ * aggressive contradiction reflect different signal quality. A single citation
+ * is weaker evidence than a stretch of neglect, and contradiction is a
+ * high-quality negative signal. The shared constants keep migration, I/O
+ * wrappers, and ranking aligned.
  */
 
 import {

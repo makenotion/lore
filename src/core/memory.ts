@@ -25,14 +25,8 @@ import type {
   MemoryScopeContext,
   DatabaseRef,
 } from "../types.js"
-import {
-  CONFIDENCE_DISPLAY_THRESHOLD,
-  EXPIRING_SOON_DAYS,
-  MS_PER_DAY,
-  STALE_CONFIDENCE_DAYS,
-} from "../types.js"
+import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
-import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
 import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
@@ -49,7 +43,6 @@ import {
   extractTitle,
   extractRichText,
 } from "../notion/extractors.js"
-import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { MemoryPinned } from "./memory-pinned.js"
 import { MemoryConfidence } from "./memory-confidence.js"
@@ -72,7 +65,6 @@ import {
   type RecordComparedResult,
 } from "./memory-compare.js"
 import { MemorySearch, type SearchPagesResult } from "./memory-search.js"
-import { reviewTerminalStatusExclusionFilters } from "./memory-review-state.js"
 import { MemoryMapper } from "./memory-mapper.js"
 import { MemoryCreate, type MemoryCreateResult } from "./memory-create.js"
 import { MemoryList, type ListMemoriesOptions } from "./memory-list.js"
@@ -1189,156 +1181,13 @@ export class MemoryService {
     return { total, bySource, byAgent }
   }
 
-  /**
-   * Memories that need triage: either scored low, OR long-neglected
-   * regardless of stored score. Backs the Stale Confidence wake-up
-   * subsection.
-   *
-   * Server-side filter (when `opts.projectId` is supplied):
-   *
-   * (Project contains projectId OR Project is_empty)
-   * AND Confidence Score is_not_empty
-   * AND (
-   * Confidence Score < CONFIDENCE_DISPLAY_THRESHOLD
-   * OR Last Referenced At on_or_before today - STALE_CONFIDENCE_DAYS
-   * )
-   *
-   * Server-side filter (vault-wide, when `opts.projectId` is omitted):
-   * the project clause is dropped entirely so the query covers every
-   * memory regardless of project scoping. Same posture as
-   * `MemoryService.list`.
-   *
-   * The neglect-OR clause is load-bearing under the
-   * **write-realized lazy decay** model. RRF reads stored
-   * Confidence Score verbatim — no decay applied at read. So a memory
-   * touched once 6 months ago at score 0.9 keeps a stored 0.9 (and
-   * ranks high in retrieval) until something disturbs it. The
-   * neglect-OR clause is what surfaces it for triage. When the agent
-   * reads it, `touchOnRead` realizes the accrued decay (decay-then-bump),
-   * the stored score drops, and the row either continues surfacing
-   * (if now actually low-score) or rotates out.
-   *
-   * The `is_not_empty` guard excludes never-scored rows — those have
-   * not yet been touched by any read path; flagging them as stale
-   * would conflate "never scored" with "needs triage." Operators
-   * backfill them via `lore migrate --build-confidence-scores`.
-   *
-   * `projectOrUnscopedFilter` matches `MemoryService.list` etc. —
-   * repo-wide memories surface in the Stale Confidence section the
-   * same way they surface in Recent Memories.
-   *
-   * Sorted by score ascending so most-decayed rows surface first;
-   * neglected-but-fresh-score rows fall to the end of the list. Notion
-   * page size = 100 so archive-heavy windows can refill efficiently;
-   * archived rows are filtered client-side (matches the established Memories
-   * DS pattern). No body fetch — the wake-up subsection renders title +
-   * synopsis + trust label + meta only, never bodies.
-   */
   async queryStaleConfidence(opts: {
-    /** Omit for vault-wide wake-up; matches `MemoryService.list` shape. */
     projectId?: string
     limit: number
-    /** YYYY-MM-DD anchor; same shape as `taskDaysOverdue` etc. */
     today: string
-    /**
-     * When `true`, do NOT exclude `Status = proposed` rows. Defaults
-     * to `false` so the wake-up Stale Confidence subsection mirrors
-     * the rest of the default-recall posture:
-     * proposed memories belong in the inbox surface, not in normal
-     * triage lists. The inbox-review flow opts in.
-     */
     includeProposed?: boolean
   }): Promise<Memory[]> {
-    const neglectCutoff = new Date(
-      new Date(opts.today).getTime() - STALE_CONFIDENCE_DAYS * MS_PER_DAY
-    )
-      .toISOString()
-      .slice(0, 10)
-
-    const filters: Array<Record<string, unknown>> = []
-    if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
-    }
-    if (opts.includeProposed !== true) {
-      // Same default-exclude posture as `MemoryService.list` and
-      // `MemoryService.search`: hide both `proposed` (inbox-pending)
-      // and `rejected` (terminal-off-recall) rows from triage so
-      // review-state never leaks into the Stale Confidence subsection.
-      filters.push(...reviewTerminalStatusExclusionFilters())
-    }
-    filters.push({
-      property: MEMORY_PROPS.CONFIDENCE_SCORE,
-      number: { is_not_empty: true },
-    })
-    filters.push({
-      or: [
-        {
-          property: MEMORY_PROPS.CONFIDENCE_SCORE,
-          number: { less_than: CONFIDENCE_DISPLAY_THRESHOLD },
-        },
-        {
-          property: MEMORY_PROPS.LAST_REFERENCED_AT,
-          date: { on_or_before: neglectCutoff },
-        },
-      ],
-    })
-    // Resurfaced cleanup-orphan exclusion. A restored-
-    // from-trash orphan that was scored by `--build-confidence-scores`
-    // before this filter shipped would otherwise show up in the
-    // wake-up Stale Confidence triage view as an empty-body shell —
-    // confusing for the operator and noise in the section meant to
-    // surface real low-confidence memories.
-    filters.push(cleanupOrphanExclusionFilter())
-
-    const filter = { and: filters } as QueryDataSourceParameters["filter"]
-
-    // Pre-migration vaults that haven't yet run `lore migrate` against
-    // the 0.8.0 schema lack the `Confidence Score` and
-    // `Last Referenced At` columns entirely. Notion responds with a
-    // `validation_error` ("Could not find sort property with name or
-    // id: Confidence Score") rather than an empty result, which would
-    // otherwise propagate up through `loadWakeUpData`'s `Promise.all`
-    // and fail the entire wake-up. Degrade to an empty section
-    // instead — same posture as `FactService.queryByEntityTextOnUnmigrated`
-    // and `TaskService.countClosedSince`, both of which silently
-    // suppress their feature on vaults that pre-date the column they
-    // depend on. The schema-drift detector
-    // (`migrateVaultSchema` / `lore migrate --dry-run`) is the
-    // canonical operator-facing surface for "you need to migrate";
-    // wake-up itself stays decorative. Transient 5xx / rate-limit /
-    // network errors do NOT match `isMissingPropertyError` and still
-    // propagate so a real outage isn't masked.
-    const limit = opts.limit
-    if (limit <= 0) return []
-
-    let result: Awaited<ReturnType<typeof collectLivePages>>
-    try {
-      result = await collectLivePages({
-        limit,
-        source: "MemoryService.queryStaleConfidence",
-        query: ({ page_size, start_cursor }) =>
-          this.client.dataSources.query({
-            data_source_id: this.db.dataSourceId,
-            filter,
-            sorts: [{ property: MEMORY_PROPS.CONFIDENCE_SCORE, direction: "ascending" }],
-            page_size,
-            start_cursor,
-          }),
-      })
-    } catch (err) {
-      if (isMissingPropertyError(err)) return []
-      throw err
-    }
-    if (result.capped) {
-      warnLivePageCapFired({
-        source: "MemoryService.queryStaleConfidence",
-        pages: result.pageCount,
-        accumulated: result.pages.length,
-        limit,
-      })
-    }
-
-    return Promise.all(result.pages.map((page) => this.pageToMemory(page, "")))
+    return this.confidence.queryStaleConfidence(opts)
   }
 
   async listPinnedBlocks(opts: {

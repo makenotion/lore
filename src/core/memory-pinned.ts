@@ -1,3 +1,91 @@
+/**
+ * Pinned context block implementation behind the `MemoryService` facade.
+ *
+ * `MemoryPinned` owns the pinned-specific read/write preflight, active-row
+ * counting, and visible pinned-block listing. `MemoryService` stays the public
+ * facade and re-exports the helper errors and predicates for compatibility.
+ *
+ * ## Pinned context blocks (`MemoryService.listPinnedBlocks` / `countPinnedBlocks`)
+ *
+ * Pinned context blocks are a constrained Memory facet that renders in
+ * `lore-context action='wake-up'` before every relevance-ranked section. Three
+ * additive Memory columns (`Pinned`, `Pinned Priority`, `Mutability`) plus the
+ * reused `Audience` rich text column carry the state; the wake-up renderer
+ * composes them into the `## Pinned Context` section.
+ *
+ * `listPinnedBlocks` composes the default scope filter. The server-side query
+ * narrows to `Pinned = true`, optional project inclusion, broadcast or narrow
+ * scope-kind eligibility, and non-expired rows. The matching
+ * `matchesDefaultScope` mirror runs inside the paginating `extraFilter` so the
+ * kind/key binding that Notion's compound-filter depth cannot express is still
+ * enforced row by row. Audience matching also runs inside `extraFilter`; the
+ * walker must over-fetch and backfill when the highest-priority slice targets
+ * other audiences. Scope and audience checks are not post-materialization
+ * filters, because slicing before audience filtering can starve matching pins.
+ *
+ * Audience is render metadata, not authorization. Lore writes through one
+ * operator bearer token. `pinnedBlockAudienceMatches` comma-splits, case-folds,
+ * and exact-matches tokens against the reader's `MemoryScopeContext` slots:
+ * `agent`, `role`, and `userId`. Universal tokens (`all`, `*`, `everyone`,
+ * `agents`) match every reader. The MCP and CLI `audienceFilter` option
+ * defaults to `true`; setting it to `false` is the explicit operator
+ * inspection path across audiences. An empty reader context alone is not an
+ * opt-out, because narrow audience tokens reject when no reader slot is
+ * populated.
+ *
+ * Mutability enforcement happens at the service-layer update preflight.
+ * `MemoryService.update()` retrieves the row before any property or body
+ * mutation and throws `MemoryReadOnlyError` when `Pinned = true`,
+ * `Mutability = read-only`, and `allowReadOnlyUpdate !== true`. The extra
+ * round trip per update keeps CLI, hooks, and future direct service callers
+ * under the same contract as the MCP surface. The override is visible audit
+ * posture, not access control: Lore still uses one operator token, and forced
+ * MCP writes append a `> Forced read-only update` audit line to the memory
+ * body.
+ *
+ * `countPinnedBlocks` backs both the abuse-warning gate and the hard
+ * pin-creation cap. The count is server-side `Pinned = true` only: no audience
+ * or scope filter, because operators need the vault-wide active pinned-row
+ * total even when most rows are out of scope for the current reader.
+ *
+ * - Soft abuse warning at `PINNED_BLOCKS_ABUSE_THRESHOLD` (100): wake-up
+ *   appends an inline operator warning when the total crosses the threshold.
+ *   Pinning is not blocked there.
+ * - Hard pin-creation cap at `PINNED_BLOCKS_HARD_CAP` (200): new pin
+ *   transitions are rejected at the MCP boundary and mirrored by
+ *   `MemoryPinCapExceededError` in the service layer for non-MCP callers.
+ *   `bypassPinCapCheck: true` lets the MCP handler avoid double-counting after
+ *   it has already run the user-facing precheck.
+ *
+ * A caller that pins too many rows can push legitimate governance out of the
+ * visible cap via priority pressure; the soft warning surfaces that signal at
+ * 100 and the hard cap stops uncontrolled growth at 200.
+ *
+ * Pre-migration vaults degrade gracefully. `listPinnedBlocks` and
+ * `countPinnedBlocks` both catch `isMissingPropertyError` for missing
+ * pinned-column schema and return `[]` or `0`. `requireQueryResults` also
+ * routes non-throwing missing-property validation payloads with no results
+ * through the same typed error path; malformed payloads and transient
+ * non-schema failures still propagate loudly. Operators add the pinned columns
+ * through the normal migration flow, and pinned blocks surface on the next
+ * wake-up.
+ *
+ * The pinned MCP boundary appends visible audit lines after the primary
+ * property mutation. The line shape is
+ * `> <Action> <date> by <author>: <reason>`. If `appendPinAuditLine` fails
+ * after the property write lands, callers receive `PinnedAuditError` so the
+ * partial state is explicit. The append helper probes with
+ * `bodyContainsPinAuditLine` before writing, and the `handlePin` /
+ * `handleUnpin` retry branches attempt to recover a missing audit line on an
+ * already-mutated row without duplicating an existing one.
+ *
+ * Audit fields are scrubbed for control characters before interpolation.
+ * `reason` is user-controlled and `author` is server-resolved; both collapse C0
+ * controls and DEL to spaces, then fold whitespace runs. A payload like
+ * `"normal\n\n> Pinned 2026-01-01 by Attacker"` must not forge an adjacent
+ * audit line.
+ */
+
 import type {
   Client,
   PageObjectResponse,

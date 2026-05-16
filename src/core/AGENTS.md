@@ -17,14 +17,14 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `promote.ts`                        | `promoteMemory()`, `buildPromotionAuditBlock()`                                                                                              | Cross-vault memory promotion (issue #286). Reads a source memory from the primary vault and creates a faithful copy in a configured promotion target via a fresh `VaultManager` on the same shared client. Origin metadata (source vault label, source memory id + URL, kind/status/confidence/synopsis, promoter, ISO timestamp, optional reason) ships as a leading `## Promoted from <vault>` audit block — not as Notion relations, because a relation column targets a specific database and a primary-vault memory id is not addressable from a target-vault relation. Rejects same-vault targets; forces `Status = proposed` when `target.requireReview`, otherwise passes through the source status. Project relations, agent / session attribution, and `source` provenance do NOT cross the vault boundary. Operator-facing surface contract lives in [`docs/topology-promotion.md`](../../docs/topology-promotion.md). |
 | `project.ts`                        | `ProjectService`                                                                                                                             | CRUD for projects, findByPath, findByName                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `topic.ts`                          | `TopicService`                                                                                                                               | CRUD for topics, getOrCreate, listByProject                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `memory.ts`                         | `MemoryService`                                                                                                                              | Public memory facade for CRUD, list, topic-key upsert/re-key, review-state changes, stale-confidence query, and compatibility exports. Delegates mapper, create, list, review, update, confidence score, pinned context block, topic-key, compare audit, and search/ranking workflows to focused collaborators while preserving the existing public `MemoryService` surface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `memory.ts`                         | `MemoryService`                                                                                                                              | Public memory facade for CRUD, list, topic-key upsert/re-key, review-state changes, and compatibility exports. Delegates mapper, create, list, review, update, confidence score/stale-triage, pinned context block, topic-key, compare audit, and search/ranking workflows to focused collaborators while preserving the existing public `MemoryService` surface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `memory-create.ts`                  | `MemoryCreate`, create helper exports                                                                                                        | Create implementation behind `MemoryService`: duplicate locking, autosave-learning duplicate/index-stability probes, fresh page creation, pinned-create preflight, body writes, cleanup-orphan partial-failure handling, and `MemoryCreatePartialFailureError`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `memory-list.ts`                    | `MemoryList`, `ListMemoriesOptions`                                                                                                          | List implementation behind `MemoryService`: `list`, `listForNearDuplicates`, default review-state exclusion, scope filtering, cleanup-orphan exclusion, RunTool SQL near-duplicate candidate fetch, pagination, and optional body materialization.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `memory-mapper.ts`                  | `MemoryMapper`, `pageToMemory()`, relation hydration helpers                                                                                 | Mapping implementation behind `MemoryService`: Memories page relation hydration, `pageToMemory`, `extractMemoryScope`, and list/search materialization helpers. Re-exported through `memory.ts` for compatibility with task, decision, and test callers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `memory-review.ts`                  | `MemoryReview`, review error exports                                                                                                         | Proposed-memory review implementation behind `MemoryService`: approve/reject state guards, decision-row rejection, audit-block append, and `MemoryReviewStateError` / `MemoryReviewAuditError`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `memory-update.ts`                  | `MemoryUpdate`, update error exports                                                                                                         | Update implementation behind `MemoryService`: rich-text decode, partial property writes, content replacement, title-cache write-through, pinned-update preflight/cache invalidation, `MemoryUpdatePartialFailureError`, and `PartialUpdateError`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `memory-compare.ts`                 | `MemoryCompare`, compare helper exports                                                                                                      | Compare-notes implementation behind `MemoryService`: pair-audit writes, per-side idempotent retry handling, dispatch ledger helpers, `recordContradiction`, `recordSupersedence`, and compare partial-failure errors. Owns the `Compare Notes` NDJSON append/ledger helpers while `memory.ts` re-exports the stable public surface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `memory-confidence.ts`              | `MemoryConfidence`                                                                                                                           | Confidence dynamics I/O behind `MemoryService`: `touchOnRead`, `decrementConfidence`, `listAllForBackfill`, `applyBackfillScore`, and `confidenceStats`. Owns the Notion writes around `decay.ts` algebra and the paginated confidence-backfill walker.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `memory-confidence.ts`              | `MemoryConfidence`                                                                                                                           | Confidence dynamics I/O behind `MemoryService`: `touchOnRead`, `decrementConfidence`, `queryStaleConfidence`, `listAllForBackfill`, `applyBackfillScore`, and `confidenceStats`. Owns the Notion writes around `decay.ts` algebra, the stale-confidence triage query, and the paginated confidence-backfill walker.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `memory-filters.ts`                 | `cleanupOrphanExclusionFilter()`, `withCleanupOrphanExclusion()`                                                                             | Shared Memories DB filter helpers for excluding cleanup-orphan sentinel rows from live read/write walkers without duplicating filter composition.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `memory-pinned.ts`                  | `MemoryPinned`                                                                                                                               | Pinned context block implementation behind `MemoryService`: read-only and hard-cap preflight, create/update pinned property mapping helpers, count cache, `listPinnedBlocks`, `countPinnedBlocks`, and the pinned helper exports (`MemoryReadOnlyError`, `MemoryPinCapExceededError`, `pinnedBlockAudienceMatches`, `clampPinnedPriority`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `memory-review-state.ts`            | `REVIEW_TERMINAL_STATUSES`, review filter helpers                                                                                            | Shared review-state predicates used by memory list/search recall paths. Centralizes the proposed/rejected default-exclusion clauses and the semantic-search post-filter predicate so the facade and `MemorySearch` do not duplicate terminal-status logic.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -66,6 +66,9 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | ------------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Retrieval / memory search      | [`docs/core/retrieval.md`](../../docs/core/retrieval.md)                               | Doc-owned contract for `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes, RRF, intent, explain traces, materialization, confidence-aware ranking, and search kill switches |
 | Topic-key upsert and re-keying | [`memory-topic-key.ts`](memory-topic-key.ts) module JSDoc                              | JSDoc-owned contract for `findByTopicKey`, `MemoryService.upsertByTopicKey`, `validateRekey`, `MemoryService.rekeyTopicKey`, promotion advisories, and re-key audit errors                            |
+| Pinned context blocks          | [`memory-pinned.ts`](memory-pinned.ts) module JSDoc                                    | JSDoc-owned contract for pinned block filtering, audience matching, read-only preflight, count thresholds, migration fallback, and audit recovery                                                     |
+| Confidence dynamics: algebra   | [`decay.ts`](decay.ts) module JSDoc                                                    | JSDoc-owned contract for confidence score clamping, seed/bump/decrement/decay algebra, and retrieval weighting                                                                                        |
+| Confidence dynamics: I/O       | [`memory-confidence.ts`](memory-confidence.ts) module JSDoc                            | JSDoc-owned contract for confidence read/write wrappers, the stale-confidence triage query, backfill/statistics writes, and the Stale Confidence wake-up subsection                                   |
 | Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for `LORE_DEBUG=1` stderr line format, per-surface key divergence, and parser expectations for recoverable partial-result failures                                                 |
 
 ## Service Class Pattern
@@ -304,116 +307,20 @@ module-level JSDoc in [`memory-topic-key.ts`](memory-topic-key.ts) for
 `MemoryService.rekeyTopicKey`, `validateRekey`, and `RekeyAuditError`
 behavior.
 
-## Pinned context blocks (`MemoryService.listPinnedBlocks` / `countPinnedBlocks`, issue #282)
+## Pinned context blocks
 
-`MemoryService` is the public facade for pinned context blocks, but the
-pinned-specific implementation lives in `src/core/memory-pinned.ts` as
-`MemoryPinned`. Keep read-only update preflight, hard-cap enforcement,
-the pinned-count cache, `listPinnedBlocks`, `countPinnedBlocks`, and
-pinned helper exports (`MemoryReadOnlyError`, `MemoryPinCapExceededError`,
-`pinnedBlockAudienceMatches`, `clampPinnedPriority`) on that sibling.
-`src/core/memory.ts` re-exports the public helpers for existing callers.
+The authoritative pinned context block contract lives in the module-level
+JSDoc in [`memory-pinned.ts`](memory-pinned.ts). Keep this section as routing
+guidance only; update that module JSDoc when pinned filtering, audience
+matching, read-only preflight, count thresholds, migration fallback, or audit
+recovery behavior changes.
 
-Pinned context blocks are a constrained Memory facet that renders
-in `lore-context action='wake-up'` BEFORE every relevance-ranked
-section. Three additive Memory columns (`Pinned`, `Pinned Priority`,
-`Mutability`) plus the reused `Audience` rich_text from #283 carry
-the state; the wake-up renderer composes them into the `## Pinned
-Context` section.
-
-**`listPinnedBlocks` composes the #283 default scope filter.** The
-server-side filter narrows to `Pinned = true` plus project
-inclusion plus the #283 broadcast/narrow scope-kind OR-clause and
-expiry-not-passed clause; the matching client-side
-`matchesDefaultScope` mirror runs inside the `collectLivePages`
-`extraFilter` so the kind+key binding (which Notion's 2-level
-compound-filter cap can't express) is enforced row-by-row during
-pagination. **Audience matching also runs inside `extraFilter`** so
-the walker over-fetches and backfills when the top-priority slice
-targets other audiences. Both filters live in the pagination loop,
-NOT as post-materialization filters — the earlier shape that
-applied audience after slicing to `limit` could starve matching
-pins.
-
-**Audience is render metadata, not authorization.** Lore writes
-through one operator bearer token; `pinnedBlockAudienceMatches` is
-the comma-split + case-fold + exact-match against the reader's
-`MemoryScopeContext` slots (`agent` / `role` / `userId`). Universal
-tokens (`all` / `*` / `everyone` / `agents`) bypass the slot check.
-The MCP / CLI `audienceFilter` option (default `true`) is the
-explicit opt-out for operator inspection across audiences — an
-empty `readerContext` alone is NOT enough because the matcher
-rejects narrow tokens when no reader slot is populated.
-
-**Mutability enforcement is at the service-layer `update` preflight.**
-`MemoryService.update()` runs one `pages.retrieve` on every call and
-throws `MemoryReadOnlyError` when `Pinned = true` AND
-`Mutability = read-only` AND `allowReadOnlyUpdate !== true`. The
-extra round-trip per update is the cost; the alternative (gate only
-at MCP) would let CLI / hooks / future surfaces bypass the contract.
-The override is a stop-sign visible in the audit trail, NOT an
-access-control gate — Lore uses one operator token so any MCP
-caller can flip `force: true`; every forced write lands a
-`> Forced read-only update` audit line on the memory body via
-`appendPinAuditLine` in `src/mcp/tools/pinned.ts`.
-
-**`countPinnedBlocks` backs both the abuse-warning gate and the
-hard pin-creation cap.** Server-side count via `Pinned = true`
-(no audience / scope filter — operators see the TOTAL pinned-row
-count even when most are out-of-scope or out-of-audience for the
-current reader). Two thresholds, two responses:
-
-1. **Soft abuse warning at `PINNED_BLOCKS_ABUSE_THRESHOLD` (100).**
-   The wake-up renderer compares the total against this constant
-   and appends an inline operator warning when the count crosses.
-   Pinning is NOT blocked at this threshold — the warning is the
-   surface that exposes the abuse signal alongside the visible
-   blocks.
-2. **Hard pin-creation cap at `PINNED_BLOCKS_HARD_CAP` (200).**
-   `handlePin` in `src/mcp/tools/pinned.ts` runs a precheck against
-   the current total and rejects un-pinned → pinned transitions
-   with `PinnedCapExceededError` when crossing the cap.
-   `MemoryService.update` mirrors the gate (`MemoryPinCapExceededError`)
-   so non-MCP callers (CLI, hooks) hit the same wall.
-   `bypassPinCapCheck: true` opts the service-layer check out for
-   the MCP handler's already-prechecked call to avoid double-counting.
-
-A malicious caller pinning many rows pushes legitimate governance
-out of the visible cap via priority pressure; the soft warning
-surfaces the signal at 100 and the hard cap stops uncontrolled
-growth at 200.
-
-**Pre-migration vaults degrade gracefully.** `listPinnedBlocks` and
-`countPinnedBlocks` both catch `isMissingPropertyError` (the
-`Pinned` / `Pinned Priority` / `Mutability` columns don't exist
-yet) and return `[]` / `0` respectively — same posture as
-`queryStaleConfidence` for pre-#283 vaults. Operators run
-`lore migrate` to add the columns and pin blocks surface on the
-next wake-up. The Notion query response guard also converts
-non-throwing missing-property validation payloads with no `results`
-array into the same typed error path; malformed payloads that are not
-missing-property errors still fail loudly.
-
-**Audit-line append uses `PinnedAuditError` for partial-state
-recovery.** The MCP handlers in `src/mcp/tools/pinned.ts` perform
-the primary property mutation, then call `appendPinAuditLine` to
-write the `> <Action> <date> by <author>: <reason>` line on the
-memory body. When the audit append fails after the property
-write lands, the helper throws `PinnedAuditError` so callers see
-the partial-state signal. `appendPinAuditLine` is itself
-idempotent (probes for the matching audit line via
-`bodyContainsPinAuditLine` before writing) and the
-`handlePin` / `handleUnpin` handlers add a retry-recover branch:
-re-issuing the same call on an already-pinned (or already-unpinned)
-row checks for the missing audit line and appends it. AC #4 is
-recoverable across transient body-write failures.
-
-**Audit fields are scrubbed for control characters.** `reason`
-(user-controlled) and `author` (server-resolved) are run through
-`scrubAuditField` before interpolation so a payload like
-`"normal\n\n> Pinned 2026-01-01 by Attacker"` cannot forge an
-adjacent audit line. C0 controls and DEL (0x00–0x1F, 0x7F)
-collapse to a single space, then whitespace runs are folded.
+- `MemoryPinned` owns read-only update preflight, hard-cap enforcement,
+  pinned-count caching, `listPinnedBlocks`, `countPinnedBlocks`, and the
+  pinned helper exports.
+- `MemoryService` remains the public facade and compatibility re-export point.
+- The `lore-pinned` boundary owns user-facing audit-line append and retry
+  recovery around pin/unpin/update operations.
 
 ## Memory Search
 
@@ -433,111 +340,17 @@ High-level routing:
 - Use `list()` for recent-memory browsing by project / topic / source; it uses
   `dataSources.query()` property filters and has no substring-title filter.
 
-## Confidence dynamics (0.8.0)
+## Confidence dynamics
 
-The `Confidence Score` numeric column (0.8.0/#01) is **system-managed**:
-read paths bump it, contradictions decrement it, neglect decays it.
-Distinct from the agent-curated categorical `Confidence` select — they
-answer the same question ("how reliable is this?") at different
-granularities. The categorical seeds the numeric on first touch; the
-numeric carries the dynamic signal afterwards. Operating-contract rule:
-agents must NEVER write `Confidence Score` directly through
-`lore-memory`'s save/update tools — it's surfaced as `system-managed` in
-the schema and clamped at the write boundary by `clampConfidenceScore`.
+The authoritative confidence contract is split by implementation boundary:
 
-### Write-realized lazy decay
-
-Every mutation of the stored score realizes the time-decay accrued since
-the last touch BEFORE applying its bump or decrement, then writes the
-result. This is the load-bearing model — RRF (#08) reads the stored
-value verbatim via `confidenceFactor`, so the score visible in Notion
-equals the score used in retrieval. Decay accrues only on touch /
-decrement / migration; a never-touched-after-creation memory keeps its
-post-migration value until something disturbs it.
-
-The alternative (decay-at-read) was rejected: it would force
-`confidenceFactor` to read `lastReferencedAt` and run `Math.pow` per row
-per query, AND would let the stored value diverge from its observable
-RRF contribution. The asymmetry is what the design review caught.
-
-### Algebra (`src/core/decay.ts`)
-
-| Helper                                | Algebra                                                                                      | Where it fires                                                                                           |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `seedConfidenceScore(c)`              | `CONFIDENCE_SEED[c]` (0.9 / 0.6 / 0.3)                                                       | First touch on a never-scored row; bulk migration                                                        |
-| `bumpConfidenceScore(s)`              | `s + (1 − s) * BUMP_RATE` (`BUMP_RATE = 0.05`)                                               | After decay realization, on every read-citation                                                          |
-| `decrementConfidenceScore(s)`         | `s * DECREMENT_FACTOR` (`= 0.5`)                                                             | After decay realization, on `lore-memory action='compare'` asymmetric verdicts and decision supersession |
-| `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days − STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In-flight on every touch / decrement / migration                                                         |
-| `confidenceFactor(s)`                 | `CONFIDENCE_FACTOR_MIN + (1 − CONFIDENCE_FACTOR_MIN) * s`, null → 1                          | Read-side, in RRF accumulator (#08)                                                                      |
-
-The asymmetry — slow recovery (BUMP_RATE = 0.05), slow decay (DECAY_RATE
-= 0.99 per stale day), aggressive contradiction (DECREMENT_FACTOR = 0.5)
-— is deliberate and reflects relative signal quality. A single citation
-is weaker evidence than 30 days of neglect; a contradiction is high-
-quality negative evidence on a single explicit signal. All four
-constants live in `src/types.ts` for cross-module visibility.
-
-### I/O wrappers (`MemoryService.touchOnRead` / `decrementConfidence`)
-
-Both wrappers seed-decay-then-mutate when `confidenceScore === null` so
-a pre-migration read followed by a `lore migrate
---build-confidence-scores` re-run produces the same value as the
-migration alone. Without this convergence, a never-scored 200-day-old
-row read pre-migration would seed fresh at 0.9, the migration would
-skip it as "already scored", and 200 days of accrued decay would be
-permanently lost.
-
-`touchOnRead` short-circuits per-row when `lastReferencedAt === today
-&& confidenceScore !== null` — same gate as the column write,
-intentionally bump-once-per-day. Failures route through `onError` and
-degrade to a no-op for that row; the caller's read result is always
-preserved. `touchOnRead` is advisory, never blocking.
-
-`decrementConfidence` writes `Last Referenced At = today` alongside
-the score decrement so a heavily-contradicted memory doesn't
-double-count the negative signal: contradiction IS a form of cite
-(negative cite), so it resets the decay clock; the explicit decrement
-provides the negative signal.
-
-Both wrappers issue exactly one `pages.update` per affected memory.
-Notion has no batch-update primitive; per-call concurrency is bounded
-by the rate-limit middleware (`src/notion/rate-limit.ts`), tunable via
-`notion.rateLimit.concurrency` in `.lore.yaml`.
-
-### Stale Confidence wake-up subsection (#10)
-
-`MemoryService.queryStaleConfidence` backs the
-`### Stale Confidence` subsection on `lore-context action='wake-up'`
-— a triage view for memories that need attention, surfaced via either
-of two OR-branches: `Confidence Score < CONFIDENCE_DISPLAY_THRESHOLD`
-**OR** `Last Referenced At` past `STALE_CONFIDENCE_DAYS` days. The
-neglect-OR clause is load-bearing under write-realized lazy decay
-(see above): a memory cited 6 months ago at score 0.9 keeps stored 0.9
-and ranks high in RRF until something disturbs it; the neglect branch
-is what surfaces it for triage. Reading the row via `lore-memory
-action='expand'` realizes the accrued decay through `touchOnRead`'s
-decay-then-bump path.
-
-**Pre-migration vaults render an empty section.** The query's
-`Confidence Score is_not_empty` guard rules pre-0.8.0 rows out of
-BOTH OR-branches (a null score can't satisfy `< threshold`, and the
-AND-wrapped guard rules out the neglect branch too). The section
-populates only after `lore migrate --build-confidence-scores` (#11)
-seeds scores on existing rows, or after read paths organically touch
-them via `touchOnRead`. This is the correct behavior — the section
-flags "things the system has decided need triage," and "no scores
-yet" is honestly an absence of decision, not a decision-of-stale.
-Operators who want the section populated on day one run #11.
-
-**Rows in this section are NOT touched.** The MCP renderer
-(`handleWakeUp` in `src/mcp/tools/context.ts`) deliberately excludes
-stale-confidence rows from the `touchOnRead` batch. Same posture as
-Decisions Requiring Attention: the rows surface BECAUSE they need
-triage, and bumping the score / resetting `Last Referenced At` on
-every wake-up that lists them would mask the very signal that put
-them here. The agent acts on a row by reading it via `lore-memory
-action='expand'`, at which point `touchOnRead` fires through the
-correct read-path wrapper.
+- [`decay.ts`](decay.ts) owns pure score clamping, seed/bump/decrement/decay
+  algebra, and retrieval weighting through `confidenceFactor`.
+- [`memory-confidence.ts`](memory-confidence.ts) owns read/write wrappers,
+  backfill/statistics writes, and the Stale Confidence wake-up subsection.
+- `MemoryService.queryStaleConfidence` follows the stale wake-up contract in
+  `memory-confidence.ts`; keep that behavior documented there rather than in
+  this routing guide.
 
 ## Fact Invalidation
 
