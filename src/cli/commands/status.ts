@@ -35,8 +35,11 @@ import {
   formatMalformedLedgerWarning,
   formatUsd,
   monthRange,
+  readCostLedgerAppendErrorMarker,
   readLedgerEventsWithDiagnostics,
   summarizeCostEvents,
+  type CostLedgerAppendErrorMarkerRead,
+  type ResolvedCostTracking,
 } from "../../core/cost-ledger.js"
 import { defaultProfileSelector } from "../../profile/index.js"
 import { notionPageUrl, terminalLink } from "../output.js"
@@ -351,7 +354,10 @@ export async function loadCostStatusLines(services: LoreServices): Promise<strin
   const now = new Date()
   const monthLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
   const currentMonthRange = monthRange(monthLabel)
-  const ledger = await readLedgerEventsWithDiagnostics(costTracking)
+  const [appendError, ledger] = await Promise.all([
+    readCostLedgerAppendErrorMarker(costTracking),
+    readLedgerEventsForStatus(costTracking),
+  ])
   const todayRows = ledger.rows.filter((row) => eventInRange(row.event, todayRange))
   const monthRows = ledger.rows.filter((row) =>
     eventInRange(row.event, currentMonthRange)
@@ -366,6 +372,12 @@ export async function loadCostStatusLines(services: LoreServices): Promise<strin
   )
 
   const lines = [`Cost tracking: enabled (ledger: ${costTracking.displayLedgerPath})`]
+  if (appendError) {
+    lines.push(formatCostAppendErrorLine(costTracking, appendError))
+  }
+  if (ledger.unreadable) {
+    lines.push("Warning: cost ledger could not be read; totals may be incomplete.")
+  }
   const warning = formatMalformedLedgerWarning(ledger.malformedLineCount)
   if (warning) lines.push(warning)
   if (today.eventCount === 0) {
@@ -377,6 +389,38 @@ export async function loadCostStatusLines(services: LoreServices): Promise<strin
     lines.push(`This month: ${formatCompactCostLine(month, { omitNotionWrites: true })}`)
   }
   return lines
+}
+
+type CostStatusLedgerRead = Awaited<
+  ReturnType<typeof readLedgerEventsWithDiagnostics>
+> & {
+  unreadable: boolean
+}
+
+async function readLedgerEventsForStatus(
+  costTracking: Extract<ResolvedCostTracking, { enabled: true }>
+): Promise<CostStatusLedgerRead> {
+  try {
+    return {
+      ...(await readLedgerEventsWithDiagnostics(costTracking)),
+      unreadable: false,
+    }
+  } catch {
+    return { rows: [], malformedLineCount: 0, unreadable: true }
+  }
+}
+
+function formatCostAppendErrorLine(
+  costTracking: Extract<ResolvedCostTracking, { enabled: true }>,
+  appendError: CostLedgerAppendErrorMarkerRead
+): string {
+  if (appendError.marker) {
+    return `Warning: cost ledger appends have failed since ${appendError.marker.timestamp} (ledger: ${appendError.marker.ledgerPath}; error: ${appendError.marker.error})`
+  }
+  const detail = appendError.readError
+    ? `; marker unreadable: ${appendError.readError}`
+    : ""
+  return `Warning: cost ledger appends have failed (ledger: ${costTracking.displayLedgerPath}${detail})`
 }
 
 function formatCompactCostLine(

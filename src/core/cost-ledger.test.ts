@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   existsSync,
@@ -22,6 +23,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   appendCostEvent,
   COST_LEDGER_SCHEMA_VERSION,
+  costLedgerAppendErrorMarkerPath,
   costLedgerShardPath,
   defaultTodayRange,
   estimateModelCost,
@@ -30,9 +32,11 @@ import {
   formatMalformedLedgerWarning,
   loadPricingTable,
   payloadSummary,
+  readCostLedgerAppendErrorMarker,
   readLedgerEvents,
   readLedgerEventsWithDiagnostics,
   resolveCostTracking,
+  resetCostLedgerWarningForTests,
   summarizeCostEvents,
   validatePricingTable,
   type CostLedgerEvent,
@@ -49,6 +53,8 @@ describe("cost ledger", () => {
   const dirs: string[] = []
 
   afterEach(() => {
+    resetCostLedgerWarningForTests()
+    vi.restoreAllMocks()
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
@@ -123,6 +129,21 @@ describe("cost ledger", () => {
     } finally {
       process.stderr.write = originalWrite
     }
+  }
+
+  function sampleMcpEvent(overrides: Partial<CostLedgerEvent> = {}): CostLedgerEvent {
+    return {
+      schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+      timestamp: new Date().toISOString(),
+      eventType: "mcp.invocation",
+      source: "host_agent",
+      status: "success",
+      tool: "lore-memory",
+      action: "save",
+      payload: payloadSummary('{"action":"save"}', "Saved memory"),
+      notion: { reads: 1, writes: 2, failures: 0, rateLimitBackoffs: 0 },
+      ...overrides,
+    } as CostLedgerEvent
   }
 
   it("is disabled by default and does not create ledger files", async () => {
@@ -261,16 +282,7 @@ describe("cost ledger", () => {
 
   it("streams multiple ledger rows and preserves range filtering without readFile", async () => {
     const root = tempDir()
-    const costTracking = resolveCostTracking(
-      {
-        costTracking: {
-          enabled: true,
-          ledgerPath: "state/costs.jsonl",
-        },
-      },
-      root
-    )
-    if (!costTracking.enabled) throw new Error("expected cost tracking to be enabled")
+    const costTracking = enabledCostTracking(root, { ledgerPath: "state/costs.jsonl" })
 
     mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
     writeFileSync(
@@ -336,16 +348,72 @@ describe("cost ledger", () => {
     const disabled = resolveCostTracking({}, root)
     expect(await readLedgerEvents(disabled)).toEqual([])
 
-    const costTracking = resolveCostTracking(
-      {
-        costTracking: {
-          enabled: true,
-          ledgerPath: "state/missing.jsonl",
-        },
-      },
-      root
-    )
+    const costTracking = enabledCostTracking(root, { ledgerPath: "state/missing.jsonl" })
     expect(await readLedgerEvents(costTracking)).toEqual([])
+  })
+
+  it("creates an append-error marker without throwing when append fails", async () => {
+    const root = tempDir()
+    const costTracking = enabledCostTracking(root, { ledgerPath: "state/costs.jsonl" })
+
+    mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
+    mkdirSync(costLedgerShardPath(costTracking.ledgerPath))
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    await expect(
+      appendCostEvent(
+        costTracking,
+        sampleMcpEvent({ projectName: "SECRET_APPEND_EVENT" })
+      )
+    ).resolves.toBeUndefined()
+    await appendCostEvent(
+      costTracking,
+      sampleMcpEvent({ projectName: "SECRET_SECOND_APPEND_EVENT" })
+    )
+
+    expect(stderr).toHaveBeenCalledTimes(1)
+    const markerPath = costLedgerAppendErrorMarkerPath(costTracking.ledgerPath)
+    expect(existsSync(markerPath)).toBe(true)
+    const marker = await readCostLedgerAppendErrorMarker(costTracking)
+    expect(marker?.marker).toMatchObject({
+      version: 1,
+      ledgerPath: costTracking.displayLedgerPath,
+    })
+    expect(marker?.marker?.error).toEqual(expect.any(String))
+    const rawMarker = readFileSync(markerPath, "utf-8")
+    expect(rawMarker).not.toContain("SECRET_APPEND_EVENT")
+    expect(rawMarker).not.toContain("SECRET_SECOND_APPEND_EVENT")
+  })
+
+  it("does not throw when the append-error marker cannot be written", async () => {
+    const root = tempDir()
+    const costTracking = enabledCostTracking(root, { ledgerPath: "state/costs.jsonl" })
+
+    writeFileSync(join(root, "state"), "not a directory")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    await expect(appendCostEvent(costTracking, sampleMcpEvent())).resolves.toBeUndefined()
+
+    expect(stderr).toHaveBeenCalledTimes(1)
+    expect(await readCostLedgerAppendErrorMarker(costTracking)).toBeNull()
+  })
+
+  it("clears the append-error marker after a later successful append", async () => {
+    const root = tempDir()
+    const costTracking = enabledCostTracking(root, { ledgerPath: "state/costs.jsonl" })
+
+    mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
+    const shardPath = costLedgerShardPath(costTracking.ledgerPath)
+    mkdirSync(shardPath)
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    await appendCostEvent(costTracking, sampleMcpEvent())
+    expect(await readCostLedgerAppendErrorMarker(costTracking)).not.toBeNull()
+
+    rmSync(shardPath, { recursive: true, force: true })
+    await appendCostEvent(costTracking, sampleMcpEvent())
+
+    expect(await readCostLedgerAppendErrorMarker(costTracking)).toBeNull()
+    expect(await readLedgerEvents(costTracking)).toHaveLength(1)
   })
 
   it("summarizes and exports range-filtered ledger events", async () => {

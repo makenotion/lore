@@ -31,6 +31,7 @@ import {
   COST_LEDGER_SCHEMA_VERSION,
   payloadSummary,
   resolveCostTracking,
+  writeCostLedgerAppendErrorMarker,
 } from "../../core/cost-ledger.js"
 
 function makeMemory(overrides: Partial<Memory>): Memory {
@@ -914,6 +915,81 @@ describe("loadCostStatusLines", () => {
       expect(output).toContain("skipped 2 malformed cost ledger lines")
       expect(output).toContain("1 MCP calls")
       expect(output).not.toContain("SECRET_INVALID_STATUS_ROW")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("warns when the append-error marker exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lore-status-costs-"))
+    try {
+      const costTracking = resolveCostTracking(
+        {
+          costTracking: {
+            enabled: true,
+            ledgerPath: "state/costs.jsonl",
+          },
+        },
+        dir
+      )
+      if (!costTracking.enabled) {
+        throw new Error("expected cost tracking to be enabled")
+      }
+      await writeCostLedgerAppendErrorMarker(
+        costTracking,
+        new Error(
+          "EACCES: permission denied, open ntn_abcdefghijklmnopqrstuvwxyz0123456789"
+        ),
+        new Date("2026-05-15T12:00:00.000Z")
+      )
+
+      const lines = await loadCostStatusLines({ costTracking } as LoreServices)
+      const output = lines.join("\n")
+
+      expect(output).toContain("Cost tracking: enabled")
+      expect(output).toContain(
+        "Warning: cost ledger appends have failed since 2026-05-15T12:00:00.000Z"
+      )
+      expect(output).toContain(`ledger: ${costTracking.displayLedgerPath}`)
+      expect(output).toContain("Today: no cost events yet")
+      expect(output).not.toContain("ntn_abcdefghijklmnopqrstuvwxyz0123456789")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("warns when the append-error marker exists and the ledger is unreadable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lore-status-costs-"))
+    try {
+      const costTracking = resolveCostTracking(
+        {
+          costTracking: {
+            enabled: true,
+            ledgerPath: "state/costs.jsonl",
+          },
+        },
+        dir
+      )
+      if (!costTracking.enabled) {
+        throw new Error("expected cost tracking to be enabled")
+      }
+      await writeCostLedgerAppendErrorMarker(
+        costTracking,
+        new Error("EISDIR: illegal operation on a directory"),
+        new Date("2026-05-15T12:00:00.000Z")
+      )
+      mkdirSync(costTracking.ledgerPath)
+
+      const lines = await loadCostStatusLines({ costTracking } as LoreServices)
+      const output = lines.join("\n")
+
+      expect(output).toContain(
+        "Warning: cost ledger appends have failed since 2026-05-15T12:00:00.000Z"
+      )
+      expect(output).toContain(
+        "Warning: cost ledger could not be read; totals may be incomplete."
+      )
+      expect(output).toContain("Today: no cost events yet")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir } from "node:fs/promises"
+import { mkdir, open, readFile, readdir, unlink, writeFile } from "node:fs/promises"
 import { createReadStream } from "node:fs"
 import { createInterface } from "node:readline"
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path"
@@ -10,6 +10,8 @@ import { redactDebugError } from "../debug-redact.js"
 export const COST_LEDGER_SCHEMA_VERSION = 1
 export const DEFAULT_COST_LEDGER_PATH = "~/.local/share/lore/cost-ledger.jsonl"
 export const DEFAULT_COST_PRICING_TABLE = "openai-2026-05"
+export const COST_LEDGER_APPEND_ERROR_MARKER_VERSION = 1
+export const COST_LEDGER_APPEND_ERROR_MARKER_SUFFIX = ".append-error.json"
 export const TOKEN_ESTIMATOR = "chars_per_token_4"
 
 export type CostEventType =
@@ -163,6 +165,19 @@ export type ResolvedCostTracking =
       }
     }
 
+export interface CostLedgerAppendErrorMarker {
+  version: typeof COST_LEDGER_APPEND_ERROR_MARKER_VERSION
+  timestamp: string
+  ledgerPath: string
+  error: string
+}
+
+export interface CostLedgerAppendErrorMarkerRead {
+  markerPath: string
+  marker: CostLedgerAppendErrorMarker | null
+  readError?: string
+}
+
 const BUILTIN_PRICING_TABLES: Record<string, PricingTable> = {
   [DEFAULT_COST_PRICING_TABLE]: {
     source: "builtin-openai-2026-05",
@@ -315,6 +330,7 @@ export async function appendCostEvent(
     } finally {
       await handle.close()
     }
+    await clearCostLedgerAppendErrorMarker(costTracking)
   } catch (err) {
     if (!appendWarningEmitted) {
       appendWarningEmitted = true
@@ -322,11 +338,73 @@ export async function appendCostEvent(
         `[lore] cost-tracking: failed to append ledger event: ${redactDebugError(err)}\n`
       )
     }
+    try {
+      await writeCostLedgerAppendErrorMarker(costTracking, err)
+    } catch {
+      // The ledger is advisory. Losing the marker must not make a cost
+      // accounting failure fatal to the caller.
+    }
   }
 }
 
 export function resetCostLedgerWarningForTests(): void {
   appendWarningEmitted = false
+}
+
+export function costLedgerAppendErrorMarkerPath(ledgerPath: string): string {
+  return `${ledgerPath}${COST_LEDGER_APPEND_ERROR_MARKER_SUFFIX}`
+}
+
+export async function writeCostLedgerAppendErrorMarker(
+  costTracking: ResolvedCostTracking,
+  err: unknown,
+  now = new Date()
+): Promise<void> {
+  if (!costTracking.enabled) return
+  const markerPath = costLedgerAppendErrorMarkerPath(costTracking.ledgerPath)
+  const marker: CostLedgerAppendErrorMarker = {
+    version: COST_LEDGER_APPEND_ERROR_MARKER_VERSION,
+    timestamp: now.toISOString(),
+    ledgerPath: costTracking.displayLedgerPath,
+    error: redactDebugError(err),
+  }
+  await mkdir(dirname(markerPath), { recursive: true, mode: 0o700 })
+  await writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`, {
+    mode: 0o600,
+  })
+}
+
+export async function readCostLedgerAppendErrorMarker(
+  costTracking: ResolvedCostTracking
+): Promise<CostLedgerAppendErrorMarkerRead | null> {
+  if (!costTracking.enabled) return null
+  const markerPath = costLedgerAppendErrorMarkerPath(costTracking.ledgerPath)
+  try {
+    const parsed = JSON.parse(await readFile(markerPath, "utf-8"))
+    const marker = parseCostLedgerAppendErrorMarker(parsed)
+    return marker
+      ? { markerPath, marker }
+      : {
+          markerPath,
+          marker: null,
+          readError: "marker did not match expected schema",
+        }
+  } catch (err) {
+    if (isFileNotFoundError(err)) return null
+    return { markerPath, marker: null, readError: redactDebugError(err) }
+  }
+}
+
+export async function clearCostLedgerAppendErrorMarker(
+  costTracking: ResolvedCostTracking
+): Promise<void> {
+  if (!costTracking.enabled) return
+  try {
+    await unlink(costLedgerAppendErrorMarkerPath(costTracking.ledgerPath))
+  } catch {
+    // Best-effort cleanup; a stale marker should not make a successful
+    // ledger append fail.
+  }
 }
 
 export async function loadPricingTable(
@@ -533,6 +611,30 @@ const COST_OUTPUT_COUNT_KEYS = [
   "projectsReturned",
   "proceduresReturned",
 ] as const satisfies readonly (keyof CostOutputCounts)[]
+
+function parseCostLedgerAppendErrorMarker(
+  value: unknown
+): CostLedgerAppendErrorMarker | null {
+  if (!isRecord(value)) return null
+  if (value["version"] !== COST_LEDGER_APPEND_ERROR_MARKER_VERSION) return null
+  const timestamp = stringField(value, "timestamp")
+  const ledgerPath = stringField(value, "ledgerPath")
+  const error = stringField(value, "error")
+  if (
+    timestamp === null ||
+    !Number.isFinite(Date.parse(timestamp)) ||
+    ledgerPath === null ||
+    error === null
+  ) {
+    return null
+  }
+  return {
+    version: COST_LEDGER_APPEND_ERROR_MARKER_VERSION,
+    timestamp,
+    ledgerPath,
+    error,
+  }
+}
 
 function parseCostLedgerEvent(value: unknown): CostLedgerEvent | null {
   if (!isRecord(value)) return null
@@ -942,7 +1044,7 @@ function escapeRegExp(value: string): string {
 }
 
 function isFileNotFoundError(err: unknown): boolean {
-  return isRecord(err) && err["code"] === "ENOENT"
+  return isRecord(err) && (err["code"] === "ENOENT" || err["code"] === "ENOTDIR")
 }
 
 export interface CostSummary {

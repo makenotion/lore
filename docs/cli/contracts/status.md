@@ -105,3 +105,7 @@ Cost tracking:
 - Missing, empty, or malformed ledger rows must not fail status output.
   Malformed or schema-invalid non-blank rows render a redacted warning with only
   the skipped-line count.
+- If a previous ledger append failed, `lore status` shows a warning while the
+  append-error marker exists. A later successful append clears the marker.
+- Unreadable ledger files must not fail status output. They render a warning
+  and status still surfaces any append-error marker.
