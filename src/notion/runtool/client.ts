@@ -125,10 +125,7 @@ export async function runTool<T extends RunToolName>(
   // `params` literally types the value at key `tool` — every call
   // site narrows `T` to a single literal so the runtime shape is
   // always correct.
-  const body = {
-    type: tool,
-    [tool]: params,
-  } as Record<string, unknown>
+  const body = buildRunToolBody(tool, params)
 
   // 200-wrapped `{ object: "error" }` bodies surfaced by the `tools/run`
   // gateway are normalized into a thrown `APIResponseError` inside
@@ -144,6 +141,41 @@ export async function runTool<T extends RunToolName>(
     method: "post",
     path: RUNTOOL_PATH,
     body,
+  })
+}
+
+function buildRunToolBody<T extends RunToolName>(
+  tool: T,
+  params: RunToolRequestMap[T]
+): Record<string, unknown> {
+  return {
+    type: tool,
+    [tool]: params,
+  } as Record<string, unknown>
+}
+
+/**
+ * Issue a RunTool request whose params are rebuilt whenever the SDK
+ * reads the `client.request()` body.
+ *
+ * Most tools should use `runTool()` above. This narrow helper exists for
+ * request bodies that must track mutable process state across an auth-refresh
+ * retry. The auth-refreshing client retries the exact same request object
+ * after rebuilding the inner SDK client; a getter lets the retried call
+ * rebuild host-coupled params from the current auth snapshot instead of
+ * replaying stale serialized values.
+ */
+export async function runToolWithParamsFactory<T extends RunToolName>(
+  client: Client,
+  tool: T,
+  paramsFactory: () => RunToolRequestMap[T]
+): Promise<RunToolResponseMap[T]> {
+  return await client.request<RunToolResponseMap[T] & object>({
+    method: "post",
+    path: RUNTOOL_PATH,
+    get body(): Record<string, unknown> {
+      return buildRunToolBody(tool, paramsFactory())
+    },
   })
 }
 

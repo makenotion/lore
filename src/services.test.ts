@@ -3,6 +3,8 @@ import { rm, writeFile } from "node:fs/promises"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { APIErrorCode, APIResponseError } from "@notionhq/client"
+import type { Client, PageObjectResponse } from "@notionhq/client"
 
 // Same isolation hoist as digest-marker.test.ts and drift-marker.test.ts.
 // The env override has to land before `getStateDir` resolves, and
@@ -66,6 +68,7 @@ import {
 import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
 import { resolveProject } from "./core/context.js"
 import { VaultManager } from "./core/vault.js"
+import { createClient } from "./notion/client.js"
 import {
   driftMarkerPath,
   driftMarkerAgeDays,
@@ -78,6 +81,62 @@ function uniqueRoot(label: string): string {
   const root = `/tmp/test-services-drift-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`
   TEST_ROOTS.push(root)
   return root
+}
+
+function unauthorizedError(message = "unauthorized"): APIResponseError {
+  return new APIResponseError({
+    code: APIErrorCode.Unauthorized,
+    status: 401,
+    message,
+    headers: new Headers(),
+    rawBodyText: `{"code":"unauthorized","message":${JSON.stringify(message)}}`,
+    additional_data: undefined,
+    request_id: undefined,
+  })
+}
+
+function factPageForServicesTest(id: string): PageObjectResponse {
+  return {
+    object: "page",
+    id,
+    created_time: "2026-01-01T00:00:00.000Z",
+    last_edited_time: "2026-01-01T00:00:00.000Z",
+    archived: false,
+    url: `https://notion.so/${id}`,
+    parent: { type: "database_id", database_id: "facts-db" },
+    properties: {
+      Subject: {
+        type: "title",
+        title: [{ plain_text: "memory-title" }],
+      } as unknown,
+      Predicate: {
+        type: "select",
+        select: { name: "mentions" },
+      } as unknown,
+      Object: {
+        type: "rich_text",
+        rich_text: [{ plain_text: "entity" }],
+      } as unknown,
+      Project: { type: "relation", relation: [] } as unknown,
+      "Valid From": { type: "date", date: { start: "2026-05-05" } } as unknown,
+      "Valid Until": { type: "date", date: null } as unknown,
+      "Observed At": { type: "date", date: { start: "2026-05-05" } } as unknown,
+      "Invalidated At": { type: "date", date: null } as unknown,
+      "Invalidated By": { type: "relation", relation: [] } as unknown,
+      "Review By": { type: "date", date: null } as unknown,
+      Source: { type: "relation", relation: [] } as unknown,
+      Confidence: {
+        type: "select",
+        select: { name: "speculative" },
+      } as unknown,
+      "Confidence Score": { type: "number", number: null } as unknown,
+      "Last Referenced At": { type: "date", date: null } as unknown,
+      DedupKey: { type: "rich_text", rich_text: [] } as unknown,
+      SubjectKey: { type: "rich_text", rich_text: [] } as unknown,
+      SubjectEntity: { type: "relation", relation: [] } as unknown,
+      ObjectEntity: { type: "relation", relation: [] } as unknown,
+    } as PageObjectResponse["properties"],
+  } as unknown as PageObjectResponse
 }
 
 afterAll(async () => {
@@ -106,11 +165,19 @@ describe("deriveRelationUrlBase (PR #538 live-verification host-coupling)", () =
     expect(deriveRelationUrlBase("https://api.notion.com")).toBe("https://www.notion.so/")
   })
 
-  it("unknown / custom hosts fall back to www.notion.so", () => {
-    // Operators on bespoke configurations who need a different
-    // mapping must override `auth.baseUrl` to a recognized host.
-    expect(deriveRelationUrlBase("https://api-staging.notion.com")).toBe(
-      "https://www.notion.so/"
+  it("api.notion.so → www.notion.so", () => {
+    expect(deriveRelationUrlBase("https://api.notion.so")).toBe("https://www.notion.so/")
+  })
+
+  it("api-stg.notion.com fails closed until a user-facing staging host is verified", () => {
+    expect(() => deriveRelationUrlBase("https://api-stg.notion.com")).toThrow(
+      /Unsupported Notion API host.*api-stg\.notion\.com/
+    )
+  })
+
+  it("unknown / custom hosts fail closed instead of deriving production URLs", () => {
+    expect(() => deriveRelationUrlBase("https://api-staging.notion.com")).toThrow(
+      /Unsupported Notion API host.*api-staging\.notion\.com/
     )
   })
 
@@ -341,8 +408,12 @@ describe("initServicesFromConfig — lazy author identity", () => {
   }
 
   afterEach(() => {
+    delete process.env["LORE_USE_RUNTOOL_BATCH_CREATES"]
     vi.mocked(resolveAuth).mockReset()
     vi.mocked(resolveProject).mockReset()
+    vi.mocked(createClient).mockImplementation(
+      () => ({ users: { me: serviceClientUsersMe } }) as unknown as Client
+    )
     serviceClientUsersMe.mockReset()
     operationAccountingClient.mockClear()
   })
@@ -399,6 +470,164 @@ describe("initServicesFromConfig — lazy author identity", () => {
 
       expect(services.costTracking.enabled).toBe(true)
       expect(operationAccountingClient).toHaveBeenCalledOnce()
+    } finally {
+      loadSpy.mockRestore()
+    }
+  })
+
+  it("allows staging auth when RunTool batch creates are disabled", async () => {
+    process.env["LORE_USE_RUNTOOL_BATCH_CREATES"] = "0"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "init-token",
+      baseUrl: "https://api-stg.notion.com",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+
+      expect(services.features.runTool.batchCreates).toBe(false)
+    } finally {
+      loadSpy.mockRestore()
+    }
+  })
+
+  it("fails closed for staging auth when RunTool batch creates are enabled", async () => {
+    process.env["LORE_USE_RUNTOOL_BATCH_CREATES"] = "1"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "init-token",
+      baseUrl: "https://api-stg.notion.com",
+      source: "env-notion-api-token",
+    })
+    const loadSpy = vi.spyOn(VaultManager.prototype, "load")
+
+    try {
+      await expect(
+        initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+      ).rejects.toThrow(/Unsupported Notion API host.*api-stg\.notion\.com/)
+      expect(loadSpy).not.toHaveBeenCalled()
+    } finally {
+      loadSpy.mockRestore()
+    }
+  })
+
+  it("fails closed when an auth-refresh retry moves RunTool batch creates to an unsupported host", async () => {
+    process.env["LORE_USE_RUNTOOL_BATCH_CREATES"] = "1"
+    vi.mocked(resolveAuth)
+      .mockResolvedValueOnce({
+        token: "old-token",
+        source: "ntn-auth-json",
+      })
+      .mockResolvedValueOnce({
+        token: "new-token",
+        baseUrl: "https://api-stg.notion.com",
+        source: "ntn-auth-json",
+      })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+
+    const initialBodies: Array<{
+      create_pages: { pages: Array<{ properties: Record<string, unknown> }> }
+    }> = []
+    const refreshedBodyErrors: unknown[] = []
+    const query = vi.fn(async () => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const create = vi.fn(async () =>
+      factPageForServicesTest(`fallback-${create.mock.calls.length}`)
+    )
+    const dataSources = {
+      retrieve: vi.fn(async () => ({
+        properties: {
+          "Scope Kind": {},
+          "Expires At": {},
+        },
+      })),
+      query,
+    }
+    const initialRequest = vi.fn(async (args: { body: unknown }) => {
+      initialBodies.push(
+        args.body as {
+          create_pages: { pages: Array<{ properties: Record<string, unknown> }> }
+        }
+      )
+      throw unauthorizedError()
+    })
+    const refreshedRequest = vi.fn(async (args: { body: unknown }) => {
+      try {
+        void args.body
+      } catch (err) {
+        refreshedBodyErrors.push(err)
+        throw err
+      }
+      throw new Error("RunTool create_pages body unexpectedly built for staging")
+    })
+    const makeRawClient = (request: typeof initialRequest): Client =>
+      ({
+        users: { me: serviceClientUsersMe },
+        dataSources,
+        pages: { create, retrieve: vi.fn() },
+        request,
+      }) as unknown as Client
+    vi.mocked(createClient).mockImplementation((token) =>
+      token === "old-token"
+        ? makeRawClient(initialRequest)
+        : makeRawClient(refreshedRequest as typeof initialRequest)
+    )
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+      const results = await services.facts.createBatchWithDedup([
+        {
+          subject: "memory-title",
+          predicate: "mentions",
+          object: "entity-a",
+          projectIds: ["proj-1"],
+          confidence: "speculative",
+        },
+        {
+          subject: "memory-title",
+          predicate: "mentions",
+          object: "entity-b",
+          projectIds: ["proj-1"],
+          confidence: "speculative",
+        },
+      ])
+
+      expect(results).toHaveLength(2)
+      expect(results.every((r) => r.status === "fulfilled")).toBe(true)
+      expect(initialRequest).toHaveBeenCalledOnce()
+      expect(refreshedRequest).toHaveBeenCalledOnce()
+      expect(initialBodies[0]!.create_pages.pages[0]!.properties["Project"]).toBe(
+        '["https://www.notion.so/proj1"]'
+      )
+      expect(refreshedBodyErrors).toHaveLength(1)
+      expect((refreshedBodyErrors[0] as Error).message).toMatch(
+        /Unsupported Notion API host.*api-stg\.notion\.com/
+      )
+      expect(create).toHaveBeenCalledTimes(2)
     } finally {
       loadSpy.mockRestore()
     }

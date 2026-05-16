@@ -342,6 +342,47 @@ describe("createPagesViaRunTool — converts Notion REST to SQLite-flat on the w
     // server rejects it (`no such column: Valid From`).
     expect(wireProps).not.toHaveProperty("Valid From")
   })
+
+  it("rebuilds host-coupled relation URLs whenever the request body is read", async () => {
+    let relationUrlBase = "https://www.notion.so/"
+    const bodyReads: string[] = []
+    const { client, captured } = makeStubClientWithRequest((args) => {
+      relationUrlBase = "https://dev.notion.so/"
+      const retryBody = args.body as {
+        create_pages: {
+          pages: Array<{ properties: Record<string, unknown> }>
+        }
+      }
+      bodyReads.push(retryBody.create_pages.pages[0]!.properties["Project"] as string)
+      return makeCreatePagesResponse(["new-fact"])
+    })
+
+    await createPagesViaRunTool({
+      client,
+      parentDataSourceId: "ds-1",
+      relationUrlBase: () => relationUrlBase,
+      pages: [
+        {
+          properties: {
+            Subject: { title: [{ text: { content: "subject" } }] },
+            Project: { relation: [{ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] },
+          },
+        },
+      ],
+    })
+
+    const firstBody = captured[0]!.body as {
+      create_pages: {
+        pages: Array<{ properties: Record<string, unknown> }>
+      }
+    }
+    expect(firstBody.create_pages.pages[0]!.properties["Project"]).toBe(
+      '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]'
+    )
+    expect(bodyReads).toEqual([
+      '["https://dev.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
+    ])
+  })
 })
 
 describe("createPagesViaRunTool — failure semantics", () => {

@@ -134,9 +134,8 @@ describe("convertNotionRestToSqliteProperties — relation as JSON URL array", (
     })
     // Default base is the production host. Tests that don't pass
     // a base use this default; production callers MUST pass the
-    // derived base via `services.ts:deriveRelationUrlBase` because
-    // host-mismatched URLs are rejected by the server (PR #538
-    // live verification).
+    // derived base from the configured auth host because
+    // host-mismatched URLs are rejected by the server.
     expect(out).toEqual({
       Project: '["https://www.notion.so/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
     })

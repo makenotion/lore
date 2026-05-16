@@ -34,6 +34,7 @@ import type {
   QueryFactsOpts,
   QueryOverdueOpts,
 } from "./fact-queries.js"
+import type { RelationUrlBaseResolver } from "../notion/runtool/create-pages.js"
 
 export { scopesMatchForMerge } from "./fact-scope.js"
 export { clampNotionPageSize } from "./fact-queries.js"
@@ -122,7 +123,10 @@ export class FactService {
     private client: Client,
     private db: DatabaseRef,
     scopeCtx?: MemoryScopeContext,
-    options?: { useRunToolBatchCreates?: boolean; relationUrlBase?: string }
+    options?: {
+      useRunToolBatchCreates?: boolean
+      relationUrlBase?: RelationUrlBaseResolver
+    }
   ) {
     this.queries = new FactQueries({
       client,

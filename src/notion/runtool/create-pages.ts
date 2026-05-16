@@ -54,12 +54,12 @@
  * (`dev.notion.so` for dev, `www.notion.so` for production) MUST
  * match the workspace's API host or the server returns
  * `400 validation_error: Invalid page URL ... for property X`.
- * Callers thread the derived host via `relationUrlBase`; see
- * `services.ts:deriveRelationUrlBase` for the canonical mapping.
+ * Callers thread the derived host via `relationUrlBase`; unsupported
+ * API hosts must stay on the REST create path.
  */
 
 import type { Client } from "@notionhq/client"
-import { runTool } from "./client.js"
+import { runToolWithParamsFactory } from "./client.js"
 import { convertNotionRestToSqliteProperties } from "./sqlite-properties.js"
 import type { RunToolCreatePagesInputPage, RunToolCreatePagesParent } from "./types.js"
 
@@ -81,6 +81,8 @@ export const RUNTOOL_CREATE_PAGES_MAX_CHUNK = 100
  * lands in one round-trip; larger inputs auto-chunk.
  */
 export const RUNTOOL_CREATE_PAGES_DEFAULT_CHUNK = 100
+
+export type RelationUrlBaseResolver = string | (() => string)
 
 export interface CreatePagesViaRunToolInput {
   /**
@@ -119,9 +121,11 @@ export interface CreatePagesViaRunToolInput {
    * that the server rejects relation URLs whose host doesn't match
    * the workspace environment. Optional; defaults to the production
    * host. Production callers MUST thread the derived base from the
-   * auth chain.
+   * auth chain. A resolver function is read when the request body is
+   * built, including auth-refresh retries that reuse the request
+   * object.
    */
-  relationUrlBase?: string
+  relationUrlBase?: RelationUrlBaseResolver
 }
 
 export interface CreatePagesViaRunToolResult {
@@ -166,6 +170,12 @@ export class BatchCreateError extends Error {
     this.committedIds = committedIds
     this.cause = cause
   }
+}
+
+function resolveRelationUrlBase(
+  relationUrlBase: RelationUrlBaseResolver | undefined
+): string | undefined {
+  return typeof relationUrlBase === "function" ? relationUrlBase() : relationUrlBase
 }
 
 /**
@@ -234,18 +244,21 @@ export async function createPagesViaRunTool(
     // [{ text: {...} }] }`, `{ relation: [{ id }] }`, etc.) are
     // structurally not the SQLite property values the endpoint
     // expects.
-    const convertedChunk = chunk.map((page) => ({
-      ...page,
-      properties: convertNotionRestToSqliteProperties(
-        page.properties,
-        input.relationUrlBase
-      ),
-    }))
     let response
     try {
-      response = await runTool(client, "create_pages", {
-        parent,
-        pages: convertedChunk,
+      response = await runToolWithParamsFactory(client, "create_pages", () => {
+        const relationUrlBase = resolveRelationUrlBase(input.relationUrlBase)
+        const convertedChunk = chunk.map((page) => ({
+          ...page,
+          properties: convertNotionRestToSqliteProperties(
+            page.properties,
+            relationUrlBase
+          ),
+        }))
+        return {
+          parent,
+          pages: convertedChunk,
+        }
       })
     } catch (err) {
       // First-chunk failure leaves no committed prefix to surface;

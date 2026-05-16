@@ -16,6 +16,7 @@ import { withEntityRelationLocks } from "./entity-relation-lock.js"
 import {
   createPagesViaRunTool,
   isBatchCreateError,
+  type RelationUrlBaseResolver,
 } from "../notion/runtool/create-pages.js"
 import type { RunToolCreatePagesInputPage } from "../notion/runtool/types.js"
 import { isFullPage } from "../notion/extractors.js"
@@ -234,12 +235,12 @@ type FactCreatePipelineDeps = {
   db: DatabaseRef
   pageToFact: (page: PageObjectResponse) => Promise<Fact | null>
   useRunToolBatchCreates?: boolean
-  relationUrlBase?: string
+  relationUrlBase?: RelationUrlBaseResolver
 }
 
 export class FactCreatePipeline {
   private useRunToolBatchCreates = false
-  private relationUrlBase: string | undefined
+  private relationUrlBase: RelationUrlBaseResolver | undefined
 
   constructor(private deps: FactCreatePipelineDeps) {
     if (deps.useRunToolBatchCreates === true) {

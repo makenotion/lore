@@ -64,25 +64,25 @@
  * | -------------------------------- | ----------------------------- |
  * | `https://api-dev.notion.com`     | `https://dev.notion.so/`      |
  * | `https://api.notion.com` (default) | `https://www.notion.so/`    |
- * | unknown / custom                 | falls back to `www.notion.so` |
+ * | staging / unknown / custom       | unsupported for batch writes  |
  *
- * The mapping lives in `services.ts:deriveRelationUrlBase` and is
- * threaded through `FactService` to the converter via the
- * `createPagesViaRunTool` input. The converter accepts the base as
- * an optional parameter that defaults to `RELATION_URL_BASE_DEFAULT`
+ * Service initialization derives the base and threads it through
+ * `FactService` to the converter via the `createPagesViaRunTool`
+ * input. The converter accepts the base as an optional parameter
+ * that defaults to `RELATION_URL_BASE_DEFAULT`
  * (`https://www.notion.so/`) for tests that don't care about
  * environment coupling. **Production callers MUST pass the
  * derived base explicitly** — relying on the production default
- * against a dev workspace produces a 400 from the server. The
- * default exists only so unit tests of the converter (where the
- * URL host is incidental to the assertion being made) can omit
- * the parameter without a fixture-rebuild churn.
+ * against non-production workspaces produces a 400 from the server.
+ * The default exists only so unit tests of the converter (where the
+ * URL host is incidental to the assertion being made) can omit the
+ * parameter without fixture rebuild churn.
  */
 
 /**
  * Hardcoded production fallback used by tests that don't care about
- * environment coupling. Production callers MUST resolve the base
- * via `services.ts:deriveRelationUrlBase` and pass it explicitly.
+ * environment coupling. Production callers MUST resolve the base from
+ * the configured auth host and pass it explicitly.
  */
 export const RELATION_URL_BASE_DEFAULT = "https://www.notion.so/"
 
@@ -264,8 +264,7 @@ function extractTextArrayContent(value: unknown): string {
  * an internal vault confirmed that the server rejects relation URLs
  * whose host doesn't match the workspace environment with
  * `400 validation_error: Invalid page URL`. The base must be derived
- * from the configured auth host, NOT hardcoded —
- * `deriveRelationUrlBase` carries the mapping.
+ * from the configured auth host, NOT hardcoded.
  *
  * Idempotent and pure; no I/O.
  */

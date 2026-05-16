@@ -200,15 +200,52 @@ export function resolveRunToolBatchCreatesFlag(
  * | ------------------------------------ | ----------------------------- |
  * | `https://api-dev.notion.com`         | `https://dev.notion.so/`      |
  * | `https://api.notion.com` (default)   | `https://www.notion.so/`      |
- * | undefined / unknown                  | `https://www.notion.so/`      |
+ * | undefined                            | `https://www.notion.so/`      |
  *
- * The unknown-host fallback to `www.notion.so` matches the
- * production default — operators on bespoke configurations who
- * need a different mapping should override `auth.baseUrl` to
- * something this helper recognizes (or fall back to the per-input
- * REST `pages.create` path, which accepts plain page ids
- * regardless of host).
+ * Unknown hosts fail closed instead of falling back to production:
+ * RunTool validates relation URL hosts against the workspace
+ * domain, and a wrong base creates confusing validation errors.
+ * Operators on bespoke configurations should keep
+ * `LORE_USE_RUNTOOL_BATCH_CREATES=0` and use the per-input REST
+ * `pages.create` path, which accepts plain page ids regardless of
+ * host.
  */
+export function deriveRelationUrlBase(apiBaseUrl: string | undefined): string {
+  if (apiBaseUrl === undefined || apiBaseUrl === null) {
+    return "https://www.notion.so/"
+  }
+  const trimmedBaseUrl = apiBaseUrl.trim()
+  let host: string
+  try {
+    host = new URL(trimmedBaseUrl).hostname.toLowerCase()
+  } catch {
+    throw new Error(
+      `Unsupported Notion API host for RunTool relation URLs: ${trimmedBaseUrl}. ` +
+        "Supported hosts are api.notion.com, api.notion.so, " +
+        "api-dev.notion.com, and api.dev.notion.com."
+    )
+  }
+  if (host === "api.notion.com" || host === "api.notion.so") {
+    return "https://www.notion.so/"
+  }
+  if (host === "api-dev.notion.com" || host === "api.dev.notion.com") {
+    return "https://dev.notion.so/"
+  }
+  throw new Error(
+    `Unsupported Notion API host for RunTool relation URLs: ${host}. ` +
+      "Set LORE_USE_RUNTOOL_BATCH_CREATES=0 or use a supported " +
+      "production/dev API host."
+  )
+}
+
+function deriveRelationUrlBaseForRunToolBatchCreates(
+  apiBaseUrl: string | undefined,
+  enabled: boolean
+): string | undefined {
+  if (!enabled) return undefined
+  return deriveRelationUrlBase(apiBaseUrl)
+}
+
 /**
  * Read the bench-mode write-budget env vars and validate them.
  *
@@ -306,17 +343,6 @@ export function readWriteBudgetEnv(): {
     throw new Error(`LORE_MCP_WRITE_BUDGET must be a positive integer, got "${limitRaw}"`)
   }
   return { limit, stateFilePath: pathRaw }
-}
-
-export function deriveRelationUrlBase(apiBaseUrl: string | undefined): string {
-  if (apiBaseUrl === undefined || apiBaseUrl === null) {
-    return "https://www.notion.so/"
-  }
-  const lower = apiBaseUrl.toLowerCase()
-  if (lower.includes("api-dev.notion.com") || lower.includes("api.dev.notion")) {
-    return "https://dev.notion.so/"
-  }
-  return "https://www.notion.so/"
 }
 
 export function resolveMemoryScopeContext(): MemoryScopeContext {
@@ -515,6 +541,18 @@ export async function initServicesFromConfig(
   const auth = await resolveAuth(config, configRoot)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
   const authSnapshotRef = { current: toClientAuth(auth) }
+  const runToolBatchRelationUrlBase = deriveRelationUrlBaseForRunToolBatchCreates(
+    authSnapshotRef.current.baseUrl,
+    features.runTool.batchCreates
+  )
+  // The batch-create request body resolves this at body-read time. The
+  // auth-refreshing client can rebuild the inner SDK client and retry the
+  // same request object, so the relation URLs must be derived from the
+  // auth snapshot that owns that concrete dispatch.
+  const runToolBatchRelationUrlBaseResolver =
+    runToolBatchRelationUrlBase === undefined
+      ? undefined
+      : () => deriveRelationUrlBase(authSnapshotRef.current.baseUrl)
   const identityRef: { current?: AuthorIdentityResolver } = {}
   const rateLimitOptions = config.notion?.rateLimit ?? {}
   // Every downstream service shares the same rate-limited Proxy so fan-out
@@ -654,7 +692,7 @@ export async function initServicesFromConfig(
   })
   const facts = new FactService(client, db.facts, effectiveScopeCtx, {
     useRunToolBatchCreates: features.runTool.batchCreates,
-    relationUrlBase: deriveRelationUrlBase(auth.baseUrl),
+    relationUrlBase: runToolBatchRelationUrlBaseResolver,
   })
   // Decisions are backed by the Memories DB — same DatabaseRef, different
   // business logic (Kind = decision discriminator, supersession chains,
