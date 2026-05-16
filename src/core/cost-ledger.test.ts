@@ -22,6 +22,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   appendCostEvent,
   COST_LEDGER_SCHEMA_VERSION,
+  costLedgerShardPath,
   defaultTodayRange,
   estimateModelCost,
   eventsToCsv,
@@ -55,6 +56,26 @@ describe("cost ledger", () => {
     const dir = mkdtempSync(join(tmpdir(), "lore-cost-ledger-"))
     dirs.push(dir)
     return dir
+  }
+
+  function mcpEvent(timestamp: string, action: string): CostLedgerEvent {
+    return {
+      schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+      timestamp,
+      eventType: "mcp.invocation",
+      source: "host_agent",
+      status: "success",
+      tool: "lore-query",
+      action,
+      payload: payloadSummary("{}", "ok"),
+      notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+    }
+  }
+
+  function eventActions(rows: Array<{ event: CostLedgerEvent }>): string[] {
+    return rows.map((row) =>
+      row.event.eventType === "mcp.invocation" ? (row.event.action ?? "") : ""
+    )
   }
 
   function enabledCostTracking(
@@ -104,7 +125,7 @@ describe("cost ledger", () => {
     }
   }
 
-  it("is disabled by default and does not create a ledger file", async () => {
+  it("is disabled by default and does not create ledger files", async () => {
     const root = tempDir()
     const costTracking = resolveCostTracking({}, root)
 
@@ -122,7 +143,25 @@ describe("cost ledger", () => {
     expect(existsSync(join(root, ".local"))).toBe(false)
   })
 
-  it("resolves relative paths and writes private JSONL files", async () => {
+  it("does not create shard files when cost tracking is explicitly disabled", async () => {
+    const root = tempDir()
+    const costTracking = resolveCostTracking(
+      {
+        costTracking: {
+          enabled: false,
+          ledgerPath: "state/costs.jsonl",
+        },
+      },
+      root
+    )
+
+    await appendCostEvent(costTracking, mcpEvent(new Date().toISOString(), "disabled"))
+
+    expect(costTracking.enabled).toBe(false)
+    expect(existsSync(join(root, "state"))).toBe(false)
+  })
+
+  it("resolves relative paths and writes private per-process JSONL shard files", async () => {
     const root = tempDir()
     const costTracking = resolveCostTracking(
       {
@@ -148,8 +187,10 @@ describe("cost ledger", () => {
       outputs: { memoriesCreated: 1 },
     })
 
-    const ledgerStat = statSync(costTracking.ledgerPath)
+    const shardPath = costLedgerShardPath(costTracking.ledgerPath)
+    const ledgerStat = statSync(shardPath)
     const dirStat = statSync(join(root, "state"))
+    expect(existsSync(costTracking.ledgerPath)).toBe(false)
     expect(ledgerStat.mode & 0o777).toBe(0o600)
     expect(dirStat.mode & 0o777).toBe(0o700)
     const rows = await readLedgerEvents(costTracking)
@@ -161,6 +202,61 @@ describe("cost ledger", () => {
       outputs: { memoriesCreated: 1 },
     })
     expect(rows[0]!.line).not.toContain("Saved memory")
+  })
+
+  it("merges legacy ledger rows and multiple process shards on read", async () => {
+    const root = tempDir()
+    const costTracking = enabledCostTracking(root, {
+      ledgerPath: "state/costs.jsonl",
+    })
+    mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
+    writeFileSync(
+      costTracking.ledgerPath,
+      JSON.stringify(mcpEvent("2026-05-15T10:00:00.000Z", "legacy")) + "\n"
+    )
+    writeFileSync(
+      costLedgerShardPath(costTracking.ledgerPath, 101),
+      JSON.stringify(mcpEvent("2026-05-15T10:01:00.000Z", "shard-101")) + "\n"
+    )
+    writeFileSync(
+      costLedgerShardPath(costTracking.ledgerPath, 202),
+      JSON.stringify(mcpEvent("2026-05-15T10:02:00.000Z", "shard-202")) + "\n"
+    )
+
+    const rows = await readLedgerEvents(costTracking)
+
+    expect(eventActions(rows)).toEqual(["legacy", "shard-101", "shard-202"])
+  })
+
+  it("sorts merged ledger rows by timestamp with deterministic tie-breaking", async () => {
+    const root = tempDir()
+    const costTracking = enabledCostTracking(root, {
+      ledgerPath: "state/costs.jsonl",
+    })
+    const tiedTimestamp = "2026-05-15T10:00:00.000Z"
+    mkdirSync(dirname(costTracking.ledgerPath), { recursive: true })
+    writeFileSync(
+      costTracking.ledgerPath,
+      JSON.stringify(mcpEvent(tiedTimestamp, "legacy")) + "\n"
+    )
+    writeFileSync(
+      costLedgerShardPath(costTracking.ledgerPath, 202),
+      [
+        JSON.stringify(mcpEvent("2026-05-15T09:59:00.000Z", "first")),
+        JSON.stringify(mcpEvent(tiedTimestamp, "shard-202")),
+      ].join("\n") + "\n"
+    )
+    writeFileSync(
+      costLedgerShardPath(costTracking.ledgerPath, 101),
+      JSON.stringify(mcpEvent(tiedTimestamp, "shard-101")) + "\n"
+    )
+
+    const rows = await readLedgerEvents(costTracking)
+
+    expect(eventActions(rows)).toEqual(["first", "legacy", "shard-101", "shard-202"])
+    expect(eventsToCsv(rows.map((row) => row.event))).toMatch(
+      /first[\s\S]*legacy[\s\S]*shard-101[\s\S]*shard-202/
+    )
   })
 
   it("streams multiple ledger rows and preserves range filtering without readFile", async () => {

@@ -1,7 +1,7 @@
-import { mkdir, open, readFile } from "node:fs/promises"
+import { mkdir, open, readFile, readdir } from "node:fs/promises"
 import { createReadStream } from "node:fs"
 import { createInterface } from "node:readline"
-import { dirname, isAbsolute, relative, resolve } from "node:path"
+import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path"
 import { homedir } from "node:os"
 import { z } from "zod"
 import type { CostTrackingConfig, LoreConfig } from "../types.js"
@@ -293,14 +293,23 @@ export const emptyNotionSummary = (): CostNotionSummary => ({
   rateLimitBackoffs: 0,
 })
 
+export function costLedgerShardPath(
+  ledgerPath: string,
+  processId: number = process.pid
+): string {
+  const parsed = parse(ledgerPath)
+  return join(parsed.dir, `${parsed.name}.${processId}${parsed.ext}`)
+}
+
 export async function appendCostEvent(
   costTracking: ResolvedCostTracking | undefined,
   event: CostLedgerEvent
 ): Promise<void> {
   if (!costTracking?.enabled) return
+  const shardPath = costLedgerShardPath(costTracking.ledgerPath)
   try {
-    await mkdir(dirname(costTracking.ledgerPath), { recursive: true, mode: 0o700 })
-    const handle = await open(costTracking.ledgerPath, "a", 0o600)
+    await mkdir(dirname(shardPath), { recursive: true, mode: 0o700 })
+    const handle = await open(shardPath, "a", 0o600)
     try {
       await handle.write(`${JSON.stringify(event)}\n`)
     } finally {
@@ -819,6 +828,18 @@ export interface CostLedgerReadDiagnostics {
   malformedLineCount: number
 }
 
+interface CostLedgerSource {
+  path: string
+  sortKey: string
+}
+
+interface CostLedgerRow {
+  line: string
+  event: CostLedgerEvent
+  sourceIndex: number
+  lineNumber: number
+}
+
 export async function readLedgerEventsWithDiagnostics(
   costTracking: ResolvedCostTracking,
   range?: CostRange
@@ -826,38 +847,98 @@ export async function readLedgerEventsWithDiagnostics(
   if (!costTracking.enabled) {
     return { rows: [], malformedLineCount: 0 }
   }
-  const rows: Array<{ line: string; event: CostLedgerEvent }> = []
+  const rows: CostLedgerRow[] = []
   let malformedLineCount = 0
+  const sources = await costLedgerReadSources(costTracking.ledgerPath)
 
-  try {
-    const lines = createInterface({
-      input: createReadStream(costTracking.ledgerPath, { encoding: "utf8" }),
-      crlfDelay: Infinity,
-    })
+  for (const [sourceIndex, source] of sources.entries()) {
+    let lineNumber = 0
+    try {
+      const lines = createInterface({
+        input: createReadStream(source.path, { encoding: "utf8" }),
+        crlfDelay: Infinity,
+      })
 
-    for await (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        const event = parseCostLedgerEvent(JSON.parse(line))
-        if (event && (!range || eventInRange(event, range))) {
-          rows.push({ line: JSON.stringify(event), event })
+      for await (const line of lines) {
+        lineNumber += 1
+        if (!line.trim()) continue
+        try {
+          const event = parseCostLedgerEvent(JSON.parse(line))
+          if (event && (!range || eventInRange(event, range))) {
+            rows.push({
+              line: JSON.stringify(event),
+              event,
+              sourceIndex,
+              lineNumber,
+            })
+          }
+          if (!event) malformedLineCount += 1
+        } catch {
+          malformedLineCount += 1
         }
-        if (!event) malformedLineCount += 1
-      } catch {
-        malformedLineCount += 1
       }
+    } catch (err) {
+      if (!isFileNotFoundError(err)) throw err
     }
-  } catch (err) {
-    if (isFileNotFoundError(err)) return { rows: [], malformedLineCount: 0 }
-    throw err
   }
-  return { rows, malformedLineCount }
+
+  rows.sort(compareCostLedgerRows)
+  return {
+    rows: rows.map(({ line, event }) => ({ line, event })),
+    malformedLineCount,
+  }
 }
 
 export function formatMalformedLedgerWarning(malformedLineCount: number): string | null {
   if (malformedLineCount <= 0) return null
   const noun = malformedLineCount === 1 ? "line" : "lines"
   return `Warning: skipped ${malformedLineCount} malformed cost ledger ${noun}; only valid redacted rows were included.`
+}
+
+async function costLedgerReadSources(ledgerPath: string): Promise<CostLedgerSource[]> {
+  const parsed = parse(ledgerPath)
+  const sources: CostLedgerSource[] = [{ path: ledgerPath, sortKey: "" }]
+  let entries: string[]
+  try {
+    entries = (await readdir(parsed.dir, { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+  } catch (err) {
+    if (isFileNotFoundError(err)) return sources
+    throw err
+  }
+
+  const shardPattern = costLedgerShardFilenamePattern(ledgerPath)
+  for (const name of entries.filter((name) => shardPattern.test(name)).sort()) {
+    sources.push({ path: join(parsed.dir, name), sortKey: name })
+  }
+  return sources.sort(compareCostLedgerSources)
+}
+
+function compareCostLedgerSources(a: CostLedgerSource, b: CostLedgerSource): number {
+  if (a.sortKey === "") return b.sortKey === "" ? 0 : -1
+  if (b.sortKey === "") return 1
+  return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0
+}
+
+function costLedgerShardFilenamePattern(ledgerPath: string): RegExp {
+  const parsed = parse(ledgerPath)
+  return new RegExp(
+    `^${escapeRegExp(parsed.name)}\\.[1-9]\\d*${escapeRegExp(parsed.ext)}$`
+  )
+}
+
+function compareCostLedgerRows(a: CostLedgerRow, b: CostLedgerRow): number {
+  return (
+    Date.parse(a.event.timestamp) - Date.parse(b.event.timestamp) ||
+    a.sourceIndex - b.sourceIndex ||
+    a.lineNumber - b.lineNumber ||
+    a.line.localeCompare(b.line)
+  )
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function isFileNotFoundError(err: unknown): boolean {

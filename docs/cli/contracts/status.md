@@ -95,6 +95,8 @@ Cost tracking:
   `costTracking.enabled` is true. Disabled or omitted cost tracking is silent.
 - The section reads the local ledger only; it must not initialize any extra
   Notion clients beyond the status probes already running for the command.
+- The configured `costTracking.ledgerPath` is displayed as the ledger family
+  root; status reads that legacy root file plus matching per-process shards.
 - The line reports today's Lore-owned model spend, wake-up estimated tokens,
   MCP call count, and Notion writes. A month-to-date line appears only when the
   current month has ledger entries. Autosave and digest model spend is labeled

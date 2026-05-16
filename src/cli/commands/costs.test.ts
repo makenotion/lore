@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { COST_LEDGER_SCHEMA_VERSION, payloadSummary } from "../../core/cost-ledger.js"
+import {
+  COST_LEDGER_SCHEMA_VERSION,
+  costLedgerShardPath,
+  payloadSummary,
+} from "../../core/cost-ledger.js"
 import { trapProcessExit } from "../test-helpers.js"
 import { costsCommand } from "./costs.js"
 
@@ -81,6 +85,22 @@ costTracking:
         status: "success",
         tool: "lore-query",
         action: "search",
+        payload: payloadSummary("{}", "ok"),
+        notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
+      }) + "\n"
+    )
+  }
+
+  function mcpLedgerLine(timestamp: string, action: string): string {
+    return (
+      JSON.stringify({
+        schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+        timestamp,
+        eventType: "mcp.invocation",
+        source: "host_agent",
+        status: "success",
+        tool: "lore-query",
+        action,
         payload: payloadSummary("{}", "ok"),
         notion: { reads: 1, writes: 0, failures: 0, rateLimitBackoffs: 0 },
       }) + "\n"
@@ -266,6 +286,63 @@ costTracking:
     })
 
     expect(logSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(exitTrap.exitCodes).toEqual([])
+  })
+
+  it("summarizes legacy and process-shard ledger rows", async () => {
+    writeCostTrackingConfig()
+    const ledgerPath = join(dir, "state", "costs.jsonl")
+    const timestamp = new Date().toISOString()
+    writeFileSync(ledgerPath, mcpLedgerLine(timestamp, "legacy"))
+    writeFileSync(
+      costLedgerShardPath(ledgerPath, 101),
+      mcpLedgerLine(timestamp, "shard-101")
+    )
+    writeFileSync(
+      costLedgerShardPath(ledgerPath, 202),
+      mcpLedgerLine(timestamp, "shard-202")
+    )
+
+    await costsCommand.parseAsync(["summary"], { from: "user" })
+
+    const output = logSpy.mock.calls.flat().join("\n")
+    expect(output).toContain("MCP calls: 3 total")
+    expect(output).toContain("lore-query legacy: 1 success")
+    expect(output).toContain("lore-query shard-101: 1 success")
+    expect(output).toContain("lore-query shard-202: 1 success")
+    expect(exitTrap.exitCodes).toEqual([])
+  })
+
+  it("exports merged ledger rows in deterministic order", async () => {
+    writeCostTrackingConfig()
+    const ledgerPath = join(dir, "state", "costs.jsonl")
+    const tiedTimestamp = "2026-05-15T10:00:00.000Z"
+    writeFileSync(ledgerPath, mcpLedgerLine(tiedTimestamp, "legacy"))
+    writeFileSync(
+      costLedgerShardPath(ledgerPath, 202),
+      mcpLedgerLine("2026-05-15T09:59:00.000Z", "first") +
+        mcpLedgerLine(tiedTimestamp, "shard-202")
+    )
+    writeFileSync(
+      costLedgerShardPath(ledgerPath, 101),
+      mcpLedgerLine(tiedTimestamp, "shard-101")
+    )
+
+    await costsCommand.parseAsync(["export"], { from: "user" })
+
+    const exported = logSpy.mock.calls
+      .flat()
+      .join("\n")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { action: string })
+    expect(exported.map((event) => event.action)).toEqual([
+      "first",
+      "legacy",
+      "shard-101",
+      "shard-202",
+    ])
     expect(errorSpy).not.toHaveBeenCalled()
     expect(exitTrap.exitCodes).toEqual([])
   })

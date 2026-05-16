@@ -6,6 +6,11 @@
 does not initialize Notion services and must never require vault reachability to
 summarize or export existing local usage rows.
 
+- `costTracking.ledgerPath` is the ledger family root. Readers include the
+  legacy root file and same-directory per-process shard files derived from the
+  configured basename.
+- New cost events are appended to the current process shard, not the legacy
+  root file. Existing root-file rows are never migrated or rewritten.
 - `summary` defaults to the local calendar day `today`; `export` defaults to all
   ledger rows.
 - `--since` accepts only `Nh`, `Nd`, or `Nw` with a positive integer. `--month`
@@ -17,6 +22,8 @@ summarize or export existing local usage rows.
   When no rows match, JSONL export exits successfully and writes no stdout.
 - CSV export writes stable columns with missing values as empty cells. When no
   rows match, CSV export exits successfully and writes only the header row.
+- Summary and export rows are ordered by event timestamp across the merged
+  ledger family with deterministic tie-breaking for equal timestamps.
 - Malformed or schema-invalid non-blank ledger rows are skipped with a redacted
   warning that reports only the skipped-line count. Export warnings go to stderr
   so stdout stays parseable as JSONL or CSV.
