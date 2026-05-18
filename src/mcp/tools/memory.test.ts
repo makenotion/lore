@@ -3918,7 +3918,9 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // Stale `SENTRY-9999` fact is invalidated by id; `PR #1234` /
     // `#1234` stay live (still surfaced by the post-update text).
     expect(invalidate).toHaveBeenCalledTimes(1)
-    expect(invalidate).toHaveBeenCalledWith("fact-stale")
+    expect(invalidate).toHaveBeenCalledWith("fact-stale", {
+      sourceMemoryId: "mem-update-stale",
+    })
     // No fresh creates — every current-text entity is already
     // covered.
     expect(createWithDedup).not.toHaveBeenCalled()
@@ -3971,6 +3973,10 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(invalidate).toHaveBeenCalledTimes(2)
     const invalidatedIds = invalidate.mock.calls.map((c) => c[0])
     expect(invalidatedIds).toEqual(expect.arrayContaining(["fact-old-1", "fact-old-2"]))
+    expect(invalidate.mock.calls.map((c) => c[1])).toEqual([
+      { sourceMemoryId: "mem-update-strip-all" },
+      { sourceMemoryId: "mem-update-strip-all" },
+    ])
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(text).toMatch(/^Auto-mentions: 2 stale invalidated$/m)
   })
@@ -4029,6 +4035,10 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(invalidatedIds).toEqual(
       expect.arrayContaining(["fact-old-pr", "fact-old-hash"])
     )
+    expect(invalidate.mock.calls.map((c) => c[1])).toEqual([
+      { sourceMemoryId: "mem-update-rename" },
+      { sourceMemoryId: "mem-update-rename" },
+    ])
     // Fresh `PR #25800` fact emitted (and the `#25800` issue-hash
     // sibling, surfaced by the overlapping issue-hash pattern).
     const objects = createWithDedup.mock.calls.map(
@@ -4093,6 +4103,10 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(text).toContain("Updated memory:")
     // Both invalidates were attempted; one rejected, one resolved.
     expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate.mock.calls.map((c) => c[1])).toEqual([
+      { sourceMemoryId: "mem-update-invalidate-partial" },
+      { sourceMemoryId: "mem-update-invalidate-partial" },
+    ])
     // Fresh fact for `SENTRY-1234` still landed.
     const objects = createWithDedup.mock.calls.map(
       (c) => (c[0] as { object: string }).object
@@ -4102,6 +4116,54 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // off-by-one in the `staleInvalidatedCount` accumulator or a
     // future refactor that flips success/failure semantics.
     expect(text).toContain("1/2 stale invalidated attempted")
+    expect(text).toContain("1 stale mention invalidation failed")
+  })
+
+  it("surfaces a full stale invalidation failure without claiming a clean invalidate", async () => {
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-invalidate-full", {
+      title: "Generic refactor notes",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-stale-1", object: "PR #1234" },
+      { id: "fact-stale-2", object: "SENTRY-1234" },
+    ])
+    const createWithDedup = vi.fn()
+    const invalidate = vi.fn().mockRejectedValue(new Error("notion 503"))
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { ...makeFactsMock({ createWithDedup }), queryBySourceMemory, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-invalidate-full",
+      title: "Generic refactor notes",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("Updated memory:")
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate.mock.calls.map((c) => c[1])).toEqual([
+      { sourceMemoryId: "mem-update-invalidate-full" },
+      { sourceMemoryId: "mem-update-invalidate-full" },
+    ])
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(text).toContain("0/2 stale invalidated attempted")
+    expect(text).toContain("2 stale mention invalidations failed")
+    expect(text).not.toMatch(/^Auto-mentions: 2 stale invalidated$/m)
   })
 
   it("emits only for the candidates not already covered (mixed add + already-covered)", async () => {
@@ -10730,7 +10792,9 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
     } as never)
 
     // The existing fact under sess-OLD is invalidated.
-    expect(invalidate).toHaveBeenCalledWith("fact-old-scope")
+    expect(invalidate).toHaveBeenCalledWith("fact-old-scope", {
+      sourceMemoryId: "mem-rescope",
+    })
     // A new fact gets emitted under sess-NEW.
     expect(createWithDedup).toHaveBeenCalled()
     const reEmit = createWithDedup.mock.calls.find((c) => c[0].object === "PR #1234")

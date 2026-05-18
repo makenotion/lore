@@ -803,7 +803,7 @@ export async function handleUpdate(
             })
           )
         const invalidatePromises = staleFacts.map((fact) =>
-          services.facts.invalidate(fact.id).then(
+          services.facts.invalidate(fact.id, { sourceMemoryId: updated.id }).then(
             () => ({ kind: "invalidate" as const, ok: true }),
             (err: unknown) => {
               debugLogAutoFactFailure(
@@ -876,6 +876,14 @@ export async function handleUpdate(
         )
       }
       lines.push(`Auto-mentions: ${parts.join(", ")}`)
+      const staleInvalidationFailures = staleInvalidatedAttempted - staleInvalidatedCount
+      if (staleInvalidationFailures > 0) {
+        lines.push(
+          `Auto-mentions warning: ${staleInvalidationFailures} stale mention ` +
+            `invalidation${staleInvalidationFailures === 1 ? "" : "s"} failed; ` +
+            `stale mention facts may remain live.`
+        )
+      }
     }
 
     return {
