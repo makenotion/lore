@@ -23,6 +23,12 @@ export interface FactInvalidateOptions {
   sourceMemoryId?: string
 }
 
+export type FactInvalidateStatus = "invalidated" | "skipped-archived"
+
+export interface FactInvalidateResult {
+  status: FactInvalidateStatus
+}
+
 /**
  * Once-per-process stderr warning when a fact invalidate drops a missing
  * column on retry.
@@ -66,11 +72,17 @@ export class FactInvalidation {
     private readonly pageToFact: FactPageToFact
   ) {}
 
-  async invalidate(id: string, opts: FactInvalidateOptions = {}): Promise<void> {
+  async invalidate(
+    id: string,
+    opts: FactInvalidateOptions = {}
+  ): Promise<FactInvalidateResult> {
     return withEntityRelationLocks([id], () => this.invalidateLocked(id, opts))
   }
 
-  async invalidateLocked(id: string, opts: FactInvalidateOptions = {}): Promise<void> {
+  async invalidateLocked(
+    id: string,
+    opts: FactInvalidateOptions = {}
+  ): Promise<FactInvalidateResult> {
     const today = todayUtc()
     let page: PageObjectResponse | null = null
     try {
@@ -84,7 +96,7 @@ export class FactInvalidation {
     }
 
     if (page !== null && page.archived) {
-      return
+      return { status: "skipped-archived" }
     }
 
     let fact: Fact | null = null
@@ -139,7 +151,7 @@ export class FactInvalidation {
           page_id: id,
           properties: properties as UpdatePageParameters["properties"],
         })
-        return
+        return { status: "invalidated" }
       } catch (err) {
         if (!isMissingPropertyError(err)) throw err
         const missing = extractMissingPropertyName(err)
@@ -156,7 +168,7 @@ export class FactInvalidation {
             [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
           },
         })
-        return
+        return { status: "invalidated" }
       }
     }
 
@@ -167,5 +179,6 @@ export class FactInvalidation {
         [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
       },
     })
+    return { status: "invalidated" }
   }
 }

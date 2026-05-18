@@ -87,6 +87,8 @@ export {
 export type { CloseTaskOptions, CloseTaskResult } from "./core/task.js"
 export { FactService } from "./core/fact.js"
 export type {
+  FactInvalidateResult,
+  FactInvalidateStatus,
   FactEntityRepointPlan,
   FactEntityRepointResult,
   RepointEntityOptions,

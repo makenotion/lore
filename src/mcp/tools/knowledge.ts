@@ -32,6 +32,7 @@ import { writableFactPredicates } from "../../profile/index.js"
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  noopWrite?: boolean
   costOutputs?: CostOutputCounts
 }
 
@@ -351,19 +352,20 @@ export async function handleInvalidate(
   args: { factId: string; sourceMemoryId?: string }
 ): Promise<ToolResult> {
   try {
-    // Read first so we capture `sourceMemoryId` before the invalidate write —
+    // Read first so we capture `sourceMemoryId` before the invalidate write:
     // `pageToFact`'s historical-tracking-predicate filter races against
-    // `Valid Until` updates if the read happens after invalidation, and
-    // `FactService.invalidate` returns `void`. A `null` from `getById`
-    // can mean three things: the page came back partial (Notion `is_full_page`
-    // guard fails), the row is archived (`getById` returns
-    // null for archived rows so callers stay symmetric across "row missing"
-    // and "row archived"), or the row is one of the historical tracking
-    // predicates that `pageToFact` filters out. In all three cases there is
-    // no provenance link to penalize. The archived case ALSO short-circuits
-    // inside `FactService.invalidate` itself — no `Valid Until` write lands
-    // on archived rows.
-    const fact = await services.facts.getById(args.factId)
+    // `Valid Until` updates if the read happens after invalidation. This
+    // metadata read is advisory; the invalidate write remains the boundary
+    // that proves a missing or inaccessible row.
+    let fact: Awaited<ReturnType<typeof services.facts.getById>> = null
+    let factReadFailed = false
+    try {
+      fact = await services.facts.getById(args.factId)
+    } catch {
+      factReadFailed = true
+    }
+    const warnings: string[] = []
+    let invalidationSourceMemoryId: string | undefined
     // When the caller threads `sourceMemoryId`, that becomes
     // the `Invalidated By` relation: the memory that prompted the
     // invalidation. Distinct from the fact's existing `Source` link
@@ -379,7 +381,7 @@ export async function handleInvalidate(
     // pollutes the audit trail the `Invalidated By` column exists to
     // provide. Omit the second argument entirely when no provenance
     // is threaded so the single-arg call site stays byte-stable.
-    if (args.sourceMemoryId) {
+    if (args.sourceMemoryId && !factReadFailed) {
       let invalidatingProjectIds: string[]
       try {
         const invalidatingMemory = await services.memories.getPropertiesById(
@@ -422,11 +424,34 @@ export async function handleInvalidate(
           )
         )
       }
-      await services.facts.invalidate(args.factId, {
-        sourceMemoryId: args.sourceMemoryId,
-      })
-    } else {
-      await services.facts.invalidate(args.factId)
+      invalidationSourceMemoryId = args.sourceMemoryId
+    }
+
+    const invalidateResult = invalidationSourceMemoryId
+      ? await services.facts.invalidate(args.factId, {
+          sourceMemoryId: invalidationSourceMemoryId,
+        })
+      : await services.facts.invalidate(args.factId)
+
+    const status = invalidateResult?.status ?? "invalidated"
+    if (status === "skipped-archived") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Skipped fact ${args.factId}: row is archived`,
+          },
+        ],
+        noopWrite: true,
+      }
+    }
+
+    if (factReadFailed) {
+      warnings.push(
+        args.sourceMemoryId
+          ? "Fact metadata read failed before invalidation; sourceMemoryId audit link and supporting-memory confidence decrement were skipped."
+          : "Fact metadata read failed before invalidation; supporting-memory confidence decrement was skipped."
+      )
     }
 
     const sourceMemoryId = fact?.sourceMemoryId ?? null
@@ -450,8 +475,13 @@ export async function handleInvalidate(
       }
     }
 
+    const lines = [`Invalidated fact ${args.factId}`]
+    if (warnings.length > 0) {
+      lines.push(`Warnings: ${warnings.join("; ")}`)
+    }
+
     return {
-      content: [{ type: "text", text: `Invalidated fact ${args.factId}` }],
+      content: [{ type: "text", text: lines.join("\n") }],
       costOutputs: { factsUpdated: 1 },
     }
   } catch (err) {

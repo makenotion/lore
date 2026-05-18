@@ -377,7 +377,8 @@ describe("FactService.invalidate", () => {
     })
     const { client, updateSpy, retrieveSpy } = mkClient({ retrieve: factPage })
     const service = new FactService(client, DB)
-    await service.invalidate("f1")
+    const result = await service.invalidate("f1")
+    expect(result).toEqual({ status: "invalidated" })
     expect(retrieveSpy).toHaveBeenCalledTimes(1)
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const args = updateSpy.mock.calls[0][0]
@@ -444,7 +445,8 @@ describe("FactService.invalidate", () => {
     // pre-decrement value.
     const { client, updateSpy } = mkClient({ retrieve: new Error("transient 5xx") })
     const service = new FactService(client, DB)
-    await service.invalidate("f1")
+    const result = await service.invalidate("f1")
+    expect(result).toEqual({ status: "invalidated" })
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const args = updateSpy.mock.calls[0]?.[0] as {
       properties: Record<string, unknown>
@@ -454,6 +456,23 @@ describe("FactService.invalidate", () => {
       "Invalidated At": { date: { start: expect.any(String) } },
     })
     expect(args.properties).not.toHaveProperty("Confidence Score")
+  })
+
+  it("surfaces the write error when the advisory read fails and the row is missing", async () => {
+    const { client, updateSpy } = mkClient({ retrieve: new Error("retrieve 404") })
+    updateSpy.mockRejectedValueOnce(
+      Object.assign(new Error("write 404"), {
+        code: "object_not_found",
+        status: 404,
+      })
+    )
+    const service = new FactService(client, DB)
+
+    await expect(service.invalidate("missing-fact")).rejects.toThrow("write 404")
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ page_id: "missing-fact" })
+    )
   })
 
   it("short-circuits without any pages.update when the row is archived (issue #497)", async () => {
@@ -477,8 +496,9 @@ describe("FactService.invalidate", () => {
     const { client, updateSpy, retrieveSpy } = mkClient({ retrieve: archivedPage })
     const service = new FactService(client, DB)
 
-    await service.invalidate("f-archived")
+    const result = await service.invalidate("f-archived")
 
+    expect(result).toEqual({ status: "skipped-archived" })
     expect(retrieveSpy).toHaveBeenCalledTimes(1)
     expect(updateSpy).not.toHaveBeenCalled()
   })

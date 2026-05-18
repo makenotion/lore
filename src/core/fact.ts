@@ -13,7 +13,11 @@ import type {
 } from "@notionhq/client"
 import type { Fact, CreateFactInput, MemoryScopeContext, DatabaseRef } from "../types.js"
 import { FACT_PROPS } from "../notion/schema.js"
-import { FactInvalidation, type FactInvalidateOptions } from "./fact-invalidation.js"
+import {
+  FactInvalidation,
+  type FactInvalidateOptions,
+  type FactInvalidateResult,
+} from "./fact-invalidation.js"
 import { FactMaintenance } from "./fact-maintenance.js"
 import {
   runFactDedupBackfill,
@@ -47,6 +51,7 @@ export {
   classifyTailFallback,
 } from "./fact-create.js"
 export type { CreateFactResult, TailFallback } from "./fact-create.js"
+export type { FactInvalidateResult, FactInvalidateStatus } from "./fact-invalidation.js"
 export type {
   ListRecentOpts,
   QueryByEntityOpts,
@@ -645,15 +650,18 @@ export class FactService {
    *
    * Failure modes:
    * - `pages.retrieve` 5xx / 404: the catch routes to a `Valid Until`-only
-   *   write so an invalidate call never fails for a transient read
-   *   problem. The decrement is advisory; the invalidate is the
-   *   contract. Archived short-circuit is conservative — a row that
-   *   reads as not-archived (or fails to read) still gets the write.
+   *   write so an invalidate call never fails on the read alone. Missing
+   *   or inaccessible rows still fail at the `pages.update` boundary if
+   *   the write cannot land. The decrement is advisory; the invalidate is
+   *   the contract.
    * - `extractNumber` returns `null` for missing schema column: same
    *   path as a never-scored row, the decrement still runs against the
    *   seeded categorical.
    */
-  async invalidate(id: string, opts: FactInvalidateOptions = {}): Promise<void> {
+  async invalidate(
+    id: string,
+    opts: FactInvalidateOptions = {}
+  ): Promise<FactInvalidateResult> {
     return this.invalidation.invalidate(id, opts)
   }
 

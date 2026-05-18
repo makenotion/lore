@@ -1,5 +1,5 @@
 import { settleAll } from "./settle.js"
-import type { QueryFactsOpts } from "./fact.js"
+import type { FactInvalidateResult, QueryFactsOpts } from "./fact.js"
 import { computeSubjectKey } from "../notion/normalize.js"
 import { ACTIVE_DECISION_STATUSES, memoryScopeToInput } from "../types.js"
 import type { CreateFactInput, Decision, Fact, MemoryStatus } from "../types.js"
@@ -39,7 +39,7 @@ export interface DecisionGraphServices {
     queryByObject(object: string, opts?: QueryFactsOpts): Promise<Fact[]>
     queryBySourceMemory(sourceMemoryId: string, opts?: QueryFactsOpts): Promise<Fact[]>
     create(input: CreateFactInput): Promise<Fact>
-    invalidate(id: string): Promise<void>
+    invalidate(id: string): Promise<void | FactInvalidateResult>
   }
 }
 

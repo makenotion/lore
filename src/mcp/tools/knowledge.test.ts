@@ -3170,7 +3170,7 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
     opts: {
       fact?: Fact | null
       sourceMemory?: Memory
-      invalidateImpl?: () => Promise<void>
+      invalidateImpl?: () => Promise<unknown>
       decrementImpl?: (memory: Memory) => Promise<number>
       getPropertiesByIdImpl?: (id: string) => Promise<Memory>
     } = {}
@@ -3298,30 +3298,81 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
     expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
   })
 
-  it("archived row: getById returns null, decrement is skipped, response stays clean (issue #497)", async () => {
+  it("archived row: getById returns null, decrement is skipped, response reports the skip", async () => {
     // `FactService.getById` returns null for archived rows
     // alongside the partial-page and historical-tracking-predicate
     // null branches. At the handler boundary the contradiction-
     // decrement path correctly skips because `sourceMemoryId` is
-    // unavailable. The service-level archived short-circuit (pinned
-    // in fact-confidence.test.ts) guarantees no `Valid Until` write
-    // lands on the archived row itself; this test pins the
-    // handler-level half — `services.memories.decrementConfidence`
-    // is NOT invoked, and the user still sees a clean
-    // `Invalidated fact <id>` response.
+    // unavailable. The service-level archived short-circuit returns
+    // a skip status so the handler can avoid claiming a write landed.
     const mockServer = createMockServer()
-    const ctx = makeServices({ fact: null })
+    const ctx = makeServices({
+      fact: null,
+      invalidateImpl: async () => ({ status: "skipped-archived" }),
+    })
     registerKnowledgeTools(mockServer.server, ctx.services as never)
     const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
 
     const result = await invalidate({ factId: "fact-archived" } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    const payload = result as {
+      content: Array<{ text: string }>
+      isError?: boolean
+      noopWrite?: boolean
+      costOutputs?: unknown
+    }
 
     expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toBe("Invalidated fact fact-archived")
+    expect(payload.content[0].text).toBe("Skipped fact fact-archived: row is archived")
+    expect(payload.noopWrite).toBe(true)
+    expect(payload.costOutputs).toBeUndefined()
     expect(ctx.factsGetById).toHaveBeenCalledWith("fact-archived")
     expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-archived")
     expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
+    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
+  })
+
+  it("metadata read failure does not mask the invalidate write boundary", async () => {
+    const mockServer = createMockServer()
+    const ctx = makeServices({
+      invalidateImpl: async () => {
+        throw new Error("write 404")
+      },
+    })
+    ctx.factsGetById.mockRejectedValue(new Error("retrieve 404"))
+    registerKnowledgeTools(mockServer.server, ctx.services as never)
+    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await invalidate({ factId: "missing-fact" } as never)
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("write 404")
+    expect(payload.content[0].text).not.toContain("retrieve 404")
+    expect(ctx.factsInvalidate).toHaveBeenCalledWith("missing-fact")
+    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
+  })
+
+  it("skips sourceMemoryId precheck when metadata read failure prevents project precheck", async () => {
+    const mockServer = createMockServer()
+    const ctx = makeServices()
+    ctx.factsGetById.mockRejectedValue(new Error("retrieve 503"))
+    registerKnowledgeTools(mockServer.server, ctx.services as never)
+    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await invalidate({
+      factId: "fact-precheck-fail",
+      sourceMemoryId: "mem-source",
+    } as never)
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toContain("Invalidated fact fact-precheck-fail")
+    expect(payload.content[0].text).toContain("sourceMemoryId audit link")
+    expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
+    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-precheck-fail")
+    expect(ctx.factsInvalidate).not.toHaveBeenCalledWith("fact-precheck-fail", {
+      sourceMemoryId: "mem-source",
+    })
     expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
   })
 
