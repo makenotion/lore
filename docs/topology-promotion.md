@@ -128,11 +128,68 @@ archive one of the pair via `lore-memory action='archive'` in the
 target vault. Use `--dry-run` to confirm the audit block shape
 before committing.
 
-A future follow-up may add a `Promotion Source` rich_text column on
-the Memories DB (additive-only schema change) and key dedup against
-it; the current contract leaves that surface open rather than
-repurposing `Topic Key` and conflicting with the existing topic-key
-upsert chain.
+The accepted idempotency design is an additive Memories DB property
+named `Promotion Source Key`. It is a `rich_text` property populated
+only on rows created by cross-vault promotion. The key format is:
+
+```text
+v1:<normalized-source-vault-page-id>:<normalized-source-memory-page-id>
+```
+
+Both ids are normalized the same way as the same-vault guard: strip
+hyphens and lowercase. The source vault id is the primary vault page id
+from the promoting process, not the target vault id. The target vault
+itself scopes the lookup, so promoting the same source memory to two
+different targets still creates one row in each target.
+
+Implementation must probe the target Memories DB for exact
+`Promotion Source Key` equality before create. If one live row matches,
+promotion returns that row with outcome `already-promoted` and writes
+nothing. If no row matches, promotion creates a row with the key set
+and returns outcome `created`. Title, body, synopsis, status, reason,
+promoter, timestamp, or audit-block equality must never be used as the
+dedupe key: two distinct source memories can contain identical content,
+and legacy promoted rows can carry edited bodies after review.
+
+Schema/setup behavior:
+
+- New vault setup adds `Promotion Source Key` to the Memories DB.
+- `lore migrate` adds the property to the primary vault named by the
+  active config, as an add-only schema migration.
+- `lore promote` does not auto-migrate a promotion target. If the
+  target Memories DB is missing `Promotion Source Key`, it must fail
+  before create with setup guidance to run `lore migrate` against that
+  target vault.
+- Legacy promoted rows with an empty key are not deduped by title/body
+  fallback. A backfill that parses historical audit blocks would be a
+  separate explicit migration.
+
+CLI response contract after implementation:
+
+```text
+Promoted to Team: JWT auth pattern for service-to-service calls (awaiting review)
+  Target memory ID: 9876fedc4321
+  Outcome: created
+  Status: proposed
+  Promoter: Engineer Name
+  Reason: Generalizes pattern
+```
+
+```text
+Already promoted to Team: JWT auth pattern for service-to-service calls (awaiting review)
+  Target memory ID: 9876fedc4321
+  Outcome: already-promoted
+  Status: proposed
+  Promoter: Engineer Name
+```
+
+The MCP `lore-memory action='promote'` response mirrors the same
+created vs already-promoted wording. Its cost outputs report
+`memoriesCreated: 1` only for the created path; the already-promoted
+path returns the existing memory without incrementing created counts.
+`--dry-run` remains target-write-free and target-probe-free: it previews
+the audit block and resolved status, but it does not claim whether a
+matching target row already exists.
 
 ## Promoter identity
 
