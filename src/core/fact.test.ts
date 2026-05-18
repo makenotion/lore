@@ -496,7 +496,7 @@ describe("FactService.repointEntity", () => {
         results: [
           factPage({
             id: "fact-page-1",
-            subjectEntityId: "ent-loser",
+            subjectEntityIds: ["ent-other", "ent-loser"],
           }),
         ],
         has_more: true,
@@ -506,7 +506,7 @@ describe("FactService.repointEntity", () => {
         results: [
           factPage({
             id: "fact-page-2",
-            objectEntityId: "ent-loser",
+            objectEntityIds: ["ent-other", "ent-loser"],
           }),
         ],
         has_more: false,
