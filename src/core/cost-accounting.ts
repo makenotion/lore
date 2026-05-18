@@ -67,7 +67,7 @@ export function addCostOutputs(outputs: CostOutputCounts | undefined): void {
   const context = storage.getStore()
   if (!context) return
   for (const [key, value] of Object.entries(outputs)) {
-    if (typeof value !== "number" || value === 0) continue
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) continue
     const typedKey = key as keyof CostOutputCounts
     context.outputs[typedKey] = (context.outputs[typedKey] ?? 0) + value
   }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { recordNotionRead, recordNotionWrite } from "../core/cost-accounting.js"
 import { readLedgerEvents, resolveCostTracking } from "../core/cost-ledger.js"
 import type { LoreServices } from "../services.js"
+import type { DecisionSummary, Fact, Memory, TaskSummary } from "../types.js"
 import {
   installCostTrackingToolWrapper,
   runMcpInvocationWithCostTracking,
@@ -282,14 +283,36 @@ describe("MCP cost tracking", () => {
     expect(rows[0]!.event).not.toHaveProperty("sessionId")
   })
 
-  it("records wake-up rendered memory counts in ledger outputs", async () => {
+  it("records wake-up rendered row counts for every returned row type", async () => {
     const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
     dirs.push(root)
     const costTracking = resolveCostTracking(
       { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
       root
     )
-    const services = makeWakeUpServices(costTracking)
+    const services = makeWakeUpServices(costTracking, {
+      facts: [
+        makeFact({
+          id: "fact-1",
+          subject: "CostSubject",
+          predicate: "uses",
+          object: "CostObject",
+        }),
+      ],
+      proposedDecisions: [
+        makeDecisionSummary({
+          id: "decision-1",
+          title: "Cost decision",
+          status: "proposed",
+        }),
+      ],
+      tasks: [
+        makeTask({
+          id: "task-1",
+          title: "Cost task",
+        }),
+      ],
+    })
     const mockServer = createMockServer()
 
     installCostTrackingToolWrapper(mockServer.server, services)
@@ -301,6 +324,9 @@ describe("MCP cost tracking", () => {
     } as never)
 
     expect(extractText(result)).toContain("Wake-up cost fixture")
+    expect(extractText(result)).toContain("**CostSubject** uses **CostObject**")
+    expect(extractText(result)).toContain("Cost decision")
+    expect(extractText(result)).toContain("Cost task")
     const rows = await readLedgerEvents(costTracking)
     expect(rows).toHaveLength(1)
     expect(rows[0]!.event).toMatchObject({
@@ -308,7 +334,46 @@ describe("MCP cost tracking", () => {
       tool: "lore-context",
       action: "wake-up",
       status: "success",
-      outputs: { memoriesReturned: 1 },
+      outputs: {
+        memoriesReturned: 1,
+        factsReturned: 1,
+        decisionsReturned: 1,
+        tasksReturned: 1,
+      },
+    })
+  })
+
+  it("records explicit zero wake-up rendered row counts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "lore-mcp-cost-"))
+    dirs.push(root)
+    const costTracking = resolveCostTracking(
+      { costTracking: { enabled: true, ledgerPath: "ledger.jsonl" } },
+      root
+    )
+    const services = makeWakeUpServices(costTracking, { memories: [] })
+    const mockServer = createMockServer()
+
+    installCostTrackingToolWrapper(mockServer.server, services)
+    registerContextTools(mockServer.server, services)
+
+    const result = await mockServer.handler("lore-context")({
+      action: "wake-up",
+    } as never)
+
+    expect(extractText(result)).toContain("No memories found for this context.")
+    const rows = await readLedgerEvents(costTracking)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.event).toMatchObject({
+      eventType: "mcp.invocation",
+      tool: "lore-context",
+      action: "wake-up",
+      status: "success",
+      outputs: {
+        memoriesReturned: 0,
+        factsReturned: 0,
+        decisionsReturned: 0,
+        tasksReturned: 0,
+      },
     })
   })
 
@@ -388,10 +453,18 @@ function extractText(result: unknown): string {
   return (result as { content: Array<{ text: string }> }).content[0]!.text
 }
 
-function makeWakeUpServices(costTracking: LoreServices["costTracking"]): LoreServices {
-  const memory = {
-    id: "mem-1",
-    title: "Wake-up cost fixture",
+interface WakeUpCostFixtureOverrides {
+  memories?: Memory[]
+  facts?: Fact[]
+  proposedDecisions?: DecisionSummary[]
+  overdueDecisions?: DecisionSummary[]
+  tasks?: TaskSummary[]
+}
+
+function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
+  return {
+    id,
+    title: `Memory ${id}`,
     projectIds: ["project-1"],
     topicId: null,
     source: "manual",
@@ -411,7 +484,7 @@ function makeWakeUpServices(costTracking: LoreServices["costTracking"]): LoreSer
     agent: "",
     tags: [],
     keywords: "",
-    synopsis: "Rendered by wake-up.",
+    synopsis: "",
     session: "",
     content: "",
     taskState: null,
@@ -423,7 +496,65 @@ function makeWakeUpServices(costTracking: LoreServices["costTracking"]): LoreSer
     compareNotes: "",
     createdAt: "2026-05-16T00:00:00.000Z",
     updatedAt: "2026-05-16T00:00:00.000Z",
+    ...overrides,
   }
+}
+
+function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
+  return {
+    subject: "Subject",
+    predicate: "uses",
+    object: "Object",
+    projectIds: ["project-1"],
+    validFrom: null,
+    validUntil: null,
+    reviewBy: null,
+    sourceMemoryId: null,
+    confidence: "certain",
+    confidenceScore: null,
+    lastReferencedAt: null,
+    createdAt: "2026-05-16T00:00:00.000Z",
+    subjectEntityId: null,
+    objectEntityId: null,
+    ...overrides,
+  }
+}
+
+function makeDecisionSummary(
+  overrides: Partial<DecisionSummary> & { id: string }
+): DecisionSummary {
+  return makeMemory(overrides.id, {
+    kind: "decision",
+    status: "accepted",
+    decidedAt: "2026-05-16",
+    title: overrides.title ?? `Decision ${overrides.id}`,
+    ...overrides,
+  }) as unknown as DecisionSummary
+}
+
+function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
+  return makeMemory(overrides.id, {
+    kind: "task",
+    taskState: "open",
+    title: overrides.title ?? `Task ${overrides.id}`,
+    ...overrides,
+  }) as unknown as TaskSummary
+}
+
+function makeWakeUpServices(
+  costTracking: LoreServices["costTracking"],
+  overrides: WakeUpCostFixtureOverrides = {}
+): LoreServices {
+  const memories = overrides.memories ?? [
+    makeMemory("mem-1", {
+      title: "Wake-up cost fixture",
+      synopsis: "Rendered by wake-up.",
+    }),
+  ]
+  const facts = overrides.facts ?? []
+  const proposedDecisions = overrides.proposedDecisions ?? []
+  const overdueDecisions = overrides.overdueDecisions ?? []
+  const tasks = overrides.tasks ?? []
   return {
     costTracking,
     context: {
@@ -443,7 +574,7 @@ function makeWakeUpServices(costTracking: LoreServices["costTracking"]): LoreSer
         if (opts?.source === "digest" || opts?.status === "proposed") {
           return { items: [] }
         }
-        return { items: [memory] }
+        return { items: memories }
       }),
       search: vi.fn(async () => []),
       getTitleById: vi.fn(async () => null),
@@ -454,16 +585,29 @@ function makeWakeUpServices(costTracking: LoreServices["costTracking"]): LoreSer
       touchOnRead: vi.fn(async () => undefined),
     },
     facts: {
-      listRecent: vi.fn(async () => ({ items: [], hasMore: false })),
+      listRecent: vi.fn(async (opts?: { limit?: number }) => ({
+        items: facts.slice(0, opts?.limit),
+        hasMore: false,
+      })),
       touchOnRead: vi.fn(async () => undefined),
     },
     decisions: {
-      list: vi.fn(async () => ({ items: [] })),
-      queryOverdue: vi.fn(async () => []),
-      queryOverdueWindow: vi.fn(async () => ({ items: [], capped: false })),
+      list: vi.fn(async (opts?: { status?: string }) => ({
+        items: opts?.status === "proposed" ? proposedDecisions : [],
+      })),
+      queryOverdue: vi.fn(async () => overdueDecisions),
+      queryOverdueWindow: vi.fn(async () => ({
+        items: overdueDecisions,
+        capped: false,
+      })),
     },
     tasks: {
-      list: vi.fn(async () => ({ items: [] })),
+      list: vi.fn(async (opts?: { limit?: number }) => ({
+        items:
+          typeof opts?.limit === "number" && opts.limit >= 0
+            ? tasks.slice(0, opts.limit)
+            : tasks,
+      })),
     },
     scopeContext: {},
     upstreams: [],

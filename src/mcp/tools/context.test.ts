@@ -6,7 +6,7 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerContextTools, neutralizeLeadingBlockquote } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
-import { TransientProjectResolutionError } from "../../core/project-scope.js"
+import { LoreError } from "../../errors.js"
 import {
   backgroundFailureMarkerPath,
   recordBackgroundFailure,
@@ -154,6 +154,19 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
     updatedAt: "2026-04-20T00:00:00Z",
   }
   return { ...base, ...overrides }
+}
+
+class RetryableWakeUpLoadError extends LoreError<"transient-project-resolution"> {
+  readonly code = "wake_up_load_retry"
+  readonly retryable = true
+
+  constructor(pageId: string) {
+    super("transient-project-resolution", `Wake-up load failed for page ${pageId}`, {
+      names: ["Overloaded"],
+      scopeFields: "wake-up load",
+      causeMessage: `Notion rate limit for page ${pageId}`,
+    })
+  }
 }
 
 function filterAndSortTasks(tasks: TaskSummary[], opts: ListTasksOpts): TaskSummary[] {
@@ -567,33 +580,31 @@ function extractBackgroundStatus(text: string): Record<string, unknown> {
 
 describe("lore-wake-up — Part A: title-only by default", () => {
   it("preserves retryable LoreError metadata on wake-up failures", async () => {
+    const pageId = "abcdef0123456789abcdef0123456789"
     const mockServer = createMockServer()
-    const services = makeWakeServices({
-      findByName: async () => {
-        throw new TransientProjectResolutionError(
-          ["Overloaded"],
-          "projectName",
-          new Error("Notion rate limit")
-        )
-      },
+    const services = makeWakeServices()
+    services.memories.list = vi.fn(async () => {
+      throw new RetryableWakeUpLoadError(pageId)
     })
 
     registerContextTools(mockServer.server, services as never)
     const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({ projectName: "Overloaded" } as never)
+    const result = await wake({} as never)
 
     expect((result as { isError?: boolean }).isError).toBe(true)
-    const metadata = extractErrorMetadata(extractText(result))
+    const text = extractText(result)
+    const metadata = extractErrorMetadata(text)
     expect(metadata).toMatchObject({
       kind: "transient-project-resolution",
-      code: "transient_project_resolution",
+      code: "wake_up_load_retry",
       retryable: true,
       details: {
         names: ["Overloaded"],
-        scopeFields: "projectName",
-        causeMessage: "Notion rate limit",
+        scopeFields: "wake-up load",
+        causeMessage: "Notion rate limit for page <page-id>",
       },
     })
+    expect(text).not.toContain(pageId)
   })
 
   it("omits memory bodies from the default (non-expand) path", async () => {
