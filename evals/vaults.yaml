@@ -35,3 +35,6 @@ vaults:
     notes:
       - Access is controlled by Notion; the committed page id is not a bearer secret.
       - Operators still need dev Notion auth and explicit access to the vault.
+      - The recorded smoke validation covers the 4-scenario suite as of 2026-05-14;
+        later suite additions need a fresh live validation run before updating this
+        snapshot.

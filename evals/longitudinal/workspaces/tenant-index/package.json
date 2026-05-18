@@ -1,0 +1,7 @@
+{
+  "name": "lore-longitudinal-tenant-index",
+  "type": "module",
+  "scripts": {
+    "test": "node index-name.check.mjs"
+  }
+}

@@ -146,10 +146,12 @@ node dist/cli.js eval run --runner task evals/task-suites/longitudinal.yaml
 ```
 
 The initial seeded-vault validation recorded in the registry is a smoke run,
-not a statistically powered benchmark: it ran all 4 scenarios in the committed
+not a statistically powered benchmark: it ran the then-current 4-scenario
 longitudinal suite across both conditions (8 condition runs total). On
 2026-05-14, `no-memory` passed 3/4 scenarios, `lore-full-loop` passed 4/4
 scenarios, and the observed success-rate lift was +25 percentage points.
+Later suite additions need a fresh live run before they are counted in the
+registry's validation snapshot.
 
 Because the live sandbox vault state is not committed, runners against it are
 not deterministic the way fixture runs are; treat notion-mode CI as a coarser

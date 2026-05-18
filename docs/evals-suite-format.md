@@ -289,12 +289,15 @@ scenarios:
 ```
 
 The committed MVP suite lives at `evals/task-suites/longitudinal.yaml` and
-contains four smoke scenarios:
+contains seven smoke / pilot-growth scenarios:
 
 - `decision-continuity-result-boundary`
 - `failed-attempt-avoidance-esm-imports`
 - `follow-up-task-json-output`
 - `convention-continuity-cache-prefix`
+- `stale-superseded-export-format`
+- `project-scoped-context-index-prefix`
+- `migration-gotcha-page-id-key`
 
 Each scenario runs Phase A and Phase B in the same copied workspace, but each
 phase is a fresh agent process. Under `no-memory`, the runner does not write
@@ -307,13 +310,15 @@ B and injects the rendered wake-up bundle into the Phase B prompt.
 The JSON artifact records each condition run with `phases[]`, prompt ids,
 workspace source, verifier results, patch stats, elapsed time, Lore counts,
 expected context ids, surfaced context ids, harmful context ids, and cost fields
-when the adapter reports them. The summary reports pass rate per condition and a
-`lore-full-loop - no-memory` success-rate delta, plus the scenario ids where
-Lore lifted or harmed the outcome. Positive lift is useful evidence, but it is
-not a validity gate: a no-lift or harmful result means the harness found outcome
-data to inspect, not that the harness failed. The CLI exits non-zero when
-`lore-full-loop` has failing trials; `no-memory` baseline failures alone remain
-lift data.
+when the adapter reports them. A `lore-full-loop` use phase fails if wake-up
+surfaces a context id matching the scenario's harmful keywords and that id was
+not selected as expected context during formation. The summary reports pass
+rate per condition and a `lore-full-loop - no-memory` success-rate delta, plus
+the scenario ids where Lore lifted or harmed the outcome. Positive lift is
+useful evidence, but it is not a validity gate: a no-lift or harmful result
+means the harness found outcome data to inspect, not that the harness failed.
+The CLI exits non-zero when `lore-full-loop` has failing trials; `no-memory`
+baseline failures alone remain lift data.
 
 Run the dry path with mock adapters in unit tests:
 

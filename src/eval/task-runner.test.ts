@@ -13,6 +13,7 @@ import {
   isLongitudinalTaskArtifact,
   LongitudinalAdapterRefusedError,
   selectExpectedContextIds,
+  loadTaskEvalSuite,
   type LongitudinalAgentConfigServices,
   type LongitudinalLoreAdapter,
   runTaskEvalSuite,
@@ -689,6 +690,28 @@ scenarios:
     expect(fullLoop?.phases[1]?.patchStats.filesChanged).toBe(1)
   })
 
+  it("loads the committed longitudinal suite and fixture workspaces", async () => {
+    const loaded = await loadTaskEvalSuite("evals/task-suites/longitudinal.yaml")
+
+    if (!("longitudinal" in loaded.suite && loaded.suite.longitudinal === true)) {
+      throw new Error("expected committed longitudinal task suite")
+    }
+
+    expect(loaded.suite.scenarios.map((scenario) => scenario.id)).toEqual([
+      "decision-continuity-result-boundary",
+      "failed-attempt-avoidance-esm-imports",
+      "follow-up-task-json-output",
+      "convention-continuity-cache-prefix",
+      "stale-superseded-export-format",
+      "project-scoped-context-index-prefix",
+      "migration-gotcha-page-id-key",
+    ])
+
+    for (const scenario of loaded.suite.scenarios) {
+      expect(existsSync(join(loaded.root, scenario.workspace))).toBe(true)
+    }
+  })
+
   it("keeps primary longitudinal agents Lore-tool-free while mining has MCP config", async () => {
     const { suitePath } = await writeTaskSuite({
       workspace: { "status.js": "export function status() { return 'ok' }\n" },
@@ -902,6 +925,158 @@ scenarios:
       failureReason: "wake-up",
     })
     expect(usePhase?.failureMessage).toContain("wake-up prefetch exploded")
+  })
+
+  it("fails longitudinal use when wake-up surfaces harmful context", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-harmful-context
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: harmful-context
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Remember that Atlas uses atlas-prod and Beacon is unrelated.
+    phaseB:
+      prompt: Continue the Atlas helper using the prior session context.
+    expectedContext:
+      keywords: ["atlas-prod"]
+      harmfulKeywords: ["beacon-dev"]
+    verifiers:
+      - type: file-contents-match
+        path: status.js
+        pattern: status
+`,
+    })
+
+    const adapter = mockAdapter("codex", async () => successResult())
+    const loreAdapter: LongitudinalLoreAdapter = {
+      async createRun() {
+        return {
+          projectId: "project-1",
+          projectName: "Eval Sandbox/harmful-context",
+          async formContext() {
+            return {
+              projectId: "project-1",
+              projectName: "Eval Sandbox/harmful-context",
+              mining: null,
+              memoriesCreated: 2,
+              factsCreated: 0,
+              decisionsCreated: 0,
+              tasksCreated: 0,
+              createdContextIds: ["ctx-atlas", "ctx-beacon"],
+              expectedContextIds: ["ctx-atlas"],
+            }
+          },
+          async loadContext() {
+            return {
+              renderedContext:
+                "- ctx-atlas: Atlas uses atlas-prod.\n- ctx-beacon: Beacon uses beacon-dev.",
+              surfacedContextIds: ["ctx-atlas", "ctx-beacon"],
+              harmfulContextIds: ["ctx-beacon"],
+              failureMessage: null,
+            }
+          },
+          async cleanup() {},
+        }
+      },
+    }
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      longitudinalLoreAdapter: loreAdapter,
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    const result = artifact.results[0]!
+    expect(result.success).toBe(false)
+    expect(result.failureReason).toBe("expected-context")
+    expect(result.phases[1]?.failureMessage).toContain(
+      "Wake-up surfaced unexpected harmful context ids: ctx-beacon"
+    )
+  })
+
+  it("allows harmful keywords on expected longitudinal context ids", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-expected-harmful-keyword
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: expected-harmful-keyword
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Remember that service boundaries should not throw new Error.
+    phaseB:
+      prompt: Continue the helper using the prior session context.
+    expectedContext:
+      keywords: ["Result"]
+      harmfulKeywords: ["throw new Error"]
+    verifiers:
+      - type: file-contents-match
+        path: status.js
+        pattern: status
+`,
+    })
+
+    const adapter = mockAdapter("codex", async () => successResult())
+    const loreAdapter: LongitudinalLoreAdapter = {
+      async createRun() {
+        return {
+          projectId: "project-1",
+          projectName: "Eval Sandbox/expected-harmful-keyword",
+          async formContext() {
+            return {
+              projectId: "project-1",
+              projectName: "Eval Sandbox/expected-harmful-keyword",
+              mining: null,
+              memoriesCreated: 1,
+              factsCreated: 0,
+              decisionsCreated: 0,
+              tasksCreated: 0,
+              createdContextIds: ["ctx-result"],
+              expectedContextIds: ["ctx-result"],
+            }
+          },
+          async loadContext() {
+            return {
+              renderedContext:
+                "- ctx-result: Use Result helpers and do not throw new Error.",
+              surfacedContextIds: ["ctx-result"],
+              harmfulContextIds: ["ctx-result"],
+              failureMessage: null,
+            }
+          },
+          async cleanup() {},
+        }
+      },
+    }
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      longitudinalLoreAdapter: loreAdapter,
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(artifact.results[0]).toMatchObject({
+      success: true,
+      failureReason: null,
+    })
   })
 
   it("does not form or load Lore context after Phase A agent refusal", async () => {

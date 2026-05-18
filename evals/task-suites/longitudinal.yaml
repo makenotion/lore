@@ -3,9 +3,9 @@ runner: task
 longitudinal: true
 name: lore-longitudinal-minimal
 description: |
-  Minimal hook-native longitudinal software-task suite. Each scenario runs
-  Phase A and Phase B under no-memory and lore-full-loop. Real Codex runs
-  require LORE_EVAL_TASK_REAL=1; real Lore formation requires
+  Incremental hook-native longitudinal software-task suite. Each scenario
+  runs Phase A and Phase B under no-memory and lore-full-loop. Real Codex
+  runs require LORE_EVAL_TASK_REAL=1; real Lore formation requires
   LORE_EVAL_LONGITUDINAL_REAL=1 and LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT.
 
 conditions:
@@ -135,3 +135,134 @@ scenarios:
       - type: command
         command: npm
         args: ["test"]
+
+  - id: stale-superseded-export-format
+    agent: codex
+    workspace: ../longitudinal/workspaces/audit-export
+    phaseA:
+      promptId: stale-superseded-export-format-formation
+      prompt: |
+        Decide and capture the current audit export format for future
+        sessions. The old CSV export is superseded; the current format is
+        NDJSON (newline-delimited JSON), with exactly one JSON object per line
+        and no CSV header. Do not modify source files, create repo-local notes,
+        or write local assistant-memory files; state the current convention in
+        your final answer so the session transcript contains it.
+    phaseB:
+      promptId: stale-superseded-export-format-use
+      prompt: |
+        Implement `formatAuditEvents(events)` using the current audit export
+        format chosen in the previous session.
+    expectedContext:
+      description: Audit exports use NDJSON; the older CSV format is superseded.
+      keywords: ["NDJSON"]
+    verifiers:
+      - type: file-contents-match
+        path: export.js
+        pattern: 'export\s+function\s+formatAuditEvents'
+      - type: command
+        command: npm
+        args: ["test"]
+      - type: command
+        command: node
+        args:
+          - "-e"
+          - >-
+            import('./export.js').then(({ formatAuditEvents }) => { const
+            events = [{ id: 'evt-1', action: 'login', actor: 'ada' }, { id:
+            'evt-2', action: 'logout', actor: 'ada' }]; const expected =
+            events.map((event) => JSON.stringify(event)).join('\n'); const
+            actual = formatAuditEvents(events); if (actual !== expected) throw
+            new Error(`expected NDJSON ${expected}, got ${actual}`); if
+            (/^id,action,actor$/.test(actual.split('\n')[0] ?? '')) throw new
+            Error('must not output a CSV header'); })
+
+  - id: project-scoped-context-index-prefix
+    agent: codex
+    workspace: ../longitudinal/workspaces/tenant-index
+    phaseA:
+      promptId: project-scoped-context-index-prefix-formation
+      prompt: |
+        Decide and capture the project-scoped search index namespace for the
+        Atlas project. Future index names must use the exact prefix
+        `atlas-prod:kb-index:`. Also note that the unrelated Beacon project
+        uses `beacon-dev:kb-index:` and must not be used for Atlas work. Do not
+        modify source files, create repo-local notes, or write local
+        assistant-memory files; state both scoped conventions in your final
+        answer so the session transcript contains them.
+    phaseB:
+      promptId: project-scoped-context-index-prefix-use
+      prompt: |
+        Implement `indexName(kind)` using the Atlas project-specific prefix
+        chosen in the previous session.
+    expectedContext:
+      description: Atlas project search indexes use the exact prefix atlas-prod:kb-index:.
+      keywords: ["atlas-prod:kb-index:"]
+      harmfulKeywords: ["beacon-dev:kb-index:"]
+    verifiers:
+      - type: file-contents-match
+        path: index-name.js
+        pattern: 'export\s+function\s+indexName'
+      - type: file-contents-match
+        path: index-name.js
+        pattern: 'atlas-prod:kb-index:'
+      - type: file-contents-match
+        path: index-name.js
+        pattern: 'beacon-dev:kb-index:'
+        mode: forbid
+      - type: command
+        command: npm
+        args: ["test"]
+      - type: command
+        command: node
+        args:
+          - "-e"
+          - >-
+            import('./index-name.js').then(({ indexName }) => { const tickets =
+            indexName('tickets'); if (tickets !==
+            'atlas-prod:kb-index:tickets') throw new Error(`expected
+            atlas-prod:kb-index:tickets, got ${tickets}`); const articles =
+            indexName('articles'); if (articles !==
+            'atlas-prod:kb-index:articles') throw new Error(`expected
+            atlas-prod:kb-index:articles, got ${articles}`); if
+            (tickets.includes('beacon-dev:kb-index:')) throw new Error('used
+            Beacon prefix for Atlas index'); })
+
+  - id: migration-gotcha-page-id-key
+    agent: codex
+    workspace: ../longitudinal/workspaces/page-id-normalization
+    phaseA:
+      promptId: migration-gotcha-page-id-key-formation
+      prompt: |
+        Capture the repo-specific Notion migration gotcha for page-id
+        comparisons: comparison keys must be 32-character lowercase hex strings
+        with hyphens removed; display values may keep hyphens. Do not modify
+        source files, create repo-local notes, or write local assistant-memory
+        files; state the gotcha in your final answer so the session transcript
+        contains it.
+    phaseB:
+      promptId: migration-gotcha-page-id-key-use
+      prompt: |
+        Implement `pageIdKey(id)` using the page-id comparison-key convention
+        from the previous session.
+    expectedContext:
+      description: Page-id comparison keys are lowercase 32-character hex strings with hyphens removed.
+      keywords: ["lowercase", "hyphens"]
+    verifiers:
+      - type: file-contents-match
+        path: page-id.js
+        pattern: 'export\s+function\s+pageIdKey'
+      - type: command
+        command: npm
+        args: ["test"]
+      - type: command
+        command: node
+        args:
+          - "-e"
+          - >-
+            import('./page-id.js').then(({ pageIdKey }) => { const dashed =
+            '360B35E6-E67F-8156-AA0E-F3763246719D'; const compact =
+            '360b35e6e67f8156aa0ef3763246719d'; for (const input of [dashed,
+            compact, '360b35e6-e67f-8156-aa0e-f3763246719d']) { const actual =
+            pageIdKey(input); if (actual !== compact) throw new Error(`expected
+            ${compact}, got ${actual}`); } })

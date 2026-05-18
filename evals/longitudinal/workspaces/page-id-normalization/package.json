@@ -1,0 +1,7 @@
+{
+  "name": "lore-longitudinal-page-id-normalization",
+  "type": "module",
+  "scripts": {
+    "test": "node page-id.check.mjs"
+  }
+}

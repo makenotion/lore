@@ -349,6 +349,12 @@ async function runLongitudinalUsePhase(input: {
     input.condition !== "lore-full-loop" ||
     input.expectedContextIds.length === 0 ||
     input.expectedContextIds.some((id) => input.wakeUp.surfacedContextIds.includes(id))
+  const unexpectedHarmfulContextIds =
+    input.condition === "lore-full-loop"
+      ? input.wakeUp.harmfulContextIds.filter(
+          (id) => !input.expectedContextIds.includes(id)
+        )
+      : []
   const agentSucceeded = agentRun.exitCode === 0 && !agentRun.timedOut
   const verifierSucceeded = verifierResults.every((r) => r.passed)
   let failureReason: LongitudinalFailureReason | null = null
@@ -362,6 +368,11 @@ async function runLongitudinalUsePhase(input: {
       .filter((r) => !r.passed)
       .map((r) => r.message)
       .join("; ")
+  } else if (unexpectedHarmfulContextIds.length > 0) {
+    failureReason = "expected-context"
+    failureMessage = `Wake-up surfaced unexpected harmful context ids: ${unexpectedHarmfulContextIds.join(
+      ", "
+    )}.`
   } else if (!expectedSurfaced) {
     failureReason = "expected-context"
     failureMessage =

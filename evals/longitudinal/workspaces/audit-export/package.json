@@ -1,0 +1,7 @@
+{
+  "name": "lore-longitudinal-audit-export",
+  "type": "module",
+  "scripts": {
+    "test": "node export.check.mjs"
+  }
+}
