@@ -40,32 +40,44 @@ Pattern for future deprecation cycles:
 
 ## Server Version History
 
-The lore version is reported in four places that **must move together**:
+The lore version is reported in package metadata and three runtime-observed
+surfaces that **must move together**:
 
 1. `package.json#version` — what `npm`, dependency consumers, and `npm publish` see.
-2. The `version` string passed to `new McpServer({ name, version }, ...)` in
+2. `package-lock.json#version` and `package-lock.json#packages[""].version` —
+   what npm lockfile consumers see for the root package.
+3. The `version` string passed to `new McpServer({ name, version }, ...)` in
    `src/mcp/server.ts` — what every connected MCP client sees on the protocol handshake.
-3. The `.version(...)` argument in `src/cli/index.ts` — what `lore --version`
+4. The `.version(...)` argument in `src/cli/index.ts` — what `lore --version`
    reports to humans on the command line.
-4. The `USER_AGENT` constant in `src/notion/client.ts` — the `User-Agent` header
+5. The `USER_AGENT` constant in `src/notion/client.ts` — the `User-Agent` header
    sent on every Notion API request, used by Notion's API analytics to attribute
    lore traffic.
 
 These are intentionally separate string literals (no runtime
 `import` of `package.json`, no generated `version.ts`) so the build has
-zero JSON-resolution wiring. The cost is that drift is silent: a bump in
-one file will not fail the build or any test. Treat them as a paired
-release-checklist item — when bumping the version for an agent-observable
-change (new tool, removed alias, default-behavior flip), update all four
-files in the same commit and add a row to the historical-bumps table
-below so the table doesn't go stale.
-
-A vitest assertion that reads each file, parses the version literal, and
-asserts equality was considered and deferred — release-checklist
-discipline suffices at the current bump cadence. Revisit if a future
-change introduces a `version.ts` source of truth or if the cadence picks up.
+zero JSON-resolution wiring. The cost is that drift needs a dedicated guard:
+`npm run version:check`, CI, and the staged pre-commit hook parse these sources
+and fail if they diverge. When bumping the version for an agent-observable
+change (new tool, removed alias, default-behavior flip), update all five
+sources in the same commit and add a historical note below so the release
+evidence doesn't go stale.
 
 Historical bumps and what they signalled:
+
+Latest historical note:
+
+- `0.15.0` (2026-05-18) prepares the non-breaking CLI, MCP, task, promotion,
+  cost-ledger, documentation, and hardening release. New agent-observable
+  surfaces include top-level memory / decision / ask CLI commands,
+  `lore doctor`, MCP action help resources, task project membership in list JSON,
+  bulk task close, task close reasons, opt-in cost accounting, MCP read-output
+  counts, and `lore search --json`. Behavior hardening includes idempotent
+  promotion by source key, stricter setup and input validation, broader redaction
+  of diagnostic/error surfaces, safer migration dry runs, and more explicit fact
+  invalidation outcomes. No breaking CLI, MCP, package, or vault-schema contract
+  changes; the package, lockfile, MCP handshake, CLI version, and Notion
+  `User-Agent` literals move together under the version-sync guard.
 
 These entries preserve behavior at the time of each release. The current
 `.lore.yaml` policy is local-only: it remains gitignored, any staged copy is

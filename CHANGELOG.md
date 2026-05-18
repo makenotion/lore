@@ -11,8 +11,47 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-18
+
+### Added
+
+- Added top-level CLI workflows for memories, decisions, and ask-style recall,
+  plus `lore doctor` setup diagnostics and MCP action help resources for
+  self-service operator recovery.
+- Added task workflow affordances: task list JSON now includes project
+  membership, tasks can be bulk-closed, and close reasons are tracked for
+  review workflows.
+- Added opt-in cost ledger accounting with MCP read-output counts, JSONL
+  streaming, sub-cent display, append-failure status visibility, pricing
+  override validation, and prompt-estimate labeling for background model costs.
+- Added `--json` output to `lore search` for automation-friendly retrieval.
+
+### Changed
+
+- Promotion is idempotent by source key, so repeated promotion attempts reuse
+  the intended upstream copy instead of creating duplicate promoted memories.
+- Documentation was reorganized into focused CLI, hook, eval, Notion SDK,
+  topology, retrieval, and auth contracts, with shipped reference docs refreshed
+  for the current public surface.
+- The release process now has an explicit version-sync guard covering package,
+  lockfile, MCP handshake, CLI, and Notion `User-Agent` literals.
+
 ### Fixed
 
+- Hardened install and auth setup paths by validating resolved Notion base URLs,
+  trimming install help descriptions, and clarifying shared-vault onboarding.
+- Improved task and migration safety by rejecting pointer-only task subjects,
+  honoring dry-run in migrate runners, validating blank project flags before
+  service initialization, and validating cleanup orphan age parsing.
+- Improved error handling and redaction for MCP page IDs, bearer tokens,
+  startup diagnostics, RunTool fallback codes, unsupported RunTool relation URL
+  hosts, wake-up metadata preservation, and near-duplicate hydration failures.
+- Improved fact and entity maintenance by preserving multi-valued fact entity
+  repoints, serializing entity relation union writes, surfacing fact
+  invalidation skip outcomes, recording stale mention invalidation provenance,
+  and resetting duplicate warning state in fact creation.
+- Hardened hook state file permissions, bounded autosave learning lock
+  acquisition, and preserved zero-cost output counts for wake-up.
 - Clarified that the current `.lore.yaml` policy is local-only: the file stays
   gitignored, the guard rejects any staged copy, and shared `vault.pageId` /
   `auth.workspaceId` values should be distributed through onboarding docs rather
@@ -1047,7 +1086,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/makenotion/lore/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/makenotion/lore/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/makenotion/lore/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/makenotion/lore/compare/v0.12.0...v0.13.0
