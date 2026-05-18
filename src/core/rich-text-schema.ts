@@ -40,6 +40,7 @@ type RichTextMetadataField =
   | "blockedBy"
   | "entity"
   | "topicKey"
+  | "promotionSourceKey"
 
 const richTextMetadataFieldsSchema = z
   .object({
@@ -53,6 +54,7 @@ const richTextMetadataFieldsSchema = z
     blockedBy: richTextPropertySchema("blockedBy").optional(),
     entity: richTextPropertySchema("entity").optional(),
     topicKey: richTextPropertySchema("topicKey").optional(),
+    promotionSourceKey: richTextPropertySchema("promotionSourceKey").optional(),
   })
   .passthrough()
 
@@ -83,9 +85,9 @@ function formatRichTextMetadataIssue(issue: z.ZodIssue): string {
 }
 
 /**
- * Validate raw metadata text before any HTML-entity decode pass. This mirrors
- * the MCP boundary behavior: encoded text does not get to exceed the cap and
- * then shrink under it during decoding.
+ * Validate raw metadata text before any HTML-entity decode pass. For
+ * agent-facing fields this mirrors the MCP boundary behavior: encoded text
+ * does not get to exceed the cap and then shrink under it during decoding.
  */
 export function validateRichTextMetadataFields(
   input: Partial<Record<RichTextMetadataField, string | undefined>>,

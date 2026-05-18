@@ -147,6 +147,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     revisionCount: extractNumber(props[MEMORY_PROPS.REVISION_COUNT]) ?? 1,
     comparedWith: extractRelationIds(props[MEMORY_PROPS.COMPARED_WITH]),
     compareNotes: extractRichText(props[MEMORY_PROPS.COMPARE_NOTES]),
+    promotionSourceKey: extractRichText(props[MEMORY_PROPS.PROMOTION_SOURCE_KEY]),
     scope: extractMemoryScope(props),
     pinned: extractMemoryPinned(props),
   }

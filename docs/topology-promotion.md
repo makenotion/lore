@@ -118,19 +118,11 @@ block claimed primary-vault provenance.
 
 ## Idempotency posture
 
-`lore promote` is **not idempotent**. A second run with the same
-`<memoryId>` and `--to <name>` creates a second target-vault row with
-a fresh audit block, distinct from the first. The cross-vault link
-lives in body text/url metadata rather than in a Notion relation, so
-the helper has no read-side dedup key to probe against the target
-before writing. Operators who land a duplicate via re-run should
-archive one of the pair via `lore-memory action='archive'` in the
-target vault. Use `--dry-run` to confirm the audit block shape
-before committing.
-
-The accepted idempotency design is an additive Memories DB property
-named `Promotion Source Key`. It is a `rich_text` property populated
-only on rows created by cross-vault promotion. The key format is:
+`lore promote` is idempotent for a given source vault, source memory,
+and target vault. Promoted target rows carry an additive Memories DB
+property named `Promotion Source Key`. It is a `rich_text` property
+populated only on rows created by cross-vault promotion. The key format
+is:
 
 ```text
 v1:<normalized-source-vault-page-id>:<normalized-source-memory-page-id>
@@ -142,12 +134,12 @@ from the promoting process, not the target vault id. The target vault
 itself scopes the lookup, so promoting the same source memory to two
 different targets still creates one row in each target.
 
-Implementation must probe the target Memories DB for exact
+The apply path probes the target Memories DB for exact
 `Promotion Source Key` equality before create. If one live row matches,
 promotion returns that row with outcome `already-promoted` and writes
 nothing. If no row matches, promotion creates a row with the key set
 and returns outcome `created`. Title, body, synopsis, status, reason,
-promoter, timestamp, or audit-block equality must never be used as the
+promoter, timestamp, or audit-block equality are never used as the
 dedupe key: two distinct source memories can contain identical content,
 and legacy promoted rows can carry edited bodies after review.
 

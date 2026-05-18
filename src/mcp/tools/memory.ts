@@ -53,7 +53,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Notes and tasks return null.\n" +
         "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n" +
         "- `action: 'approve'` / `'reject'` — inbox-review a `Status: proposed` memory (#281); flips Status and appends a Reviewed audit block.\n" +
-        "- `action: 'promote'` — copy a memory into a configured `promotionTargets` entry with origin audit block; `requireReview` targets land as `Status: proposed`. See docs/topology.md#promotion.\n\n" +
+        "- `action: 'promote'` — copy to a `promotionTargets` entry with origin audit; review-required creates land as `Status: proposed`; reruns reuse by `Promotion Source Key`. See docs/topology-promotion.md.\n\n" +
         "For pinned context blocks (always-visible governing memory rendered in wake-up before relevance-ranked sections), use `lore-pinned`.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",

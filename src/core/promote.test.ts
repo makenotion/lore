@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import type { Client } from "@notionhq/client"
+import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   PROMOTION_REASON_MAX_LEN,
   buildPromotionAuditBlock,
@@ -9,6 +9,7 @@ import {
 import { MemoryService } from "./memory.js"
 import type { Memory, Vault } from "../types.js"
 import type { PromotionTargetTopologyRef } from "./topology.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 
 // Stub the SDK-touching vault preflight (`verifyVaultDatabases`) so the
 // target vault under test reports a deterministic schema without making
@@ -95,7 +96,11 @@ function makeSourceMemory(overrides: Partial<Memory> = {}): Memory {
 interface PromotionHarness {
   client: Client
   createSpy: ReturnType<typeof vi.fn>
+  updateSpy: ReturnType<typeof vi.fn>
   updateMarkdownSpy: ReturnType<typeof vi.fn>
+  retrieveMarkdownSpy: ReturnType<typeof vi.fn>
+  retrieveDataSourceSpy: ReturnType<typeof vi.fn>
+  queryDataSourceSpy: ReturnType<typeof vi.fn>
   memories: MemoryService
 }
 
@@ -103,6 +108,10 @@ function makePromotionHarness(
   source: Memory,
   options: {
     getPropertiesByIdImpl?: (id: string) => Promise<Memory>
+    dataSourceProperties?: Record<string, unknown>
+    queryDataSourceImpl?: (args: unknown) => Promise<unknown>
+    retrieveMarkdownImpl?: (args: { page_id: string }) => Promise<{ markdown: string }>
+    updateImpl?: (args: unknown) => Promise<unknown>
   } = {}
 ): PromotionHarness {
   const createSpy = vi.fn(
@@ -117,11 +126,38 @@ function makePromotionHarness(
       url: "",
     })
   )
+  const updateSpy = vi.fn(options.updateImpl ?? (async () => ({})))
   const updateMarkdownSpy = vi.fn(async () => ({}))
+  const retrieveMarkdownSpy = vi.fn(
+    options.retrieveMarkdownImpl ??
+      (async () => ({ markdown: "## Promoted from Primary\n\nPromoted body." }))
+  )
+  const retrieveDataSourceSpy = vi.fn(async () => ({
+    properties: options.dataSourceProperties ?? {
+      [MEMORY_PROPS.PROMOTION_SOURCE_KEY]: {
+        type: "rich_text",
+        rich_text: {},
+      },
+    },
+  }))
+  const queryDataSourceSpy = vi.fn(
+    options.queryDataSourceImpl ??
+      (async () => ({
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      }))
+  )
   const client = {
     pages: {
       create: createSpy,
+      update: updateSpy,
       updateMarkdown: updateMarkdownSpy,
+      retrieveMarkdown: retrieveMarkdownSpy,
+    },
+    dataSources: {
+      retrieve: retrieveDataSourceSpy,
+      query: queryDataSourceSpy,
     },
   } as unknown as Client
   const defaultGetProps = async (id: string) => {
@@ -142,7 +178,57 @@ function makePromotionHarness(
     })),
   } as unknown as MemoryService
 
-  return { client, createSpy, updateMarkdownSpy, memories }
+  return {
+    client,
+    createSpy,
+    updateSpy,
+    updateMarkdownSpy,
+    retrieveMarkdownSpy,
+    retrieveDataSourceSpy,
+    queryDataSourceSpy,
+    memories,
+  }
+}
+
+function makeTargetMemoryPage(
+  overrides: Partial<Memory> & { id: string; title: string }
+): PageObjectResponse {
+  const status = overrides.status ?? "proposed"
+  return {
+    object: "page",
+    id: overrides.id,
+    created_time: overrides.createdAt ?? FIXED_NOW.toISOString(),
+    last_edited_time: overrides.updatedAt ?? FIXED_NOW.toISOString(),
+    archived: false,
+    parent: { type: "database_id", database_id: "target-vault-mem-db" },
+    url: "",
+    properties: {
+      [MEMORY_PROPS.TITLE]: {
+        type: "title",
+        title: [{ plain_text: overrides.title }],
+      },
+      [MEMORY_PROPS.SOURCE]: {
+        type: "select",
+        select: { name: overrides.source ?? "manual" },
+      },
+      [MEMORY_PROPS.KIND]: {
+        type: "select",
+        select: { name: overrides.kind ?? "note" },
+      },
+      [MEMORY_PROPS.STATUS]: {
+        type: "select",
+        select: { name: status },
+      },
+      [MEMORY_PROPS.CONFIDENCE]: {
+        type: "select",
+        select: { name: overrides.confidence ?? "likely" },
+      },
+      [MEMORY_PROPS.PROMOTION_SOURCE_KEY]: {
+        type: "rich_text",
+        rich_text: [{ plain_text: overrides.promotionSourceKey ?? "" }],
+      },
+    } as unknown as PageObjectResponse["properties"],
+  } as PageObjectResponse
 }
 
 function makeTarget(
@@ -239,8 +325,14 @@ describe("buildPromotionAuditBlock", () => {
 describe("promoteMemory", () => {
   it("creates the promoted memory in the target vault with origin audit block", async () => {
     const source = makeSourceMemory()
-    const { client, createSpy, updateMarkdownSpy, memories } =
-      makePromotionHarness(source)
+    const {
+      client,
+      createSpy,
+      updateSpy,
+      updateMarkdownSpy,
+      queryDataSourceSpy,
+      memories,
+    } = makePromotionHarness(source)
 
     const result = await promoteMemory(
       {
@@ -258,6 +350,23 @@ describe("promoteMemory", () => {
       }
     )
 
+    expect(queryDataSourceSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data_source_id: "target-vault-mem-ds",
+        filter: {
+          and: expect.arrayContaining([
+            {
+              property: "Promotion Source Key",
+              rich_text: { equals: "v1:primaryvault:sourcemem1" },
+            },
+            {
+              property: "Keywords",
+              rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+            },
+          ]),
+        },
+      })
+    )
     expect(createSpy).toHaveBeenCalledTimes(1)
     const createArgs = createSpy.mock.calls[0]![0]
     expect(createArgs.parent).toEqual({
@@ -272,6 +381,13 @@ describe("promoteMemory", () => {
       >
     ).Title.title
     expect(titleRich[0]?.text.content).toBe(source.title)
+    const promotionSourceKey = (
+      createArgs.properties as Record<
+        string,
+        { rich_text: Array<{ text: { content: string } }> }
+      >
+    )["Promotion Source Key"].rich_text
+    expect(promotionSourceKey[0]?.text.content).toBe("v1:primaryvault:sourcemem1")
 
     // Body write happened with the audit block prepended.
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
@@ -289,8 +405,178 @@ describe("promoteMemory", () => {
     expect(bodyArgs.insert_content.content).toContain("- **Promoter:** Engineer Name")
     expect(bodyArgs.insert_content.content).toContain(source.content)
 
+    expect(updateSpy).not.toHaveBeenCalled()
+
     expect(result.targetVaultLabel).toBe("Team")
+    expect(result.outcome).toBe("created")
     expect(result.status).toBe("accepted")
+  })
+
+  it("reuses an existing target row with the same promotion source key", async () => {
+    const source = makeSourceMemory({
+      id: "ABC12345-6789-4DEF-8123-456789012345",
+    })
+    const existing = makeTargetMemoryPage({
+      id: "promoted-existing",
+      title: "Already promoted title",
+      status: "accepted",
+      promotionSourceKey:
+        "v1:abc1234567894def8123456789012345:abc1234567894def8123456789012345",
+    })
+    const {
+      client,
+      createSpy,
+      updateSpy,
+      updateMarkdownSpy,
+      queryDataSourceSpy,
+      memories,
+    } = makePromotionHarness(source, {
+      queryDataSourceImpl: async () => ({
+        results: [existing],
+        has_more: false,
+        next_cursor: null,
+      }),
+    })
+
+    const result = await promoteMemory(
+      {
+        client,
+        memories,
+        primaryVaultPageId: "abc12345-6789-4def-8123-456789012345",
+        primaryVaultLabel: "Primary",
+      },
+      {
+        sourceMemoryId: source.id,
+        target: makeTarget(),
+        promoter: "Engineer Name",
+        now: FIXED_NOW,
+      }
+    )
+
+    expect(queryDataSourceSpy).toHaveBeenCalledTimes(1)
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(result.outcome).toBe("already-promoted")
+    expect(result.promoted.id).toBe("promoted-existing")
+    expect(result.status).toBe("accepted")
+  })
+
+  it("does not reuse a keyed properties-only orphan after body-write cleanup fails", async () => {
+    const source = makeSourceMemory()
+    const keyedOrphan = makeTargetMemoryPage({
+      id: "promoted-orphan",
+      title: "Properties-only orphan",
+      promotionSourceKey: "v1:primaryvault:sourcemem1",
+    })
+    const {
+      client,
+      createSpy,
+      updateSpy,
+      updateMarkdownSpy,
+      retrieveMarkdownSpy,
+      memories,
+    } = makePromotionHarness(source, {
+      queryDataSourceImpl: async () => ({
+        results: [keyedOrphan],
+        has_more: false,
+        next_cursor: null,
+      }),
+      retrieveMarkdownImpl: async ({ page_id }) => ({
+        markdown:
+          page_id === "promoted-orphan"
+            ? ""
+            : "## Promoted from Primary\n\nCompleted body.",
+      }),
+      updateImpl: async (args) => {
+        if ((args as { archived?: boolean }).archived === true) {
+          throw new Error("archive failed")
+        }
+        return {}
+      },
+    })
+    updateMarkdownSpy
+      .mockRejectedValueOnce(new Error("body write failed"))
+      .mockResolvedValueOnce({})
+
+    await expect(
+      promoteMemory(
+        {
+          client,
+          memories,
+          primaryVaultPageId: "primary-vault",
+          primaryVaultLabel: "Primary",
+        },
+        {
+          sourceMemoryId: source.id,
+          target: makeTarget(),
+          promoter: "Engineer Name",
+          now: FIXED_NOW,
+        }
+      )
+    ).rejects.toThrow(/cleanup archive also failed/)
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    const firstCreateSourceKey = (
+      createSpy.mock.calls[0]![0].properties as Record<
+        string,
+        { rich_text: Array<{ text: { content: string } }> }
+      >
+    )["Promotion Source Key"].rich_text
+    expect(firstCreateSourceKey[0]?.text.content).toBe("v1:primaryvault:sourcemem1")
+
+    const result = await promoteMemory(
+      {
+        client,
+        memories,
+        primaryVaultPageId: "primary-vault",
+        primaryVaultLabel: "Primary",
+      },
+      {
+        sourceMemoryId: source.id,
+        target: makeTarget(),
+        promoter: "Engineer Name",
+        now: FIXED_NOW,
+      }
+    )
+
+    expect(result.outcome).toBe("created")
+    expect(result.promoted.id).toBe("promoted-mem-1")
+    expect(createSpy).toHaveBeenCalledTimes(2)
+    expect(retrieveMarkdownSpy).toHaveBeenCalledWith({ page_id: "promoted-orphan" })
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(2)
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy.mock.calls[0]![0]).toMatchObject({
+      page_id: "promoted-mem-1",
+      archived: true,
+    })
+  })
+
+  it("fails before create when the target vault is missing Promotion Source Key", async () => {
+    const source = makeSourceMemory()
+    const { client, createSpy, queryDataSourceSpy, memories } = makePromotionHarness(
+      source,
+      {
+        dataSourceProperties: {
+          [MEMORY_PROPS.TITLE]: { type: "title", title: {} },
+        },
+      }
+    )
+
+    await expect(
+      promoteMemory(
+        { client, memories, primaryVaultPageId: "primary-vault" },
+        {
+          sourceMemoryId: source.id,
+          target: makeTarget(),
+          promoter: "Engineer Name",
+          now: FIXED_NOW,
+        }
+      )
+    ).rejects.toThrow(/Promotion Source Key/)
+
+    expect(queryDataSourceSpy).not.toHaveBeenCalled()
+    expect(createSpy).not.toHaveBeenCalled()
   })
 
   it("forces Status=proposed when target.requireReview is true", async () => {

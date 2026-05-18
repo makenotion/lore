@@ -149,14 +149,22 @@ export const promoteCommand = new Command("promote")
           result.promoted.title || "(untitled)",
           notionPageUrl(result.promoted.id)
         )
-        const reviewSuffix = target.requireReview ? " (awaiting review)" : ""
+        const reviewSuffix =
+          target.requireReview && result.status === "proposed" ? " (awaiting review)" : ""
+        const verb =
+          result.outcome === "already-promoted" ? "Already promoted" : "Promoted"
         console.log(
-          `Promoted to ${result.targetVaultLabel}: ${linkedTitle}${reviewSuffix}`
+          `${verb} to ${result.targetVaultLabel}: ${linkedTitle}${reviewSuffix}`
         )
         console.log(`  Target memory ID: ${result.promoted.id}`)
+        console.log(`  Outcome: ${result.outcome}`)
         console.log(`  Status: ${result.status}`)
         console.log(`  Promoter: ${promoter}`)
-        if (opts.reason && opts.reason.trim().length > 0) {
+        if (
+          result.outcome === "created" &&
+          opts.reason &&
+          opts.reason.trim().length > 0
+        ) {
           console.log(`  Reason: ${opts.reason.trim()}`)
         }
       } catch (err) {

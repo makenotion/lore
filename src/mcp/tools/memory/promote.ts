@@ -118,20 +118,27 @@ export async function handlePromote(
 
     const result = await promoteMemory(helperServices, helperInput)
 
-    const reviewSuffix = target.requireReview ? " (awaiting review)" : ""
+    const reviewSuffix =
+      target.requireReview && result.status === "proposed" ? " (awaiting review)" : ""
+    const lead =
+      result.outcome === "already-promoted"
+        ? `Already promoted memory ${args.memoryId} to ${result.targetVaultLabel}${reviewSuffix}.`
+        : `Promoted memory ${args.memoryId} to ${result.targetVaultLabel}${reviewSuffix}.`
     const lines = [
-      `Promoted memory ${args.memoryId} to ${result.targetVaultLabel}${reviewSuffix}.`,
+      lead,
       `Target memory: ${result.promoted.title || "(untitled)"} (${result.promoted.id})`,
+      `Outcome: ${result.outcome}`,
       `Status: ${result.status}`,
       `Promoter: ${promoter}`,
     ]
-    if (args.reason && args.reason.trim().length > 0) {
+    if (result.outcome === "created" && args.reason && args.reason.trim().length > 0) {
       lines.push(`Reason: ${args.reason.trim()}`)
     }
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
-      costOutputs: { memoriesCreated: 1 },
+      costOutputs:
+        result.outcome === "created" ? { memoriesCreated: 1 } : { memoriesReturned: 1 },
     }
   } catch (err) {
     return toolError(err)

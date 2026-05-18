@@ -411,6 +411,12 @@ export interface Memory {
    */
   compareNotes: string
   /**
+   * System-managed idempotency key for cross-vault promotion target rows.
+   * Empty string when unset. Optional on the exported type so older external
+   * fixtures stay source-compatible; `pageToMemory` always populates it.
+   */
+  promotionSourceKey?: string
+  /**
    * Scope and lifetime declaration. `null` on rows without a scope
    * declared — retrieval treats null as broadcast scope with
    * `persistent` lifetime, preserving legacy behavior. Bundle of
@@ -549,6 +555,11 @@ export interface CreateMemoryInput {
    * `upsertByTopicKey` when seeding a fresh row in the upsert path.
    */
   revisionCount?: number
+  /**
+   * Service-layer-only field. Set by cross-vault promotion to make retries
+   * reuse the original target row instead of creating duplicates.
+   */
+  promotionSourceKey?: string
   /**
    * Scope and lifetime declaration. Omitted means "no scope
    * declared" — retrieval treats the resulting null column as

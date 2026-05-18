@@ -85,10 +85,10 @@ function scopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
 }
 
 /**
- * Every plain-text field that flows through the agent boundary and lands
- * in a Memory page. Run them through `decodeTextEntities` before writing
- * so doubly-encoded autosave input (`&amp;amp;`) resolves to plain text
- * and future similarity / embedding surfaces see consistent values.
+ * Every plain-text metadata field that lands in a Memory page through this
+ * create path. Run them through `decodeTextEntities` before writing so
+ * doubly-encoded autosave input (`&amp;amp;`) resolves to plain text and future
+ * similarity / embedding surfaces see consistent values.
  * Sibling: `decodeDecisionTextFields` — keep shared field coverage
  * in lockstep.
  *
@@ -111,6 +111,7 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
   session: string | undefined
   blockedBy: string | undefined
   entity: string | undefined
+  promotionSourceKey: string | undefined
 } {
   return {
     title: decodeTextEntities(input.title),
@@ -133,6 +134,10 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
     blockedBy:
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
     entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
+    promotionSourceKey:
+      input.promotionSourceKey !== undefined
+        ? decodeTextEntities(input.promotionSourceKey)
+        : undefined,
   }
 }
 
@@ -353,6 +358,7 @@ export class MemoryCreate {
         entity: decoded.entity,
         topicKey: input.topicKey,
         revisionCount: input.revisionCount,
+        promotionSourceKey: decoded.promotionSourceKey,
         ...scopeInputToBuilderProps(input.scope),
         ...pinnedInputToBuilderProps(input.pinned),
       }),

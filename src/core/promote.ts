@@ -38,20 +38,16 @@
  * `vault.pageId` with hyphens and the promotion target's `pageId`
  * without (or vice versa).
  *
- * Retry posture: this helper is NOT idempotent. A second run with the
- * same `sourceMemoryId` + target creates a second target-vault row
- * with a fresh audit block. The cross-vault link lives in text/url
- * metadata, not a relation, so there is no read-side dedup key the
- * helper can probe against the target before writing. Operators who
- * land a duplicate via re-run should archive one of the pair via
- * `lore-memory action='archive'` in the target vault; collapsing two
- * promoted rows into one is not safe to automate without a vocabulary
- * for which Reason/Promoter/timestamp wins on the survivor. A future
- * follow-up can add a `Promotion Source` rich_text column on the
- * Memories DB (additive-only schema change) and key dedup against it;
- * the helper's current contract leaves that surface open for that
- * future PR rather than committing to a `Topic Key` repurpose that
- * would conflict with the existing topic-key upsert chain.
+ * Retry posture: promotion is idempotent for a given source vault,
+ * source memory, and target vault. The target Memories DB stores a
+ * `Promotion Source Key` rich_text value in the format
+ * `v1:<source-vault-page-id>:<source-memory-page-id>`, with IDs
+ * normalized to dashless lowercase form. Before create, the helper
+ * probes the target Memories DB for that exact key and returns the
+ * existing live target row with outcome `already-promoted` only when
+ * the row is not a cleanup orphan and has a non-empty body. Legacy
+ * promoted rows without the key are not deduped by title or body
+ * equality.
  *
  * `--dry-run` is supported on the CLI wrapper: it issues the source
  * read but skips both `targetVault.load` and `targetMemories.create`,
@@ -64,6 +60,7 @@
 import type { Client } from "@notionhq/client"
 import { VaultManager } from "./vault.js"
 import { MemoryService } from "./memory.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import type { PromotionTargetTopologyRef } from "./topology.js"
 import type { Memory, MemoryKind, MemoryStatus } from "../types.js"
 
@@ -153,9 +150,14 @@ export interface PromoteMemoryInput {
 
 export interface PromoteMemoryResult {
   /**
-   * Newly-created memory in the target vault.
+   * Created or reused memory in the target vault.
    */
   promoted: Memory
+  /**
+   * Whether this call created a target row or reused the existing row for
+   * the same source vault + source memory key.
+   */
+  outcome: "created" | "already-promoted"
   /**
    * Display label of the target vault (`target.label`). Returned so
    * the CLI/MCP wrappers can render "Promoted to <label>" without
@@ -163,10 +165,10 @@ export interface PromoteMemoryResult {
    */
   targetVaultLabel: string
   /**
-   * The resolved status the promoted row landed with — `proposed`
-   * when the target's `requireReview` flag is set, the source's
-   * status otherwise. Surfaced so wrappers can render "(awaiting
-   * review)" when the target gates promotion behind review policy.
+   * Status on the target row. On create this is the resolved status
+   * (`proposed` when the target's `requireReview` flag is set, the
+   * source's status otherwise). On reuse this is the existing target row's
+   * current status, which may have changed during review.
    */
   status: MemoryStatus
 }
@@ -182,13 +184,15 @@ export interface PromoteMemoryResult {
  * 3. Construct a `VaultManager` against `target.pageId` using the
  *    same shared client, load it without drift-checking, and
  *    construct a target-scoped `MemoryService`.
- * 4. Build the cross-vault audit block (`## Promoted from …`) and
+ * 4. Verify the target Memories DB has `Promotion Source Key`, then
+ *    probe it for an existing completed row with the same source key.
+ * 5. Build the cross-vault audit block (`## Promoted from …`) and
  *    prepend it to the source body.
- * 5. Resolve the target status: `proposed` if `requireReview`,
+ * 6. Resolve the target status: `proposed` if `requireReview`,
  *    otherwise pass through the source memory's `status` (a
  *    promoted draft stays a draft, a promoted accepted memory
  *    stays accepted).
- * 6. Create the new memory in the target vault. The new row's
+ * 7. Create the new memory in the target vault. The new row's
  *    `source` is forced to `"manual"` — cross-vault copies are
  *    operator-deliberate, not autosave / file / digest provenance.
  *    Project relations are NOT carried across the vault boundary
@@ -200,6 +204,7 @@ export interface PromoteMemoryResult {
  *   `memories.getById`).
  * - Same-vault target (caught here with a clear error).
  * - Target vault load failure (delegated to `VaultManager.load`).
+ * - Missing target-vault `Promotion Source Key` schema property.
  * - Target-vault create failure (delegated to `MemoryService.create`).
  */
 export async function promoteMemory(
@@ -214,6 +219,25 @@ export async function promoteMemory(
     services.client,
     targetVault.databases.memories
   )
+  await assertPromotionSourceKeyColumn(
+    services.client,
+    targetVault.databases.memories.dataSourceId,
+    input.target.label
+  )
+
+  const promotionSourceKey = buildPromotionSourceKey(
+    services.primaryVaultPageId,
+    preview.source.id
+  )
+  const existing = await targetMemories.findByPromotionSourceKey(promotionSourceKey)
+  if (existing) {
+    return {
+      promoted: existing,
+      outcome: "already-promoted",
+      targetVaultLabel: input.target.label,
+      status: existing.status,
+    }
+  }
 
   const promoted = await targetMemories.create({
     title: preview.source.title,
@@ -240,6 +264,7 @@ export async function promoteMemory(
     keywords: preview.source.keywords,
     synopsis: preview.source.synopsis,
     author: preview.promoter,
+    promotionSourceKey,
     // `agent` and `session` are intentionally omitted: a cross-vault
     // promotion is operator-deliberate, not an agent-attributed
     // autosave or session-tied artifact. The source-vault Agent
@@ -257,6 +282,7 @@ export async function promoteMemory(
 
   return {
     promoted,
+    outcome: "created",
     targetVaultLabel: input.target.label,
     status: preview.status,
   }
@@ -390,6 +416,34 @@ function samePageId(a: string, b: string): boolean {
 
 function normalizePageId(id: string): string {
   return id.replace(/-/g, "").toLowerCase()
+}
+
+function buildPromotionSourceKey(
+  sourceVaultPageId: string,
+  sourceMemoryId: string
+): string {
+  return `v1:${normalizePageId(sourceVaultPageId)}:${normalizePageId(sourceMemoryId)}`
+}
+
+async function assertPromotionSourceKeyColumn(
+  client: Client,
+  memoriesDataSourceId: string,
+  targetVaultLabel: string
+): Promise<void> {
+  const response = (await client.dataSources.retrieve({
+    data_source_id: memoriesDataSourceId,
+  })) as { properties?: Record<string, unknown> }
+
+  if (response.properties && MEMORY_PROPS.PROMOTION_SOURCE_KEY in response.properties) {
+    return
+  }
+
+  throw new Error(
+    `Target vault "${targetVaultLabel}" is missing the ` +
+      `\`${MEMORY_PROPS.PROMOTION_SOURCE_KEY}\` Memories property required ` +
+      `for retry-safe promotion. Run \`lore migrate\` against that target ` +
+      `vault, then retry the promotion.`
+  )
 }
 
 function normalizeReason(raw: string | undefined): string | undefined {

@@ -416,6 +416,23 @@ describe("buildMemoryProps — topicKey emission (0.9.0/01)", () => {
   })
 })
 
+describe("buildMemoryProps — promotionSourceKey emission", () => {
+  it("omits Promotion Source Key when the input is undefined", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Promotion Source Key" in built).toBe(false)
+  })
+
+  it("emits a rich_text payload when promotionSourceKey is provided", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      promotionSourceKey: "v1:primaryvault:sourcememory",
+    }) as Record<string, { rich_text: Array<{ text: { content: string } }> }>
+    expect(built["Promotion Source Key"]).toEqual({
+      rich_text: [{ text: { content: "v1:primaryvault:sourcememory" } }],
+    })
+  })
+})
+
 describe("buildMemoryProps — revisionCount emission (0.9.0/01)", () => {
   it("omits Revision Count when the input is undefined", () => {
     const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
@@ -470,6 +487,27 @@ describe("memoriesProperties — Compare Notes column (0.9.0/02)", () => {
     const reviewByIdx = keys.indexOf("Review By")
     expect(compareNotesIdx).toBeGreaterThan(confidenceScoreIdx)
     expect(compareNotesIdx).toBeLessThan(reviewByIdx)
+  })
+})
+
+describe("memoriesProperties — Promotion Source Key column", () => {
+  it("declares Promotion Source Key as a rich_text column on the fresh-vault config", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Promotion Source Key"]).toEqual({ rich_text: {} })
+  })
+
+  it("declares Promotion Source Key on the legacy-vault shape too", () => {
+    const props = memoriesProperties("p-ds", "t-ds")
+    expect(props["Promotion Source Key"]).toEqual({ rich_text: {} })
+  })
+
+  it("places Promotion Source Key after Compare Notes and before Review By", () => {
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    const compareNotesIdx = keys.indexOf("Compare Notes")
+    const promotionSourceKeyIdx = keys.indexOf("Promotion Source Key")
+    const reviewByIdx = keys.indexOf("Review By")
+    expect(promotionSourceKeyIdx).toBeGreaterThan(compareNotesIdx)
+    expect(promotionSourceKeyIdx).toBeLessThan(reviewByIdx)
   })
 })
 

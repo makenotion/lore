@@ -153,6 +153,7 @@ export const MEMORY_PROPS = {
   TOPIC_KEY: "Topic Key",
   REVISION_COUNT: "Revision Count",
   COMPARE_NOTES: "Compare Notes",
+  PROMOTION_SOURCE_KEY: "Promotion Source Key",
   REVIEW_BY: "Review By",
   DONE_AT: "Done At",
   DECIDED_AT: "Decided At",
@@ -290,8 +291,9 @@ export function memoriesProperties(
     // `pageToMemory` returns `null` when missing so the RRF integration
     // can distinguish "never scored" from "scored zero."
     [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
-    // 0.9.0 scalar cluster between `Confidence Score` and `Review By`:
-    //   Confidence Score → Topic Key → Revision Count → Compare Notes → Review By
+    // 0.9.0+ scalar cluster between `Confidence Score` and `Review By`:
+    //   Confidence Score → Topic Key → Revision Count → Compare Notes →
+    //   Promotion Source Key → Review By
     // `Topic Key` and `Revision Count` are part of the Topic-key
     // upsert workstream. `Compare Notes` lands after them. Tests pin
     // `Compare Notes` precedes `Review By` (loose) rather than
@@ -322,6 +324,10 @@ export function memoriesProperties(
     // truncating. Empty for legacy rows and for memories that have
     // never been compared.
     [MEMORY_PROPS.COMPARE_NOTES]: { rich_text: {} },
+    // System-managed idempotency key for deliberate cross-vault promotion.
+    // Populated only by `promoteMemory` on target-vault rows, and probed
+    // before create to make retries reuse the original promoted row.
+    [MEMORY_PROPS.PROMOTION_SOURCE_KEY]: { rich_text: {} },
     [MEMORY_PROPS.REVIEW_BY]: { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
     // transitions to a terminal state — either via `TaskService.close()`
@@ -1034,6 +1040,7 @@ export function buildMemoryProps(input: {
   revisionCount?: number
   comparedWith?: string[]
   compareNotes?: string
+  promotionSourceKey?: string
   /**
    * Scope / lifetime fields. Each carries clear-cell
    * semantics: `undefined` leaves the column untouched, `null` (for
@@ -1201,6 +1208,11 @@ export function buildMemoryProps(input: {
   if (input.compareNotes !== undefined) {
     props[MEMORY_PROPS.COMPARE_NOTES] = {
       rich_text: encodeCompareNotesRichText(input.compareNotes),
+    }
+  }
+  if (input.promotionSourceKey !== undefined) {
+    props[MEMORY_PROPS.PROMOTION_SOURCE_KEY] = {
+      rich_text: [{ text: { content: input.promotionSourceKey } }],
     }
   }
   // Scope / lifetime. Tristate semantics on the select +

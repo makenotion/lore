@@ -177,6 +177,7 @@ describe("promoteCommand", () => {
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Promoted memory title" } as never,
+      outcome: "created",
       targetVaultLabel: "Team",
       status: "accepted",
     })
@@ -202,6 +203,7 @@ describe("promoteCommand", () => {
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
+      outcome: "created",
       targetVaultLabel: "Team",
       status: "proposed",
     })
@@ -211,6 +213,7 @@ describe("promoteCommand", () => {
     const text = logSpy.mock.calls.map((c) => String(c[0])).join("\n")
     expect(text).toContain("Promoted to Team:")
     expect(text).toContain("(awaiting review)")
+    expect(text).toContain("Outcome: created")
     expect(text).toContain("Status: proposed")
   })
 
@@ -223,6 +226,7 @@ describe("promoteCommand", () => {
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
+      outcome: "created",
       targetVaultLabel: "Team",
       status: "accepted",
     })
@@ -236,6 +240,32 @@ describe("promoteCommand", () => {
     expect(callArgs?.reason).toBe("Generalizes pattern")
     const text = logSpy.mock.calls.map((c) => String(c[0])).join("\n")
     expect(text).toContain("Reason: Generalizes pattern")
+  })
+
+  it("renders already-promoted outcome without echoing a new reason", async () => {
+    const { logSpy } = makeHarness()
+    vi.mocked(initServices).mockResolvedValue(
+      makeServicesStub({
+        promotionTargets: [{ name: "Team", pageId: "team-vault", requireReview: true }],
+      }) as never
+    )
+    vi.mocked(promoteMemory).mockResolvedValue({
+      promoted: { id: "promoted-1", title: "Title" } as never,
+      outcome: "already-promoted",
+      targetVaultLabel: "Team",
+      status: "accepted",
+    })
+
+    await promoteCommand.parseAsync(["mem-1", "--to", "Team", "--reason", "Second run"], {
+      from: "user",
+    })
+
+    const text = logSpy.mock.calls.map((c) => String(c[0])).join("\n")
+    expect(text).toContain("Already promoted to Team:")
+    expect(text).toContain("Outcome: already-promoted")
+    expect(text).toContain("Status: accepted")
+    expect(text).not.toContain("(awaiting review)")
+    expect(text).not.toContain("Reason: Second run")
   })
 
   it("on --dry-run, calls preparePromotion and renders the audit block without writing", async () => {

@@ -61,8 +61,9 @@ Keep this index focused on cross-command invariants, routing, and a short summar
   aliases, writes a merge note, and archives the loser only with `--yes`.
 - `vault ensure-entities` is the legacy four-database cutover helper; it should
   stay additive and dry-run-capable.
-- `promote` copies a memory into a configured promotion target and is not
-  idempotent; rerunning duplicates by design.
+- `promote` copies a memory into a configured promotion target and is
+  idempotent by target-vault `Promotion Source Key`; rerunning the same
+  source/target reuses the existing row.
 - `mcp` starts the stdio server and should stay a thin entry point.
 - `hooks` dispatches host-assistant hook events. Hook behavior is documented in
   [`hooks.md`](hooks.md), [`hooks-autosave.md`](hooks-autosave.md),

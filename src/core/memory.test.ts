@@ -99,6 +99,7 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.session).toBeNull()
     expect(memory.confidenceScore).toBeNull()
     expect(memory.lastReferencedAt).toBeNull()
+    expect(memory.promotionSourceKey).toBe("")
     expect(memory.content).toBe("body content")
   })
 
@@ -2004,6 +2005,17 @@ describe("Topic Key + Revision Count property round-trip (0.9.0/01)", () => {
     expect(pageToMemory(page).revisionCount).toBe(5)
   })
 
+  it("extracts a populated promotionSourceKey", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Promoted" }] },
+      "Promotion Source Key": {
+        type: "rich_text",
+        rich_text: [{ plain_text: "v1:primaryvault:sourcememory" }],
+      },
+    })
+    expect(pageToMemory(page).promotionSourceKey).toBe("v1:primaryvault:sourcememory")
+  })
+
   it("round-trips topicKey through buildMemoryProps + pageToMemory", () => {
     const built = buildMemoryProps({
       title: "x",
@@ -2034,6 +2046,24 @@ describe("Topic Key + Revision Count property round-trip (0.9.0/01)", () => {
       "Revision Count": { type: "number", number: built["Revision Count"].number },
     })
     expect(pageToMemory(page).revisionCount).toBe(7)
+  })
+
+  it("round-trips promotionSourceKey through buildMemoryProps + pageToMemory", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      promotionSourceKey: "v1:primaryvault:sourcememory",
+    }) as Record<string, { rich_text: Array<{ text: { content: string } }> }>
+
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Promotion Source Key": {
+        type: "rich_text",
+        rich_text: built["Promotion Source Key"].rich_text.map((seg) => ({
+          plain_text: seg.text.content,
+        })),
+      },
+    })
+    expect(pageToMemory(page).promotionSourceKey).toBe("v1:primaryvault:sourcememory")
   })
 })
 

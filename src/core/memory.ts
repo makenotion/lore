@@ -459,6 +459,34 @@ export class MemoryService {
     return await this.topicKey.findByTopicKey(input)
   }
 
+  async findByPromotionSourceKey(sourceKey: string): Promise<Memory | null> {
+    const trimmed = sourceKey.trim()
+    if (trimmed.length === 0) return null
+
+    let cursor: string | undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: withCleanupOrphanExclusion({
+          property: MEMORY_PROPS.PROMOTION_SOURCE_KEY,
+          rich_text: { equals: trimmed },
+        }) as QueryDataSourceParameters["filter"],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      const pages = response.results.filter(isLiveFullPage)
+      for (const page of pages) {
+        const memory = await this.pageToMemory(page, "")
+        const hydrated = await this.materializeContent(memory)
+        if (hydrated.content.trim().length === 0) continue
+        return hydrated
+      }
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
+    } while (cursor !== undefined)
+
+    return null
+  }
+
   async upsertByTopicKey(input: TopicKeyUpsertInput): Promise<TopicKeyUpsertResult> {
     return await this.topicKey.upsertByTopicKey(input)
   }

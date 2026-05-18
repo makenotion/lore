@@ -167,6 +167,7 @@ describe("lore-memory action='promote' dispatch", () => {
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Promoted title" } as never,
+      outcome: "created",
       targetVaultLabel: "Team",
       status: "accepted",
     })
@@ -182,6 +183,7 @@ describe("lore-memory action='promote' dispatch", () => {
     expect(callInput?.promoter).toBe("Server Resolved Engineer")
     const text = extractText(result)
     expect(text).toContain("Promoted memory mem-1 to Team")
+    expect(text).toContain("Outcome: created")
     expect(text).toContain("Status: accepted")
     expect(text).toContain("Promoter: Server Resolved Engineer")
   })
@@ -196,6 +198,7 @@ describe("lore-memory action='promote' dispatch", () => {
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
+      outcome: "created",
       targetVaultLabel: "Team",
       status: "proposed",
     })
@@ -221,6 +224,7 @@ describe("lore-memory action='promote' dispatch", () => {
     )
     vi.mocked(promoteMemory).mockResolvedValue({
       promoted: { id: "promoted-1", title: "Title" } as never,
+      outcome: "created",
       targetVaultLabel: "Team",
       status: "accepted",
     })
@@ -241,6 +245,37 @@ describe("lore-memory action='promote' dispatch", () => {
     )
     const text = extractText(result)
     expect(text).toContain("Reason: Generalizes pattern")
+  })
+
+  it("renders already-promoted outcome and returns no created cost", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server as never,
+      makePromoteServices({
+        promotionTargets: [{ name: "Team", pageId: "team-vault", requireReview: true }],
+      }) as never
+    )
+    vi.mocked(promoteMemory).mockResolvedValue({
+      promoted: { id: "promoted-1", title: "Title" } as never,
+      outcome: "already-promoted",
+      targetVaultLabel: "Team",
+      status: "accepted",
+    })
+
+    const result = await mock.get("lore-memory")({
+      action: "promote",
+      memoryId: "mem-1",
+      targetName: "Team",
+      reason: "Second run",
+    })
+
+    const text = extractText(result)
+    expect(text).toContain("Already promoted memory mem-1 to Team")
+    expect(text).toContain("Outcome: already-promoted")
+    expect(text).toContain("Status: accepted")
+    expect(text).not.toContain("(awaiting review)")
+    expect(text).not.toContain("Reason: Second run")
+    expect(result).toMatchObject({ costOutputs: { memoriesReturned: 1 } })
   })
 
   it("surfaces handlePromote MCP error when the service helper throws", async () => {
