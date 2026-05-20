@@ -317,7 +317,6 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       },
       isCatchAllFallback: false,
       configProjects: [{ name: "Widget", path: "apps/widget" }],
-      tasks: [makeTask({ id: "task-1" }), makeTask({ id: "task-2" })],
       coverage: buildEmptyWakeUpCoverage({
         mode: "ranked",
         queryLength: 24,
@@ -326,8 +325,8 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
           digest: 1,
           currentTaskMemories: 2,
           recentMemories: 3,
-          relatedMemories: 1,
-          tasks: 2,
+          relatedMemories: 0,
+          tasks: 0,
           knowledgeFacts: 5,
         },
       }),
@@ -349,14 +348,15 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       expect(logLine).toContain("mode=ranked")
       expect(logLine).toContain("ranked=true")
       expect(logLine).toContain("memory=3")
+      expect(logLine).toContain("related=0")
       expect(logLine).toContain("sections.currentTask=2")
       expect(logLine).toContain("sections.facts=5")
-      expect(logLine).toContain("sections.tasks=2")
+      expect(logLine).toContain("sections.tasks=0")
       expect(logLine).toContain("digestAgeDays=1")
       expect(logLine).not.toContain("Fix retrieval metrics")
-      expect(logLine).not.toContain("Task task-1")
       expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
         includeCoverage: true,
+        taskLimit: 0,
       })
     } finally {
       stderr.mockRestore()
@@ -601,48 +601,14 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       expect(stderr.mock.calls.length).toBe(0)
       expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
         includeCoverage: false,
+        taskLimit: 0,
       })
     } finally {
       stderr.mockRestore()
     }
   })
 
-  it("renders a fair task subset when overdue rows dominate the wake-up window", async () => {
-    function daysAgo(n: number): string {
-      return new Date(Date.now() - n * 86_400_000).toISOString()
-    }
-    function daysAgoDate(n: number): string {
-      return daysAgo(n).split("T")[0]
-    }
-
-    const tasks: TaskSummary[] = []
-    for (let i = 0; i < 12; i++) {
-      tasks.push(
-        makeTask({
-          id: `overdue-${i}`,
-          title: `Overdue task ${i}`,
-          reviewBy: daysAgoDate(7 + i),
-          updatedAt: daysAgo(2),
-        })
-      )
-    }
-    tasks.push(
-      makeTask({
-        id: "stale-1",
-        title: "Null-date stale task",
-        reviewBy: null,
-        updatedAt: daysAgo(45),
-      })
-    )
-    tasks.push(
-      makeTask({
-        id: "active-1",
-        title: "Null-date active task",
-        reviewBy: null,
-        updatedAt: daysAgo(2),
-      })
-    )
-
+  it("does not render task inventory in automatic wake-up output", async () => {
     setupMocks({
       project: {
         id: "proj-widget",
@@ -654,25 +620,22 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       },
       isCatchAllFallback: false,
       configProjects: [{ name: "Widget", path: "apps/widget" }],
-      tasks,
+      tasks: [
+        makeTask({ id: "overdue-1", title: "Overdue task" }),
+        makeTask({ id: "active-1", title: "Active task" }),
+      ],
     })
 
     await wakeup()
 
     expect(stdout).toHaveBeenCalledTimes(1)
     const written = String(stdout.mock.calls[0][0])
-    expect(written).toContain("Null-date stale task")
-    expect(written).toContain("Null-date active task")
-    expect(written).toContain("Overdue task 0")
-    expect(written).toContain("Overdue task 7")
-    expect(written).not.toContain("Overdue task 8")
-
-    const firstOverdue = written.indexOf("- Overdue task 0")
-    const stale = written.indexOf("- Null-date stale task")
-    const active = written.indexOf("- Null-date active task")
-    expect(firstOverdue).toBeGreaterThan(-1)
-    expect(stale).toBeGreaterThan(firstOverdue)
-    expect(active).toBeGreaterThan(stale)
+    expect(written).not.toContain("## Tasks")
+    expect(written).not.toContain("Overdue task")
+    expect(written).not.toContain("Active task")
+    expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
+      taskLimit: 0,
+    })
   })
 
   it("uses Codex UserPromptSubmit prompt as the ranked wake-up query", async () => {
@@ -703,9 +666,10 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
       userQuery: "Make Codex wake-up query-aware",
       memoryLimit: 3,
-      relatedMemoryLimit: 2,
+      relatedMemoryLimit: 0,
       knowledgeFactLimit: 10,
       taskMemoryLimit: 3,
+      taskLimit: 0,
     })
   })
 
@@ -838,6 +802,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
     expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
       userQuery: undefined,
+      taskLimit: 0,
     })
     expect(stdout).toHaveBeenCalledTimes(1)
   })
@@ -1157,7 +1122,7 @@ describe("hooks/wakeup — trust-boundary framing", () => {
     expect(written).toContain("    Line three.")
   })
 
-  it("indents task titles in the Tasks section", async () => {
+  it("does not render task titles returned by the data layer", async () => {
     setupVaultMocks({
       tasks: [
         {
@@ -1176,7 +1141,8 @@ describe("hooks/wakeup — trust-boundary framing", () => {
     await wakeup()
 
     const written = String(stdout.mock.calls[0][0])
-    expect(written).toContain("    - Crafted task title [open]")
+    expect(written).not.toContain("## Tasks")
+    expect(written).not.toContain("Crafted task title")
   })
 
   it("indents knowledge-fact triples in the Active Facts section", async () => {
@@ -1197,11 +1163,7 @@ describe("hooks/wakeup — trust-boundary framing", () => {
     expect(written).toContain("    - SubjectX depends on ObjectY")
   })
 
-  it("indents related-memory and current-task memory bullets", async () => {
-    // The two memory-list surfaces other than `## Recent Memories`
-    // route through the same per-field indent path. Pin both so a
-    // future renderer change that splits the indentation across
-    // sections is caught.
+  it("indents current-task memory bullets and skips task-related memories", async () => {
     setupVaultMocks({
       taskMemories: [makeMemory({ id: "tm1", title: "Current-task memory" })],
       relatedMemories: [makeMemory({ id: "rm1", title: "Related memory" })],
@@ -1211,7 +1173,8 @@ describe("hooks/wakeup — trust-boundary framing", () => {
 
     const written = String(stdout.mock.calls[0][0])
     expect(written).toContain("    - **Current-task memory** (conversation, 2026-04-20)")
-    expect(written).toContain("    - **Related memory** (conversation, 2026-04-20)")
+    expect(written).not.toContain("Related to Active Tasks")
+    expect(written).not.toContain("Related memory")
   })
 
   it("omits the preamble entirely when no project framing and no data sections render", async () => {

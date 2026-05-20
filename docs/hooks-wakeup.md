@@ -35,10 +35,12 @@ path. Wake-up must not crash for input-shape regressions.
 ## Context Loading
 
 Wake-up loads the latest project digest when one was saved in the last 7 days,
-plus recent memories, active facts, and memories relevance-matched against
-active task entities. It performs one semantic query scored against memory
-titles and bodies, so the context behind each outstanding task arrives alongside
-the task itself.
+plus recent memories, active facts, and memories relevance-matched against the
+user's first prompt when the hook event provides one. Automatic hook wake-up
+passes `taskLimit: 0`, so it skips task inventory and the task-seeded
+related-memory query. Task triage belongs behind explicit `lore-task` calls or
+the MCP `lore-context action='wake-up'` surface, not automatic session-start
+prompt material.
 
 The hook's wake-up render passes `includeProposedMemories: false`, so it never
 includes the proposed-memory inbox section. Inbox depth belongs to `lore status`
@@ -86,25 +88,29 @@ job failure, so `lore status` does not report it under **Background hooks**.
 When a user query is present, the hook tightens per-section caps via
 `RANKED_WAKEUP_LIMITS`:
 
-| Section        | Ranked cap |
-| -------------- | ---------- |
-| `memory`       | 3          |
-| `related`      | 2          |
-| `knowledge`    | 10         |
-| `taskMemories` | 3          |
+| Section                        | Ranked cap |
+| ------------------------------ | ---------- |
+| `memory`                       | 3          |
+| `related` (active-task seeded) | 0          |
+| `knowledge`                    | 10         |
+| `taskMemories`                 | 3          |
 
 Ranked wake-up adds a top-of-output **For Your Current Task** section seeded by
 `MemoryService.search(userQuery)`. The section is omitted on the default path so
 unranked output keeps the same shape used by promptless wake-up events.
 
 `RANKED_WAKEUP_LIMITS` lives in `src/core/wakeup.ts` and is shared with the MCP
-`lore-context action='wake-up'` handler. Both surfaces use the same caps when
-`userQuery` is set and the caller has not overridden a section.
+`lore-context action='wake-up'` handler for user-query ranking caps. The hook
+starts from those caps, then applies `relatedMemoryLimit: 0` and `taskLimit: 0`
+so the active-task-seeded Related section stays empty even though the MCP
+surface still renders it by default. `relatedMemoryLimit` controls that
+active-task-entity query, not the user-query-seeded **For Your Current Task**
+section.
 
-`taskMemories` is deduped against digest, recents, and `relatedMemories` in
-`loadWakeUpData` in `src/core/wakeup.ts`, so the same memory never renders
-across the three memory sections. The user query is truncated to 1000 chars
-before search so pasted logs do not overwhelm Notion query budget or relevance.
+`taskMemories` is deduped against digest and recents in `loadWakeUpData` in
+`src/core/wakeup.ts`, so the same memory never renders across the hook memory
+sections. The user query is truncated to 1000 chars before search so pasted
+logs do not overwhelm Notion query budget or relevance.
 
 ## Operator Log
 
@@ -119,16 +125,16 @@ stitching together separate log schemas. The examples below are wrapped for
 readability; the hook emits each event as one line.
 
 ```text
-[lore] wakeup: mode=ranked ranked=true queryLen=42 memory=3 related=2
+[lore] wakeup: mode=ranked ranked=true queryLen=42 memory=3 related=0
 knowledge=10 taskMemories=3 digestAvailable=true digestFresh=true
 digestAgeDays=1 sections.digest=1 sections.currentTask=3 sections.recent=3
-sections.related=2 sections.tasks=10 sections.facts=10 sections.decisions=0
+sections.related=0 sections.tasks=0 sections.facts=10 sections.decisions=0
 sections.proposedDecisions=0 sections.overdueDecisions=0
 sections.proposedMemories=0 sections.staleConfidence=0
 
 [lore] wakeup: mode=default ranked=false reason=no-ranked-search
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
-sections.currentTask=0 sections.recent=10 sections.related=5 sections.tasks=10
+sections.currentTask=0 sections.recent=10 sections.related=0 sections.tasks=0
 sections.facts=25 sections.decisions=0 sections.proposedDecisions=0
 sections.overdueDecisions=0 sections.proposedMemories=0
 sections.staleConfidence=0

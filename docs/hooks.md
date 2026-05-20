@@ -68,11 +68,12 @@ recall.
 ## Wake-Up
 
 `lore hooks wakeup` loads the latest project digest, if one was saved in the
-last 7 days, plus recent memories, active facts, and any memories
-relevance-matched against active task entities. Yarn PnP installs invoke it as
-`yarn run -T lore hooks wakeup`. It performs one semantic query scored against
-memory titles and bodies, so the context behind each outstanding task comes in
-alongside the task itself.
+last 7 days, plus recent memories, active facts, and query-ranked memories when
+the host supplies the user's first prompt. Yarn PnP installs invoke it as
+`yarn run -T lore hooks wakeup`. Automatic wake-up deliberately skips task
+inventory and task-seeded related-memory retrieval; agents that need task state
+should call `lore-task` or the MCP `lore-context action='wake-up'` surface
+explicitly.
 
 Claude Code and current Codex installs inject wake-up context on
 `UserPromptSubmit`, which lets Lore rank memories against the user's first real

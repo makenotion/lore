@@ -41,7 +41,7 @@ import {
   type TranscriptInspection,
 } from "./transcript.js"
 import { initServicesFromConfig } from "../services.js"
-import { STALE_TASK_DAYS, type LoreConfig, type TaskSummary } from "../types.js"
+import type { LoreConfig } from "../types.js"
 import { resolveProjectPathFromCwd } from "../core/context.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
@@ -51,7 +51,6 @@ import {
 } from "../profile/index.js"
 import { indentUntrustedText, UNTRUSTED_VAULT_PREAMBLE } from "./untrusted-text.js"
 import {
-  DEFAULT_WAKEUP_TASK_LIMIT,
   RANKED_WAKEUP_LIMITS,
   dateBucket,
   emptyWakeUpCoverageMetrics,
@@ -61,7 +60,6 @@ import {
 import { resolveCostTracking } from "../core/cost-ledger.js"
 import { composeProjectContext, type ProjectContext } from "../core/project-context.js"
 import { formatCatchAllScopeSummary } from "../core/context.js"
-import { taskDaysOverdue, taskDaysStale } from "../core/task.js"
 import { spawnBackgroundSave, type SpawnResult } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
 import {
@@ -858,6 +856,9 @@ function renderHookProjectContextLines(context: ProjectContext | null): string[]
   return lines
 }
 
+const HOOK_WAKEUP_TASK_INVENTORY_LIMIT = 0
+const HOOK_WAKEUP_ACTIVE_TASK_RELATED_MEMORY_LIMIT = 0
+
 export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   const rawEvent = opts.event ?? process.env["LORE_WAKEUP_EVENT"]
   const eventMeta = parseWakeupEventMetadata(rawEvent)
@@ -946,56 +947,61 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // Claude Code and Codex installs pass the payload via stdin/`opts.event`;
   // legacy `SessionStart` installs and other callers with no prompt fall
   // through to the data-layer defaults.
-  const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
+  const rankedLimits = userQuery
+    ? {
+        ...RANKED_WAKEUP_LIMITS,
+        relatedMemoryLimit: HOOK_WAKEUP_ACTIVE_TASK_RELATED_MEMORY_LIMIT,
+      }
+    : {}
 
-  let digest, memories, tasks, knowledgeFacts, relatedMemories, taskMemories, coverage
+  let digest, memories, knowledgeFacts, taskMemories, coverage
   try {
-    ;({
-      digest,
-      memories,
-      tasks,
-      knowledgeFacts,
-      relatedMemories,
-      taskMemories,
-      coverage,
-    } = await loadWakeUpData(services, {
-      projectId: project?.id,
-      // Hook rendering only uses title/source/date - skip the N+1 markdown fetch.
-      includeMemoryContent: false,
-      // Hook never renders decisions - skip the two Notion queries so
-      // session-start latency doesn't regress on the hot path.
-      includeDecisions: false,
-      // Hook never renders the Stale Confidence section either - skip
-      // the extra Notion query for the same reason. Same posture as
-      // `includeDecisions: false` above.
-      includeStaleConfidence: false,
-      // Hook never renders the Proposed Memories inbox section —
-      // skip the extra Notion query so the session-start latency
-      // stays unchanged. Same posture as `includeDecisions: false`
-      // and `includeStaleConfidence: false` above.
-      includeProposedMemories: false,
-      // Hook never renders the Inherited Memories section — skip
-      // the per-upstream Notion fan-out so the session-start hot
-      // path doesn't pay one `dataSources.query` per configured
-      // upstream on every launch. Same posture as
-      // `includeDecisions: false` etc. The previous default
-      // (`true`) was a performance regression and a privacy
-      // posture change operators hadn't opted into.
-      includeInheritedMemories: false,
-      // Hook never renders the Pinned Context section — skip
-      // the `listPinnedBlocks` + `countPinnedBlocks`
-      // round-trips so the session-start hot path doesn't pay
-      // two extra `dataSources.query` calls per launch. Same
-      // posture as `includeInheritedMemories: false` above. The
-      // MCP `lore-context action='wake-up'` surface still renders
-      // pinned blocks at default; agents that need pinned
-      // context call the MCP surface explicitly.
-      includePinnedBlocks: false,
-      includeCoverage: debug,
-      userQuery,
-      cache: services.wakeupCache,
-      ...rankedLimits,
-    }))
+    ;({ digest, memories, knowledgeFacts, taskMemories, coverage } = await loadWakeUpData(
+      services,
+      {
+        projectId: project?.id,
+        // Hook rendering only uses title/source/date - skip the N+1 markdown fetch.
+        includeMemoryContent: false,
+        // Hook never renders decisions - skip the two Notion queries so
+        // session-start latency doesn't regress on the hot path.
+        includeDecisions: false,
+        // Hook never renders the Stale Confidence section either - skip
+        // the extra Notion query for the same reason. Same posture as
+        // `includeDecisions: false` above.
+        includeStaleConfidence: false,
+        // Hook never renders the Proposed Memories inbox section —
+        // skip the extra Notion query so the session-start latency
+        // stays unchanged. Same posture as `includeDecisions: false`
+        // and `includeStaleConfidence: false` above.
+        includeProposedMemories: false,
+        // Hook never renders the Inherited Memories section — skip
+        // the per-upstream Notion fan-out so the session-start hot
+        // path doesn't pay one `dataSources.query` per configured
+        // upstream on every launch. Same posture as
+        // `includeDecisions: false` etc. The previous default
+        // (`true`) was a performance regression and a privacy
+        // posture change operators hadn't opted into.
+        includeInheritedMemories: false,
+        // Hook never renders the Pinned Context section — skip
+        // the `listPinnedBlocks` + `countPinnedBlocks`
+        // round-trips so the session-start hot path doesn't pay
+        // two extra `dataSources.query` calls per launch. Same
+        // posture as `includeInheritedMemories: false` above. The
+        // MCP `lore-context action='wake-up'` surface still renders
+        // pinned blocks at default; agents that need pinned
+        // context call the MCP surface explicitly.
+        includePinnedBlocks: false,
+        // Hook wake-up is automatic session-start prompt material, not a
+        // task-triage surface. These caps skip task inventory and the
+        // active-task-entity related-memory query; they do not affect the
+        // user-query-seeded "For Your Current Task" search.
+        taskLimit: HOOK_WAKEUP_TASK_INVENTORY_LIMIT,
+        includeCoverage: debug,
+        userQuery,
+        cache: services.wakeupCache,
+        ...rankedLimits,
+      }
+    ))
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
@@ -1022,12 +1028,6 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     return
   }
 
-  const today = new Date().toISOString().split("T")[0]
-  // The data layer may return far more rows than the hook should print.
-  // Pick an urgency-ordered visible subset with reserved space for
-  // Stale / Active so a large overdue set doesn't hide null-date work.
-  const visibleTasks = selectHookWakeUpTasks(tasks, DEFAULT_WAKEUP_TASK_LIMIT, today)
-
   if (debug) {
     // Operator-facing log: report the ranked/default path, the applied
     // ranked caps, and rendered section counts. It intentionally carries
@@ -1041,7 +1041,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
           userQuery
             ? {
                 memoryLimit: RANKED_WAKEUP_LIMITS.memoryLimit,
-                relatedMemoryLimit: RANKED_WAKEUP_LIMITS.relatedMemoryLimit,
+                relatedMemoryLimit: HOOK_WAKEUP_ACTIVE_TASK_RELATED_MEMORY_LIMIT,
                 knowledgeFactLimit: RANKED_WAKEUP_LIMITS.knowledgeFactLimit,
                 taskMemoryLimit: RANKED_WAKEUP_LIMITS.taskMemoryLimit,
               }
@@ -1125,33 +1125,6 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     }
   }
 
-  if (tasks.length > 0) {
-    dataSections.push("\n## Tasks")
-    for (const task of visibleTasks) {
-      const stateLabel = task.taskState ?? "open"
-      const blocker = task.blockedBy ? `, blocked by ${task.blockedBy}` : ""
-      const due = task.reviewBy
-        ? task.reviewBy <= today
-          ? `, review by ${task.reviewBy} OVERDUE`
-          : `, review by ${task.reviewBy}`
-        : ""
-      dataSections.push(
-        indentUntrustedText(`- ${task.title} [${stateLabel}${blocker}${due}]`)
-      )
-    }
-  }
-
-  if (relatedMemories.length > 0) {
-    dataSections.push("\n## Related to Active Tasks")
-    for (const mem of relatedMemories) {
-      dataSections.push(
-        indentUntrustedText(
-          `- **${mem.title}** (${mem.source}, ${mem.updatedAt.split("T")[0]})`
-        )
-      )
-    }
-  }
-
   if (knowledgeFacts.length > 0) {
     dataSections.push("\n## Active Facts")
     for (const fact of knowledgeFacts) {
@@ -1194,67 +1167,6 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       sessionId: eventMeta.sessionId,
     })
   }
-}
-
-function selectHookWakeUpTasks(
-  tasks: TaskSummary[],
-  limit: number,
-  today: string
-): TaskSummary[] {
-  if (limit <= 0) return []
-  const overdue: TaskSummary[] = []
-  const stale: TaskSummary[] = []
-  const active: TaskSummary[] = []
-  for (const task of tasks) {
-    if (taskDaysOverdue(task, today) !== null) {
-      overdue.push(task)
-      continue
-    }
-    const staleDays = taskDaysStale(task, today)
-    if (staleDays !== null && staleDays >= STALE_TASK_DAYS) {
-      stale.push(task)
-      continue
-    }
-    active.push(task)
-  }
-
-  const buckets = [overdue, stale, active]
-  const quotas = visibleTaskQuotas(limit)
-  const selectedByBucket = buckets.map(() => [] as TaskSummary[])
-  const offsets = [0, 0, 0]
-
-  const take = (bucketIndex: number, count: number): number => {
-    let taken = 0
-    const bucket = buckets[bucketIndex]
-    const selected = selectedByBucket[bucketIndex]
-    while (taken < count && offsets[bucketIndex] < bucket.length) {
-      selected.push(bucket[offsets[bucketIndex]])
-      offsets[bucketIndex] += 1
-      taken += 1
-    }
-    return taken
-  }
-
-  for (let i = 0; i < buckets.length; i++) {
-    take(i, quotas[i])
-  }
-
-  let remaining = limit - selectedByBucket.reduce((sum, bucket) => sum + bucket.length, 0)
-  for (let i = 0; i < buckets.length && remaining > 0; i++) {
-    remaining -= take(i, remaining)
-  }
-
-  return selectedByBucket.flat()
-}
-
-function visibleTaskQuotas(limit: number): [number, number, number] {
-  if (limit <= 0) return [0, 0, 0]
-  const overdue = Math.min(limit, Math.max(1, Math.floor(limit * 0.6)))
-  const staleBudget = limit - overdue
-  const stale =
-    staleBudget > 0 ? Math.min(staleBudget, Math.max(1, Math.floor(limit * 0.3))) : 0
-  const active = limit - overdue - stale
-  return [overdue, stale, active]
 }
 
 // ---------------------------------------------------------------------------
