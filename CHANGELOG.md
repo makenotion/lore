@@ -11,6 +11,14 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-05-20
+
+### Fixed
+
+- Automatic hook wake-up now skips task inventory and task-seeded
+  related-memory retrieval, keeping task triage behind explicit `lore-task`
+  or MCP `lore-context action='wake-up'` calls. (#889)
+
 ## [0.15.0] - 2026-05-18
 
 ### Added
@@ -1086,7 +1094,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/makenotion/lore/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/makenotion/lore/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/makenotion/lore/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/makenotion/lore/compare/v0.13.0...v0.13.1

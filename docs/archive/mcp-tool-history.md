@@ -67,6 +67,14 @@ Historical bumps and what they signalled:
 
 Latest historical note:
 
+- `0.15.1` (2026-05-20) ships the hook wake-up task-triage fix. Automatic
+  hook wake-up skips task inventory and active-task-seeded related-memory
+  retrieval, while query-ranked current-task memories still render when the
+  host supplies the user's first prompt. Agents that need task state should
+  call `lore-task` or the MCP `lore-context action='wake-up'` surface
+  explicitly. No schema or dispatch-surface change; agent-observable hook
+  output changes; the package, lockfile, MCP handshake, CLI version, and
+  Notion `User-Agent` literals move together under the version-sync guard.
 - `0.15.0` (2026-05-18) prepares the non-breaking CLI, MCP, task, promotion,
   cost-ledger, documentation, and hardening release. New agent-observable
   surfaces include top-level memory / decision / ask CLI commands,
