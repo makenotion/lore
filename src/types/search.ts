@@ -65,6 +65,17 @@ export interface SearchMemoriesInput {
    * support.
    */
   includeProposed?: boolean
+  /**
+   * Exclude memories whose `Pinned` checkbox is true. Used by
+   * query-focused wake-up paths where pinned context is intentionally
+   * suppressed so governance rows cannot consume the ranked task-memory
+   * window.
+   *
+   * Server-side filter in `"contains"` (and the contains leg of
+   * `"hybrid"`); client-side post-filter in `"semantic"` because
+   * `client.search` lacks property-filter support.
+   */
+  excludePinned?: boolean
   limit?: number
   /**
    * When false, skip the per-page `retrieveMarkdown` round-trip and return

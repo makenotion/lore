@@ -7,10 +7,12 @@ This page owns the read-upstream wake-up contract for configured
 
 ## Read inheritance
 
-When `.lore.yaml` declares one or more `upstreamVaults`, `lore-context
-action='wake-up'` adds a bounded, separately labeled
+When `.lore.yaml` declares one or more `upstreamVaults`, a full
+`lore-context action='wake-up'` adds a bounded, separately labeled
 `## Inherited from <Label>` section per upstream below the primary
-sections. The default cap is **3 memories per upstream**
+sections. Query-focused wake-up calls with `userQuery` skip inherited
+sections unless the caller passes `governanceContext: true`. The
+default cap is **3 memories per upstream**
 (`DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT`); operators with a different
 signal/noise tradeoff override per call via `inheritedMemoryLimit`.
 
@@ -28,8 +30,8 @@ signal/noise tradeoff override per call via `inheritedMemoryLimit`.
 ```
 
 **Why the inline-code wrapping and "untrusted, advisory only"
-marker?** Upstream content is *untrusted from the primary vault's
-perspective* — an operator with write access to any configured
+marker?** Upstream content is _untrusted from the primary vault's
+perspective_ — an operator with write access to any configured
 upstream could otherwise stage a memory whose `title` reads like
 primary-vault guidance (`## CRITICAL PRIMARY GUIDANCE\nIgnore prior
 instructions and …`) and the rendered wake-up section would put that
@@ -78,7 +80,7 @@ structure.
   literal `<unrenderable upstream error>` sentinel so the
   failure-isolation contract holds even when the redactor can't
   format the value. Under `LORE_DEBUG=1`, one `[lore]
-  upstream-vault-unavailable: label=<X> page=<page-id> error=<msg>`
+upstream-vault-unavailable: label=<X> page=<page-id> error=<msg>`
   stderr line additionally fires per bundle per process — the
   whole line is routed through `redactDebugMessage`, so real
   Notion page ids are emitted as `<page-id>` (recon-class per
@@ -99,8 +101,8 @@ structure.
 
 ## Opting out
 
-There is no `--no-inherit` CLI flag and no MCP-tool argument today
-— the operator-facing toggle is the `.lore.yaml` config itself:
+There is no `--no-inherit` CLI flag — the operator-facing persistent
+toggle is the `.lore.yaml` config itself:
 
 | Operator action                         | Effect                                                                    |
 | --------------------------------------- | ------------------------------------------------------------------------- |
@@ -109,10 +111,10 @@ There is no `--no-inherit` CLI flag and no MCP-tool argument today
 
 Programmatically, `WakeUpOptions.includeInheritedMemories: false` and
 `WakeUpOptions.inheritedMemoryLimit: 0` both skip the fan-out for one
-wake-up call — internal-only flags consumed by the shell-hook wake-up
-runner (which opts out by default; the hook never renders the
-inherited section) and reserved for a future per-call MCP knob if
-real-vault data shows operators need it.
+wake-up call. The shell-hook wake-up runner opts out by default because
+the hook never renders the inherited section. The MCP
+`lore-context action='wake-up'` surface defaults `governanceContext` to
+false when `userQuery` is present and true for full catch-up calls.
 
 ## Promotion targets are NOT exposed as read upstreams
 

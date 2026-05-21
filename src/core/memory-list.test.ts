@@ -1,6 +1,7 @@
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { defaultFeatureFlags } from "../feature-flags.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import type { DatabaseRef, Memory } from "../types.js"
 import { MemoryList } from "./memory-list.js"
 
@@ -55,6 +56,14 @@ function makePage(id: string): PageObjectResponse {
   } as unknown as PageObjectResponse
 }
 
+function missingPinnedPropertyError(): Error & { code: string } {
+  const err = new Error(
+    `Could not find property with name or id: ${MEMORY_PROPS.PINNED}`
+  ) as Error & { code: string }
+  err.code = "validation_error"
+  return err
+}
+
 function makeLister(options: {
   request?: ReturnType<typeof vi.fn>
   query?: ReturnType<typeof vi.fn>
@@ -77,6 +86,57 @@ function makeLister(options: {
     options.getPropertiesById
   )
 }
+
+describe("MemoryList.list", () => {
+  it("pushes excludePinned into the Notion filter", async () => {
+    const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    await lister.list({ projectId: "project-id", excludePinned: true, limit: 3 })
+
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    const firstCall = calls[0]?.[0]
+    expect(firstCall).toBeDefined()
+    const serialized = JSON.stringify(firstCall?.filter)
+    expect(serialized).toContain(MEMORY_PROPS.PINNED)
+    expect(serialized).toContain("does_not_equal")
+    expect(serialized).toContain("true")
+  })
+
+  it("retries excludePinned without the pinned filter on pre-migration vaults", async () => {
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(missingPinnedPropertyError())
+      .mockResolvedValueOnce({
+        results: [makePage("normal-id")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    const result = await lister.list({
+      excludePinned: true,
+      limit: 3,
+      since: "2026-01-01",
+      until: "2026-02-01",
+    })
+
+    expect(result.items.map((memory) => memory.id)).toEqual(["normal-id"])
+    expect(query).toHaveBeenCalledTimes(2)
+    const firstFilter = JSON.stringify(query.mock.calls[0]![0].filter)
+    const retryFilter = JSON.stringify(query.mock.calls[1]![0].filter)
+    expect(firstFilter).toContain(MEMORY_PROPS.PINNED)
+    expect(retryFilter).not.toContain(MEMORY_PROPS.PINNED)
+    expect(retryFilter).toContain("2026-01-01")
+    expect(retryFilter).toContain("2026-02-01")
+  })
+})
 
 describe("MemoryList.listForNearDuplicates", () => {
   let savedDebug: string | undefined

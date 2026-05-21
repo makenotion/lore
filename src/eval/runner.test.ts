@@ -21,10 +21,10 @@ describe("runEvalSuite", () => {
 
     expect(writtenPath).toBe(outPath)
     expect(artifact.summary).toMatchObject({
-      tasks: 22,
+      tasks: 24,
       trials: 1,
-      totalResults: 72,
-      passedResults: 72,
+      totalResults: 80,
+      passedResults: 80,
       failedResults: 0,
     })
     expect(artifact.summary.scenarios).toEqual([
@@ -37,6 +37,7 @@ describe("runEvalSuite", () => {
     expect(artifact.runner).toMatchObject({
       mode: "retrieval",
       surfaces: [
+        "wake-up.context",
         "wake-up.memories",
         "wake-up.relatedMemories",
         "wake-up.staleConfidence",
@@ -439,6 +440,108 @@ tasks:
     expect(result.unexpectedMemoriesSurfaced).toContain("note/payments-distractor")
   })
 
+  it("extracts task-only surfaced ids without full wake-up recents", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+description: Full wake-up recents include unrelated noise, task-only retrieval should not.
+memories:
+  - id: note/sprint-catering
+    title: Sprint catering menu
+    synopsis: Unrelated recent team logistics.
+    keywords: catering lunch snacks
+  - id: decision/payment-retry-backoff
+    title: Payment retry backoff decision
+    synopsis: Payment retry code must use exponential backoff.
+    keywords: payment retry backoff validator
+`,
+      },
+      suite: `version: 1
+name: task-only-suite
+runner: retrieval
+tasks:
+  - id: task-only-avoids-recents-noise
+    prompt: Implement payment retry backoff in the validator.
+    surface: wake-up.taskOnly
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payment-retry-backoff
+        shouldNotSurface:
+          - note/sprint-catering
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.taskOnly"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/payment-retry-backoff"],
+      retrieval: { surface: "wake-up.taskOnly" },
+    })
+  })
+
+  it("wake-up.context extracts rendered query-focused memory channels without governance rows", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: note/retry-handler-idempotency
+    title: Retry handler must preserve idempotency keys
+    keywords: retry handler idempotency payments
+  - id: pinned/retry-shortcut
+    title: Retry idempotency pinned shortcut
+    keywords: retry handler idempotency payments shortcut
+    isPinnedContext: true
+  - id: upstream/retry-shortcut
+    title: Retry idempotency upstream shortcut
+    keywords: retry handler idempotency payments upstream
+    isInheritedMemory: true
+`,
+      },
+      suite: `version: 1
+name: context-governance-suite
+runner: retrieval
+tasks:
+  - id: context-suppresses-governance
+    prompt: Add retry handling to payments while preserving idempotency keys.
+    surface: wake-up.context
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - note/retry-handler-idempotency
+        shouldNotSurface:
+          - pinned/retry-shortcut
+          - upstream/retry-shortcut
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+    const result = artifact.results.find((r) => r.scenario === "helpful-memory")!
+    expect(result).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["note/retry-handler-idempotency"],
+      retrieval: { surface: "wake-up.context" },
+    })
+  })
+
   it("wake-up.memories enforces shouldNotSurface for distractors", async () => {
     const { suitePath, outPath } = await writeTempEvalSuite({
       fixtures: {
@@ -691,56 +794,6 @@ tasks:
     )
   })
 
-  it("extracts task-only surfaced ids without full wake-up recents", async () => {
-    const { suitePath, outPath } = await writeTempEvalSuite({
-      fixtures: {
-        "no-lore.yaml": emptyScenario("no-lore"),
-        "empty.yaml": emptyScenario("empty-lore"),
-        "helpful.yaml": `name: helpful-memory
-description: Full wake-up recents include unrelated noise, task-only retrieval should not.
-memories:
-  - id: note/sprint-catering
-    title: Sprint catering menu
-    synopsis: Unrelated recent team logistics.
-    keywords: catering lunch snacks
-  - id: decision/payment-retry-backoff
-    title: Payment retry backoff decision
-    synopsis: Payment retry code must use exponential backoff.
-    keywords: payment retry backoff validator
-`,
-      },
-      suite: `version: 1
-name: task-only-suite
-runner: retrieval
-tasks:
-  - id: task-only-avoids-recents-noise
-    prompt: Implement payment retry backoff in the validator.
-    surface: wake-up.taskOnly
-    memoryScenarios:
-      no-lore: ../memory/no-lore.yaml
-      empty-lore: ../memory/empty.yaml
-      helpful-memory: ../memory/helpful.yaml
-    expectedRetrieval:
-      helpful-memory:
-        shouldSurface:
-          - decision/payment-retry-backoff
-        shouldNotSurface:
-          - note/sprint-catering
-`,
-    })
-
-    const { artifact } = await runEvalSuite(suitePath, { outPath })
-
-    expect(artifact.runner.surfaces).toEqual(["wake-up.taskOnly"])
-    expect(
-      artifact.results.find((result) => result.scenario === "helpful-memory")
-    ).toMatchObject({
-      success: true,
-      surfacedMemoryIds: ["decision/payment-retry-backoff"],
-      retrieval: { surface: "wake-up.taskOnly" },
-    })
-  })
-
   it("extracts surfaced ids from the wake-up.staleConfidence surface", async () => {
     const { suitePath, outPath } = await writeTempEvalSuite({
       fixtures: {
@@ -887,6 +940,102 @@ tasks:
     const result = artifact.results.find((r) => r.scenario === "helpful-memory")!
     expect(result.surfacedMemoryIds).toHaveLength(STALE_CONFIDENCE_LIMIT)
     expect(result.surfacedMemoryIds).toEqual(expectedSurface)
+  })
+
+  it("extracts surfaced ids from the wake-up.pinnedContext surface", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: pinned/release-policy
+    title: Release policy pin
+    synopsis: Governance row that should surface on the pinned channel.
+    isPinnedContext: true
+  - id: note/not-pinned
+    title: Normal note
+    synopsis: Should not surface on the pinned channel.
+`,
+      },
+      suite: `version: 1
+name: pinned-context-suite
+runner: retrieval
+tasks:
+  - id: surfaces-pinned-context
+    prompt: Review release governance.
+    surface: wake-up.pinnedContext
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - pinned/release-policy
+        shouldNotSurface:
+          - note/not-pinned
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.pinnedContext"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["pinned/release-policy"],
+      retrieval: { surface: "wake-up.pinnedContext" },
+    })
+  })
+
+  it("extracts surfaced ids from the wake-up.inheritedMemories surface", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: upstream/platform-guidance
+    title: Platform guidance from upstream
+    synopsis: Inherited row that should surface on the upstream channel.
+    isInheritedMemory: true
+  - id: note/local-note
+    title: Local note
+    synopsis: Should not surface on the inherited channel.
+`,
+      },
+      suite: `version: 1
+name: inherited-context-suite
+runner: retrieval
+tasks:
+  - id: surfaces-inherited-memory
+    prompt: Review inherited platform guidance.
+    surface: wake-up.inheritedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - upstream/platform-guidance
+        shouldNotSurface:
+          - note/local-note
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.inheritedMemories"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["upstream/platform-guidance"],
+      retrieval: { surface: "wake-up.inheritedMemories" },
+    })
   })
 })
 

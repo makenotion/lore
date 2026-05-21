@@ -19,6 +19,7 @@ import type {
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
 import { collectLivePages } from "../notion/live-pages.js"
+import { extractMissingPropertyName } from "../notion/errors.js"
 import { fetchNearDuplicateCandidatePageIds } from "../notion/runtool/index.js"
 import { redactDebugError } from "../debug-redact.js"
 import {
@@ -118,6 +119,13 @@ export interface ListMemoriesOptions {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  /**
+   * Exclude active pinned context rows before applying the result
+   * limit. Query-focused wake-up uses this when the pinned-governance
+   * channel is disabled; otherwise a run of pinned rows can consume
+   * the recents candidate window before client-side filtering.
+   */
+  excludePinned?: boolean
   sortBy?: "created_time" | "last_edited_time"
   direction?: "ascending" | "descending"
   startCursor?: string
@@ -388,13 +396,34 @@ export class MemoryList {
         created_time: { before: opts.until },
       })
     }
+    const filtersWithoutPinned = [...filters]
+    if (opts?.excludePinned === true) {
+      filters.push({
+        property: MEMORY_PROPS.PINNED,
+        checkbox: { does_not_equal: true },
+      })
+    }
 
-    const baseFilter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
+    const toBaseFilter = (
+      activeFilters: Array<Record<string, unknown>>
+    ): Record<string, unknown> | undefined =>
+      activeFilters.length > 1
+        ? { and: activeFilters }
+        : activeFilters.length === 1
+          ? activeFilters[0]
           : undefined
+    const buildFilter = (
+      activeFilters: Array<Record<string, unknown>>
+    ): QueryDataSourceParameters["filter"] => {
+      const baseFilter = toBaseFilter(activeFilters)
+      const scopedFilter =
+        opts?.includeOutOfScope === true || !this.scopeFilterEnabled
+          ? baseFilter
+          : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
+      return withCleanupOrphanExclusion(
+        scopedFilter
+      ) as QueryDataSourceParameters["filter"]
+    }
 
     // Resurfaced cleanup-orphan exclusion. Pushed
     // server-side here so every consumer of `list` — including
@@ -410,11 +439,9 @@ export class MemoryList {
     // `includeOutOfScope: true` skips the scope clause for audit
     // paths (`lore status` expiring-rows surface, conflict scanner,
     // near-duplicate probe pool).
-    const scopedFilter =
-      opts?.includeOutOfScope === true || !this.scopeFilterEnabled
-        ? baseFilter
-        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
-    const filter = withCleanupOrphanExclusion(scopedFilter)
+    const filter = buildFilter(filters)
+    const fallbackFilter =
+      opts?.excludePinned === true ? buildFilter(filtersWithoutPinned) : null
 
     const limit = Math.min(opts?.limit ?? 20, 100)
     if (limit <= 0) {
@@ -434,25 +461,38 @@ export class MemoryList {
         ? undefined
         : (page: PageObjectResponse) =>
             matchesDefaultScope(page.properties, this.scopeCtx, today)
-    const result = await collectLivePages({
-      limit,
-      startCursor: opts?.startCursor,
-      source: "MemoryService.list",
-      query: ({ page_size, start_cursor }) =>
-        this.client.dataSources.query({
-          data_source_id: this.db.dataSourceId,
-          filter: filter as QueryDataSourceParameters["filter"],
-          sorts: [
-            {
-              timestamp: opts?.sortBy ?? "last_edited_time",
-              direction: opts?.direction ?? "descending",
-            },
-          ],
-          page_size,
-          start_cursor,
-        }),
-      extraFilter: applyExtraFilter,
-    })
+    const collectWithFilter = (activeFilter: QueryDataSourceParameters["filter"]) =>
+      collectLivePages({
+        limit,
+        startCursor: opts?.startCursor,
+        source: "MemoryService.list",
+        query: ({ page_size, start_cursor }) =>
+          this.client.dataSources.query({
+            data_source_id: this.db.dataSourceId,
+            filter: activeFilter,
+            sorts: [
+              {
+                timestamp: opts?.sortBy ?? "last_edited_time",
+                direction: opts?.direction ?? "descending",
+              },
+            ],
+            page_size,
+            start_cursor,
+          }),
+        extraFilter: applyExtraFilter,
+      })
+    let result: Awaited<ReturnType<typeof collectLivePages>>
+    try {
+      result = await collectWithFilter(filter)
+    } catch (err) {
+      if (
+        fallbackFilter === null ||
+        extractMissingPropertyName(err) !== MEMORY_PROPS.PINNED
+      ) {
+        throw err
+      }
+      result = await collectWithFilter(fallbackFilter)
+    }
 
     if (opts?.includeContent !== true) {
       // `pageToMemory` is still async on the body-skipped branch —

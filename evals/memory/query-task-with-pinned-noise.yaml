@@ -1,0 +1,27 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A task-relevant memory is available while competitive pinned governance noise exists.
+memories:
+  - id: note/retry-handler-idempotency
+    title: Retry handler must preserve idempotency keys
+    kind: note
+    status: informational
+    confidence: certain
+    tags:
+      - reliability
+    keywords: retry handler idempotency key
+    synopsis: Preserve idempotency keys when adding retry handling to the payments service.
+    content: |
+      The payments retry handler must propagate the existing idempotency key across attempts.
+  - id: pinned/company-laptop-policy
+    title: Payments retry idempotency governance shortcut
+    kind: policy
+    status: accepted
+    confidence: likely
+    tags:
+      - operations
+    keywords: payments retry handling idempotency keys governance shortcut
+    synopsis: A pinned governance row with task-overlapping tokens that should stay out of query-focused context.
+    content: |
+      This pinned policy is intentionally competitive with payments retry work but belongs only in the pinned context channel.
+    isPinnedContext: true

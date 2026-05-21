@@ -14,6 +14,8 @@ export interface WakeUpSectionCounts {
   currentTaskMemories: number
   recentMemories: number
   relatedMemories: number
+  pinnedContext: number
+  inheritedMemories: number
   tasks: number
   knowledgeFacts: number
   decisions: number
@@ -63,6 +65,11 @@ export interface WakeUpCoverageInput {
   memories: readonly Memory[]
   relatedMemories: readonly Memory[]
   taskMemories: readonly Memory[]
+  pinnedBlocks?: readonly Memory[]
+  inheritedMemories?: readonly {
+    memories: readonly Memory[]
+    error: string | null
+  }[]
   /** Rendered task count after applying the task section cap. */
   renderedTaskCount?: number
   tasks: readonly TaskSummary[]
@@ -100,6 +107,8 @@ function emptyWakeUpSectionCounts(): WakeUpSectionCounts {
     currentTaskMemories: 0,
     recentMemories: 0,
     relatedMemories: 0,
+    pinnedContext: 0,
+    inheritedMemories: 0,
     tasks: 0,
     knowledgeFacts: 0,
     decisions: 0,
@@ -128,6 +137,16 @@ export function emptyWakeUpCoverageMetrics(
 export function buildEmptyWakeUpCoverage(
   overrides: WakeUpCoverageOverrides = {}
 ): WakeUpCoverageMetrics {
+  const sectionCounts = emptyWakeUpSectionCounts()
+  if (overrides.sectionCounts) {
+    for (const key of Object.keys(overrides.sectionCounts) as Array<
+      keyof WakeUpSectionCounts
+    >) {
+      const value = overrides.sectionCounts[key]
+      if (value !== undefined) sectionCounts[key] = value
+    }
+  }
+
   return {
     mode: overrides.mode ?? "default",
     wakeUpMode: overrides.wakeUpMode ?? "full",
@@ -139,20 +158,7 @@ export function buildEmptyWakeUpCoverage(
       ageDays: null,
       ...overrides.digest,
     },
-    sectionCounts: {
-      digest: 0,
-      currentTaskMemories: 0,
-      recentMemories: 0,
-      relatedMemories: 0,
-      tasks: 0,
-      knowledgeFacts: 0,
-      decisions: 0,
-      proposedDecisions: 0,
-      overdueDecisions: 0,
-      proposedMemories: 0,
-      staleConfidence: 0,
-      ...overrides.sectionCounts,
-    },
+    sectionCounts,
   }
 }
 
@@ -164,6 +170,11 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
   const proposedDecisionCount = input.proposedDecisions.length
   const overdueDecisionCount = input.overdueDecisions.length
   const taskSectionCount = input.renderedTaskCount ?? input.tasks.length
+  const inheritedMemoryCount =
+    input.inheritedMemories?.reduce(
+      (sum, section) => sum + (section.error === null ? section.memories.length : 0),
+      0
+    ) ?? 0
   const now = input.now ?? Date.now()
   const digestFresh = isFreshDigest(
     input.latestDigest,
@@ -186,6 +197,8 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       currentTaskMemories: input.taskMemories.length,
       recentMemories: input.memories.length,
       relatedMemories: input.relatedMemories.length,
+      pinnedContext: input.pinnedBlocks?.length ?? 0,
+      inheritedMemories: inheritedMemoryCount,
       tasks: Math.max(0, taskSectionCount),
       knowledgeFacts: input.knowledgeFacts.length,
       // Keep this rollup adjacent to its addends so any new decision bucket
@@ -243,6 +256,8 @@ export function formatWakeUpCoverage(
     `sections.currentTask=${counts.currentTaskMemories}`,
     `sections.recent=${counts.recentMemories}`,
     `sections.related=${counts.relatedMemories}`,
+    `sections.pinnedContext=${counts.pinnedContext}`,
+    `sections.inheritedMemories=${counts.inheritedMemories}`,
     `sections.tasks=${counts.tasks}`,
     `sections.facts=${counts.knowledgeFacts}`,
     `sections.decisions=${counts.decisions}`,

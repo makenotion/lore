@@ -56,6 +56,9 @@ export const EVAL_SURFACES = [
   "wake-up.memories",
   "wake-up.relatedMemories",
   "wake-up.staleConfidence",
+  "wake-up.context",
+  "wake-up.pinnedContext",
+  "wake-up.inheritedMemories",
 ] as const
 
 export type EvalRunner = (typeof EVAL_RUNNERS)[number]
@@ -87,8 +90,8 @@ const evalTaskSchema = z
       .min(1)
       .describe(
         "Prompt for the task. Consumed as `userQuery` on the " +
-          "wake-up.taskMemories and wake-up.taskOnly surfaces. Decorative on memories, " +
-          "relatedMemories, and staleConfidence surfaces, which route " +
+          "wake-up.taskMemories, wake-up.taskOnly, and wake-up.context surfaces. Decorative on " +
+          "memories, relatedMemories, and staleConfidence surfaces, which route " +
           "through queries that ignore the prompt. See docs/evals-suite-format.md " +
           '("Wake-up surfaces") for the per-surface contract.'
       ),
@@ -183,6 +186,8 @@ export const evalMemoryScenarioSchema = z
             // recents). Defaults preserve the existing taskMemories-only
             // suite shape.
             isStaleConfidence: z.boolean().default(false),
+            isPinnedContext: z.boolean().default(false),
+            isInheritedMemory: z.boolean().default(false),
           })
           .strict()
       )
@@ -271,9 +276,9 @@ export type BenchIngestionStrategy = (typeof BENCH_INGESTION_STRATEGIES)[number]
  *   Claude Code headless adapter restores tool-driven retrieval.
  *
  * - `wake-up-prefetch`: the bench-runner calls `loadWakeUpData` with
- *   `mode="task-only"` and `userQuery=<question>` BEFORE invoking the
- *   agent. The relevance-ranked top memories (bodies included) are
- *   rendered as a system-prompt addendum the agent reads inline. No MCP tools
+ *   `userQuery=<question>` BEFORE invoking the agent. The
+ *   relevance-ranked top memories (bodies included) are rendered as
+ *   a system-prompt addendum the agent reads inline. No MCP tools
  *   required — the agent just answers from the injected context.
  *   Maps to how Lore's wake-up hook actually works at session start:
  *   the hook calls `lore-context action='wake-up' userQuery=<task>`

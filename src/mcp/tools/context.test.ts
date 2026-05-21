@@ -1137,6 +1137,80 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     expect(recentIdx).toBeGreaterThan(taskIdx)
   })
 
+  it("suppresses pinned and inherited governance context by default when userQuery is provided", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "fix outlook auth bug",
+      taskMemories: [makeMemory("task-1", { title: "Outlook auth investigation" })],
+      pinnedBlocks: [
+        makeMemory("pinned-noise", {
+          title: "Pinned governance note that should not crowd task wake-up",
+          pinned: { priority: 100, mutability: "mutable" },
+        }),
+      ],
+      upstreamSections: [
+        {
+          label: "Engineering",
+          memories: [
+            makeMemory("upstream-noise", {
+              title: "Upstream recent that should not crowd task wake-up",
+            }),
+          ],
+        },
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({
+      userQuery: "fix outlook auth bug",
+      debug: true,
+    } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## For Your Current Task")
+    expect(text).toContain("Outlook auth investigation")
+    expect(text).not.toContain("## Pinned Context")
+    expect(text).not.toContain("## Inherited from Engineering")
+    expect(text).toContain("sections.pinnedContext=0")
+    expect(text).toContain("sections.inheritedMemories=0")
+  })
+
+  it("includes pinned and inherited governance context for query wake-up when explicitly requested", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "fix outlook auth bug",
+      taskMemories: [makeMemory("task-1", { title: "Outlook auth investigation" })],
+      pinnedBlocks: [
+        makeMemory("pinned-policy", {
+          title: "Pinned rollout policy",
+          synopsis: "Governance context requested by the caller.",
+          pinned: { priority: 100, mutability: "mutable" },
+        }),
+      ],
+      upstreamSections: [
+        {
+          label: "Engineering",
+          memories: [makeMemory("upstream-policy", { title: "Inherited rollout note" })],
+        },
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({
+      userQuery: "fix outlook auth bug",
+      governanceContext: true,
+      debug: true,
+    } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## Pinned Context (1 block)")
+    expect(text).toContain("## Inherited from Engineering")
+    expect(text).toContain("sections.pinnedContext=1")
+    expect(text).toContain("sections.inheritedMemories=1")
+  })
+
   it("omits the task section when userQuery is absent (legacy callers see byte-identical output)", async () => {
     const mockServer = createMockServer()
     const services = makeWakeServices({

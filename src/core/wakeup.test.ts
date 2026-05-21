@@ -29,6 +29,7 @@ import type {
   MemoryStatus,
   TaskSummary,
 } from "../types.js"
+import { DEFAULT_PINNED_BLOCK_LIMIT } from "../types.js"
 
 const NOW = new Date("2026-04-20T12:00:00Z").getTime()
 
@@ -184,6 +185,7 @@ type ListCall = {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  excludePinned?: boolean
   sortBy?: "created_time" | "last_edited_time"
   direction?: "ascending" | "descending"
 }
@@ -194,6 +196,7 @@ type SearchCall = {
   limit?: number
   includeContent?: boolean
   mode?: "contains" | "semantic" | "hybrid"
+  excludePinned?: boolean
 }
 
 type ListRecentCall = {
@@ -235,6 +238,21 @@ function applyExcludeKinds(items: Memory[], excludeKinds?: MemoryKind[]): Memory
   if (!excludeKinds || excludeKinds.length === 0) return items
   const exclude = new Set(excludeKinds)
   return items.filter((m) => !exclude.has(m.kind))
+}
+
+function applyListCallFilters(items: Memory[], args: ListCall): Memory[] {
+  const kindFiltered = applyExcludeKinds(items, args.excludeKinds)
+  const pinnedFiltered = args.excludePinned
+    ? kindFiltered.filter((m) => m.pinned == null)
+    : kindFiltered
+  return pinnedFiltered.slice(0, args.limit ?? Number.MAX_SAFE_INTEGER)
+}
+
+function applySearchCallFilters(items: Memory[], args: SearchCall): Memory[] {
+  const pinnedFiltered = args.excludePinned
+    ? items.filter((m) => m.pinned == null)
+    : items
+  return pinnedFiltered.slice(0, args.limit ?? Number.MAX_SAFE_INTEGER)
 }
 
 function stubServices(
@@ -311,15 +329,15 @@ function stubServices(
         // explicitly excluded.
         if (args.source === "digest") {
           return {
-            items: applyExcludeKinds(opts.digestMemories ?? [], args.excludeKinds),
+            items: applyListCallFilters(opts.digestMemories ?? [], args),
           }
         }
         if (args.status === "proposed") {
           return {
-            items: applyExcludeKinds(opts.proposedMemories ?? [], args.excludeKinds),
+            items: applyListCallFilters(opts.proposedMemories ?? [], args),
           }
         }
-        return { items: applyExcludeKinds(opts.rawMemories ?? [], args.excludeKinds) }
+        return { items: applyListCallFilters(opts.rawMemories ?? [], args) }
       }),
       search: vi.fn(async (args: SearchCall) => {
         memoriesSearchCalls.push(args)
@@ -328,9 +346,9 @@ function stubServices(
           opts.taskMemories !== undefined &&
           args.query === opts.taskQuery
         ) {
-          return opts.taskMemories
+          return applySearchCallFilters(opts.taskMemories, args)
         }
-        return opts.relatedMemories ?? []
+        return applySearchCallFilters(opts.relatedMemories ?? [], args)
       }),
       queryStaleConfidence: vi.fn(async (args: StaleConfidenceCall) => {
         staleConfidenceCalls.push(args)
@@ -446,6 +464,8 @@ describe("wake-up coverage counters", () => {
       currentTaskMemories: 1,
       recentMemories: 1,
       relatedMemories: 1,
+      pinnedContext: 0,
+      inheritedMemories: 0,
       tasks: 1,
       knowledgeFacts: 1,
       decisions: 2,
@@ -564,6 +584,8 @@ describe("wake-up coverage counters", () => {
           currentTaskMemories: 3,
           recentMemories: 2,
           relatedMemories: 1,
+          pinnedContext: 7,
+          inheritedMemories: 8,
           tasks: 4,
           knowledgeFacts: 5,
           decisions: 6,
@@ -585,6 +607,8 @@ describe("wake-up coverage counters", () => {
     expect(line).toContain("queryLen=42")
     expect(line).toContain("memory=3")
     expect(line).toContain("sections.currentTask=3")
+    expect(line).toContain("sections.pinnedContext=7")
+    expect(line).toContain("sections.inheritedMemories=8")
     expect(line).toContain("sections.decisions=6")
     expect(line).toContain("digestAgeDays=2")
     expect(line).not.toContain("Fix retrieval metrics")
@@ -829,6 +853,44 @@ describe("loadWakeUpData", () => {
     expect(taskOnlyServices.decisionsListCalls).toEqual([])
     expect(taskOnlyServices.tasksListCalls).toEqual([])
     expect(taskOnlyServices.staleConfidenceCalls).toEqual([])
+  })
+
+  it("reports pinned and inherited rows as separate coverage channels", async () => {
+    const pinned = buildMemory({
+      id: "pinned",
+      title: "Pinned policy",
+      createdAt: "2026-04-19T00:00:00Z",
+      pinned: { priority: 100, mutability: "mutable" },
+    })
+    const inherited = buildMemory({
+      id: "inherited",
+      title: "Inherited policy",
+      createdAt: "2026-04-18T00:00:00Z",
+    })
+    const services = stubServices({ pinnedBlocks: [pinned] })
+    services.upstreams = [
+      {
+        label: "Engineering",
+        pageId: "engineering-page",
+        priority: 100,
+        lastError: null,
+        loadReaders: async () =>
+          ({
+            memories: {
+              list: async () => ({ items: [inherited] }),
+            },
+          }) as never,
+      },
+    ]
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      includeCoverage: true,
+      now: NOW,
+    })
+
+    expect(data.coverage?.sectionCounts.pinnedContext).toBe(1)
+    expect(data.coverage?.sectionCounts.inheritedMemories).toBe(1)
   })
 
   it("reports rendered task coverage instead of the over-fetched task window", async () => {
@@ -2004,6 +2066,62 @@ describe("loadWakeUpData", () => {
       expect(data.memories.map((m) => m.id)).toEqual(["m0"])
       expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-hit"])
       expect(data.taskMemories.map((m) => m.id)).toEqual(["task-fresh"])
+    })
+
+    it("excludes pinned rows from memory sections when pinned context is disabled", async () => {
+      const pinned = { priority: 100, mutability: "mutable" as const }
+      const manyPinned = Array.from({ length: DEFAULT_PINNED_BLOCK_LIMIT + 1 }, (_, i) =>
+        buildMemory({
+          id: `pinned-${i}`,
+          title: `Pinned ${i}`,
+          createdAt: `2026-04-${String(20 - i).padStart(2, "0")}T00:00:00Z`,
+          pinned,
+        })
+      )
+      const recent = buildMemory({
+        id: "recent",
+        title: "Normal recent after many pins",
+        createdAt: "2026-04-01T00:00:00Z",
+      })
+      const related = buildMemory({
+        id: "related",
+        title: "Normal related after many pins",
+        createdAt: "2026-03-19T00:00:00Z",
+      })
+      const taskHit = buildMemory({
+        id: "task-hit",
+        title: "Normal task search hit after many pins",
+        createdAt: "2026-03-17T00:00:00Z",
+      })
+      const task = buildTask({
+        id: "task-1",
+        title: "Retry handler",
+        entity: "retry handler idempotency",
+      })
+      const services = stubServices({
+        rawMemories: [...manyPinned, recent],
+        digestMemories: [],
+        relatedMemories: [...manyPinned, related],
+        taskQuery: "current retry prompt",
+        taskMemories: [...manyPinned, taskHit],
+        tasks: [task],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "current retry prompt",
+        includePinnedBlocks: false,
+        now: NOW,
+      })
+
+      expect(data.memories.map((m) => m.id)).toEqual(["recent"])
+      expect(data.relatedMemories.map((m) => m.id)).toEqual(["related"])
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["task-hit"])
+      expect(data.pinnedBlocks).toEqual([])
+      expect(
+        services.memoriesCalls.find((call) => call.includeContent === true)?.excludePinned
+      ).toBe(true)
+      expect(services.memoriesSearchCalls.every((call) => call.excludePinned)).toBe(true)
     })
 
     it("caps taskMemories at taskMemoryLimit (default 3)", async () => {

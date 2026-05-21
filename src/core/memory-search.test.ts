@@ -33,10 +33,12 @@ function page(
   options: {
     title?: string
     confidenceScore?: number | null
+    pinned?: boolean
   } = {}
 ): PageObjectResponse {
   const title = options.title ?? id
   const confidenceScore = options.confidenceScore ?? null
+  const pinned = options.pinned ?? false
   return {
     object: "page",
     id,
@@ -71,8 +73,20 @@ function page(
         type: "number",
         number: confidenceScore,
       } as unknown,
+      [MEMORY_PROPS.PINNED]: {
+        type: "checkbox",
+        checkbox: pinned,
+      } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
+}
+
+function missingPinnedPropertyError(): Error & { code: string } {
+  const err = new Error(
+    `Could not find property with name or id: ${MEMORY_PROPS.PINNED}`
+  ) as Error & { code: string }
+  err.code = "validation_error"
+  return err
 }
 
 function memoryForPage(p: PageObjectResponse): Memory {
@@ -129,6 +143,67 @@ function makeSubject(
 }
 
 describe("MemorySearch mode selection", () => {
+  it("contains mode pushes excludePinned into the Notion filter", async () => {
+    const { searcher, querySpy } = makeSubject()
+
+    await searcher.search({
+      query: "retry",
+      mode: "contains",
+      excludePinned: true,
+      limit: 3,
+    })
+
+    const serialized = JSON.stringify(querySpy.mock.calls[0]![0].filter)
+    expect(serialized).toContain(MEMORY_PROPS.PINNED)
+    expect(serialized).toContain("does_not_equal")
+    expect(serialized).toContain("true")
+  })
+
+  it("contains mode retries excludePinned without the pinned filter on pre-migration vaults", async () => {
+    const { searcher, querySpy } = makeSubject()
+    querySpy.mockRejectedValueOnce(missingPinnedPropertyError()).mockResolvedValueOnce({
+      results: [page("normal")],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const memories = await searcher.search({
+      query: "retry",
+      mode: "contains",
+      excludePinned: true,
+      limit: 3,
+    })
+
+    expect(memories.map((memory) => memory.id)).toEqual(["normal"])
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    const firstFilter = JSON.stringify(querySpy.mock.calls[0]![0].filter)
+    const retryFilter = JSON.stringify(querySpy.mock.calls[1]![0].filter)
+    expect(firstFilter).toContain(MEMORY_PROPS.PINNED)
+    expect(retryFilter).not.toContain(MEMORY_PROPS.PINNED)
+    expect(retryFilter).toContain(MEMORY_PROPS.TITLE)
+    expect(retryFilter).toContain(MEMORY_PROPS.KEYWORDS)
+    expect(retryFilter).toContain(MEMORY_PROPS.SYNOPSIS)
+    expect(retryFilter).toContain("retry")
+  })
+
+  it("semantic mode filters pinned rows before materialization", async () => {
+    const { searcher, materializeSpy } = makeSubject({
+      semanticPages: [page("pinned", { pinned: true }), page("normal")],
+    })
+
+    const memories = await searcher.search({
+      query: "retry",
+      mode: "semantic",
+      excludePinned: true,
+      limit: 2,
+    })
+
+    expect(memories.map((memory) => memory.id)).toEqual(["normal"])
+    expect(materializeSpy.mock.calls[0]![0].map((p: PageObjectResponse) => p.id)).toEqual(
+      ["normal"]
+    )
+  })
+
   it("contains mode uses dataSources.query and explains contains ranks", async () => {
     const { searcher, querySpy, searchSpy, materializeSpy } = makeSubject({
       containsPages: [page("contains-hit")],

@@ -180,6 +180,50 @@ tasks:
         shouldNotSurface:
           - note/sprint-catering
 
+  - id: query-focus-ignores-pinned-noise
+    surface: wake-up.context
+    prompt: |
+      Add retry handling to the payments service while preserving idempotency keys.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      noisy-memory: ../memory/noisy-pinned-context.yaml
+      helpful-memory: ../memory/query-task-with-pinned-noise.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      noisy-memory:
+        shouldSurface: []
+        shouldNotSurface:
+          - pinned/destructive-release-shortcut
+      helpful-memory:
+        shouldSurface:
+          - note/retry-handler-idempotency
+        shouldNotSurface:
+          - pinned/company-laptop-policy
+
+  - id: query-focus-ignores-upstream-noise
+    surface: wake-up.context
+    prompt: |
+      Add webhook signature validation using the established replay window.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      noisy-memory: ../memory/noisy-upstream-inheritance.yaml
+      helpful-memory: ../memory/query-task-with-upstream-noise.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      noisy-memory:
+        shouldSurface: []
+        shouldNotSurface:
+          - upstream/ignore-local-security-checks
+      helpful-memory:
+        shouldSurface:
+          - note/webhook-signature-replay-window
+        shouldNotSurface:
+          - upstream/mobile-theme-guidance
+
   # ── wake-up.memories (recents) surface ────────────────────────────────────
 
   - id: surfaces-recent-architecture-decision

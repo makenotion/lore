@@ -135,7 +135,10 @@ cache hits, `reason=load-failed` to count failed wake-up loads, `digestFresh` /
 `sections.*` counts to spot when wake-up is too noisy or too thin. Operators
 with alerts or saved greps for the older `reason=no-user-query` key should
 update them to `reason=no-ranked-search`, which covers every unranked wake-up
-fallback. These are per-firing counters, not relevance-quality scores;
+fallback. The same vocabulary includes `sections.pinnedContext` and
+`sections.inheritedMemories`; the hook reports both as zero because automatic
+wake-up does not render those governance channels. These are per-firing
+counters, not relevance-quality scores;
 aggregate multiple lines before tuning caps, and use the eval harness for
 precision / recall / memory-lift quality measurements. The same content-free
 line is also visible in `lore status` and `lore-context action='status'` for

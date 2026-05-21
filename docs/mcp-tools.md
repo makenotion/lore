@@ -10,15 +10,11 @@ historical timeline.
 
 ## `lore-context` — vault context
 
-| Action    | Description                                                                                                                                                                                                                                                                                                                            |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`  | Show vault status, active profile, topology health when configured, database counts, active project, task summary, proposed-memory inbox count, wake-up coverage counters, configured projects, and background hook failure markers                                                                                                    |
-| `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, memories related to active tasks, and inherited upstream memories per configured `upstreamVaults` entry. `mode: "task-only"` suppresses broad sections and renders only `userQuery`-ranked memories plus minimal framing/debug metadata. |
-| `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                                                                                                                                                                                                                                |
-
-Full wake-up inherited upstream sections remain sparse and labeled per
-configured upstream, with failures rendered inline without suppressing
-surviving sections; see [`topology-inheritance.md`](topology-inheritance.md).
+| Action    | Description                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`  | Show vault status, active profile, topology health when configured, database counts, active project, task summary, proposed-memory inbox count, wake-up coverage counters, configured projects, and background hook failure markers                                                                                                                                                                                    |
+| `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, and memories related to active tasks. Full catch-up wake-ups also render pinned context blocks and inherited upstream memories per configured `upstreamVaults`; query-focused wake-ups include those governance channels only with `governanceContext: true`; `mode: "task-only"` suppresses broad sections and renders only `userQuery`-ranked memories plus minimal framing/debug metadata (see [`topology-inheritance.md`](topology-inheritance.md)). |
+| `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                                                                                                                                                                                                                                                                                                                |
 
 `lore-context action='status'` includes a `Background hooks` JSON block. The
 object is shaped for agents to inspect directly:
@@ -54,19 +50,16 @@ exist.
 
 Pass `userQuery` to `wake-up` when rerunning context after `/clear`, a resume,
 or a topic pivot; the response adds a **For Your Current Task** section ranked
-against that prompt.
-
-Pass `mode: "task-only"` with `userQuery` for narrow one-shot retrieval. That
-shape renders project framing plus query-ranked memories and suppresses digest,
-recents, active task inventory, broad facts, governance triage, pinned, and
-inherited sections.
+against that prompt. Query-focused wake-up skips pinned context blocks and
+inherited upstream memories by default so task-ranked memory is not crowded by
+governance channels. Pass `governanceContext: true` when the current task
+explicitly needs pinned policies or upstream catch-up context; full wake-up
+without `userQuery` includes those governance channels by default.
 
 Pass `debug: true` to `wake-up` when investigating why a context load is too
 thin or too noisy. The response appends privacy-conscious coverage counters
-for ranked/default mode, full/task-only shape, caps, section counts, and digest
-age; it does not include titles, facts, memory bodies, or the raw `userQuery`.
-In task-only debug output, digest freshness may be probed for observability even
-though the digest section stays suppressed.
+for mode, caps, section counts, and digest age; it does not include titles,
+facts, memory bodies, or the raw `userQuery`.
 
 The active profile controls write-time tag validation, entity kind options,
 and writable fact predicates. Tag read filters remain permissive so agents can
@@ -147,11 +140,12 @@ default reads byte-identically.
 
 Pinned context blocks render in `lore-context action='wake-up'` under
 a dedicated `## Pinned Context` section BEFORE the relevance-ranked
-sections (digest / recent / for-your-current-task). Audience matching
-is comma-split + case-folded against the reader's resolved scope
-context (`LORE_USER_NAME` / `LORE_AGENT_NAME` / `LORE_ROLE`); `all`
-/ `*` / `everyone` / `agents` are universal tokens. Empty audience
-matches every reader.
+sections on full catch-up wake-ups and on query-focused wake-ups that
+set `governanceContext: true`. Audience matching is comma-split +
+case-folded against the reader's resolved scope context
+(`LORE_USER_NAME` / `LORE_AGENT_NAME` / `LORE_ROLE`); `all` / `*` /
+`everyone` / `agents` are universal tokens. Empty audience matches
+every reader.
 
 Every pin / unpin / update appends an audit line to the memory body
 (`> <Action> <YYYY-MM-DD> by <author>: <reason>`) so the change is

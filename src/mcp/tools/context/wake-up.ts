@@ -438,6 +438,7 @@ export async function handleWakeUp(
     taskLimit?: number
     userQuery?: string
     taskMemoryLimit?: number
+    governanceContext?: boolean
     debug?: boolean
     mode?: "full" | "task-only"
   }
@@ -464,6 +465,7 @@ export async function handleWakeUp(
     // wins — these defaults only apply when the corresponding arg is
     // absent.
     const ranked = typeof args.userQuery === "string" && args.userQuery.trim().length > 0
+    const includeGovernanceContext = args.governanceContext ?? !ranked
     const recentDefault = ranked
       ? RANKED_WAKEUP_LIMITS.memoryLimit
       : DEFAULT_WAKEUP_MEMORY_LIMIT
@@ -550,6 +552,8 @@ export async function handleWakeUp(
       taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
       includeCoverage: args.debug === true,
+      includePinnedBlocks: includeGovernanceContext,
+      includeInheritedMemories: includeGovernanceContext,
       todayDate: today,
       cache: services.wakeupCache,
       // Pinned context blocks. Audience matching uses
@@ -562,12 +566,18 @@ export async function handleWakeUp(
       pinnedReaderContext: services.scopeContext,
     })
 
+    const inheritedMemoryRows = inheritedMemories.reduce(
+      (sum, section) => sum + (section.error === null ? section.memories.length : 0),
+      0
+    )
     const sections: string[] = []
     const renderedCoverageCounts: WakeUpSectionCounts = {
       digest: !taskOnly && digest ? 1 : 0,
       currentTaskMemories: 0,
       recentMemories: 0,
       relatedMemories: 0,
+      pinnedContext: taskOnly ? 0 : pinnedBlocks.length,
+      inheritedMemories: taskOnly ? 0 : inheritedMemoryRows,
       tasks: 0,
       knowledgeFacts: taskOnly ? 0 : knowledgeFacts.length,
       decisions: taskOnly ? 0 : proposedDecisions.length + overdueDecisions.length,
@@ -1181,10 +1191,6 @@ export async function handleWakeUp(
       sections.push(`\`${formatWakeUpCoverage(renderedCoverage, coverageCaps)}\`\n`)
     }
 
-    const inheritedMemoryRows = inheritedSectionsToRender.reduce(
-      (sum, section) => sum + (section.error === null ? section.memories.length : 0),
-      0
-    )
     const renderedMemoryRows =
       renderedCoverageCounts.digest +
       renderedCoverageCounts.currentTaskMemories +
@@ -1193,7 +1199,7 @@ export async function handleWakeUp(
       (taskOnly ? 0 : proposedMemories.length) +
       renderedCoverageCounts.staleConfidence +
       (taskOnly ? 0 : pinnedBlocks.length) +
-      inheritedMemoryRows
+      (taskOnly ? 0 : inheritedMemoryRows)
 
     const response: ToolResult = {
       content: [{ type: "text", text: sections.join("\n") }],

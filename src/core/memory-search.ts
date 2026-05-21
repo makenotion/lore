@@ -19,6 +19,7 @@ import type {
 import type { LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
+import { extractMissingPropertyName } from "../notion/errors.js"
 import {
   RunToolSearchRestrictedError,
   RUNTOOL_SEARCH_MAX_PAGE_SIZE,
@@ -30,6 +31,7 @@ import { confidenceFactor } from "./decay.js"
 import { todayUtc } from "./task.js"
 import {
   extractMultiSelect,
+  extractCheckbox,
   extractNumber,
   extractRelationIds,
   extractRichText,
@@ -696,7 +698,6 @@ export class MemorySearch {
       // Explicit `status` short-circuits this branch.
       filters.push(...reviewTerminalStatusExclusionFilters())
     }
-
     // Empty-string query degenerates to "match every page in the data source"
     // because `contains: ""` is satisfied by every value. Skip the text
     // clause entirely so the caller gets a recency-ordered listing of
@@ -712,18 +713,39 @@ export class MemorySearch {
         ],
       })
     }
+    const filtersWithoutPinned = [...filters]
+    if (input.excludePinned === true) {
+      filters.push({
+        property: MEMORY_PROPS.PINNED,
+        checkbox: { does_not_equal: true },
+      })
+    }
 
     // No filters AND empty query → `filter: undefined` returns every row in
     // the DS sorted by recency, capped at `limit`. Intentional, not a
     // degenerate-input bug: callers passing only `mode: "contains"` with
     // no scope and no query get the equivalent of `lore-query action='recall'` minus
     // cursor pagination. A future reader: do not add a guard here.
-    const baseFilter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
+    const toBaseFilter = (
+      activeFilters: Array<Record<string, unknown>>
+    ): Record<string, unknown> | undefined =>
+      activeFilters.length > 1
+        ? { and: activeFilters }
+        : activeFilters.length === 1
+          ? activeFilters[0]
           : undefined
+    const buildFilter = (
+      activeFilters: Array<Record<string, unknown>>
+    ): QueryDataSourceParameters["filter"] => {
+      const baseFilter = toBaseFilter(activeFilters)
+      const scopedFilter =
+        input.includeOutOfScope === true || !this.scopeFilterEnabled
+          ? baseFilter
+          : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
+      return withCleanupOrphanExclusion(
+        scopedFilter
+      ) as QueryDataSourceParameters["filter"]
+    }
 
     // Resurfaced cleanup-orphan exclusion. Pushed
     // server-side so a restored-from-trash orphan does not consume a
@@ -733,11 +755,9 @@ export class MemorySearch {
     // Default scope filter. Same posture as `list` —
     // narrow-scope rows whose `scopeKey` doesn't match the reader's
     // identity slot drop out of the contains lane by default.
-    const scopedFilter =
-      input.includeOutOfScope === true || !this.scopeFilterEnabled
-        ? baseFilter
-        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
-    const filter = withCleanupOrphanExclusion(scopedFilter)
+    const filter = buildFilter(filters)
+    const fallbackFilter =
+      input.excludePinned === true ? buildFilter(filtersWithoutPinned) : null
 
     if (limit <= 0) return { pages: [], capped: false }
 
@@ -751,21 +771,34 @@ export class MemorySearch {
         : (page: PageObjectResponse) =>
             matchesDefaultScope(page.properties, this.scopeCtx, containsToday)
 
-    const result = await collectLivePages({
-      limit,
-      source: "MemoryService.fetchContainsPages",
-      query: ({ page_size, start_cursor }) =>
-        this.client.dataSources.query({
-          data_source_id: this.db.dataSourceId,
-          filter: filter as QueryDataSourceParameters["filter"],
-          // No relevance ranking is available on `dataSources.query`; sort by
-          // recency so the latest-edited matches surface first.
-          sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
-          page_size,
-          start_cursor,
-        }),
-      extraFilter: containsExtraFilter,
-    })
+    const collectWithFilter = (activeFilter: QueryDataSourceParameters["filter"]) =>
+      collectLivePages({
+        limit,
+        source: "MemoryService.fetchContainsPages",
+        query: ({ page_size, start_cursor }) =>
+          this.client.dataSources.query({
+            data_source_id: this.db.dataSourceId,
+            filter: activeFilter,
+            // No relevance ranking is available on `dataSources.query`; sort by
+            // recency so the latest-edited matches surface first.
+            sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+            page_size,
+            start_cursor,
+          }),
+        extraFilter: containsExtraFilter,
+      })
+    let result: Awaited<ReturnType<typeof collectLivePages>>
+    try {
+      result = await collectWithFilter(filter)
+    } catch (err) {
+      if (
+        fallbackFilter === null ||
+        extractMissingPropertyName(err) !== MEMORY_PROPS.PINNED
+      ) {
+        throw err
+      }
+      result = await collectWithFilter(fallbackFilter)
+    }
     if (result.capped) {
       warnLivePageCapFired({
         source: "MemoryService.fetchContainsPages",
@@ -1417,6 +1450,11 @@ export class MemorySearch {
       // posture as the kind / status exact-match filters above.
       // Explicit `input.status` short-circuits this branch.
       filtered = filtered.filter(isNotReviewTerminalStatus)
+    }
+    if (input.excludePinned === true) {
+      filtered = filtered.filter(
+        (page) => !extractCheckbox(page.properties[MEMORY_PROPS.PINNED])
+      )
     }
 
     // Default scope filter. Same posture as the

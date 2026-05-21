@@ -223,6 +223,8 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
       userQuery: input.phaseBPrompt,
       includeMemoryContent: true,
       includeCoverage: true,
+      includePinnedBlocks: false,
+      includeInheritedMemories: false,
     })
     return wakeUpDataToLongitudinalResult(data, input.scenario)
   }

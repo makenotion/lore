@@ -36,10 +36,12 @@ export const HELP_RECIPES = [
       mode: "task-only",
       userQuery: "Implement MCP help resources for polymorphic tool actions",
       expand: false,
+      governanceContext: false,
       debug: true,
     },
     cautions: [
       "Prefer title-tier output first. Set expand only when the returned titles are not enough.",
+      "When userQuery is set, pinned and inherited governance context is skipped unless governanceContext is true.",
     ],
   },
   {

@@ -303,6 +303,9 @@ const ZEROED_SECTION_OPTIONS: Partial<WakeUpOptions> = {
   taskLimit: 0,
   includeDecisions: false,
   includeStaleConfidence: false,
+  includeProposedMemories: false,
+  includePinnedBlocks: false,
+  includeInheritedMemories: false,
 }
 
 /**
@@ -384,6 +387,58 @@ const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
     // specific top-1 id is implicitly testing fixture-load order, not
     // the production ranking algorithm.
     extract: (data, limit) => data.staleConfidence.slice(0, limit).map((m) => m.id),
+  },
+  "wake-up.context": {
+    configureOptions: (limit, prompt) => {
+      const ranked = prompt.trim().length > 0
+      return {
+        ...ZEROED_SECTION_OPTIONS,
+        userQuery: prompt,
+        taskMemoryLimit: limit,
+        memoryLimit: limit,
+        memoryLimitWithDigest: limit,
+        relatedMemoryLimit: limit,
+        taskLimit: RELATED_TASK_SEED_LIMIT,
+        includePinnedBlocks: !ranked,
+        includeInheritedMemories: !ranked,
+      }
+    },
+    extract: (data, _limit) => {
+      const ids: string[] = []
+      const add = (id: string) => {
+        if (!ids.includes(id)) ids.push(id)
+      }
+      if (data.digest) add(data.digest.id)
+      for (const memory of data.taskMemories) add(memory.id)
+      for (const memory of data.memories) add(memory.id)
+      for (const memory of data.relatedMemories) add(memory.id)
+      for (const memory of data.pinnedBlocks) add(memory.id)
+      for (const section of data.inheritedMemories) {
+        if (section.error !== null) continue
+        for (const memory of section.memories) add(memory.id)
+      }
+      return ids
+    },
+  },
+  "wake-up.pinnedContext": {
+    configureOptions: (limit) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      includePinnedBlocks: true,
+      pinnedBlockLimit: limit,
+    }),
+    extract: (data, limit) => data.pinnedBlocks.slice(0, limit).map((m) => m.id),
+  },
+  "wake-up.inheritedMemories": {
+    configureOptions: (limit) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      includeInheritedMemories: true,
+      inheritedMemoryLimit: limit,
+    }),
+    extract: (data, limit) =>
+      data.inheritedMemories
+        .flatMap((section) => (section.error === null ? section.memories : []))
+        .slice(0, limit)
+        .map((m) => m.id),
   },
 }
 
@@ -529,12 +584,30 @@ function isStatusRetrievable(memory: Memory): boolean {
 }
 
 function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
-  const memories = scenario.memories.map((memory, index) =>
+  const allMemories = scenario.memories.map((memory, index) =>
     fixtureMemoryToMemory(memory, index)
   )
-  const memoriesById = new Map(memories.map((memory) => [memory.id, memory]))
+  const inheritedIds = new Set(
+    scenario.memories
+      .filter((memory) => memory.isInheritedMemory)
+      .map((memory) => memory.id)
+  )
+  const memories = allMemories.filter((memory) => !inheritedIds.has(memory.id))
+  const memoriesById = new Map(allMemories.map((memory) => [memory.id, memory]))
   const staleConfidenceMemories = scenario.memories
     .filter((memory) => memory.isStaleConfidence)
+    .map((memory) => memoriesById.get(memory.id))
+    .filter((memory): memory is Memory => memory !== undefined)
+  const pinnedContextMemories = scenario.memories
+    .filter((memory) => memory.isPinnedContext)
+    .map((memory) => memoriesById.get(memory.id))
+    .filter((memory): memory is Memory => memory !== undefined)
+    .map((memory) => ({
+      ...memory,
+      pinned: memory.pinned ?? { priority: 100, mutability: "mutable" as const },
+    }))
+  const inheritedMemories = scenario.memories
+    .filter((memory) => memory.isInheritedMemory)
     .map((memory) => memoriesById.get(memory.id))
     .filter((memory): memory is Memory => memory !== undefined)
   const tasks = scenario.tasks.map((task) => fixtureTaskToSummary(task))
@@ -544,19 +617,27 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
         const sourceFiltered = opts.source
           ? memories.filter((memory) => memory.source === opts.source)
           : memories
+        const pinnedFiltered = opts.excludePinned
+          ? sourceFiltered.filter((memory) => memory.pinned == null)
+          : sourceFiltered
         // Status filtering applies the same suppression as search:
         // fixture recall does not surface superseded, deprecated, or
         // rejected rows on the recents path either.
-        const statusFiltered = sourceFiltered.filter(isStatusRetrievable)
+        const statusFiltered = pinnedFiltered.filter(isStatusRetrievable)
         const limit = opts.limit ?? Number.MAX_SAFE_INTEGER
         return { items: statusFiltered.slice(0, limit) }
       },
-      search: async (input) =>
-        searchFixtureMemories(input.query, memories).slice(0, input.limit),
+      search: async (input) => {
+        const pinnedFiltered = input.excludePinned
+          ? memories.filter((memory) => memory.pinned == null)
+          : memories
+        return searchFixtureMemories(input.query, pinnedFiltered).slice(0, input.limit)
+      },
       queryStaleConfidence: async (opts) => staleConfidenceMemories.slice(0, opts.limit),
       countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
-      listPinnedBlocks: async () => [],
-      countPinnedBlocks: async () => 0,
+      listPinnedBlocks: async (opts) =>
+        pinnedContextMemories.slice(0, opts.limit ?? Number.MAX_SAFE_INTEGER),
+      countPinnedBlocks: async () => pinnedContextMemories.length,
     },
     facts: {
       listRecent: async () => ({ items: [] as Fact[], hasMore: false }),
@@ -574,6 +655,28 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
         nextCursor: undefined,
       }),
     },
+    upstreams:
+      inheritedMemories.length > 0
+        ? [
+            {
+              label: "Fixture Upstream",
+              pageId: "fixture-upstream",
+              priority: 100,
+              lastError: null,
+              loadReaders: async () =>
+                ({
+                  memories: {
+                    list: async (opts?: { limit?: number }) => ({
+                      items: inheritedMemories.slice(
+                        0,
+                        opts?.limit ?? Number.MAX_SAFE_INTEGER
+                      ),
+                    }),
+                  },
+                }) as never,
+            },
+          ]
+        : [],
   }
 }
 
@@ -668,6 +771,9 @@ function fixtureMemoryToMemory(memory: EvalFixtureMemory, index: number): Memory
     compareNotes: "",
     createdAt,
     updatedAt: createdAt,
+    pinned: memory.isPinnedContext
+      ? { priority: 100, mutability: "mutable" as const }
+      : null,
   }
 }
 

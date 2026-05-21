@@ -80,6 +80,7 @@ export interface WakeUpServices {
       includeContent?: boolean
       includeUnscoped?: boolean
       includeProposed?: boolean
+      excludePinned?: boolean
       sortBy?: "created_time" | "last_edited_time"
       direction?: "ascending" | "descending"
     }): Promise<{ items: Memory[]; nextCursor?: string }>
@@ -89,6 +90,7 @@ export interface WakeUpServices {
       limit?: number
       includeContent?: boolean
       mode?: "contains" | "semantic" | "hybrid"
+      excludePinned?: boolean
     }): Promise<Memory[]>
     /**
      * Surfaces low-score-or-long-neglected memories for the Stale
@@ -543,6 +545,12 @@ async function runWakeUpFanOut(
     : (opts.includeProposedMemories ?? true)
   const proposedMemoryLimit =
     opts.proposedMemoryLimit ?? DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT
+  const includePinnedBlocks = taskOnly ? false : (opts.includePinnedBlocks ?? true)
+  const pinnedBlockLimit = opts.pinnedBlockLimit ?? DEFAULT_PINNED_BLOCK_LIMIT
+  const includePinnedSection = includePinnedBlocks && pinnedBlockLimit > 0
+  const excludePinnedFromMemorySections = !includePinnedSection
+  const filterPinnedMemoryRows = (items: Memory[]): Memory[] =>
+    excludePinnedFromMemorySections ? items.filter((m) => m.pinned == null) : items
   const userQuery = sanitizeUserQuery(opts.userQuery)
 
   // Request one extra memory so we can drop a digest entry without running
@@ -645,25 +653,21 @@ async function runWakeUpFanOut(
   // undefined`) still fires the query — `listPinnedBlocks` returns
   // every pinned row regardless of project scope when no project
   // id is supplied.
-  const includePinnedBlocks = taskOnly ? false : (opts.includePinnedBlocks ?? true)
-  const pinnedBlockLimit = opts.pinnedBlockLimit ?? DEFAULT_PINNED_BLOCK_LIMIT
-  const pinnedBlocksQuery =
-    includePinnedBlocks && pinnedBlockLimit > 0
-      ? services.memories.listPinnedBlocks({
-          projectId,
-          limit: pinnedBlockLimit,
-          today: todayDate,
-          readerContext: opts.pinnedReaderContext,
-          includeContent: false,
-        })
-      : Promise.resolve([] as Memory[])
+  const pinnedBlocksQuery = includePinnedSection
+    ? services.memories.listPinnedBlocks({
+        projectId,
+        limit: pinnedBlockLimit,
+        today: todayDate,
+        readerContext: opts.pinnedReaderContext,
+        includeContent: false,
+      })
+    : Promise.resolve([] as Memory[])
   // Total active pinned-block count for the abuse-warning gate.
   // Only fires when the section runs — skipping pinned blocks
   // skips the abuse signal too.
-  const pinnedBlocksTotalQuery =
-    includePinnedBlocks && pinnedBlockLimit > 0
-      ? services.memories.countPinnedBlocks()
-      : Promise.resolve(null as number | null)
+  const pinnedBlocksTotalQuery = includePinnedSection
+    ? services.memories.countPinnedBlocks()
+    : Promise.resolve(null as number | null)
   const shouldProbeDigest = Boolean(projectId && (!taskOnly || opts.includeCoverage))
 
   const includeProposedSection = includeProposedMemories && proposedMemoryLimit > 0
@@ -739,6 +743,7 @@ async function runWakeUpFanOut(
           projectId,
           limit: memoryLimit + 1,
           includeContent,
+          excludePinned: excludePinnedFromMemorySections,
         })
       : // Both memory limits are zero — render no memories regardless of
         // whether a digest exists. Skip the Notion query rather than
@@ -788,6 +793,7 @@ async function runWakeUpFanOut(
           projectId,
           limit: taskFetchLimit,
           includeContent,
+          excludePinned: excludePinnedFromMemorySections,
         })
       : Promise.resolve([] as Memory[]),
     staleConfidenceQuery,
@@ -804,7 +810,8 @@ async function runWakeUpFanOut(
   const digest = !taskOnly && latestDigestIsFresh ? latestDigest : null
 
   const digestCreatedAt = digest ? new Date(digest.createdAt).getTime() : null
-  const nonDigestMemories = rawMemories.filter((m) => {
+  const rawMemoryRows = filterPinnedMemoryRows(rawMemories)
+  const nonDigestMemories = rawMemoryRows.filter((m) => {
     if (m.source === "digest") return false
     if (digestCreatedAt === null) return true
     return new Date(m.createdAt).getTime() > digestCreatedAt
@@ -843,13 +850,16 @@ async function runWakeUpFanOut(
       // phrase-shaped seed queries — running it would just add a Notion
       // round-trip per wake-up before the inevitable semantic fallback
       // fires. The cost saving is one round-trip per session start.
-      const candidates = await services.memories.search({
-        query: entities.join(" "),
-        projectId,
-        limit: fetchLimit,
-        includeContent,
-        mode: "semantic",
-      })
+      const candidates = filterPinnedMemoryRows(
+        await services.memories.search({
+          query: entities.join(" "),
+          projectId,
+          limit: fetchLimit,
+          includeContent,
+          mode: "semantic",
+          excludePinned: excludePinnedFromMemorySections,
+        })
+      )
       relatedMemories = candidates
         .filter((m) => !alreadySurfaced.has(m.id))
         .slice(0, relatedLimit)
@@ -882,34 +892,12 @@ async function runWakeUpFanOut(
   if (taskCandidates.length > 0 && taskMemoryLimit > 0) {
     const taskSurfaced = new Set(alreadySurfaced)
     for (const mem of relatedMemories) taskSurfaced.add(mem.id)
-    for (const candidate of taskCandidates) {
+    for (const candidate of filterPinnedMemoryRows(taskCandidates)) {
       if (taskSurfaced.has(candidate.id)) continue
       taskMemories.push(candidate)
       if (taskMemories.length >= taskMemoryLimit) break
     }
   }
-
-  const coverage = opts.includeCoverage
-    ? computeWakeUpCoverage({
-        wakeUpMode,
-        userQuery,
-        now,
-        rankedSearchAttempted,
-        latestDigest,
-        digestFreshnessDays: freshnessDays,
-        memories,
-        relatedMemories,
-        taskMemories,
-        renderedTaskCount: taskLimit > 0 ? Math.min(tasks.length, taskLimit) : 0,
-        tasks,
-        knowledgeFacts,
-        proposedDecisions,
-        overdueDecisions,
-        proposedMemories,
-        proposedMemoriesTotal,
-        staleConfidence,
-      })
-    : null
 
   // Upstream fan-out runs AFTER the primary fan-out and renders
   // sections AFTER the primary sections — the issue's "Local
@@ -933,6 +921,30 @@ async function runWakeUpFanOut(
           includeContent
         )
       : []
+
+  const coverage = opts.includeCoverage
+    ? computeWakeUpCoverage({
+        wakeUpMode,
+        userQuery,
+        now,
+        rankedSearchAttempted,
+        latestDigest,
+        digestFreshnessDays: freshnessDays,
+        memories,
+        relatedMemories,
+        taskMemories,
+        pinnedBlocks,
+        inheritedMemories,
+        renderedTaskCount: taskLimit > 0 ? Math.min(tasks.length, taskLimit) : 0,
+        tasks,
+        knowledgeFacts,
+        proposedDecisions,
+        overdueDecisions,
+        proposedMemories,
+        proposedMemoriesTotal,
+        staleConfidence,
+      })
+    : null
 
   return {
     digest,

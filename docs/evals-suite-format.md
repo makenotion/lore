@@ -48,6 +48,9 @@ exercises only the surface under test.
 | `wake-up.memories`               | Recents -- fixture `memories` array order is the recency order.                                                                               |
 | `wake-up.relatedMemories`        | Active tasks in the fixture's top-level `tasks: [...]` block seed entity-based search. The `entity` field on each task drives the seed query. |
 | `wake-up.staleConfidence`        | Fixture memories with `isStaleConfidence: true` populate the surface.                                                                         |
+| `wake-up.context`                | Query-focused union of rendered memory channels. The prompt becomes `userQuery`; pinned and inherited governance channels are suppressed.     |
+| `wake-up.pinnedContext`          | Fixture memories with `isPinnedContext: true` populate the pinned-context channel.                                                            |
+| `wake-up.inheritedMemories`      | Fixture memories with `isInheritedMemory: true` populate one synthetic upstream inheritance channel.                                          |
 
 Every task must include the `no-lore`, `empty-lore`, and `helpful-memory`
 ablations. Additional scenarios such as `noisy-memory` and `stale-memory` are
@@ -87,6 +90,10 @@ Use `helpful-memory` to prove useful memory can surface. Keep `no-lore` and
 between "the memory helped" and "nothing was available." Add `noisy-memory`
 when plausible but irrelevant memory could crowd out the useful row, and add
 `stale-memory` when old or deprecated guidance must not influence the task.
+For task-focused wake-up, model pinned and upstream noise with
+`isPinnedContext` and `isInheritedMemory` fixtures plus `shouldNotSurface`
+expectations; those channels are measured separately from query-ranked task
+memory.
 
 Use `shouldNotSurface` for memories that would actively harm the task, such as
 deprecated decisions or unrelated notes that share tempting keywords. Retrieval

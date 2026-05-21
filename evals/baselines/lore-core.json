@@ -3,11 +3,11 @@
   "suite": "lore-core",
   "runner": "retrieval",
   "capturedAt": "2026-05-03T12:00:00.000Z",
-  "notes": "Task-only wake-up baseline — 22 tasks, task-only harmful-noise coverage",
+  "notes": "Add task-only and query-focused context governance coverage",
   "summary": {
-    "tasks": 22,
-    "totalResults": 72,
-    "passedResults": 72,
+    "tasks": 24,
+    "totalResults": 80,
+    "passedResults": 80,
     "failedResults": 0,
     "retrieval": {
       "averageRecall": 1,
@@ -77,6 +77,70 @@
       "taskId": "prefers-current-test-runner",
       "scenario": "stale-memory",
       "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "query-focus-ignores-pinned-noise",
+      "scenario": "empty-lore",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "query-focus-ignores-pinned-noise",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "query-focus-ignores-pinned-noise",
+      "scenario": "no-lore",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "query-focus-ignores-pinned-noise",
+      "scenario": "noisy-memory",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "query-focus-ignores-upstream-noise",
+      "scenario": "empty-lore",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "query-focus-ignores-upstream-noise",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "query-focus-ignores-upstream-noise",
+      "scenario": "no-lore",
+      "surface": "wake-up.context",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "query-focus-ignores-upstream-noise",
+      "scenario": "noisy-memory",
+      "surface": "wake-up.context",
       "success": true,
       "recall": null,
       "precision": null

@@ -8,12 +8,14 @@ surfaced memory IDs, and writes a JSON artifact. The retrieval runner never
 reads or writes a live Notion vault -- its fixture adapter replaces Notion
 search.
 
-The retrieval runner protects five wake-up memory-surfacing sections:
+The retrieval runner protects eight wake-up memory-surfacing sections:
 `taskMemories` (the default), `taskOnly`, `memories` (recents),
-`relatedMemories`, and `staleConfidence`. Each task selects the surface under
-test via the `surface` field. The fixture adapter replaces Notion search, so
-the retrieval runner does not claim to benchmark Notion vector ranking or the
-wake-up debug metrics emitted by the observability path.
+`relatedMemories`, `staleConfidence`, full `context`, `pinnedContext`, and
+`inheritedMemories`.
+Each task selects the surface under test via the `surface` field. The fixture
+adapter replaces Notion search, so the retrieval runner does not claim to
+benchmark Notion vector ranking or the wake-up debug metrics emitted by the
+observability path.
 
 A second mode, the **Notion-backed runner** (`--runner notion`), points the
 same suite YAML at an operator-configured sandbox project and exercises the
