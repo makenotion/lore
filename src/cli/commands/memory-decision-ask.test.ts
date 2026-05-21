@@ -7,7 +7,13 @@ import { initServices, type LoreServices } from "../../services.js"
 import type { Decision, Fact, Memory, Project, TaskSummary } from "../../types.js"
 import { INVALID_LIMIT_STRINGS, trapProcessExit } from "../test-helpers.js"
 import { readTextSource } from "./common.js"
-import { memoryCommand, parseMemorySaveCliOptions, runMemorySave } from "./memory.js"
+import {
+  memoryCommand,
+  parseMemorySaveCliOptions,
+  parseMemoryUpdateCliOptions,
+  runMemorySave,
+  runMemoryUpdate,
+} from "./memory.js"
 import {
   decisionCommand,
   parseDecisionCreateCliOptions,
@@ -119,6 +125,7 @@ function makeServices(overrides: Partial<LoreServices> = {}): LoreServices {
     },
     memories: {
       create: vi.fn(async () => makeMemory()),
+      update: vi.fn(async (id: string) => makeMemory({ id })),
       getTitleById: vi.fn(async () => null),
       getManyById: vi.fn(async () => []),
       touchOnRead: vi.fn(async () => undefined),
@@ -191,6 +198,26 @@ describe("memory save CLI", () => {
     }
   })
 
+  it("parses operational expiry metadata", () => {
+    const result = parseMemorySaveCliOptions(
+      "PR poll state",
+      {
+        content: "Polling review state for PR #908.",
+        kind: "operational",
+        expiresAt: "2026-06-01",
+        expiresOn: "pr-closed:Iron-Ham/lore#908",
+      },
+      []
+    )
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.kind).toBe("operational")
+      expect(result.value.expiresAt).toBe("2026-06-01")
+      expect(result.value.expiresOn).toBe("pr-closed:Iron-Ham/lore#908")
+    }
+  })
+
   it("rejects missing and duplicate body sources", () => {
     expect(parseMemorySaveCliOptions("Title", {}, ["backend"]).ok).toBe(false)
     expect(
@@ -239,6 +266,51 @@ describe("memory save CLI", () => {
         url: "https://notion.so/m1",
       })
     )
+  })
+
+  it("passes operational expiry metadata to MemoryService.create", async () => {
+    const services = makeServices()
+    const parsed = parseMemorySaveCliOptions(
+      "PR poll state",
+      {
+        content: "Polling review state for PR #908.",
+        kind: "operational",
+        expiresAt: "2026-06-01",
+        expiresOn: "pr-closed:Iron-Ham/lore#908",
+      },
+      []
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+
+    await runMemorySave(services, parsed.value, "Polling review state for PR #908.")
+
+    expect(services.memories.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "operational",
+        expiresAt: "2026-06-01",
+        expiresOn: "pr-closed:Iron-Ham/lore#908",
+      })
+    )
+  })
+
+  it("updates memory operational expiry metadata", async () => {
+    const services = makeServices()
+    const parsed = parseMemoryUpdateCliOptions("m-1", {
+      kind: "operational",
+      expiresAt: "2026-06-01",
+      expiresOn: "pr-closed:Iron-Ham/lore#908",
+    })
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+
+    await runMemoryUpdate(services, parsed.value)
+
+    expect(services.memories.update).toHaveBeenCalledWith("m-1", {
+      kind: "operational",
+      expiresAt: "2026-06-01",
+      expiresOn: "pr-closed:Iron-Ham/lore#908",
+    })
   })
 })
 

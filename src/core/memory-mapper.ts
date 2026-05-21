@@ -129,6 +129,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     tags: extractMultiSelect(props[MEMORY_PROPS.TAGS]),
     keywords: extractRichText(props[MEMORY_PROPS.KEYWORDS]),
     synopsis: extractRichText(props[MEMORY_PROPS.SYNOPSIS]),
+    expiresOn: extractRichText(props[MEMORY_PROPS.EXPIRES_ON]),
     session: session.length > 0 ? session : null,
     content: content ?? "",
     createdAt: page.created_time,

@@ -11027,6 +11027,83 @@ describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION
   })
 })
 
+describe("lore-memory expiry fields", () => {
+  it("threads save expiresAt/expiresOn through to memories.create", async () => {
+    const mockServer = createMockServer()
+    const create = vi.fn().mockResolvedValue(
+      makeMemory("mem-expiring", {
+        title: "PR poll receipt",
+        kind: "operational",
+      })
+    )
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "PR poll receipt",
+      content: "PR #899 is open.",
+      kind: "operational",
+      expiresAt: "2026-06-01",
+      expiresOn: "pr-closed:Iron-Ham/lore#899",
+    } as never)
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "operational",
+        expiresAt: "2026-06-01",
+        expiresOn: "pr-closed:Iron-Ham/lore#899",
+        scope: expect.objectContaining({
+          lifetime: "expires",
+          expiresAt: "2026-06-01",
+        }),
+      })
+    )
+  })
+
+  it("threads update expiry clears through to memories.update", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue(makeMemory("mem-1"))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-1",
+      expiresAt: null,
+      expiresOn: null,
+    } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({
+        expiresAt: null,
+        expiresOn: null,
+        scope: expect.objectContaining({ expiresAt: null }),
+      })
+    )
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Issue #467: create-required text fields must be nonblank after trimming.
 // Empty / whitespace-only `title` or `content` would create blank or

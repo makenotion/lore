@@ -113,6 +113,11 @@ is active, conversational capture is suppressed with the learning block. The
 autosave prompt falls back to the durable synopsis-only shape rather than
 running broad recall capture without the per-spawn cap.
 
+The session synopsis is a scan surface, not a session-history surface. It should
+capture durable signal from the transcript, not a chronological "first/then"
+activity log. Log-shaped synopses are reported by `lore debt scan` under
+`summary_quality`.
+
 Each autosave run may save at most `PER_SPAWN_LEARNING_LIMIT` atomic learnings
 from `prompts.ts` (currently 5). A noisy session must rank by durability and
 skip the long tail; overlapping transcripts let later autosaves recover

@@ -5,6 +5,7 @@ import type {
   Memory,
   MemoryConfidence,
   MemoryKind,
+  UpdateMemoryInput,
 } from "../../types.js"
 import { notionPageUrl, terminalLink } from "../output.js"
 import type { CliParseResult } from "../parse.js"
@@ -18,6 +19,8 @@ import {
   validateNonBlank,
   validateYmd,
   type TextSource,
+  YMD_HINT,
+  YMD_REGEX,
 } from "./common.js"
 
 const MEMORY_KINDS = [
@@ -27,6 +30,7 @@ const MEMORY_KINDS = [
   "runbook",
   "postmortem",
   "policy",
+  "operational",
 ] as const satisfies readonly MemoryKind[]
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
@@ -42,6 +46,8 @@ export interface MemorySaveCliOptions {
   reviewBy: string | undefined
   decidedAt: string | undefined
   synopsis: string | undefined
+  expiresAt: string | undefined
+  expiresOn: string | undefined
 }
 
 export interface MemorySaveCliResultData {
@@ -61,6 +67,64 @@ export interface MemorySaveCliResult {
   data: MemorySaveCliResultData
 }
 
+export interface MemoryUpdateCliOptions {
+  memoryId: string
+  kind: MemoryKind | undefined
+  expiresAt: string | null | undefined
+  expiresOn: string | null | undefined
+}
+
+export interface MemoryUpdateCliResultData {
+  id: string
+  title: string
+  url: string
+  kind: MemoryKind
+  expiresAt: string | null
+  expiresOn: string | null
+  memory: Memory
+}
+
+export interface MemoryUpdateCliResult {
+  text: string
+  data: MemoryUpdateCliResultData
+}
+
+function validateOptionalText(
+  raw: string | undefined,
+  flag: string
+): CliParseResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  const parsed = validateNonBlank(raw, flag)
+  if (!parsed.ok) return parsed
+  return { ok: true, value: parsed.value }
+}
+
+function validateClearableYmd(
+  raw: string | undefined,
+  flag: string
+): CliParseResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  if (raw === "") return { ok: true, value: null }
+  if (!YMD_REGEX.test(raw)) {
+    return {
+      ok: false,
+      message: `${flag} ${YMD_HINT} or empty string to clear, got "${raw}"`,
+    }
+  }
+  return { ok: true, value: raw }
+}
+
+function validateClearableText(
+  raw: string | undefined,
+  flag: string
+): CliParseResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  if (raw === "") return { ok: true, value: null }
+  const parsed = validateNonBlank(raw, flag)
+  if (!parsed.ok) return parsed
+  return { ok: true, value: parsed.value }
+}
+
 export function parseMemorySaveCliOptions(
   title: string,
   raw: {
@@ -75,6 +139,8 @@ export function parseMemorySaveCliOptions(
     reviewBy?: string
     decidedAt?: string
     synopsis?: string
+    expiresAt?: string
+    expiresOn?: string
   },
   tagVocabulary: readonly string[]
 ): CliParseResult<MemorySaveCliOptions> {
@@ -95,6 +161,10 @@ export function parseMemorySaveCliOptions(
   if (!reviewBy.ok) return reviewBy
   const decidedAt = validateYmd(raw.decidedAt, "--decided-at")
   if (!decidedAt.ok) return decidedAt
+  const expiresAt = validateYmd(raw.expiresAt, "--expires-at")
+  if (!expiresAt.ok) return expiresAt
+  const expiresOn = validateOptionalText(raw.expiresOn, "--expires-on")
+  if (!expiresOn.ok) return expiresOn
 
   return {
     ok: true,
@@ -110,6 +180,46 @@ export function parseMemorySaveCliOptions(
       reviewBy: reviewBy.value,
       decidedAt: decidedAt.value,
       synopsis: raw.synopsis,
+      expiresAt: expiresAt.value,
+      expiresOn: expiresOn.value,
+    },
+  }
+}
+
+export function parseMemoryUpdateCliOptions(
+  memoryId: string,
+  raw: {
+    kind?: string
+    expiresAt?: string
+    expiresOn?: string
+  }
+): CliParseResult<MemoryUpdateCliOptions> {
+  const parsedMemoryId = validateNonBlank(memoryId, "<memory-id>")
+  if (!parsedMemoryId.ok) return parsedMemoryId
+  const kind = validateChoice(raw.kind, "--kind", MEMORY_KINDS)
+  if (!kind.ok) return kind
+  const expiresAt = validateClearableYmd(raw.expiresAt, "--expires-at")
+  if (!expiresAt.ok) return expiresAt
+  const expiresOn = validateClearableText(raw.expiresOn, "--expires-on")
+  if (!expiresOn.ok) return expiresOn
+  if (
+    kind.value === undefined &&
+    expiresAt.value === undefined &&
+    expiresOn.value === undefined
+  ) {
+    return {
+      ok: false,
+      message: "Pass at least one of --kind, --expires-at, or --expires-on",
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      memoryId: parsedMemoryId.value,
+      kind: kind.value,
+      expiresAt: expiresAt.value,
+      expiresOn: expiresOn.value,
     },
   }
 }
@@ -150,6 +260,8 @@ export async function runMemorySave(
     reviewBy: opts.reviewBy,
     decidedAt: opts.decidedAt,
     synopsis: opts.synopsis,
+    expiresAt: opts.expiresAt,
+    expiresOn: opts.expiresOn,
   }
   const memory = await services.memories.create(input)
   const url = notionPageUrl(memory.id)
@@ -177,6 +289,42 @@ export async function runMemorySave(
   }
 }
 
+export async function runMemoryUpdate(
+  services: LoreServices,
+  opts: MemoryUpdateCliOptions
+): Promise<MemoryUpdateCliResult> {
+  const input: UpdateMemoryInput = {}
+  if (opts.kind !== undefined) input.kind = opts.kind
+  if (opts.expiresAt !== undefined) input.expiresAt = opts.expiresAt
+  if (opts.expiresOn !== undefined) input.expiresOn = opts.expiresOn
+
+  const memory = await services.memories.update(opts.memoryId, input)
+  const url = notionPageUrl(memory.id)
+  const expiresAt = memory.scope?.expiresAt ?? null
+  const expiresOn =
+    memory.expiresOn && memory.expiresOn.trim().length > 0 ? memory.expiresOn : null
+  const lines = [
+    `Updated memory: "${memory.title}" (${memory.id})`,
+    `URL: ${terminalLink(url, url)}`,
+    `Kind: ${memory.kind}`,
+  ]
+  if (expiresAt !== null) lines.push(`Expires At: ${expiresAt}`)
+  if (expiresOn !== null) lines.push(`Expires On: ${expiresOn}`)
+
+  return {
+    text: lines.join("\n"),
+    data: {
+      id: memory.id,
+      title: memory.title,
+      url,
+      kind: memory.kind,
+      expiresAt,
+      expiresOn,
+      memory,
+    },
+  }
+}
+
 const saveCommand = new Command("save")
   .description("Save a memory")
   .argument("<title>", "Memory title")
@@ -194,6 +342,8 @@ const saveCommand = new Command("save")
   .option("--review-by <YYYY-MM-DD>", "Review-by date")
   .option("--decided-at <YYYY-MM-DD>", "Canonical decision date")
   .option("--synopsis <text>", "1-2 sentence synopsis")
+  .option("--expires-at <YYYY-MM-DD>", "Expiry date for temporary memories")
+  .option("--expires-on <marker>", "Event-bound expiry marker")
   .option("--json", "Emit the result as JSON")
   .action(
     async (
@@ -210,6 +360,8 @@ const saveCommand = new Command("save")
         reviewBy?: string
         decidedAt?: string
         synopsis?: string
+        expiresAt?: string
+        expiresOn?: string
         json?: boolean
       }
     ) => {
@@ -238,6 +390,44 @@ const saveCommand = new Command("save")
     }
   )
 
+const updateCommand = new Command("update")
+  .description("Update memory metadata")
+  .argument("<memory-id>", "ID of the memory to update")
+  .option("--kind <kind>", `Memory kind: ${MEMORY_KINDS.join(" | ")}`)
+  .option("--expires-at <YYYY-MM-DD>", "Expiry date (pass empty string to clear)")
+  .option(
+    "--expires-on <marker>",
+    "Event-bound expiry marker (pass empty string to clear)"
+  )
+  .option("--json", "Emit the result as JSON")
+  .action(
+    async (
+      memoryId: string,
+      opts: {
+        kind?: string
+        expiresAt?: string
+        expiresOn?: string
+        json?: boolean
+      }
+    ) => {
+      try {
+        const parsed = parseMemoryUpdateCliOptions(memoryId, opts)
+        if (!parsed.ok) {
+          console.error(`Memory update failed: ${parsed.message}`)
+          process.exit(1)
+          return
+        }
+        const services = await initServices()
+        const result = await runMemoryUpdate(services, parsed.value)
+        console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text)
+      } catch (err) {
+        console.error("Memory update failed:", err instanceof Error ? err.message : err)
+        process.exit(1)
+      }
+    }
+  )
+
 export const memoryCommand = new Command("memory")
   .description("Memory operations")
   .addCommand(saveCommand)
+  .addCommand(updateCommand)

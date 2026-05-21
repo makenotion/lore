@@ -1,4 +1,4 @@
-In addition to a session-level synopsis, identify *atomic learnings* — single-fact discoveries from this session that would help a future session even without context. Examples:
+In addition to a session-level synopsis, identify *atomic learnings* — single-fact discoveries from this session that would help a future session even without context. The synopsis is a scan surface for durable signal, not a session-history surface: do not write "first/then/finally" activity logs. Examples:
 
   - "bcrypt cost=12 is the right balance for server CPU at our load."
   - "Postgres partman extension must be installed before partition tables."

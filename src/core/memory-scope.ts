@@ -24,10 +24,13 @@ export function matchesDefaultScope(
     scopeKind: MEMORY_PROPS.SCOPE_KIND,
     scopeKey: MEMORY_PROPS.SCOPE_KEY,
     expiresAt: MEMORY_PROPS.EXPIRES_AT,
-  }
+  },
+  options: { includeExpired?: boolean } = {}
 ): boolean {
   const expiresAt = extractDate(props[scopeProps.expiresAt])
-  if (expiresAt !== null && expiresAt < today) return false
+  if (options.includeExpired !== true && expiresAt !== null && expiresAt < today) {
+    return false
+  }
 
   const kindProp = props[scopeProps.scopeKind]
   const kind =

@@ -15,7 +15,7 @@
  *  5. JSON contract — the shape stays self-describing and stable.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { LoreServices } from "../services.js"
 import type { Decision, DecisionSummary, Fact, Memory, TaskSummary } from "../types.js"
 import { findSimilarTopicGroups } from "./topic-merge.js"
@@ -42,6 +42,10 @@ vi.mock("./topic-merge.js", async () => {
 
 beforeEach(() => {
   vi.mocked(findSimilarTopicGroups).mockResolvedValue([])
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 const TODAY = "2026-05-12"
@@ -128,6 +132,15 @@ interface StubOpts {
   activeTasksByPage?: TaskSummary[][]
   scanMemoriesByProject?: Memory[][]
   ownerlessMemories?: Memory[]
+  operationalMemories?: Memory[]
+  /** Multi-page operational-memory return. Same shape as `activeTasksByPage`. */
+  operationalMemoriesByPage?: Memory[][]
+  digestMemories?: Memory[]
+  /** Multi-page digest-memory return. Same shape as `activeTasksByPage`. */
+  digestMemoriesByPage?: Memory[][]
+  summaryMemories?: Memory[]
+  summaryMemoriesByPage?: Memory[][]
+  tasksById?: Record<string, TaskSummary>
   /** Multi-page paginated ownerless-memory return. Same shape as `activeTasksByPage`. */
   ownerlessByPage?: Memory[][]
   similarTopicGroups?: Awaited<
@@ -169,22 +182,81 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
   const memoriesStub = {
     queryStaleConfidence: vi.fn(async () => opts.staleConfidence ?? []),
     listForScan: vi.fn(async () => opts.scanMemoriesByProject ?? projects.map(() => [])),
-    list: vi.fn(async (listOpts?: { startCursor?: string }) => {
-      if (opts.ownerlessByPage && opts.ownerlessByPage.length > 0) {
-        const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
-        const page = opts.ownerlessByPage[cursorIndex] ?? []
-        const hasNext = cursorIndex + 1 < opts.ownerlessByPage.length
+    list: vi.fn(
+      async (listOpts?: {
+        startCursor?: string
+        kind?: string
+        source?: string
+        includeOutOfScope?: boolean
+        includeContent?: boolean
+      }) => {
+        if (listOpts?.kind === "operational") {
+          if (
+            opts.operationalMemoriesByPage &&
+            opts.operationalMemoriesByPage.length > 0
+          ) {
+            const cursorIndex = listOpts.startCursor ? Number(listOpts.startCursor) : 0
+            const page = opts.operationalMemoriesByPage[cursorIndex] ?? []
+            const hasNext = cursorIndex + 1 < opts.operationalMemoriesByPage.length
+            return {
+              items: page,
+              capped: false as const,
+              ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
+            }
+          }
+          return {
+            items: opts.operationalMemories ?? [],
+            capped: false as const,
+          }
+        }
+        if (listOpts?.source === "digest") {
+          if (opts.digestMemoriesByPage && opts.digestMemoriesByPage.length > 0) {
+            const cursorIndex = listOpts.startCursor ? Number(listOpts.startCursor) : 0
+            const page = opts.digestMemoriesByPage[cursorIndex] ?? []
+            const hasNext = cursorIndex + 1 < opts.digestMemoriesByPage.length
+            return {
+              items: page,
+              capped: false as const,
+              ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
+            }
+          }
+          return {
+            items: opts.digestMemories ?? [],
+            capped: false as const,
+          }
+        }
+        if (listOpts?.includeOutOfScope === true && listOpts.includeContent === false) {
+          if (opts.summaryMemoriesByPage && opts.summaryMemoriesByPage.length > 0) {
+            const cursorIndex = listOpts.startCursor ? Number(listOpts.startCursor) : 0
+            const page = opts.summaryMemoriesByPage[cursorIndex] ?? []
+            const hasNext = cursorIndex + 1 < opts.summaryMemoriesByPage.length
+            return {
+              items: page,
+              capped: false as const,
+              ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
+            }
+          }
+          return {
+            items: opts.summaryMemories ?? [],
+            capped: false as const,
+          }
+        }
+        if (opts.ownerlessByPage && opts.ownerlessByPage.length > 0) {
+          const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
+          const page = opts.ownerlessByPage[cursorIndex] ?? []
+          const hasNext = cursorIndex + 1 < opts.ownerlessByPage.length
+          return {
+            items: page,
+            capped: false as const,
+            ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
+          }
+        }
         return {
-          items: page,
+          items: opts.ownerlessMemories ?? [],
           capped: false as const,
-          ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
         }
       }
-      return {
-        items: opts.ownerlessMemories ?? [],
-        capped: false as const,
-      }
-    }),
+    ),
     expiringScopedStats: vi.fn(async () => {
       if (opts.scopeStats && "throws" in opts.scopeStats) {
         throw opts.scopeStats.throws
@@ -234,6 +306,11 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
         items: opts.activeTasks ?? [],
         capped: false as const,
       }
+    }),
+    getById: vi.fn(async (id: string) => {
+      const task = opts.tasksById?.[id]
+      if (!task) throw new Error(`Task not found: ${id}`)
+      return task
     }),
     create: vi.fn(async () => undefined),
   }
@@ -552,6 +629,201 @@ describe("scanDebt — category detection", () => {
     })
     const report = await scanDebt(services, { today: TODAY })
     expect(report.stats.scopeAnomalies).toBeNull()
+  })
+
+  it("detects operational memories with no expiry metadata", async () => {
+    const operational = makeMemory({
+      id: "op1",
+      title: "poll state",
+      kind: "operational",
+      expiresOn: "",
+    })
+    const services = makeStubServices({ operationalMemories: [operational] })
+    const report = await scanDebt(services, { today: TODAY })
+    const items = report.items.filter((i) => i.category === "operational_expiry")
+    expect(items.length).toBe(1)
+    expect(items[0]!.suggestedActions).toContain("add_expires_at")
+  })
+
+  it("continues operational expiry auditing onto the next memory page", async () => {
+    const scoped = makeMemory({
+      id: "op-scoped",
+      title: "temporary poll state",
+      kind: "operational",
+      expiresOn: "",
+      scope: {
+        kind: null,
+        key: "",
+        audience: "",
+        lifetime: "expires",
+        expiresAt: "2026-06-01",
+      },
+    })
+    const missingExpiry = makeMemory({
+      id: "op-missing",
+      title: "second-page poll state",
+      kind: "operational",
+      expiresOn: "",
+    })
+    const services = makeStubServices({
+      operationalMemoriesByPage: [[scoped], [missingExpiry]],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      categories: ["operational_expiry"],
+    })
+
+    const items = report.items.filter((i) => i.category === "operational_expiry")
+    expect(items.map((i) => i.entityId)).toEqual(["op-missing"])
+    expect(report.stats.operationalMemoriesInspected).toBe(2)
+  })
+
+  it("detects operational memories whose linked task has closed", async () => {
+    const task = makeMemory({
+      id: "task-1",
+      title: "close the loop",
+      kind: "task",
+      taskState: "done",
+    }) as TaskSummary
+    const operational = makeMemory({
+      id: "op1",
+      title: "task receipt",
+      kind: "operational",
+      expiresOn: "task-closed:task-1",
+    })
+    const services = makeStubServices({
+      operationalMemories: [operational],
+      tasksById: { "task-1": task },
+    })
+    const report = await scanDebt(services, { today: TODAY })
+    const items = report.items.filter((i) => i.category === "operational_expiry")
+    expect(items.length).toBe(1)
+    expect(items[0]!.reasons.join(" ")).toContain("Linked task is done")
+  })
+
+  it("detects operational memories whose linked GitHub PR has closed", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ state: "closed", merged_at: null }),
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+    const operational = makeMemory({
+      id: "op1",
+      title: "pr receipt",
+      kind: "operational",
+      expiresOn: "pr-closed:Iron-Ham/lore#899",
+    })
+    const services = makeStubServices({ operationalMemories: [operational] })
+
+    const report = await scanDebt(services, { today: TODAY })
+
+    const items = report.items.filter((i) => i.category === "operational_expiry")
+    expect(items.length).toBe(1)
+    expect(items[0]!.reasons.join(" ")).toContain("Linked PR is closed")
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/Iron-Ham/lore/pulls/899",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          accept: "application/vnd.github+json",
+          "user-agent": "lore-memory-debt-scan",
+        }),
+      })
+    )
+  })
+
+  it("does not flag operational memories whose linked GitHub PR is still open", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ state: "open", merged_at: null }),
+      }))
+    )
+    const operational = makeMemory({
+      id: "op1",
+      title: "open pr receipt",
+      kind: "operational",
+      expiresOn: "pr-closed:Iron-Ham/lore#899",
+    })
+    const services = makeStubServices({ operationalMemories: [operational] })
+
+    const report = await scanDebt(services, { today: TODAY })
+
+    expect(report.items.filter((i) => i.category === "operational_expiry")).toEqual([])
+  })
+
+  it("detects log-shaped digest summaries", async () => {
+    const digest = makeMemory({
+      id: "d1",
+      title: "daily digest",
+      source: "digest",
+      content:
+        "Today we worked on the debt scanner. First we opened the issue. " +
+        "Then we searched files. Next we edited code. Finally we ran tests.",
+    })
+    const services = makeStubServices({ digestMemories: [digest] })
+    const report = await scanDebt(services, { today: TODAY })
+    const items = report.items.filter((i) => i.category === "summary_quality")
+    expect(items.length).toBe(1)
+    expect(report.stats.logShapedSummaries).toBe(1)
+  })
+
+  it("continues digest quality auditing onto the next memory page", async () => {
+    const durableDigest = makeMemory({
+      id: "d-ok",
+      title: "durable digest",
+      source: "digest",
+      content:
+        "Decision: keep operational PR poll rows temporary. Rows must carry expiresAt or expiresOn so debt scan can archive stale coordination state.",
+    })
+    const logDigest = makeMemory({
+      id: "d-log",
+      title: "daily digest",
+      source: "digest",
+      content:
+        "This session started with issue triage. First we searched files. Then we edited code. Next we ran tests. Finally we pushed.",
+    })
+    const services = makeStubServices({
+      digestMemoriesByPage: [[durableDigest], [logDigest]],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      categories: ["summary_quality"],
+    })
+
+    const items = report.items.filter((i) => i.category === "summary_quality")
+    expect(items.map((i) => i.entityId)).toEqual(["d-log"])
+    expect(report.stats.logShapedSummaries).toBe(1)
+  })
+
+  it("caps synopsis auditing by auditable candidates, not raw scanned rows", async () => {
+    const blank = makeMemory({
+      id: "blank",
+      title: "blank synopsis",
+      synopsis: "",
+    })
+    const logSynopsis = makeMemory({
+      id: "s1",
+      title: "autosave synopsis",
+      synopsis:
+        "This session started with issue triage. First we searched files, then we edited code, and finally we ran tests.",
+    })
+    const services = makeStubServices({
+      summaryMemoriesByPage: [[blank], [logSynopsis]],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      perCategoryLimit: 1,
+      categories: ["summary_quality"],
+    })
+
+    const items = report.items.filter((i) => i.category === "summary_quality")
+    expect(items.length).toBe(1)
+    expect(items[0]!.entityId).toBe("s1")
+    expect(report.stats.summaryQualityCandidates).toBe(1)
   })
 
   it("detects ownerless memories with no topic and no author/agent", async () => {
@@ -932,7 +1204,12 @@ describe("scanDebt — bounded probes (issue #585 review)", () => {
       ownerlessByPage: [[ownerless("m0")], [ownerless("m1")], [ownerless("m2")]],
     })
     const report = await scanDebt(services, { today: TODAY, perCategoryLimit: 100 })
-    expect(services.memories.list).toHaveBeenCalledTimes(3)
+    const ownerlessCalls = vi
+      .mocked(services.memories.list)
+      .mock.calls.filter(
+        ([args]) => !args?.kind && !args?.source && args?.includeOutOfScope !== true
+      )
+    expect(ownerlessCalls.length).toBe(3)
     expect(report.stats.ownerlessMemories).toBe(3)
     expect(report.stats.ownerlessScanCapped).toBe(false)
   })
@@ -998,6 +1275,9 @@ describe("scanDebt — JSON contract", () => {
     )
     expect(Object.keys(json.stats).sort()).toEqual([
       "duplicateClusterPairs",
+      "logShapedSummaries",
+      "operationalExpiryIssues",
+      "operationalMemoriesInspected",
       "orphanFacts",
       "orphanFactsCapped",
       "overdueDecisions",
@@ -1011,6 +1291,7 @@ describe("scanDebt — JSON contract", () => {
       "staleConfidenceCandidates",
       "staleTasks",
       "staleTasksScanCapped",
+      "summaryQualityCandidates",
       "truncated",
     ])
     expect(json.items[0]).toEqual(

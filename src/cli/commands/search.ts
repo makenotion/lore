@@ -12,6 +12,7 @@ export interface SearchCliOptions {
   projectName: string | undefined
   tags: string[] | undefined
   limit: number
+  includeExpired: boolean
   json: boolean
 }
 
@@ -26,6 +27,7 @@ export function parseSearchCliOptions(raw: {
   project?: string
   tags?: string
   limit: string
+  includeExpired?: boolean
   json?: boolean
 }): CliParseResult<SearchCliOptions> {
   const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
@@ -36,6 +38,7 @@ export function parseSearchCliOptions(raw: {
       projectName: raw.project,
       tags: raw.tags?.split(",").map((t) => t.trim()),
       limit: parsedLimit.value,
+      includeExpired: raw.includeExpired === true,
       json: raw.json === true,
     },
   }
@@ -47,6 +50,7 @@ export const searchCommand = new Command("search")
   .option("-p, --project <name>", "Scope to a specific project")
   .option("-t, --tags <tags>", "Filter by tags (comma-separated)")
   .option("-n, --limit <n>", "Max results", "10")
+  .option("--include-expired", "Include expired scoped memories in results")
   .option("--json", "Emit machine-readable JSON instead of human-readable text")
   .action(
     async (
@@ -55,6 +59,7 @@ export const searchCommand = new Command("search")
         project?: string
         tags?: string
         limit: string
+        includeExpired?: boolean
         json?: boolean
       }
     ) => {
@@ -95,6 +100,7 @@ export const searchCommand = new Command("search")
           projectId,
           tags: parsed.value.tags,
           limit: parsed.value.limit,
+          includeExpired: parsed.value.includeExpired,
         })
 
         if (parsed.value.json) {

@@ -44,6 +44,11 @@ import { findConflictCandidates } from "./conflict.js"
 import { findSimilarTopicGroups, type SimilarTopicGroup } from "./topic-merge.js"
 import { loadExpiringScopedStatus } from "./expiring-scoped.js"
 import { taskDaysOverdue, taskDaysStale, todayUtc } from "./task.js"
+import {
+  assessSignalSummaryQuality,
+  shouldAuditSummaryQuality,
+  type SummaryQualityResult,
+} from "./summary-quality.js"
 
 /**
  * Closed vocabulary of debt categories the scanner emits. New categories
@@ -58,6 +63,8 @@ export type DebtCategory =
   | "topic_sprawl"
   | "overdue_governance"
   | "scope_anomaly"
+  | "operational_expiry"
+  | "summary_quality"
 
 /**
  * Three-bucket priority. Maps from the numeric score via
@@ -93,6 +100,8 @@ export const DEBT_CATEGORIES: DebtCategory[] = [
   "topic_sprawl",
   "overdue_governance",
   "scope_anomaly",
+  "operational_expiry",
+  "summary_quality",
 ]
 
 /**
@@ -231,6 +240,10 @@ export interface DebtStats {
    * signal.
    */
   scopeAnomalyProbeSkipped: boolean
+  operationalMemoriesInspected: number
+  operationalExpiryIssues: number
+  summaryQualityCandidates: number
+  logShapedSummaries: number
   /** Capped scans surface this so the operator knows to raise the limit. */
   truncated: boolean
 }
@@ -285,8 +298,10 @@ const DEFAULT_PER_CATEGORY_LIMIT = 200
 const SEVERITY_WEIGHT: Record<DebtCategory, number> = {
   orphan_fact: 55,
   overdue_governance: 35,
+  summary_quality: 30,
   scope_anomaly: 25,
   duplicate_cluster: 25,
+  operational_expiry: 25,
   low_trust: 20,
   ownerless: 15,
   topic_sprawl: 15,
@@ -332,6 +347,10 @@ export async function scanDebt(
     // `scope_anomaly`.
     scopeAnomalies: 0,
     scopeAnomalyProbeSkipped: !wantCategory("scope_anomaly"),
+    operationalMemoriesInspected: 0,
+    operationalExpiryIssues: 0,
+    summaryQualityCandidates: 0,
+    logShapedSummaries: 0,
     truncated: false,
   }
 
@@ -626,7 +645,73 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 7. Ownerless / unclassifiable memories
+  // 7. Operational expiry hygiene
+  //    Operational rows are allowed, but only with an expiry contract.
+  //    Rows without one, or rows whose event-bound expiry has already
+  //    closed, should be archived or converted into durable knowledge.
+  // ---------------------------------------------------------------
+  if (wantCategory("operational_expiry")) {
+    let operationalCursor: string | undefined = undefined
+    let firstOperationalPage = true
+    while (firstOperationalPage || operationalCursor !== undefined) {
+      firstOperationalPage = false
+      if (stats.operationalMemoriesInspected >= perCategoryLimit) break
+      const remaining = perCategoryLimit - stats.operationalMemoriesInspected
+      const operationalPage: {
+        items: Memory[]
+        nextCursor?: string
+        capped?: boolean
+      } = await services.memories.list({
+        ...(opts.projectId ? { projectId: opts.projectId } : {}),
+        kind: "operational",
+        limit: Math.min(100, remaining),
+        includeContent: true,
+        includeOutOfScope: true,
+        ...(operationalCursor !== undefined ? { startCursor: operationalCursor } : {}),
+      })
+      for (const memory of operationalPage.items) {
+        if (stats.operationalMemoriesInspected >= perCategoryLimit) break
+        stats.operationalMemoriesInspected++
+        if (memory.kind !== "operational") continue
+        const issue = await operationalExpiryIssue(services, memory, today)
+        if (issue === null) continue
+        stats.operationalExpiryIssues++
+        items.push(buildOperationalExpiryItem(memory, today, issue))
+      }
+      if (stats.operationalMemoriesInspected >= perCategoryLimit) break
+      operationalCursor = operationalPage.nextCursor
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // 8. Digest / synopsis quality
+  //    Digest bodies and synopsis properties are scan surfaces. Audit
+  //    rows whose summaries read like chronological logs instead of
+  //    durable signal.
+  // ---------------------------------------------------------------
+  if (wantCategory("summary_quality")) {
+    const candidates = await collectSummaryQualityCandidates(
+      services,
+      opts,
+      perCategoryLimit
+    )
+    stats.summaryQualityCandidates = candidates.length
+    for (const memory of candidates) {
+      const quality = assessSignalSummaryQuality({
+        title: memory.title,
+        source: memory.source,
+        kind: memory.kind,
+        synopsis: memory.synopsis,
+        content: memory.source === "digest" ? memory.content : "",
+      })
+      if (quality.ok) continue
+      stats.logShapedSummaries++
+      items.push(buildSummaryQualityItem(memory, quality, today))
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // 9. Ownerless / unclassifiable memories
   //    We list memories scoped to the project (or vault-wide); flag
   //    rows whose Topic is null in a project with topics. The signal
   //    is intentionally narrow in phase 1: empty Topic where peers
@@ -742,6 +827,8 @@ function emptyByCategory(): Record<DebtCategory, number> {
     topic_sprawl: 0,
     overdue_governance: 0,
     scope_anomaly: 0,
+    operational_expiry: 0,
+    summary_quality: 0,
   }
 }
 
@@ -1037,6 +1124,69 @@ function buildScopeAnomalyItem(
   }
 }
 
+type OperationalExpiryIssue =
+  | { kind: "missing_expiry" }
+  | { kind: "closed_event"; marker: string; evidence: string }
+
+function buildOperationalExpiryItem(
+  memory: Memory,
+  today: string,
+  issue: OperationalExpiryIssue
+): DebtItem {
+  const reasons =
+    issue.kind === "missing_expiry"
+      ? ["Operational memory has no Expires At or Expires On marker"]
+      : [`Expires On marker closed: ${issue.marker}`, issue.evidence]
+  const blended =
+    SEVERITY_WEIGHT.operational_expiry +
+    retrievalRiskFromMemory(memory, today) +
+    (issue.kind === "closed_event" ? 15 : 5)
+  return {
+    id: `operational_expiry::${memory.id}`,
+    priority: priorityForScore(blended),
+    category: "operational_expiry",
+    entityType: "memory",
+    entityId: memory.id,
+    title: memory.title,
+    score: Math.round(blended),
+    reasons,
+    suggestedActions:
+      issue.kind === "missing_expiry"
+        ? ["add_expires_at", "add_expires_on", "archive"]
+        : ["archive", "convert_to_durable_memory", "set_expires_at"],
+    safeToAutoFix: false,
+    projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
+  }
+}
+
+function buildSummaryQualityItem(
+  memory: Memory,
+  quality: SummaryQualityResult,
+  today: string
+): DebtItem {
+  const blended =
+    SEVERITY_WEIGHT.summary_quality +
+    retrievalRiskFromMemory(memory, today) +
+    Math.min(25, quality.chronologyScore * 3) -
+    Math.min(10, quality.signalScore)
+  return {
+    id: `summary_quality::${memory.id}`,
+    priority: priorityForScore(blended),
+    category: "summary_quality",
+    entityType: memory.kind === "decision" ? "decision" : "memory",
+    entityId: memory.id,
+    title: memory.title,
+    score: Math.round(blended),
+    reasons: [
+      ...quality.reasons,
+      `Chronology score ${quality.chronologyScore}; signal score ${quality.signalScore}`,
+    ],
+    suggestedActions: ["rewrite_as_distilled_signal", "archive", "split_durable_facts"],
+    safeToAutoFix: false,
+    projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
+  }
+}
+
 function buildOwnerlessItem(memory: Memory, today: string): DebtItem {
   const reasons: string[] = []
   if (memory.topicId === null) reasons.push("Topic is empty")
@@ -1064,6 +1214,168 @@ function buildOwnerlessItem(memory: Memory, today: string): DebtItem {
     ],
     safeToAutoFix: false,
     projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
+  }
+}
+
+async function operationalExpiryIssue(
+  services: LoreServices,
+  memory: Memory,
+  today: string
+): Promise<OperationalExpiryIssue | null> {
+  const expiresAt = memory.scope?.expiresAt ?? null
+  const expiresOn = memory.expiresOn?.trim() ?? ""
+  if (expiresAt !== null && expiresAt < today) return null
+  if (expiresAt === null && expiresOn.length === 0) return { kind: "missing_expiry" }
+  if (expiresOn.length === 0) return null
+
+  const taskMatch = /^task-closed:(.+)$/i.exec(expiresOn)
+  if (taskMatch) {
+    const taskId = taskMatch[1]!.trim()
+    try {
+      const task = await services.tasks.getById(taskId)
+      if (task.taskState === "done" || task.taskState === "cancelled") {
+        return {
+          kind: "closed_event",
+          marker: expiresOn,
+          evidence: `Linked task is ${task.taskState}`,
+        }
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const prMatch = /^pr-closed:(.+#\d+)$/i.exec(expiresOn)
+  if (prMatch) {
+    const closure = await fetchGitHubPullRequestClosure(expiresOn)
+    if (closure !== null) {
+      return {
+        kind: "closed_event",
+        marker: expiresOn,
+        evidence: closure.evidence,
+      }
+    }
+  }
+
+  return null
+}
+
+async function collectSummaryQualityCandidates(
+  services: LoreServices,
+  opts: ScanDebtOpts,
+  perCategoryLimit: number
+): Promise<Memory[]> {
+  const byId = new Map<string, Memory>()
+  let digestCursor: string | undefined = undefined
+  let digestRows = 0
+  let firstDigestPage = true
+  while (firstDigestPage || digestCursor !== undefined) {
+    firstDigestPage = false
+    if (digestRows >= perCategoryLimit) break
+    const remaining = perCategoryLimit - digestRows
+    const digestPage: {
+      items: Memory[]
+      nextCursor?: string
+      capped?: boolean
+    } = await services.memories.list({
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      source: "digest",
+      limit: Math.min(100, remaining),
+      includeContent: true,
+      includeOutOfScope: true,
+      ...(digestCursor !== undefined ? { startCursor: digestCursor } : {}),
+    })
+    for (const memory of digestPage.items) {
+      if (digestRows >= perCategoryLimit) break
+      digestRows++
+      if (shouldAuditSummaryQuality(memory)) byId.set(memory.id, memory)
+    }
+    if (digestRows >= perCategoryLimit) break
+    digestCursor = digestPage.nextCursor
+  }
+
+  let synopsisCursor: string | undefined = undefined
+  let synopsisCandidates = 0
+  let firstPage = true
+  while (firstPage || synopsisCursor !== undefined) {
+    firstPage = false
+    if (synopsisCandidates >= perCategoryLimit) break
+    const page: {
+      items: MemoryWithoutContent[]
+      nextCursor?: string
+      capped: boolean
+    } = await services.memories.list({
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      limit: 100,
+      includeContent: false,
+      includeOutOfScope: true,
+      ...(synopsisCursor !== undefined ? { startCursor: synopsisCursor } : {}),
+    })
+    for (const memory of page.items) {
+      if (!shouldAuditSummaryQuality(memory)) continue
+      synopsisCandidates++
+      if (!byId.has(memory.id)) byId.set(memory.id, memory)
+      if (synopsisCandidates >= perCategoryLimit) break
+    }
+    if (synopsisCandidates >= perCategoryLimit) break
+    synopsisCursor = page.nextCursor
+  }
+
+  return [...byId.values()]
+}
+
+interface PullRequestClosure {
+  evidence: string
+}
+
+function parsePullRequestClosedMarker(
+  marker: string
+): { owner: string; repo: string; number: string } | null {
+  const match = /^pr-closed:([^/\s#]+)\/([^/\s#]+)#(\d+)$/i.exec(marker.trim())
+  if (!match) return null
+  return { owner: match[1]!, repo: match[2]!, number: match[3]! }
+}
+
+async function fetchGitHubPullRequestClosure(
+  marker: string
+): Promise<PullRequestClosure | null> {
+  const parsed = parsePullRequestClosedMarker(marker)
+  if (parsed === null) return null
+  if (typeof globalThis.fetch !== "function") return null
+
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+    "user-agent": "lore-memory-debt-scan",
+  }
+  const token = process.env["GITHUB_TOKEN"] || process.env["GH_TOKEN"]
+  if (token && token.trim().length > 0) {
+    headers.authorization = `Bearer ${token.trim()}`
+  }
+
+  try {
+    const response = await globalThis.fetch(
+      `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(
+        parsed.repo
+      )}/pulls/${encodeURIComponent(parsed.number)}`,
+      {
+        headers,
+        signal: AbortSignal.timeout(1500),
+      }
+    )
+    if (!response.ok) return null
+    const data = (await response.json()) as {
+      state?: string
+      merged_at?: string | null
+    }
+    if (data.state !== "closed") return null
+    const label = `${parsed.owner}/${parsed.repo}#${parsed.number}`
+    return {
+      evidence: data.merged_at
+        ? `Linked PR is merged: ${label}`
+        : `Linked PR is closed: ${label}`,
+    }
+  } catch {
+    return null
   }
 }
 

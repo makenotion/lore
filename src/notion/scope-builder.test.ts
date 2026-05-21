@@ -134,6 +134,24 @@ describe("buildMemoryProps — scope tristate semantics", () => {
   })
 })
 
+describe("buildMemoryProps — event expiry marker", () => {
+  it("writes and clears Expires On", () => {
+    const setProps = buildMemoryProps({
+      title: "x",
+      expiresOn: "pr-closed:Iron-Ham/lore#899",
+    }) as Record<string, unknown>
+    expect(setProps[MEMORY_PROPS.EXPIRES_ON]).toEqual({
+      rich_text: [{ text: { content: "pr-closed:Iron-Ham/lore#899" } }],
+    })
+
+    const clearProps = buildMemoryProps({ title: "x", expiresOn: null }) as Record<
+      string,
+      unknown
+    >
+    expect(clearProps[MEMORY_PROPS.EXPIRES_ON]).toEqual({ rich_text: [] })
+  })
+})
+
 describe("buildFactProps — scope tristate semantics mirror buildMemoryProps", () => {
   it("populated values write the named option / date verbatim", () => {
     const props = buildFactProps({

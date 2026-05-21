@@ -17,6 +17,7 @@ export const contextDispatchSchema = z.discriminatedUnion("action", [
     userQuery: z.string().optional(),
     taskMemoryLimit: z.number().int().min(0).max(20).optional(),
     governanceContext: z.boolean().optional(),
+    includeExpired: z.boolean().optional(),
     debug: z.boolean().optional(),
   }),
   z.object({
@@ -101,6 +102,12 @@ export const contextInputSchema = {
     .optional()
     .describe(
       "(action='wake-up') Include pinned context blocks and inherited upstream memories. Defaults to false when userQuery is provided, and true for full project catch-up wake-ups."
+    ),
+  includeExpired: z
+    .boolean()
+    .optional()
+    .describe(
+      "(action='wake-up') Include expired memory rows while preserving narrow-scope isolation. Default false."
     ),
   debug: z
     .boolean()

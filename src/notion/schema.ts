@@ -165,6 +165,7 @@ export const MEMORY_PROPS = {
   TAGS: "Tags",
   KEYWORDS: "Keywords",
   SYNOPSIS: "Synopsis",
+  EXPIRES_ON: "Expires On",
   SESSION: "Session",
   SUPERSEDES: "Supersedes",
   AFFECTS: "Affects",
@@ -246,6 +247,7 @@ export function memoriesProperties(
           { name: "postmortem", color: "orange" },
           { name: "policy", color: "purple" },
           { name: "state", color: "gray" },
+          { name: "operational", color: "gray" },
           { name: "task", color: "yellow" },
           { name: "procedure", color: "pink" },
         ],
@@ -364,6 +366,10 @@ export function memoriesProperties(
     // Soft-capped at 500 chars at the MCP boundary; Notion rich_text
     // caps at 2000 per block which is the hard ceiling.
     [MEMORY_PROPS.SYNOPSIS]: { rich_text: {} },
+    // Optional event-bound expiry marker for operational rows. Date-based
+    // hiding stays on `Expires At`; this marker lets debt scan report rows
+    // whose linked closure event has happened before a date expiry was applied.
+    [MEMORY_PROPS.EXPIRES_ON]: { rich_text: {} },
     [MEMORY_PROPS.SESSION]: { rich_text: {} },
     // Scope / lifetime. Select option lists must stay in
     // lockstep with the canonical `MEMORY_SCOPE_KINDS` / `MEMORY_LIFETIMES`
@@ -1033,6 +1039,7 @@ export function buildMemoryProps(input: {
   tags?: string[]
   keywords?: string
   synopsis?: string
+  expiresOn?: string | null
   session?: string
   taskState?: string
   blockedBy?: string
@@ -1158,6 +1165,12 @@ export function buildMemoryProps(input: {
   }
   if (input.synopsis !== undefined) {
     props[MEMORY_PROPS.SYNOPSIS] = { rich_text: [{ text: { content: input.synopsis } }] }
+  }
+  if (input.expiresOn !== undefined) {
+    props[MEMORY_PROPS.EXPIRES_ON] =
+      input.expiresOn === null
+        ? { rich_text: [] }
+        : { rich_text: [{ text: { content: input.expiresOn } }] }
   }
   if (input.session) {
     props[MEMORY_PROPS.SESSION] = { rich_text: [{ text: { content: input.session } }] }

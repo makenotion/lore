@@ -340,7 +340,7 @@ If this session produced no recall-relevant facts, skip the per-fact saves entir
       statusLine,
     })
   }
-  return `In addition to a session-level synopsis, identify *atomic learnings* — single-fact discoveries from this session that would help a future session even without context. Examples:
+  return `In addition to a session-level synopsis, identify *atomic learnings* — single-fact discoveries from this session that would help a future session even without context. The synopsis is a scan surface for durable signal, not a session-history surface: do not write "first/then/finally" activity logs. Examples:
 
   - "bcrypt cost=12 is the right balance for server CPU at our load."
   - "Postgres partman extension must be installed before partition tables."
@@ -469,7 +469,7 @@ A good digest contains:
 3. Open loops still outstanding (top 5 by priority — overdue first, then oldest)
 4. Emerging themes (pull from tag clusters and repeated subjects across memories)
 
-A bad digest is a chronological session log, a paraphrase of individual memory titles, or a "here's what happened" narrative. Extract signal. If a memory doesn't surface a durable discovery, skip it entirely.
+A bad digest is a chronological session log, a paraphrase of individual memory titles, or a "here's what happened" narrative. The digest body and synopsis fields are scan surfaces, not session-history surfaces. Extract signal. If a memory doesn't surface a durable discovery, skip it entirely.
 
 If the raw data has no durable signal (e.g., a quiet week with only routine work), respond exactly "No digest-worthy activity." and stop. Do not invent content.`
 }

@@ -167,6 +167,7 @@ const CORE_PROPERTY_NAMES: Record<ProfileDatabaseKey, readonly string[]> = {
     "Tags",
     "Keywords",
     "Synopsis",
+    "Expires On",
     "Session",
     "Supersedes",
     "Affects",

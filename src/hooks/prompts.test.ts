@@ -408,6 +408,7 @@ describe("buildBackgroundSavePrompt", () => {
     const prompt = buildBackgroundSavePrompt([], null, "transcript")
     expect(prompt).toContain("atomic learnings")
     expect(prompt).toContain("single-fact discoveries")
+    expect(prompt).toContain("scan surface for durable signal")
     expect(prompt).toContain(`at most ${PER_SPAWN_LEARNING_LIMIT} atomic`)
   })
 
@@ -758,6 +759,7 @@ describe("buildDigestPrompt", () => {
     const prompt = buildDigestPrompt(rawData, "Widget", "2026-04-24", null)
     expect(prompt).toContain("bad digest")
     expect(prompt).toContain("chronological session log")
+    expect(prompt).toContain("scan surfaces, not session-history surfaces")
   })
 
   it("forbids fanning out to lore-fact / lore-decision — the digest is one memory", () => {

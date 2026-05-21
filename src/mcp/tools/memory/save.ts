@@ -23,6 +23,7 @@ import type {
   MemorySource,
   MemoryStatus,
   TaskSummary,
+  MemoryScopeInput,
 } from "../../../types.js"
 import type { ToolResult } from "./types.js"
 import { CONFIDENCES, KINDS, SOURCES, STATUSES } from "./types.js"
@@ -179,6 +180,8 @@ export interface SaveArgs {
   confidence?: (typeof CONFIDENCES)[number]
   reviewBy?: string
   decidedAt?: string
+  expiresAt?: string
+  expiresOn?: string
   tags?: string[]
   keywords?: string
   synopsis?: string
@@ -188,9 +191,20 @@ export interface SaveArgs {
   subject?: string
   replace?: boolean
   topicKey?: string
-  scope?: import("../../../types.js").MemoryScopeInput
+  scope?: MemoryScopeInput
 }
 
+function applyExpiryArgs(
+  scope: MemoryScopeInput | undefined,
+  expiresAt: string | undefined
+): MemoryScopeInput | undefined {
+  if (expiresAt === undefined) return scope
+  return {
+    ...(scope ?? {}),
+    lifetime: scope?.lifetime ?? "expires",
+    expiresAt,
+  }
+}
 export async function handleSave(
   services: LoreServices,
   args: SaveArgs
@@ -258,11 +272,18 @@ export async function handleSave(
     // `note`-defaulted memory.
     const resolvedKind =
       (args.kind as MemoryKind | undefined) ?? (subjectTopicKey ? "state" : "note")
-    if (topicKeyForWrite && (resolvedKind === "note" || resolvedKind === "task")) {
+    if (
+      topicKeyForWrite &&
+      (resolvedKind === "note" ||
+        resolvedKind === "task" ||
+        resolvedKind === "operational")
+    ) {
       const reason =
         resolvedKind === "note"
           ? "notes are the catch-all default"
-          : "tasks are lifecycle records owned by lore-task"
+          : resolvedKind === "task"
+            ? "tasks are lifecycle records owned by lore-task"
+            : "operational rows are temporary coordination receipts"
 
       throw new Error(
         `topicKey is not valid on kind: '${resolvedKind}'. Topic keys group ` +
@@ -488,6 +509,8 @@ export async function handleSave(
             tags: args.tags,
             keywords: args.keywords,
             synopsis: args.synopsis,
+            expiresAt: args.expiresAt,
+            expiresOn: args.expiresOn,
             author: resolvedAuthor,
             agent: args.agent,
             session: args.session,
@@ -496,7 +519,7 @@ export async function handleSave(
             // Scope / lifetime — fresh-create branch lands the scope
             // verbatim; append-revision branch silently preserves the
             // existing row's scope.
-            scope: args.scope,
+            scope: applyExpiryArgs(args.scope, args.expiresAt),
           })
           .then((result) => ({
             ...result,
@@ -517,13 +540,15 @@ export async function handleSave(
           tags: args.tags,
           keywords: args.keywords,
           synopsis: args.synopsis,
+          expiresAt: args.expiresAt,
+          expiresOn: args.expiresOn,
           author: resolvedAuthor,
           agent: args.agent,
           session: args.session,
           // Scope / lifetime. The Zod schema accepts the
           // `MemoryScopeInput` shape verbatim; pass through as-is so the
           // service layer translates it onto the Notion column writes.
-          scope: args.scope,
+          scope: applyExpiryArgs(args.scope, args.expiresAt),
           autosaveLearningDedupScope,
           autosaveLearningScopeId: services.context.vault?.pageId ?? services.configRoot,
           prepareFreshCreate,

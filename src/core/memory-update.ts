@@ -104,6 +104,7 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
   consequences: string | undefined
   keywords: string | undefined
   synopsis: string | undefined
+  expiresOn: string | null | undefined
   blockedBy: string | undefined
   entity: string | undefined
 } {
@@ -122,6 +123,12 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
       input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
     synopsis:
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
+    expiresOn:
+      input.expiresOn === null
+        ? null
+        : input.expiresOn !== undefined
+          ? decodeTextEntities(input.expiresOn)
+          : undefined,
     blockedBy:
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
     entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
@@ -181,6 +188,12 @@ export class MemoryUpdate {
       props[MEMORY_PROPS.SYNOPSIS] = {
         rich_text: [{ text: { content: decoded.synopsis } }],
       }
+    }
+    if (decoded.expiresOn !== undefined) {
+      props[MEMORY_PROPS.EXPIRES_ON] =
+        decoded.expiresOn === null || decoded.expiresOn.length === 0
+          ? { rich_text: [] }
+          : { rich_text: [{ text: { content: decoded.expiresOn } }] }
     }
     if (input.kind) {
       props[MEMORY_PROPS.KIND] = { select: { name: input.kind } }
@@ -279,6 +292,12 @@ export class MemoryUpdate {
         props[MEMORY_PROPS.EXPIRES_AT] =
           scope.expiresAt === null ? { date: null } : { date: { start: scope.expiresAt } }
       }
+    }
+    if (input.expiresAt !== undefined) {
+      props[MEMORY_PROPS.LIFETIME] =
+        input.expiresAt === null ? { select: null } : { select: { name: "expires" } }
+      props[MEMORY_PROPS.EXPIRES_AT] =
+        input.expiresAt === null ? { date: null } : { date: { start: input.expiresAt } }
     }
 
     // Pinned context block update. Mirrors the scope/

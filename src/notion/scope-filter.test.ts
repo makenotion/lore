@@ -98,6 +98,16 @@ describe("defaultScopeInclusionFilter", () => {
     ])
   })
 
+  it("can omit the expiry clause while keeping scope isolation", () => {
+    const filter = defaultScopeInclusionFilter({}, "2026-05-04", undefined, {
+      includeExpired: true,
+    })
+    const top = filter["and"] as Array<Record<string, unknown>>
+    expect(top).toHaveLength(1)
+    expect(JSON.stringify(top)).toContain(MEMORY_PROPS.SCOPE_KIND)
+    expect(JSON.stringify(top)).not.toContain(MEMORY_PROPS.EXPIRES_AT)
+  })
+
   it("targets the Facts DB columns when FACT_SCOPE_PROPS is passed", () => {
     // Memories and Facts use the same column NAMES (`Scope Kind` /
     // `Scope Key` / `Expires At`) — what differs is which DB the
@@ -156,6 +166,22 @@ describe("withDefaultScopeFilter", () => {
     }
     expect(result.and[0]).toBe(bare)
     expect(result.and).toHaveLength(3)
+  })
+
+  it("includeExpired appends only the scope-kind clause", () => {
+    const baseAnd: Record<string, unknown> = {
+      and: [{ property: "Foo", select: { equals: "bar" } }],
+    }
+    const result = withDefaultScopeFilter(
+      baseAnd,
+      { session: "s" },
+      "2026-05-04",
+      undefined,
+      { includeExpired: true }
+    )
+    const top = (result as { and: Array<Record<string, unknown>> }).and
+    expect(top).toHaveLength(2)
+    expect(JSON.stringify(top)).not.toContain(MEMORY_PROPS.EXPIRES_AT)
   })
 })
 

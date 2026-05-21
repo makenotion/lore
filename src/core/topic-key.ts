@@ -22,9 +22,10 @@ import type { MemoryKind } from "../types.js"
 /**
  * Map memory Kind to a topic-key family prefix. Closed and matches
  * `MemoryKind` exactly. `note` and `task` map to `null` because notes
- * are the catch-all default (no recurring topic) and tasks transition
+ * are the catch-all default (no recurring topic), tasks transition
  * through lifecycle states (`open` / `blocked` / `done`) rather than
- * upsert revisions. `state` also maps to `null`: subject-canonical
+ * upsert revisions, and operational rows are temporary coordination
+ * receipts that expire. `state` also maps to `null`: subject-canonical
  * keys are derived from explicit `subject` saves, not title heuristics.
  *
  * Adding a `MemoryKind` value requires adding an entry here.
@@ -41,6 +42,7 @@ const KIND_TO_FAMILY: Record<MemoryKind, string | null> = {
   state: null,
   task: null,
   procedure: "procedure",
+  operational: null,
 }
 
 /**
@@ -178,7 +180,7 @@ export interface TopicKeySuggestion {
 /**
  * Suggest a stable topic key from `title + kind`. Pure function — same
  * input always returns the same output. Returns `{ key: null }` when
- * the kind has no family (note, task, state) or the title produces no
+ * the kind has no family (note, operational, task, state) or the title produces no
  * meaningful tokens after stoplist filtering.
  */
 export function suggestTopicKey(input: {
@@ -205,6 +207,13 @@ export function suggestTopicKey(input: {
         key: null,
         reason:
           "Kind 'state' uses subject-canonical saves; pass subject with replace=true instead of a title-derived topicKey.",
+      }
+    }
+    if (input.kind === "operational") {
+      return {
+        key: null,
+        reason:
+          "Kind 'operational' is temporary coordination state and should expire instead of forming an upsert chain.",
       }
     }
     return {

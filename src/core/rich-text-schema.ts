@@ -38,6 +38,7 @@ type RichTextMetadataField =
   | "agent"
   | "keywords"
   | "synopsis"
+  | "expiresOn"
   | "session"
   | "blockedBy"
   | "entity"
@@ -54,6 +55,7 @@ function richTextMetadataFieldsSchema(options: RichTextMetadataValidationOptions
       agent: richTextPropertySchema("agent").optional(),
       keywords: richTextPropertySchema("keywords").optional(),
       synopsis: synopsisPropertySchema(synopsisMaxChars).optional(),
+      expiresOn: richTextPropertySchema("expiresOn").nullable().optional(),
       session: richTextPropertySchema("session").optional(),
       blockedBy: richTextPropertySchema("blockedBy").optional(),
       entity: richTextPropertySchema("entity").optional(),
@@ -95,7 +97,7 @@ function formatRichTextMetadataIssue(issue: z.ZodIssue): string {
  * does not get to exceed the cap and then shrink under it during decoding.
  */
 export function validateRichTextMetadataFields(
-  input: Partial<Record<RichTextMetadataField, string | undefined>>,
+  input: Partial<Record<RichTextMetadataField, string | null | undefined>>,
   caller: string,
   options: RichTextMetadataValidationOptions = {}
 ): void {

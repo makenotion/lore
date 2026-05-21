@@ -122,6 +122,13 @@ export interface SearchMemoriesInput {
    * `client.search` lacks property-filter support.
    */
   includeOutOfScope?: boolean
+  /**
+   * When `true`, keep expired rows while still enforcing narrow-scope
+   * kind/key isolation. This is narrower than `includeOutOfScope`: wake-up
+   * diagnostics can inspect expired operational memories without exposing
+   * another session's private rows.
+   */
+  includeExpired?: boolean
 }
 
 /**

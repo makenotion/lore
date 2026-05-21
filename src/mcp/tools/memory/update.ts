@@ -16,6 +16,7 @@ import type {
   Memory,
   MemoryConfidence,
   MemoryKind,
+  MemoryScopeInput,
   MemoryStatus,
 } from "../../../types.js"
 import { memoryScopeToInput } from "../../../types.js"
@@ -79,14 +80,28 @@ export interface UpdateArgs {
   confidence?: (typeof CONFIDENCES)[number]
   reviewBy?: string | null
   decidedAt?: string | null
+  expiresAt?: string | null
+  expiresOn?: string | null
   supersedesIds?: string[]
   affectsIds?: string[]
   alternatives?: string
   consequences?: string
   topicKey?: string
-  scope?: import("../../../types.js").MemoryScopeInput
+  scope?: MemoryScopeInput
 }
 
+function applyExpiryArgs(
+  scope: MemoryScopeInput | undefined,
+  expiresAt: string | null | undefined
+): MemoryScopeInput | undefined {
+  if (expiresAt === undefined) return scope
+  return {
+    ...(scope ?? {}),
+    lifetime:
+      expiresAt === null ? (scope?.lifetime ?? null) : (scope?.lifetime ?? "expires"),
+    expiresAt,
+  }
+}
 export async function handleUpdate(
   services: LoreServices,
   args: UpdateArgs
@@ -491,6 +506,8 @@ export async function handleUpdate(
           confidence: args.confidence as MemoryConfidence | undefined,
           reviewBy: args.reviewBy,
           decidedAt: args.decidedAt,
+          expiresAt: args.expiresAt,
+          expiresOn: args.expiresOn,
           supersedesIds: args.supersedesIds,
           affectsIds: args.affectsIds,
           alternatives: args.alternatives,
@@ -499,7 +516,7 @@ export async function handleUpdate(
           // shape as save; absent fields leave columns untouched, explicit
           // `null` clears select / date columns, empty strings clear
           // rich_text columns.
-          scope: args.scope,
+          scope: applyExpiryArgs(args.scope, args.expiresAt),
         })
       } catch (err) {
         if (

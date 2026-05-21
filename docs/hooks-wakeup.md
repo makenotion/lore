@@ -42,6 +42,16 @@ related-memory query. Task triage belongs behind explicit `lore-task` calls or
 the MCP `lore-context action='wake-up'` surface, not automatic session-start
 prompt material.
 
+Digest bodies and memory synopses rendered by wake-up are scan surfaces, not
+session-history surfaces. They should describe durable signal; chronological
+"first/then/finally" activity logs are memory debt and are reported by
+`lore debt scan`.
+
+Expired memories are excluded from wake-up by default. MCP callers can pass
+`includeExpired: true` to `lore-context action='wake-up'` when auditing stale
+operational rows; that option re-includes expired rows while still enforcing
+narrow-scope kind/key isolation.
+
 The hook's wake-up render passes `includeProposedMemories: false`, so it never
 includes the proposed-memory inbox section. Inbox depth belongs to `lore status`
 and the MCP `lore-context action='wake-up' debug=true` output.

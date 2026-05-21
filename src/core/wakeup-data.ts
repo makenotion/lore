@@ -80,6 +80,8 @@ export interface WakeUpServices {
       includeContent?: boolean
       includeUnscoped?: boolean
       includeProposed?: boolean
+      includeExpired?: boolean
+      today?: string
       excludePinned?: boolean
       sortBy?: "created_time" | "last_edited_time"
       direction?: "ascending" | "descending"
@@ -89,6 +91,7 @@ export interface WakeUpServices {
       projectId?: string
       limit?: number
       includeContent?: boolean
+      includeExpired?: boolean
       mode?: "contains" | "semantic" | "hybrid"
       excludePinned?: boolean
     }): Promise<Memory[]>
@@ -106,6 +109,7 @@ export interface WakeUpServices {
       projectId?: string
       limit: number
       today: string
+      includeExpired?: boolean
     }): Promise<Memory[]>
     /**
      * True proposed-memory inbox depth. Required on the
@@ -114,7 +118,11 @@ export interface WakeUpServices {
      * the query via `includeProposedMemories: false` /
      * `proposedMemoryLimit: 0`, NOT by omitting the method.
      */
-    countProposed(opts: { projectId?: string }): Promise<{
+    countProposed(opts: {
+      projectId?: string
+      today?: string
+      includeExpired?: boolean
+    }): Promise<{
       total: number
       bySource: Record<string, number>
       byAgent: Record<string, number>
@@ -134,6 +142,7 @@ export interface WakeUpServices {
       includeContent?: boolean
       audienceFilter?: boolean
       includeOutOfScope?: boolean
+      includeExpired?: boolean
     }): Promise<Memory[]>
     /** Active-pinned-block count (issue #282). Backs the abuse-
      *  warning surfaced by the wake-up renderer when the total
@@ -233,6 +242,12 @@ export interface WakeUpOptions {
    * is always fetched with content since it IS the content.
    */
   includeMemoryContent?: boolean
+  /**
+   * When true, wake-up re-includes expired memory rows while preserving
+   * narrow-scope kind/key filtering. Default false keeps expired
+   * operational receipts out of session priming.
+   */
+  includeExpiredMemories?: boolean
   /**
    * When false, skip the proposed + overdue decision queries. The hook
    * wake-up path renders no decision sections, so it has no reason to
@@ -538,6 +553,7 @@ async function runWakeUpFanOut(
   const taskLimit = taskOnly ? 0 : (opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT)
   const taskMemoryLimit = opts.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
+  const includeExpired = opts.includeExpiredMemories === true
   const includeDecisions = taskOnly ? false : (opts.includeDecisions ?? true)
   const includeStaleConfidence = taskOnly ? false : (opts.includeStaleConfidence ?? true)
   const includeProposedMemories = taskOnly
@@ -619,6 +635,7 @@ async function runWakeUpFanOut(
         projectId,
         limit: STALE_CONFIDENCE_LIMIT,
         today: todayDate,
+        includeExpired,
       })
     : Promise.resolve([] as Memory[])
 
@@ -660,6 +677,7 @@ async function runWakeUpFanOut(
         today: todayDate,
         readerContext: opts.pinnedReaderContext,
         includeContent: false,
+        includeExpired,
       })
     : Promise.resolve([] as Memory[])
   // Total active pinned-block count for the abuse-warning gate.
@@ -695,12 +713,18 @@ async function runWakeUpFanOut(
         // wake-up for bodies that were fetched, deserialized, and
         // dropped on the floor.
         includeContent: false,
+        includeExpired,
+        today: todayDate,
         sortBy: "created_time",
         direction: "ascending",
       })
     : Promise.resolve({ items: [] as Memory[] })
   const proposedMemoriesTotalQuery = includeProposedSection
-    ? services.memories.countProposed({ projectId })
+    ? services.memories.countProposed({
+        projectId,
+        today: todayDate,
+        includeExpired,
+      })
     : Promise.resolve({
         total: 0,
         bySource: {} as Record<string, number>,
@@ -743,6 +767,7 @@ async function runWakeUpFanOut(
           projectId,
           limit: memoryLimit + 1,
           includeContent,
+          includeExpired,
           excludePinned: excludePinnedFromMemorySections,
         })
       : // Both memory limits are zero — render no memories regardless of
@@ -763,6 +788,7 @@ async function runWakeUpFanOut(
           sortBy: "created_time",
           // The wake-up renderer prints the stored digest body verbatim.
           includeContent: true,
+          includeExpired,
         })
       : Promise.resolve({ items: [] as Memory[] }),
     projectId && knowledgeLimit > 0
@@ -793,6 +819,7 @@ async function runWakeUpFanOut(
           projectId,
           limit: taskFetchLimit,
           includeContent,
+          includeExpired,
           excludePinned: excludePinnedFromMemorySections,
         })
       : Promise.resolve([] as Memory[]),
@@ -857,6 +884,7 @@ async function runWakeUpFanOut(
           limit: fetchLimit,
           includeContent,
           mode: "semantic",
+          includeExpired,
           excludePinned: excludePinnedFromMemorySections,
         })
       )

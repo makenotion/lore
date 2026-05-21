@@ -119,6 +119,8 @@ export interface ListMemoriesOptions {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  includeExpired?: boolean
+  today?: string
   /**
    * Exclude active pinned context rows before applying the result
    * limit. Query-focused wake-up uses this when the pinned-governance
@@ -412,6 +414,7 @@ export class MemoryList {
         : activeFilters.length === 1
           ? activeFilters[0]
           : undefined
+    const today = opts?.today ?? todayUtc()
     const buildFilter = (
       activeFilters: Array<Record<string, unknown>>
     ): QueryDataSourceParameters["filter"] => {
@@ -419,7 +422,9 @@ export class MemoryList {
       const scopedFilter =
         opts?.includeOutOfScope === true || !this.scopeFilterEnabled
           ? baseFilter
-          : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
+          : withDefaultScopeFilter(baseFilter, this.scopeCtx, today, undefined, {
+              includeExpired: opts?.includeExpired === true,
+            })
       return withCleanupOrphanExclusion(
         scopedFilter
       ) as QueryDataSourceParameters["filter"]
@@ -455,12 +460,13 @@ export class MemoryList {
     // `matchesDefaultScope` here. The walker over-fetches by the
     // slots dropped on the client side; backfilled pagination keeps
     // the result at the caller's requested limit.
-    const today = todayUtc()
     const applyExtraFilter =
       opts?.includeOutOfScope === true || !this.scopeFilterEnabled
         ? undefined
         : (page: PageObjectResponse) =>
-            matchesDefaultScope(page.properties, this.scopeCtx, today)
+            matchesDefaultScope(page.properties, this.scopeCtx, today, undefined, {
+              includeExpired: opts?.includeExpired === true,
+            })
     const collectWithFilter = (activeFilter: QueryDataSourceParameters["filter"]) =>
       collectLivePages({
         limit,

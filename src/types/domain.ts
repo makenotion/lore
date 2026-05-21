@@ -192,6 +192,12 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
  * `state` memories are subject-canonical current-state projections. They use
  * topic-key upsert chains (`state/<subject>`) so repeated writes replace the
  * wake-up-visible row while preserving prior revisions in the page body.
+ *
+ * `operational` memories are temporary coordination receipts: PR poll
+ * state, closeout banners, build run breadcrumbs, or other entries that
+ * explain recent execution but should not become durable project knowledge.
+ * They should carry an expiry declaration (`expiresAt`, `expiresOn`, or
+ * the nested scope lifetime fields) so default recall can age them out.
  */
 export type MemoryKind =
   | "note"
@@ -201,6 +207,7 @@ export type MemoryKind =
   | "postmortem"
   | "policy"
   | "state"
+  | "operational"
   | "task"
   | "procedure"
 
@@ -356,10 +363,20 @@ export interface Memory {
   /**
    * Short 1–2 sentence synopsis of the memory. Surfaces on title-tier
    * rendering (recall, search, wake-up) so listings give the agent a
-   * one-line gist without a body fetch. Soft-capped at 500 chars at the
-   * MCP and service boundaries; empty string when not set.
+   * one-line gist without a body fetch. This is a scan surface, not a
+   * session-history log: write durable signal, not chronological activity.
+   * Soft-capped at 500 chars at the MCP and service boundaries; empty
+   * string when not set.
    */
   synopsis: string
+  /**
+   * Event-bound expiry marker such as `pr-closed:owner/repo#123` or
+   * `task-closed:<memory-id>`. Empty string when unset. Unlike
+   * `scope.expiresAt`, this field does not hide a row by itself; debt scan
+   * audits operational rows whose linked closure event can be resolved and
+   * whose date expiry has not been applied yet.
+   */
+  expiresOn?: string
   session: string | null
   content: string
   createdAt: string
@@ -525,6 +542,10 @@ export interface CreateMemoryInput {
    * structural storage ceiling.
    */
   synopsis?: string
+  /** Shorthand for `scope: { lifetime: "expires", expiresAt }`. */
+  expiresAt?: string
+  /** Event-bound expiry marker, e.g. `pr-closed:owner/repo#123`. */
+  expiresOn?: string
   session?: string
   /**
    * Internal autosave-learning duplicate mode. Omitted lets the service use
@@ -627,6 +648,10 @@ export interface UpdateMemoryInput {
   kind?: MemoryKind
   status?: MemoryStatus
   confidence?: MemoryConfidence
+  /** Shorthand update for `scope.expiresAt`; `null` clears the date. */
+  expiresAt?: string | null
+  /** Event-bound expiry marker. Empty string or `null` clears the column. */
+  expiresOn?: string | null
   /**
    * Optional Confidence Score update. Production callers leave this unset —
    * the column is system-managed via `touchOnRead` / decay / contradiction

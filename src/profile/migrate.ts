@@ -137,6 +137,7 @@ const RESERVED_PROFILE_MIGRATION_PROPERTY_NAMES: Record<
     "Tags",
     "Keywords",
     "Synopsis",
+    "Expires On",
     "Session",
     "Supersedes",
     "Affects",

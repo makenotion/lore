@@ -325,6 +325,12 @@ describe("computeWakeUpCacheKey", () => {
       const variant = computeWakeUpCacheKey({ ...base, [field]: false })
       expect(variant).not.toBe(baseline)
     }
+    expect(computeWakeUpCacheKey({ ...base, includeExpiredMemories: true })).not.toBe(
+      baseline
+    )
+    expect(computeWakeUpCacheKey({ ...base, includeExpiredMemories: false })).toBe(
+      baseline
+    )
   })
 
   it("varies on pinnedReaderContext so different audiences don't cross-serve filtered slices (issue #282)", () => {

@@ -85,6 +85,14 @@ function scopeInputToBuilderProps(scope: MemoryScopeInput | undefined): {
   return out
 }
 
+function memoryScopeWithExpiry(input: CreateMemoryInput): MemoryScopeInput | undefined {
+  if (input.expiresAt === undefined) return input.scope
+  return {
+    ...(input.scope ?? {}),
+    lifetime: input.scope?.lifetime ?? "expires",
+    expiresAt: input.expiresAt,
+  }
+}
 /**
  * Every plain-text metadata field that lands in a Memory page through this
  * create path. Run them through `decodeTextEntities` before writing so
@@ -109,6 +117,7 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
   agent: string | undefined
   keywords: string | undefined
   synopsis: string | undefined
+  expiresOn: string | undefined
   session: string | undefined
   blockedBy: string | undefined
   entity: string | undefined
@@ -131,6 +140,8 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
       input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
     synopsis:
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
+    expiresOn:
+      input.expiresOn !== undefined ? decodeTextEntities(input.expiresOn) : undefined,
     session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
     blockedBy:
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
@@ -356,6 +367,7 @@ export class MemoryCreate {
         tags: input.tags,
         keywords: decoded.keywords,
         synopsis: decoded.synopsis,
+        expiresOn: decoded.expiresOn,
         session: decoded.session,
         taskState: input.taskState,
         blockedBy: decoded.blockedBy,
@@ -363,7 +375,7 @@ export class MemoryCreate {
         topicKey: input.topicKey,
         revisionCount: input.revisionCount,
         promotionSourceKey: decoded.promotionSourceKey,
-        ...scopeInputToBuilderProps(input.scope),
+        ...scopeInputToBuilderProps(memoryScopeWithExpiry(input)),
         ...pinnedInputToBuilderProps(input.pinned),
       }),
     })

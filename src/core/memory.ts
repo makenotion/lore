@@ -31,7 +31,7 @@ import type {
 import { DEFAULT_MEMORY_SYNOPSIS_MAX } from "../types.js"
 import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
-import { projectOrUnscopedFilter } from "../notion/filters.js"
+import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
 import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
 import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
 import {
@@ -74,6 +74,7 @@ import { MemoryCreate, type MemoryCreateResult } from "./memory-create.js"
 import { MemoryList, type ListMemoriesOptions } from "./memory-list.js"
 import { MemoryReview } from "./memory-review.js"
 import { MemoryUpdate } from "./memory-update.js"
+import { matchesDefaultScope } from "./memory-scope.js"
 
 export { matchesDefaultScope } from "./memory-scope.js"
 export {
@@ -277,8 +278,12 @@ export class MemoryService {
       () => this.scopeFilterEnabled,
       (pages, includeContent) => this.materializeMemories(pages, includeContent)
     )
-    this.confidence = new MemoryConfidence(client, db, (page, content) =>
-      this.pageToMemory(page, content)
+    this.confidence = new MemoryConfidence(
+      client,
+      db,
+      () => this.scopeCtx,
+      () => this.scopeFilterEnabled,
+      (page, content) => this.pageToMemory(page, content)
     )
     this.topicKey = new MemoryTopicKey(
       client,
@@ -1154,6 +1159,7 @@ export class MemoryService {
    * Status = proposed
    * AND Kind != decision
    * AND (when scoped) (Project contains projectId OR Project is_empty)
+   * AND default scope / lifetime visibility
    *
    * Direct `client.dataSources.query` rather than `MemoryService.list`
    * because the inbox surface only needs the property tuple
@@ -1168,14 +1174,18 @@ export class MemoryService {
    * so a `dataSources.query` cannot exclude it server-side. Archived
    * proposals are not part of the live inbox.
    *
-   * Vault-scoping matches `MemoryService.list`: when `projectId` is
-   * omitted the project clause is dropped entirely, so the counter
-   * walks every project's proposals (the surface used when no
-   * `--project` flag is supplied to `lore status`). When `projectId`
-   * is supplied, repo-wide unscoped proposals surface in the count
-   * via the OR clause — same posture as recall.
+   * Vault-scoping and lifetime visibility match `MemoryService.list`:
+   * when `projectId` is omitted the project clause is dropped entirely,
+   * so the counter walks every project's proposals (the surface used when
+   * no `--project` flag is supplied to `lore status`). When `projectId`
+   * is supplied, repo-wide unscoped proposals surface in the count via
+   * the OR clause — same posture as recall. When default scope filtering
+   * is enabled, expired proposals are excluded unless `includeExpired`
+   * is true, and narrow-scope proposals must match the reader context.
    */
-  async countProposed(opts: { projectId?: string } = {}): Promise<{
+  async countProposed(
+    opts: { projectId?: string; today?: string; includeExpired?: boolean } = {}
+  ): Promise<{
     total: number
     bySource: Record<string, number>
     byAgent: Record<string, number>
@@ -1200,7 +1210,16 @@ export class MemoryService {
     const filters: Array<Record<string, unknown>> = [...proposedMemoryFilter().and]
     if (opts.projectId) filters.push(projectOrUnscopedFilter(opts.projectId))
     filters.push(cleanupOrphanExclusionFilter())
-    const filter = filters.length > 1 ? { and: filters } : filters[0]
+    const today = opts.today ?? todayUtc()
+    const baseFilter = filters.length > 1 ? { and: filters } : filters[0]
+    const scopeFilterActive = this.scopeFilterEnabled
+    const filter = (
+      scopeFilterActive
+        ? withDefaultScopeFilter(baseFilter, this.scopeCtx, today, undefined, {
+            includeExpired: opts.includeExpired === true,
+          })
+        : baseFilter
+    ) as QueryDataSourceParameters["filter"]
 
     let total = 0
     const bySource: Record<string, number> = {}
@@ -1209,11 +1228,19 @@ export class MemoryService {
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
+        filter,
         page_size: 100,
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isLiveFullPage)) {
+        if (
+          scopeFilterActive &&
+          !matchesDefaultScope(page.properties, this.scopeCtx, today, undefined, {
+            includeExpired: opts.includeExpired === true,
+          })
+        ) {
+          continue
+        }
         total += 1
         const sourceProp = page.properties[MEMORY_PROPS.SOURCE]
         const sourceKey =
@@ -1235,6 +1262,7 @@ export class MemoryService {
     limit: number
     today: string
     includeProposed?: boolean
+    includeExpired?: boolean
   }): Promise<Memory[]> {
     return this.confidence.queryStaleConfidence(opts)
   }
@@ -1247,6 +1275,7 @@ export class MemoryService {
     includeContent?: boolean
     audienceFilter?: boolean
     includeOutOfScope?: boolean
+    includeExpired?: boolean
   }): Promise<Memory[]> {
     return this.pinned.listPinnedBlocks(opts)
   }

@@ -962,6 +962,8 @@ export class MemoryTopicKey {
     confidence?: MemoryConfidenceLevel
     topicId?: string
     synopsis?: string
+    expiresAt?: string
+    expiresOn?: string
     keywords?: string
     tags?: string[]
     author?: string
@@ -1012,6 +1014,8 @@ export class MemoryTopicKey {
         tags: input.tags,
         keywords: input.keywords,
         synopsis: input.synopsis,
+        expiresAt: input.expiresAt,
+        expiresOn: input.expiresOn,
         author: input.author,
         agent: input.agent,
         session: input.session,

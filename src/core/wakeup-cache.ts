@@ -332,6 +332,11 @@ const KEY_OPTION_FIELDS = [
   "includeStaleConfidence",
   "includeProposedMemories",
   "proposedMemoryLimit",
+  // Expired memories are excluded from default wake-up priming but
+  // re-included for explicit audit calls. The flag changes every
+  // memory read branch, so audit and default wake-ups must not share
+  // cached results in either direction.
+  "includeExpiredMemories",
   "includeCoverage",
   "todayDate",
   // Both inherited-memory options change the `inheritedMemories`
@@ -394,6 +399,10 @@ export function computeWakeUpCacheKey(opts: WakeUpOptions): string {
     if (field === "userQuery" && typeof value === "string") {
       const trimmed = value.trim().toLowerCase()
       if (trimmed.length > 0) normalized[field] = trimmed
+      continue
+    }
+    if (field === "includeExpiredMemories") {
+      if (value === true) normalized[field] = true
       continue
     }
     if (field === "pinnedReaderContext" && value !== undefined && value !== null) {

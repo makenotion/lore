@@ -12699,9 +12699,14 @@ describe("MemoryService.countProposed", () => {
     id: string,
     source: string | null,
     agent: string,
-    overrides: Partial<PageObjectResponse> & { kind?: string } = {}
+    overrides: Partial<PageObjectResponse> & {
+      kind?: string
+      expiresAt?: string | null
+      scopeKind?: string | null
+      scopeKey?: string | null
+    } = {}
   ): PageObjectResponse {
-    const { kind, ...pageOverrides } = overrides
+    const { kind, expiresAt, scopeKind, scopeKey, ...pageOverrides } = overrides
     const props: Record<string, unknown> = {
       Title: { type: "title", title: [{ plain_text: id, text: { content: id } }] },
       Status: { type: "select", select: { name: "proposed" } },
@@ -12716,6 +12721,21 @@ describe("MemoryService.countProposed", () => {
           agent.length > 0
             ? [{ type: "text", plain_text: agent, text: { content: agent } }]
             : [],
+      },
+      "Scope Kind": {
+        type: "select",
+        select: scopeKind ? { name: scopeKind } : null,
+      },
+      "Scope Key": {
+        type: "rich_text",
+        rich_text:
+          scopeKey && scopeKey.length > 0
+            ? [{ type: "text", plain_text: scopeKey, text: { content: scopeKey } }]
+            : [],
+      },
+      "Expires At": {
+        type: "date",
+        date: expiresAt ? { start: expiresAt } : null,
       },
     }
     return {
@@ -12807,6 +12827,37 @@ describe("MemoryService.countProposed", () => {
     expect(result.total).toBe(1)
     expect(result.bySource).toEqual({ conversation: 1 })
     expect(result.byAgent).toEqual({ "Claude Code": 1 })
+  })
+
+  it("excludes expired proposed rows by default and includes them when requested", async () => {
+    const active = makeProposedPage("m-active", "manual", "Codex", {
+      expiresAt: "2026-05-21",
+    })
+    const expired = makeProposedPage("m-expired", "conversation", "Claude Code", {
+      expiresAt: "2026-05-20",
+    })
+    const query = vi.fn().mockResolvedValue({
+      results: [active, expired],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db, {})
+
+    const defaultResult = await service.countProposed({ today: "2026-05-21" })
+    const withExpired = await service.countProposed({
+      today: "2026-05-21",
+      includeExpired: true,
+    })
+
+    expect(defaultResult.total).toBe(1)
+    expect(defaultResult.bySource).toEqual({ manual: 1 })
+    expect(defaultResult.byAgent).toEqual({ Codex: 1 })
+    expect(withExpired.total).toBe(2)
+    expect(withExpired.bySource).toEqual({ manual: 1, conversation: 1 })
+    expect(withExpired.byAgent).toEqual({ Codex: 1, "Claude Code": 1 })
+    expect(JSON.stringify(query.mock.calls[0]![0].filter)).toContain("Expires At")
+    expect(JSON.stringify(query.mock.calls[1]![0].filter)).not.toContain("Expires At")
   })
 
   it("buckets empty / whitespace-only Agent values under 'unknown'", async () => {
@@ -13036,6 +13087,9 @@ describe("MemoryService.queryStaleConfidence", () => {
     extras: {
       confidenceScore?: number | null
       lastReferencedAt?: string | null
+      expiresAt?: string | null
+      scopeKind?: string | null
+      scopeKey?: string
       archived?: boolean
     } = {}
   ): PageObjectResponse {
@@ -13056,6 +13110,24 @@ describe("MemoryService.queryStaleConfidence", () => {
       props["Last Referenced At"] = {
         type: "date",
         date: extras.lastReferencedAt ? { start: extras.lastReferencedAt } : null,
+      }
+    }
+    if (extras.expiresAt !== undefined) {
+      props["Expires At"] = {
+        type: "date",
+        date: extras.expiresAt ? { start: extras.expiresAt } : null,
+      }
+    }
+    if (extras.scopeKind !== undefined) {
+      props["Scope Kind"] = {
+        type: "select",
+        select: extras.scopeKind ? { name: extras.scopeKind } : null,
+      }
+    }
+    if (extras.scopeKey !== undefined) {
+      props["Scope Key"] = {
+        type: "rich_text",
+        rich_text: [{ plain_text: extras.scopeKey }],
       }
     }
     return buildPage(props, { id, archived: extras.archived ?? false })
@@ -13220,6 +13292,116 @@ describe("MemoryService.queryStaleConfidence", () => {
     const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
 
     expect(memories.map((m) => m.id)).toEqual(["live-1"])
+  })
+
+  it("excludes expired stale-confidence rows by default and includes them when requested", async () => {
+    const { client, querySpy } = makeQueryClient([
+      buildStalePage("expired-1", {
+        confidenceScore: 0.2,
+        lastReferencedAt: "2026-04-25",
+        expiresAt: "2026-04-28",
+      }),
+      buildStalePage("active-1", {
+        confidenceScore: 0.3,
+        lastReferencedAt: "2026-04-25",
+      }),
+    ])
+    const service = new MemoryService(client, db, {})
+
+    const filtered = await service.queryStaleConfidence({ limit: 5, today: TODAY })
+    expect(filtered.map((m) => m.id)).toEqual(["active-1"])
+    expect(JSON.stringify(querySpy.mock.calls[0][0].filter)).toContain('"Expires At"')
+
+    const withExpired = await service.queryStaleConfidence({
+      limit: 5,
+      today: TODAY,
+      includeExpired: true,
+    })
+    expect(withExpired.map((m) => m.id)).toEqual(["expired-1", "active-1"])
+    expect(JSON.stringify(querySpy.mock.calls[1][0].filter)).not.toContain('"Expires At"')
+  })
+
+  it("keeps narrow scope-key filtering active when expired stale-confidence rows are included", async () => {
+    const { client } = makeQueryClient([
+      buildStalePage("matching-expired", {
+        confidenceScore: 0.2,
+        expiresAt: "2026-04-28",
+        scopeKind: "session",
+        scopeKey: "sess-1",
+      }),
+      buildStalePage("other-session", {
+        confidenceScore: 0.1,
+        scopeKind: "session",
+        scopeKey: "sess-2",
+      }),
+      buildStalePage("broadcast", {
+        confidenceScore: 0.4,
+        scopeKind: "team",
+      }),
+    ])
+    const service = new MemoryService(client, db, { session: "sess-1" })
+
+    const memories = await service.queryStaleConfidence({
+      limit: 5,
+      today: TODAY,
+      includeExpired: true,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["matching-expired", "broadcast"])
+  })
+
+  it("refills stale-confidence results past expired and out-of-scope rows across pages", async () => {
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        object: "list" as const,
+        results: [
+          buildStalePage("expired-before", {
+            confidenceScore: 0.1,
+            expiresAt: "2026-04-28",
+          }),
+          buildStalePage("other-session", {
+            confidenceScore: 0.2,
+            scopeKind: "session",
+            scopeKey: "sess-2",
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+        type: "page_or_database" as const,
+        page_or_database: {},
+      })
+      .mockResolvedValueOnce({
+        object: "list" as const,
+        results: [
+          buildStalePage("matching-session", {
+            confidenceScore: 0.3,
+            scopeKind: "session",
+            scopeKey: "sess-1",
+          }),
+          buildStalePage("broadcast", {
+            confidenceScore: 0.4,
+            scopeKind: "team",
+          }),
+        ],
+        has_more: false,
+        next_cursor: null,
+        type: "page_or_database" as const,
+        page_or_database: {},
+      })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db, { session: "sess-1" })
+
+    const memories = await service.queryStaleConfidence({
+      limit: 2,
+      today: TODAY,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["matching-session", "broadcast"])
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(querySpy.mock.calls[1][0].start_cursor).toBe("cursor-1")
   })
 
   it("refills stale-confidence results past archived rows across pages", async () => {
@@ -15425,6 +15607,7 @@ describe("MemoryService.listPinnedBlocks (issue #282)", () => {
     mutability?: "mutable" | "read-only"
     audience?: string
     projectId?: string
+    expiresAt?: string
   }): PageObjectResponse {
     const properties: Record<string, unknown> = {
       Title: { type: "title", title: [{ plain_text: opts.title }] },
@@ -15444,6 +15627,10 @@ describe("MemoryService.listPinnedBlocks (issue #282)", () => {
     }
     if (opts.mutability) {
       properties["Mutability"] = { type: "select", select: { name: opts.mutability } }
+    }
+    if (opts.expiresAt) {
+      properties["Lifetime"] = { type: "select", select: { name: "expires" } }
+      properties["Expires At"] = { type: "date", date: { start: opts.expiresAt } }
     }
     return buildPage(properties, {
       id: opts.id,
@@ -15636,6 +15823,37 @@ describe("MemoryService.listPinnedBlocks (issue #282)", () => {
       audienceFilter: false,
     })
     expect(all.map((b) => b.id)).toEqual(["narrow", "all"])
+  })
+
+  it("includes expired pinned rows only when includeExpired is true", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [
+        pinnedPage({
+          id: "expired",
+          title: "Expired",
+          priority: 10,
+          expiresAt: "2026-05-20",
+        }),
+        pinnedPage({ id: "active", title: "Active", priority: 5 }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db, {})
+
+    const filtered = await service.listPinnedBlocks({ limit: 10, today: "2026-05-21" })
+    expect(filtered.map((b) => b.id)).toEqual(["active"])
+
+    const withExpired = await service.listPinnedBlocks({
+      limit: 10,
+      today: "2026-05-21",
+      includeExpired: true,
+    })
+    expect(withExpired.map((b) => b.id)).toEqual(["expired", "active"])
   })
 
   it("backfills the visible window when top-priority pins target other audiences (issue #282 starvation fix)", async () => {

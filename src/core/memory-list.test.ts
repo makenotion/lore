@@ -2,7 +2,7 @@ import type { Client, PageObjectResponse } from "@notionhq/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { defaultFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
-import type { DatabaseRef, Memory } from "../types.js"
+import type { DatabaseRef, Memory, MemoryScopeContext } from "../types.js"
 import { MemoryList } from "./memory-list.js"
 
 const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
@@ -47,12 +47,15 @@ function makeMemory(id: string): Memory {
   }
 }
 
-function makePage(id: string): PageObjectResponse {
+function makePage(
+  id: string,
+  properties: Record<string, unknown> = {}
+): PageObjectResponse {
   return {
     object: "page",
     id,
     archived: false,
-    properties: {},
+    properties,
   } as unknown as PageObjectResponse
 }
 
@@ -67,6 +70,8 @@ function missingPinnedPropertyError(): Error & { code: string } {
 function makeLister(options: {
   request?: ReturnType<typeof vi.fn>
   query?: ReturnType<typeof vi.fn>
+  scopeContext?: MemoryScopeContext
+  scopeFilterEnabled?: boolean
   getPropertiesById: (id: string) => Promise<Memory>
 }): MemoryList {
   return new MemoryList(
@@ -80,8 +85,8 @@ function makeLister(options: {
     } as unknown as Client,
     db,
     defaultFeatureFlags(),
-    () => ({}),
-    () => false,
+    () => options.scopeContext ?? {},
+    () => options.scopeFilterEnabled === true,
     async (page) => makeMemory(page.id),
     options.getPropertiesById
   )
@@ -135,6 +140,46 @@ describe("MemoryList.list", () => {
     expect(retryFilter).not.toContain(MEMORY_PROPS.PINNED)
     expect(retryFilter).toContain("2026-01-01")
     expect(retryFilter).toContain("2026-02-01")
+  })
+
+  it("uses the caller-supplied today anchor for scope expiry filtering", async () => {
+    const active = makePage("active-id", {
+      [MEMORY_PROPS.EXPIRES_AT]: {
+        type: "date",
+        date: { start: "2026-04-21" },
+      },
+      [MEMORY_PROPS.SCOPE_KIND]: { type: "select", select: null },
+    })
+    const expired = makePage("expired-id", {
+      [MEMORY_PROPS.EXPIRES_AT]: {
+        type: "date",
+        date: { start: "2026-04-20" },
+      },
+      [MEMORY_PROPS.SCOPE_KIND]: { type: "select", select: null },
+    })
+    const query = vi.fn(async () => ({
+      results: [active, expired],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const lister = makeLister({
+      query,
+      scopeFilterEnabled: true,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    const defaultResult = await lister.list({ limit: 10, today: "2026-04-21" })
+    const withExpired = await lister.list({
+      limit: 10,
+      today: "2026-04-21",
+      includeExpired: true,
+    })
+
+    expect(defaultResult.items.map((m) => m.id)).toEqual(["active-id"])
+    expect(withExpired.items.map((m) => m.id)).toEqual(["active-id", "expired-id"])
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    expect(JSON.stringify(calls[0]?.[0].filter)).toContain("2026-04-21")
+    expect(JSON.stringify(calls[1]?.[0].filter)).not.toContain(MEMORY_PROPS.EXPIRES_AT)
   })
 })
 

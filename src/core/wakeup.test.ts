@@ -185,6 +185,8 @@ type ListCall = {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  includeExpired?: boolean
+  today?: string
   excludePinned?: boolean
   sortBy?: "created_time" | "last_edited_time"
   direction?: "ascending" | "descending"
@@ -195,6 +197,7 @@ type SearchCall = {
   projectId?: string
   limit?: number
   includeContent?: boolean
+  includeExpired?: boolean
   mode?: "contains" | "semantic" | "hybrid"
   excludePinned?: boolean
 }
@@ -204,10 +207,19 @@ type ListRecentCall = {
   limit?: number
 }
 
+type PinnedBlocksCall = {
+  projectId?: string
+  limit?: number
+  today?: string
+  includeContent?: boolean
+  includeExpired?: boolean
+}
+
 type StaleConfidenceCall = {
   projectId?: string
   limit: number
   today: string
+  includeExpired?: boolean
 }
 
 interface StubServices extends WakeUpServices {
@@ -218,6 +230,7 @@ interface StubServices extends WakeUpServices {
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
   tasksListCalls: ListTasksOpts[]
   staleConfidenceCalls: StaleConfidenceCall[]
+  pinnedBlocksCalls: PinnedBlocksCall[]
 }
 
 /**
@@ -314,6 +327,7 @@ function stubServices(
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const tasksListCalls: ListTasksOpts[] = []
   const staleConfidenceCalls: StaleConfidenceCall[] = []
+  const pinnedBlocksCalls: PinnedBlocksCall[] = []
   const factsResult = opts.facts ?? []
 
   return {
@@ -366,7 +380,8 @@ function stubServices(
         bySource: {} as Record<string, number>,
         byAgent: {} as Record<string, number>,
       })),
-      listPinnedBlocks: vi.fn(async (args: { limit?: number }) => {
+      listPinnedBlocks: vi.fn(async (args: PinnedBlocksCall) => {
+        pinnedBlocksCalls.push(args)
         return (opts.pinnedBlocks ?? []).slice(0, args.limit ?? 10)
       }),
       countPinnedBlocks: vi.fn(
@@ -413,6 +428,7 @@ function stubServices(
     decisionsOverdueCalls,
     tasksListCalls,
     staleConfidenceCalls,
+    pinnedBlocksCalls,
   }
 }
 
@@ -701,6 +717,44 @@ describe("loadWakeUpData", () => {
     expect(data.pinnedBlocksTotal).toBe(0)
     expect(querySpy).toHaveBeenCalledTimes(2)
     expect(data.coverage).not.toBeNull()
+  })
+
+  it("threads includeExpiredMemories through stale confidence and pinned wake-up blocks", async () => {
+    const services = stubServices({
+      pinnedBlocks: [
+        buildMemory({
+          id: "pin",
+          title: "Expired pin",
+          createdAt: "2026-04-19T00:00:00Z",
+        }),
+      ],
+    })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      includeExpiredMemories: true,
+      now: NOW,
+    })
+
+    expect(services.pinnedBlocksCalls).toContainEqual(
+      expect.objectContaining({
+        projectId: "p1",
+        includeExpired: true,
+      })
+    )
+    expect(services.staleConfidenceCalls).toContainEqual(
+      expect.objectContaining({
+        projectId: "p1",
+        includeExpired: true,
+      })
+    )
+    expect(services.memories.countProposed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        today: "2026-04-20",
+        includeExpired: true,
+      })
+    )
   })
 
   it("returns coverage counters for the loaded wake-up sections when requested", async () => {
@@ -1334,6 +1388,7 @@ describe("loadWakeUpData", () => {
     // bodies here would burn one N-way `retrieveMarkdown` fan-out
     // per `expand: true` wake-up for output the renderer drops.
     expect(proposedCall?.includeContent).toBe(false)
+    expect(proposedCall?.today).toBe("2026-04-20")
   })
 
   it("excludes Kind = decision from the inbox slice so heading and body agree", async () => {
@@ -1392,7 +1447,11 @@ describe("loadWakeUpData", () => {
 
     expect(data.proposedMemoriesTotal).toBe(25)
     expect(data.proposedMemories).toHaveLength(2)
-    expect(services.memories.countProposed).toHaveBeenCalledWith({ projectId: "p1" })
+    expect(services.memories.countProposed).toHaveBeenCalledWith({
+      projectId: "p1",
+      today: "2026-04-20",
+      includeExpired: false,
+    })
   })
 
   it("section count uses the true total, not the rendered slice", async () => {

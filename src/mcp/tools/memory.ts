@@ -128,13 +128,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "(save | update) Topic name within the project. Auto-created if missing on save. Case/plural/punctuation variants silently collapse onto the canonical row to prevent fan-out."
+            "(save | update) Topic name. Auto-created on save; normalized variants collapse onto the canonical row."
           ),
         forceNewTopic: z
           .boolean()
           .optional()
           .describe(
-            "(save | update) Bypass the normalized-equivalent + trigram-similar check on `topicName` and create a fresh row. Use only when you've reviewed the candidates surfaced by the structured error and confirmed your name is intentionally distinct."
+            "(save | update) Force a fresh topic row. Use only after reviewing similar-name errors."
           ),
         source: z
           .enum(SOURCES)
@@ -146,10 +146,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(SUGGEST_KIND_VALUES)
           .optional()
           .describe(
-            "(save | update | suggest-topic-key) Memory kind (default: note on save). " +
-              "Use lore-decision for decisions; lore-task for tasks. " +
-              "Required for action='suggest-topic-key', which accepts the full kind set; " +
-              "save and update reject 'task' (tasks are owned by lore-task)."
+            "(save | update | suggest-topic-key) Memory kind. Default note on save; use lore-decision/lore-task for those types. Operational rows should expire."
           ),
         status: z
           .enum(STATUSES)
@@ -168,6 +165,17 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .optional()
           .describe(
             "(save | update) Canonical decision date YYYY-MM-DD. Save: must be YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
+          ),
+        expiresAt: clearableYmdDateSchema
+          .optional()
+          .describe(
+            "(save | update) YYYY-MM-DD expiry; shorthand for scope.lifetime='expires' + scope.expiresAt. Update null/empty clears."
+          ),
+        expiresOn: z
+          .union([z.string().max(200), z.null()])
+          .optional()
+          .describe(
+            "(save | update) Event expiry marker like pr-closed:owner/repo#123 or task-closed:<id>; debt scan checks closed events."
           ),
         tags: tagsSchema.optional().describe("(save | update) Closed-vocabulary tags."),
         keywords: keywordsSchema

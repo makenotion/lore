@@ -372,6 +372,7 @@ export class MemoryPinned {
     includeContent?: boolean
     audienceFilter?: boolean
     includeOutOfScope?: boolean
+    includeExpired?: boolean
   }): Promise<Memory[]> {
     const limit = opts.limit ?? 10
     if (limit <= 0) return []
@@ -393,7 +394,11 @@ export class MemoryPinned {
     const scopeFilterActive =
       this.isScopeFilterEnabled() && opts.includeOutOfScope !== true
     const filter = (
-      scopeFilterActive ? withDefaultScopeFilter(baseFilter, scopeCtx, today) : baseFilter
+      scopeFilterActive
+        ? withDefaultScopeFilter(baseFilter, scopeCtx, today, undefined, {
+            includeExpired: opts.includeExpired === true,
+          })
+        : baseFilter
     ) as QueryDataSourceParameters["filter"]
     const applyAudienceFilter = opts.audienceFilter !== false
 
@@ -419,7 +424,9 @@ export class MemoryPinned {
         extraFilter: (page) => {
           if (
             scopeFilterActive &&
-            !matchesDefaultScope(page.properties, scopeCtx, today)
+            !matchesDefaultScope(page.properties, scopeCtx, today, undefined, {
+              includeExpired: opts.includeExpired === true,
+            })
           ) {
             return false
           }

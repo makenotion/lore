@@ -317,7 +317,7 @@ export function renderDebtJson(report: DebtReport): string {
 
 const scanSubcommand = new Command("scan")
   .description(
-    "Inventory memory debt across the vault: low-trust memories, orphan facts, overdue governance, duplicate clusters, topic sprawl, scope anomalies, and ownerless rows."
+    "Inventory memory debt across the vault: low-trust memories, orphan facts, overdue governance, duplicate clusters, topic sprawl, scope anomalies, operational expiry, summary quality, and ownerless rows."
   )
   .option("-p, --project <name>", "Restrict scan to one project (default: all projects)")
   .option(

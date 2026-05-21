@@ -439,6 +439,7 @@ export async function handleWakeUp(
     userQuery?: string
     taskMemoryLimit?: number
     governanceContext?: boolean
+    includeExpired?: boolean
     debug?: boolean
     mode?: "full" | "task-only"
   }
@@ -551,6 +552,7 @@ export async function handleWakeUp(
       userQuery: args.userQuery,
       taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
+      includeExpiredMemories: args.includeExpired === true,
       includeCoverage: args.debug === true,
       includePinnedBlocks: includeGovernanceContext,
       includeInheritedMemories: includeGovernanceContext,

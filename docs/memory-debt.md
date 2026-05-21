@@ -26,44 +26,57 @@ audit that answers a single question:
 
 ## Debt categories
 
-The scanner currently classifies findings into seven categories. Each
+The scanner currently classifies findings into nine categories. Each
 category reuses an existing service surface — the scanner is an
 orchestrator, not a re-implementation of vault walking.
 
-| Category               | Source                                                              | What it surfaces                                                                            |
-| ---------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `low_trust`            | `MemoryService.queryStaleConfidence`                                | Memories below `CONFIDENCE_DISPLAY_THRESHOLD` (0.5) or untouched ≥ `STALE_CONFIDENCE_DAYS`. |
-| `orphan_fact`          | `FactService.queryOrphans` (bounded by `--per-category-limit + 1`)  | Active facts whose `Source` relation is empty (no supporting memory).                       |
-| `overdue_governance`   | `FactService.queryOverdue`, `DecisionService.queryOverdue`, `TaskService.queryOverdue` + `taskDaysStale` | Facts / decisions / tasks past their `Review By` date, plus active tasks untouched ≥ `STALE_TASK_DAYS`. |
-| `duplicate_cluster`    | `MemoryService.listForScan` + `findConflictCandidates`              | Memory pairs whose `title + keywords` trigram overlap or tag overlap crosses threshold and that share at least one project, filtering out pairs already judged via `Compared With`. |
-| `topic_sprawl`         | `findSimilarTopicGroups`                                            | Topic groups whose stored names differ but normalize to the same key.                       |
-| `scope_anomaly`        | `loadExpiringScopedStatus` (issue #283 columns)                     | Counts of expired / expiring-soon / narrow-scope-out-of-context rows.                       |
-| `ownerless`            | `MemoryService.list` (paginated)                                    | Memories in a project that have no Topic AND no author/agent attribution.                   |
+| Category             | Source                                                                                                   | What it surfaces                                                                                                                                                                    |
+| -------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `low_trust`          | `MemoryService.queryStaleConfidence`                                                                     | Memories below `CONFIDENCE_DISPLAY_THRESHOLD` (0.5) or untouched ≥ `STALE_CONFIDENCE_DAYS`.                                                                                         |
+| `orphan_fact`        | `FactService.queryOrphans` (bounded by `--per-category-limit + 1`)                                       | Active facts whose `Source` relation is empty (no supporting memory).                                                                                                               |
+| `overdue_governance` | `FactService.queryOverdue`, `DecisionService.queryOverdue`, `TaskService.queryOverdue` + `taskDaysStale` | Facts / decisions / tasks past their `Review By` date, plus active tasks untouched ≥ `STALE_TASK_DAYS`.                                                                             |
+| `duplicate_cluster`  | `MemoryService.listForScan` + `findConflictCandidates`                                                   | Memory pairs whose `title + keywords` trigram overlap or tag overlap crosses threshold and that share at least one project, filtering out pairs already judged via `Compared With`. |
+| `topic_sprawl`       | `findSimilarTopicGroups`                                                                                 | Topic groups whose stored names differ but normalize to the same key.                                                                                                               |
+| `scope_anomaly`      | `loadExpiringScopedStatus` (issue #283 columns)                                                          | Counts of expired / expiring-soon / narrow-scope-out-of-context rows.                                                                                                               |
+| `operational_expiry` | `MemoryService.list(kind: "operational")` + task/PR closure checks                                       | Operational memories missing expiry metadata, or whose linked PR/task closure has happened.                                                                                         |
+| `summary_quality`    | `MemoryService.list(source: "digest")` + synopsis audit                                                  | Digest bodies and synopses that read like chronological logs instead of durable signal.                                                                                             |
+| `ownerless`          | `MemoryService.list` (paginated)                                                                         | Memories in a project that have no Topic AND no author/agent attribution.                                                                                                           |
 
 ### Prerequisites and category semantics
 
 - **`low_trust` requires `lore migrate --build-confidence-scores`** to
-  have run at least once. The probe filters on `Confidence Score
-  is_not_empty`, so a pre-0.8.0 row whose numeric score column is null
-  never surfaces regardless of how stale `Last Referenced At` is. The
-  migration backfills scores on every existing memory, then read-time
-  decay does the rest.
-- **`scope_anomaly` requires the issue #283 schema columns** (`Scope
-  Kind`, `Expires At`, …). On a pre-#283 vault the probe degrades to
-  `stats.scopeAnomalies: null` and the rest of the scanner runs
-  regardless. Run `lore migrate` to enable the surface.
+  have run at least once. The probe filters on the non-empty
+  `Confidence Score` column, so a pre-0.8.0 row whose numeric score
+  column is null never surfaces regardless of how stale
+  `Last Referenced At` is. The migration backfills scores on every
+  existing memory, then read-time decay does the rest.
+- **`scope_anomaly` requires the issue #283 schema columns** (`Scope Kind`,
+  `Expires At`, …). On a pre-#283 vault the probe degrades to
+  `stats.scopeAnomalies: null` and the rest of the scanner runs regardless.
+  Run `lore migrate` to enable the surface.
+- **`operational_expiry` is for temporary rows only.** Use
+  `kind: "operational"` for PR poll state, closeout receipts, and other
+  execution breadcrumbs. Add `expiresAt` or `expiresOn` when creating the
+  row; retroactively add it with `lore memory update <id> --expires-at ...`,
+  `lore memory update <id> --expires-on ...`, or
+  `lore-memory action='update'`. `task-closed` markers resolve through Lore
+  tasks; `pr-closed` markers resolve through the GitHub pull-request API, using
+  `GITHUB_TOKEN` or `GH_TOKEN` when private-repo access needs a token.
+- **`summary_quality` audits scan surfaces.** Digest bodies and
+  `Synopsis` values should contain durable signal, not chronological
+  session narration.
 - **`overdue_governance` fuses three signals**: overdue facts /
   decisions / tasks past their `Review By`, AND active tasks untouched
   ≥ `STALE_TASK_DAYS` (the "stale-task" signal). All items in this
   category carry one of four **stable id prefixes** so JSON consumers
   can split them client-side without re-deriving the classification:
 
-  | Prefix                  | What it signals                                   |
-  | ----------------------- | ------------------------------------------------- |
-  | `overdue_fact::<id>`    | Fact past `Review By`, still active.              |
+  | Prefix                   | What it signals                                           |
+  | ------------------------ | --------------------------------------------------------- |
+  | `overdue_fact::<id>`     | Fact past `Review By`, still active.                      |
   | `overdue_decision::<id>` | Decision past `Review By`, still `accepted` / `proposed`. |
-  | `overdue_task::<id>`    | Task past `Review By`, still in an active state.   |
-  | `stale_task::<id>`      | Active task untouched ≥ `STALE_TASK_DAYS`.        |
+  | `overdue_task::<id>`     | Task past `Review By`, still in an active state.          |
+  | `stale_task::<id>`       | Active task untouched ≥ `STALE_TASK_DAYS`.                |
 
   The id prefix is part of the schema contract — a consumer can write
   `if (item.id.startsWith("stale_task::"))` to triage stale rows
@@ -99,11 +112,11 @@ score = severityWeight + retrievalRisk + stalenessWeight
 
 Priority bins:
 
-| Bucket | Score band  | Meaning                                                                            |
-| ------ | ----------- | ---------------------------------------------------------------------------------- |
-| P1     | `score ≥ 70` | Triage now. Orphan facts and overdue decisions land here by default.              |
+| Bucket | Score band        | Meaning                                                                             |
+| ------ | ----------------- | ----------------------------------------------------------------------------------- |
+| P1     | `score ≥ 70`      | Triage now. Orphan facts and overdue decisions land here by default.                |
 | P2     | `40 ≤ score < 70` | Plan into the next maintenance pass. Duplicate clusters and most low-trust signals. |
-| P3     | `score < 40`  | Background hygiene. Topic sprawl, ownerless notes, low-impact stale signals.      |
+| P3     | `score < 40`      | Background hygiene. Topic sprawl, ownerless notes, low-impact stale signals.        |
 
 The formula is a prioritization aid, not objective truth. Tune the
 `SEVERITY_WEIGHT` table or the priority thresholds in
@@ -154,6 +167,7 @@ but no shipped command treats it as actionable. Consumers MUST NOT key behavior
 off `safeToAutoFix: true`; the flag is currently a no-op signal.
 
 `stats.scopeAnomalies` semantics:
+
 - A **non-null number** means the scope-anomaly probe ran successfully and observed that many anomalies (including `0`).
 - `null` means the probe was attempted but the underlying data source lacks the issue-#283 columns (pre-#283 vault). Operators run `lore migrate` to enable.
 - `0` paired with `stats.scopeAnomalyProbeSkipped: true` means the scope category was filtered out by `--category`; the probe never ran. Consumers check `scopeAnomalyProbeSkipped` before treating `null` as a degraded-probe signal.
@@ -166,6 +180,12 @@ The `stats` block reports per-category counters and these diagnostic fields:
 - `staleTasksScanCapped` — the stale-task probe stopped after
   inspecting `perCategoryLimit` active tasks without exhausting Notion.
 - `ownerlessScanCapped` — same shape for the ownerless-memory probe.
+- `operationalMemoriesInspected` and `operationalExpiryIssues` count the
+  operational-expiry audit surface.
+- `summaryQualityCandidates` and `logShapedSummaries` count audited digest /
+  synopsis rows and deterministic quality failures. For `Synopsis`, the
+  per-category limit caps auditable synopsis rows; the scanner may walk past
+  rows with empty synopses to reach that cap.
 - `scopeAnomalies` is `null` on pre-#283 vaults (probe degraded) so
   consumers can distinguish "no debt detected" from "scanner couldn't
   probe that category."
@@ -235,9 +255,9 @@ triage loop they use for normal work. The command:
   `TaskService.create` produces AND `informational` / `accepted` /
   `deprecated` / `superseded`. Two explicit passes cover `proposed`
   and `rejected` (these are excluded by the default-recall filter).
-  Together the three passes find every marker-bearing task
-  regardless of lifecycle state. A reused row reports as `REUSE
-  task: ... (existing <id>)` in the plan output and contributes to
+  Together the three passes find every marker-bearing task regardless of
+  lifecycle state. A reused row reports as `REUSE task: ... (existing <id>)`
+  in the plan output and contributes to
   the trailing `Created N tasks, reused M tasks.` summary. Closed
   (`done` / `cancelled`) tasks the operator previously closed also
   count as a reuse hit — re-running `create-tasks` honors a prior
@@ -266,7 +286,7 @@ parsing the trailing count line.
 ## Cost on a vault-wide scan
 
 A vault-wide scan (`--all-projects`, or `--project` omitted) walks the
-seven category branches sequentially within `scanDebt`. Each branch
+category branches sequentially within `scanDebt`. Each branch
 issues its own paginated `dataSources.query` calls — they are not
 fanned out via `Promise.all` because each branch mutates shared
 state (the `items` list and `stats` block). On a 10-project /
@@ -275,7 +295,8 @@ state (the `items` list and `stats` block). On a 10-project /
 - `duplicate_cluster`: one `listForScan` per active project (full
   paginated walk of the project's non-archived memories) plus an
   O(N²) per-project `findConflictCandidates` pass.
-- `low_trust`, `orphan_fact`, `overdue_governance`, `ownerless`:
+- `low_trust`, `orphan_fact`, `overdue_governance`, `ownerless`,
+  `operational_expiry`, `summary_quality`:
   each issues one or more paginated `dataSources.query` calls,
   bounded by `--per-category-limit` (default 200).
 

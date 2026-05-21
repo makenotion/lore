@@ -25,11 +25,11 @@ That action also halves the originating memory's numeric `Confidence Score`, so
 use it for real contradictions rather than soft uncertainty.
 
 For recurring corpus hygiene — low-trust memories, orphan facts, overdue
-governance, duplicate clusters, topic sprawl, ownerless rows, and scope
-anomalies — run [`lore debt scan`](./memory-debt.md) periodically. The
-scanner is read-only by default; `docs/memory-debt.md` describes the seven
-categories, scoring, recommended monthly cadence, and the opt-in
-`lore debt create-tasks` Phase-2 surface.
+governance, duplicate clusters, topic sprawl, ownerless rows, scope anomalies,
+operational expiry gaps, and log-shaped summaries — run
+[`lore debt scan`](./memory-debt.md) periodically. The scanner is read-only by
+default; `docs/memory-debt.md` describes the categories, scoring, recommended
+monthly cadence, and the opt-in `lore debt create-tasks` Phase-2 surface.
 
 Memory `synopsis` values are scan hooks, not mini-bodies. `lore-memory`
 save/update rejects synopses over `memory.synopsisMaxChars`; the default is
@@ -111,8 +111,9 @@ conflicts with accepted or deprecated rows instead of appending revision blocks.
 
 If unsure for a non-state durable memory, call
 `lore-memory action='suggest-topic-key'` with the title and kind. Do not use
-`topicKey` on `kind: 'note'`, `kind: 'task'`, or `kind: 'state'`; state uses
-the subject-canonical save shape below.
+`topicKey` on `kind: 'note'`, `kind: 'task'`, `kind: 'state'`, or
+`kind: 'operational'`; state uses the subject-canonical save shape below, and
+operational rows should expire instead of forming an upsert chain.
 
 For current-state summaries whose subject evolves through events, prefer the
 subject-canonical save shape:
@@ -262,6 +263,54 @@ rejects non-decision kinds, so it cannot replace a procedure.
 Activation conditions are also replicated to the memory's
 `Keywords` field so hybrid search picks up procedures whose
 activation entity matches the user's current query.
+
+## Operational Memories And Expiry
+
+Use `kind: "operational"` only for temporary coordination state: PR poll
+state, closeout banners, build receipts, migration breadcrumbs, or similar
+execution notes that explain what just happened but should not become durable
+project knowledge.
+
+Operational rows should carry an expiry contract at creation time:
+
+- `expiresAt: "YYYY-MM-DD"` is shorthand for
+  `scope: { lifetime: "expires", expiresAt: "YYYY-MM-DD" }`. Default wake-up
+  and recall exclude the row once `Expires At < today`.
+- `expiresOn: "pr-closed:owner/repo#123"` or
+  `expiresOn: "task-closed:<memory-id>"` records an event-bound expiry marker.
+  The marker does not hide the row by itself; `lore debt scan` audits
+  operational rows whose linked closure event has happened but whose row has
+  not been archived or date-expired. Task markers resolve through Lore task
+  state; PR markers resolve through GitHub's pull-request API and use
+  `GITHUB_TOKEN` or `GH_TOKEN` for private-repo access.
+
+Wake-up excludes expired memories by default. MCP callers that are auditing a
+specific issue can pass `lore-context action='wake-up' includeExpired: true` to
+include expired memories while still preserving narrow-scope isolation. This is
+narrower than the service-internal `includeOutOfScope` escape hatch.
+
+Migration path for stale operational rows:
+
+```text
+lore memory update <id> --expires-at YYYY-MM-DD
+lore memory update <id> --expires-on pr-closed:owner/repo#123
+lore-memory action='update' memoryId='<id>' expiresAt='YYYY-MM-DD'
+lore-memory action='update' memoryId='<id>' expiresOn='pr-closed:owner/repo#123'
+```
+
+Passing `expiresAt: null` or `expiresOn: null` through MCP clears those fields;
+the CLI clear sentinel is an empty string.
+
+## Digest And Synopsis Quality
+
+Digest bodies and `Synopsis` values are scan surfaces, not session-history
+surfaces. They should state durable signal: decisions, constraints, gotchas,
+open loops, or reusable operating knowledge. Avoid chronological prose such as
+"first we checked...", "then we edited...", or "finally we opened a PR."
+
+`lore debt scan` audits accepted `source: "digest"` rows and non-empty
+synopses for log-shaped prose. Rewrite flagged rows into distilled signal, or
+archive them if they only describe activity.
 
 ## Task Hygiene
 
