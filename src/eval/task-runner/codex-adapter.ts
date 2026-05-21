@@ -2,7 +2,8 @@ import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, delimiter, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { appendCappedChunk, joinCappedCapture, makeCappedCapture } from "./capture.js"
 import type { AgentAdapter, AgentRunInput, AgentRunResult } from "./schema.js"
 
@@ -165,19 +166,16 @@ function isBenchWorkspace(workspace: string): boolean {
 /**
  * Bench-mode argv: `codex exec --json --output-last-message
  * <answer-file> -m <model> --cd <workspace> --sandbox workspace-write
- * --skip-git-repo-check <prompt>`. The full `mcp_servers.lore` block
- * (transport, command, args, env including the bench bearer) lives
- * on disk at `<workspace>/.codex/config.toml` (mode 0600); the
- * Codex argv carries zero secrets. See `buildBenchSpawnArgs` and
- * `buildBenchWorkspace` (`eval/bench-runner.ts`) for the on-disk
- * shape and the threat-model trade-off vs argv routing.
+ * --skip-git-repo-check <prompt>`. The Codex argv carries zero
+ * secrets. Tool-driven runs get read commands through a broker
+ * socket rather than a workspace-readable bearer.
  */
 export const BENCH_AGENT_MODEL = "gpt-4o-mini-2024-07-18"
 
 /**
- * Env vars the bench-runner reads to populate the workspace
- * `.codex/config.toml`'s `[mcp_servers.lore.env]` block. The bench-
- * runner is responsible for setting them per example.
+ * Env vars the bench-runner reads to configure live Notion access.
+ * Tool-driven runs keep these in the broker process; non-shim
+ * workspaces may still thread them through Codex MCP config.
  */
 export const BENCH_RUNTIME_NOTION_TOKEN_ENV = "LORE_BENCH_NOTION_TOKEN"
 export const BENCH_RUNTIME_CONFIG_ROOT_ENV = "LORE_BENCH_CONFIG_ROOT"
@@ -187,18 +185,32 @@ export const BENCH_RUNTIME_OPENAI_KEY_ENV = "LORE_BENCH_OPENAI_API_KEY"
  * Env keys cleared from the operator's parent env before the bench
  * Codex child is spawned. Operator-day-to-day Notion / GitHub /
  * Anthropic tokens must not reach the Codex parent process; the
- * bench's MCP-child Notion auth comes from the on-disk
- * `<workspace>/.codex/config.toml` `[mcp_servers.lore.env]` block
- * (see `buildBenchWorkspace`), not from inheritance. Clearing the
- * day-to-day token from Codex's parent env is defense-in-depth so a
- * future Codex env-passthrough behavior change cannot accidentally
- * route the wrong token into the MCP child.
+ * bench's Notion auth is routed by the bench runner, not inherited
+ * through the Codex parent env. Clearing the day-to-day token from
+ * Codex's parent env is defense-in-depth so a future Codex
+ * env-passthrough behavior change cannot accidentally route the
+ * wrong token into the child.
  */
 export const BENCH_CHILD_CLEARED_ENV_KEYS = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "NOTION_API_TOKEN",
+  "NOTION_DEV_PAT",
   "GITHUB_TOKEN",
+] as const
+
+export const BENCH_TOOL_SHIM_DIR = ".lore-tools"
+export const BENCH_TOOL_TRACE_FILE = "lore-tool-trace.jsonl"
+export const BENCH_TOOL_CLI_JS_ENV = "LORE_BENCH_TOOL_CLI_JS"
+export const BENCH_TOOL_NODE_ENV = "LORE_BENCH_TOOL_NODE"
+export const BENCH_SHELL_ENV_EXCLUDES = [
+  "OPENAI_API_KEY",
+  "LORE_BENCH_OPENAI_API_KEY",
+  "NOTION_API_TOKEN",
+  "LORE_BENCH_NOTION_TOKEN",
+  "NOTION_DEV_PAT",
+  "GITHUB_TOKEN",
+  "ANTHROPIC_API_KEY",
 ] as const
 
 /**
@@ -208,16 +220,17 @@ export const BENCH_CHILD_CLEARED_ENV_KEYS = [
  * `LORE_BENCH_OPENAI_API_KEY → OPENAI_API_KEY` mapping.
  */
 export function buildBenchCodexChildEnv(
-  parentEnv: NodeJS.ProcessEnv = process.env
+  parentEnv: NodeJS.ProcessEnv = process.env,
+  options: {
+    workspace?: string
+    extraEnv?: Record<string, string>
+    codexHome?: string
+  } = {}
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {}
-  for (const key of ["PATH", "HOME", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE"]) {
+  for (const key of ["PATH", "TMPDIR", "TZ", "LANG", "LC_ALL", "LC_CTYPE"]) {
     const value = parentEnv[key]
     if (value !== undefined) out[key] = value
-  }
-  for (const [key, value] of Object.entries(parentEnv)) {
-    if (value === undefined) continue
-    if (key.startsWith("CODEX_")) out[key] = value
   }
   // Explicit child OPENAI_API_KEY comes ONLY from
   // LORE_BENCH_OPENAI_API_KEY; the operator's day-to-day
@@ -225,20 +238,47 @@ export function buildBenchCodexChildEnv(
   // reach the child via inheritance.
   const benchOpenAI = parentEnv[BENCH_RUNTIME_OPENAI_KEY_ENV]
   if (benchOpenAI) out["OPENAI_API_KEY"] = benchOpenAI
+  if (options.workspace) {
+    const shimDir = join(options.workspace, BENCH_TOOL_SHIM_DIR)
+    if (existsSync(shimDir)) {
+      out["PATH"] = out["PATH"] ? `${shimDir}${delimiter}${out["PATH"]}` : shimDir
+      out[BENCH_TOOL_NODE_ENV] = process.execPath
+      const cliJs = resolveBenchToolCliJs()
+      if (cliJs) out[BENCH_TOOL_CLI_JS_ENV] = cliJs
+    }
+  }
+  if (options.extraEnv) {
+    for (const [key, value] of Object.entries(options.extraEnv)) {
+      out[key] = value
+    }
+  }
+  if (options.codexHome !== undefined) {
+    out["CODEX_HOME"] = options.codexHome
+    out["HOME"] = options.codexHome
+  }
   return out
 }
 
+function resolveBenchToolCliJs(): string | null {
+  const current = fileURLToPath(import.meta.url)
+  if (basename(current) === "cli.js") return current
+  const distCli = resolve(process.cwd(), "dist", "cli.js")
+  return existsSync(distCli) ? distCli : null
+}
+
 /**
- * Build the Codex `exec` argv for a bench-mode run. The entire
- * bench MCP config (transport, command, args, env including the
- * bench bearer) lives on disk at `<workspace>/.codex/config.toml`
- * (mode `0o600`) — see `buildBenchWorkspace` in
- * `eval/bench-runner.ts`. The spawn argv carries ZERO secrets;
- * `args.join(" ")` is safe to log.
+ * Build the Codex `exec` argv for a bench-mode run. Workspace config
+ * lives at `<workspace>/.codex/config.toml` (mode `0o600`) — see
+ * `buildBenchWorkspace` in `eval/bench-runner.ts`. Tool-driven runs
+ * use runner-owned broker shims, so the spawn argv carries ZERO
+ * secrets and no bench Notion auth is readable from the workspace.
+ * Network is enabled for bench shell behavior, while
+ * `shell_environment_policy.exclude` strips bearer env keys from
+ * model-generated shell commands.
  *
  * Exported so the regression test can assert "the rendered argv
  * contains no bearer-shaped substring." The invariant: token
- * routing happens via on-disk config, never via Codex argv.
+ * routing never happens via Codex argv.
  */
 export function buildBenchSpawnArgs(workspace: string, prompt: string): string[] {
   return [
@@ -248,6 +288,10 @@ export function buildBenchSpawnArgs(workspace: string, prompt: string): string[]
     join(workspace, "answer.txt"),
     "-m",
     BENCH_AGENT_MODEL,
+    "-c",
+    "sandbox_workspace_write.network_access=true",
+    "-c",
+    `shell_environment_policy.exclude=${JSON.stringify([...BENCH_SHELL_ENV_EXCLUDES])}`,
     "--cd",
     workspace,
     "--sandbox",
@@ -259,6 +303,65 @@ export function buildBenchSpawnArgs(workspace: string, prompt: string): string[]
 
 export class CodexAgentAdapter implements AgentAdapter {
   readonly id: string = "codex"
+
+  async supportsBenchToolDrivenRetrieval(): Promise<{
+    supported: boolean
+    reason: string | null
+  }> {
+    let codexHome: string
+    try {
+      codexHome = await createIsolatedCodexHome()
+    } catch (err) {
+      return {
+        supported: false,
+        reason: `failed to create isolated Codex home: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      }
+    }
+    return new Promise((resolveSupport) => {
+      let settled = false
+      const finish = (result: { supported: boolean; reason: string | null }): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        void removeIsolatedCodexHome(codexHome).finally(() => resolveSupport(result))
+      }
+      const child = spawn("codex", ["--version"], {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: buildBenchCodexChildEnv(process.env, { codexHome }),
+      })
+      const stderrCapture = makeCappedCapture()
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL")
+        finish({
+          supported: false,
+          reason:
+            "codex --version timed out while checking tool-driven retrieval support",
+        })
+      }, 10_000)
+      child.stderr?.on("data", (c: Buffer) => appendCappedChunk(stderrCapture, c))
+      child.on("error", (err) => {
+        finish({
+          supported: false,
+          reason: `codex executable unavailable: ${err.message}`,
+        })
+      })
+      child.on("close", (code) => {
+        if (code === 0) {
+          finish({ supported: true, reason: null })
+          return
+        }
+        const detail = joinCappedCapture(stderrCapture).trim()
+        finish({
+          supported: false,
+          reason:
+            `codex --version exited with code ${code ?? -1}` +
+            (detail ? `: ${detail}` : ""),
+        })
+      })
+    })
+  }
 
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     if (isBenchWorkspace(input.workspace)) {
@@ -280,16 +383,22 @@ export class CodexAgentAdapter implements AgentAdapter {
         refused: true,
       }
     }
+    const codexHome = await createIsolatedCodexHome()
     const args = buildBenchSpawnArgs(input.workspace, input.prompt)
     return new Promise<AgentRunResult>((resolveRun) => {
       const child = spawn("codex", args, {
         stdio: ["ignore", "pipe", "pipe"],
-        env: buildBenchCodexChildEnv(),
+        env: buildBenchCodexChildEnv(process.env, {
+          workspace: input.workspace,
+          extraEnv: input.extraEnv,
+          codexHome,
+        }),
         detached: true,
       })
       const stdoutCapture = makeCappedCapture()
       const stderrCapture = makeCappedCapture()
       let timedOut = false
+      let settled = false
       const timer = setTimeout(() => {
         timedOut = true
         try {
@@ -299,11 +408,16 @@ export class CodexAgentAdapter implements AgentAdapter {
           // Process already gone; nothing to do.
         }
       }, input.timeoutMs)
+      const finish = (result: AgentRunResult): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        void removeIsolatedCodexHome(codexHome).finally(() => resolveRun(result))
+      }
       child.stdout?.on("data", (c: Buffer) => appendCappedChunk(stdoutCapture, c))
       child.stderr?.on("data", (c: Buffer) => appendCappedChunk(stderrCapture, c))
       child.on("error", (err) => {
-        clearTimeout(timer)
-        resolveRun({
+        finish({
           exitCode: -1,
           stdout: joinCappedCapture(stdoutCapture),
           stderr: joinCappedCapture(stderrCapture) + `\n[spawn-error] ${err}`,
@@ -311,8 +425,7 @@ export class CodexAgentAdapter implements AgentAdapter {
         })
       })
       child.on("close", (code) => {
-        clearTimeout(timer)
-        resolveRun({
+        finish({
           exitCode: code ?? -1,
           stdout: joinCappedCapture(stdoutCapture),
           stderr: joinCappedCapture(stderrCapture),

@@ -61,7 +61,7 @@ Re-running is idempotent (sha-matched file is left in place).
 | Variable                          | Purpose                                                                                                                                                                                                                                                                                            |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LORE_EVAL_BENCH_REAL=1`          | Master gate -- without it every bench-mode adapter refuses to spawn.                                                                                                                                                                                                                               |
-| `LORE_BENCH_NOTION_TOKEN`         | Per-run Notion token; the bench-runner writes it into the per-example workspace's `.codex/config.toml` (mode `0600`) so the spawned MCP child can authenticate. See "Secrets posture" below for the full risk model -- use a revocable bench-scoped token, not your day-to-day `NOTION_API_TOKEN`. |
+| `LORE_BENCH_NOTION_TOKEN`         | Per-run Notion token; the bench-runner keeps it in runner-owned process state for tool-driven retrieval. Use a revocable bench-scoped token, not your day-to-day `NOTION_API_TOKEN`. |
 | `LORE_BENCH_OPENAI_API_KEY`       | OpenAI key for both the agent (Codex shells out) and the judge.                                                                                                                                                                                                                                    |
 | `LORE_BENCH_CONFIG_ROOT`          | Path to a `.lore.yaml` directory targeting the sandbox vault.                                                                                                                                                                                                                                      |
 | `LORE_BENCH_SANDBOX_PROJECT_NAME` | Parent sandbox project name; per-example sub-projects are created under it.                                                                                                                                                                                                                        |
@@ -205,42 +205,45 @@ The bench supports two retrieval surfaces, selected via the suite YAML's
 `agent.retrieval` field. Both produce the same artifact shape;
 `config.agent.retrieval` records which surface produced the numbers.
 
-- **`tool-driven`** (V1 default) -- the agent has Lore MCP tools (`lore-query`,
-  `lore-memory`, `lore-context`) registered and decides for itself when to call
-  them. Maps to mid-session followup behavior in production Lore. **Currently
-  structurally unavailable under `codex exec`** -- Codex 0.128.0 does not load
-  MCP servers in its non-interactive exec mode (`enable_mcp_apps` feature flag
-  is "under development"). The agent sees no tools and falls through to
-  shell-command attempts that all fail with `command not found`. Listed in the
-  schema for completeness and to keep YAML loading stable when a future Codex
-  release or a Claude Code headless adapter restores tool-driven retrieval.
+- **`tool-driven`** (V1 default) -- the agent decides during the answer attempt
+  when to retrieve from Lore. Codex bench runs expose live read tools through
+  runner-installed `lore-query` and `lore-memory` command shims in the
+  workspace `PATH`; those shims call Lore services against the just-seeded
+  example project and append a JSONL retrieval trace. This is not wake-up
+  prefetch: no retrieved memory body is injected into the initial prompt.
 - **`wake-up-prefetch`**
   ([`longmemeval-wake-up.yaml`](../evals/bench-suites/longmemeval-wake-up.yaml))
   -- the bench-runner calls `loadWakeUpData({ mode: "task-only",
-userQuery: <question>, includeMemoryContent: true })` BEFORE invoking the
+  userQuery: <question>, includeMemoryContent: true })` BEFORE invoking the
   agent, then injects the top-10 matching memory bodies into the user prompt as
   a "Retrieved context" block. The agent answers from the injected context --
-  no MCP tool calls required, which sidesteps the MCP-in-exec gap. This uses
-  the same narrow wake-up shape as
+  no live tool calls required. This uses the same narrow wake-up shape as
   `lore-context action='wake-up' mode='task-only' userQuery=<task>`: for a
   one-shot bench question the relevance-ranked taskMemories section is the
   load-bearing part, while digest / recent / active-tasks sections of full
   wake-up are noise.
 
+Every bench example now records `agent.retrieval.calls[]`. Tool-driven entries
+come from the command shim and have `timing: "during-agent-run"`; wake-up
+prefetch entries have `timing: "before-agent-run"`. Each entry records the
+tool/action, status, surfaced memory IDs, expanded memory IDs, and any error.
+When the selected host cannot expose live tools, the runner writes an aborted
+artifact with a clear skip reason before creating per-example projects.
+
 The two strategies compose with `ingestion.strategy` independently:
 
-| `ingestion.strategy` | `agent.retrieval`  | What it measures                                                            | Currently runnable     |
-| -------------------- | ------------------ | --------------------------------------------------------------------------- | ---------------------- |
-| `lore-mine`          | `tool-driven`      | Production write path x agent tool-call propensity                          | Blocked on MCP-in-exec |
-| `lore-mine`          | `wake-up-prefetch` | Production write path x isolated retrieval surface                          | Yes                    |
-| `raw-transcript`     | `tool-driven`      | Full corpus fidelity x agent tool-call propensity (Zep-comparable headline) | Blocked on MCP-in-exec |
-| `raw-transcript`     | `wake-up-prefetch` | Full corpus fidelity x isolated retrieval surface (V1 publishable headline) | Yes                    |
-| `simulated-autosave` | `tool-driven`      | Enriched ingest x agent tool-call propensity (Zep-style enrichment surface) | Blocked on MCP-in-exec |
-| `simulated-autosave` | `wake-up-prefetch` | Enriched ingest x isolated retrieval surface                                | Yes                    |
+| `ingestion.strategy` | `agent.retrieval`  | What it measures                                                            | Currently runnable |
+| -------------------- | ------------------ | --------------------------------------------------------------------------- | ------------------ |
+| `lore-mine`          | `tool-driven`      | Production write path x agent tool-call propensity                          | Yes                |
+| `lore-mine`          | `wake-up-prefetch` | Production write path x isolated retrieval surface                          | Yes                |
+| `raw-transcript`     | `tool-driven`      | Full corpus fidelity x agent tool-call propensity (Zep-comparable headline) | Yes                |
+| `raw-transcript`     | `wake-up-prefetch` | Full corpus fidelity x isolated retrieval surface                           | Yes                |
+| `simulated-autosave` | `tool-driven`      | Enriched ingest x agent tool-call propensity (Zep-style enrichment surface) | Yes                |
+| `simulated-autosave` | `wake-up-prefetch` | Enriched ingest x isolated retrieval surface                                | Yes                |
 
-The V1 publishable headline lives at `longmemeval-wake-up.yaml`. The tool-driven
-Zep-comparable number becomes available once Codex ships `enable_mcp_apps` (or a
-Claude Code headless adapter lands).
+Use tool-driven suites when measuring whether the agent chooses useful
+mid-session retrieval and expansion. Use wake-up-prefetch suites when isolating
+the retrieval ranker from tool-choice behavior.
 
 ### Safety Gates
 
@@ -260,23 +263,22 @@ Claude Code headless adapter lands).
   Projected after every example; aborts before the next one if the projection
   exceeds the cap.
 - **Secrets posture.** Per-example workspaces are created via `mkdtemp` at mode
-  `0700` (owner traverse only). The workspace carries the `.lore-bench-mode`
-  sentinel and a `.codex/config.toml` written at mode `0600` (owner read/write
-  only). The `.codex/config.toml` embeds the bench `NOTION_API_TOKEN` and
-  `LORE_CONFIG_ROOT` in its `[mcp_servers.lore.env]` table so the spawned MCP
-  child can authenticate; the values do NOT appear in Codex argv
-  (`buildBenchSpawnArgs` carries zero secrets). Threat model: the token is on
-  disk for the duration of the example (~3-5 minutes), readable only by the
-  owning UID, removed when `runBenchExample`'s `finally` deletes the workspace.
-  **Cancellation or `--keep-workspaces` leaves the file behind** -- operators
-  running with either must clean up manually (`rm -rf /tmp/lore-bench-*`) and
-  use a per-run revocable bench-scoped token (`LORE_BENCH_NOTION_TOKEN` is
-  deliberately distinct from `NOTION_API_TOKEN` for this reason). An adversarial
-  corpus-row prompt-injection reaching the agent could `cat .codex/config.toml`
-  from within its sandbox; LongMemEval mitigates this at the supply-chain layer
-  (HF-pinned + sha256-verified corpus), and `redactBearerTokens` strips verbatim
-  bearer-shaped substrings from any answer/judge output before artifact write
-  as defense-in-depth.
+  `0700` (owner traverse only). Agent-readable workspaces carry only the
+  `.lore-bench-mode` sentinel and a `.codex/config.toml` with non-secret model
+  config; tool-driven retrieval additionally installs command shims. The agent
+  gets a Unix socket path for live tools; the bench-runner-owned broker process
+  keeps the Notion token, config root, project id, and trace path fixed outside
+  the workspace. Wake-up-prefetch retrieval also stays runner-side and does not
+  need a Notion-authenticated MCP config in the workspace. Codex argv and the
+  Codex child env carry zero Notion bearer-shaped values; the bench spawn also
+  sets `shell_environment_policy.exclude` so model-generated shell commands do
+  not inherit bearer env keys such as `OPENAI_API_KEY`. Cancellation or
+  `--keep-workspaces` can leave non-secret workspace files behind; operators may
+  clean up with `rm -rf /tmp/lore-bench-*`. Use a per-run revocable bench-scoped
+  token (`LORE_BENCH_NOTION_TOKEN` is deliberately distinct from
+  `NOTION_API_TOKEN` for this reason). `redactBearerTokens` strips verbatim
+  bearer-shaped substrings from answer, judge, broker stderr, and wake-up
+  retrieval errors before artifact write as defense-in-depth.
 
 ### Model Snapshot Pinning
 

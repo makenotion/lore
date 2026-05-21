@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs"
 import { mkdtemp, mkdir, writeFile, readFile, stat, rm, readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
   BENCH_CHILD_CLEARED_ENV_KEYS,
+  BENCH_SHELL_ENV_EXCLUDES,
+  BENCH_TOOL_SHIM_DIR,
   buildBenchCodexChildEnv,
   buildBenchSpawnArgs,
   buildCodexChildEnv,
@@ -1522,11 +1524,9 @@ function successResult(): AgentRunResult {
 
 describe("bench spawn argv carries NO secrets", () => {
   it("buildBenchSpawnArgs does not contain bearer-shaped substrings", () => {
-    // Invariant: the bench MCP config (transport, command, args, env
-    // including the Notion bearer) lives entirely on disk at
-    // `<workspace>/.codex/config.toml` (mode 0600). The spawn
-    // argv carries ZERO `-c mcp_servers.lore.*` overrides. Any
-    // future refactor that re-introduces `-c mcp_servers.lore.env=...`
+    // Invariant: bench Notion auth is routed outside argv. The spawn
+    // argv carries ZERO bearer-shaped values or `-c mcp_servers.lore.*`
+    // overrides. Any future refactor that re-introduces auth in argv
     // would fail this test loudly.
     //
     // The assertion uses sentinel bearer-shaped tokens that the
@@ -1548,6 +1548,10 @@ describe("bench spawn argv carries NO secrets", () => {
       // structural flags so a future revert that drops `--sandbox`
       // or `--json` fails LOUDLY here rather than at runtime.
       expect(joined).toContain("--json")
+      expect(joined).toContain("-c sandbox_workspace_write.network_access=true")
+      expect(joined).toContain(
+        `-c shell_environment_policy.exclude=${JSON.stringify([...BENCH_SHELL_ENV_EXCLUDES])}`
+      )
       expect(joined).toContain("--cd /tmp/lore-bench-test-workspace")
       expect(joined).toContain("--sandbox workspace-write")
       expect(joined).toContain("--skip-git-repo-check")
@@ -1559,19 +1563,20 @@ describe("bench spawn argv carries NO secrets", () => {
 
   it("buildBenchCodexChildEnv strips Notion bearer from child env (bench partition contract)", () => {
     // Negative-contract pin: the Codex child's env partition MUST
-    // NOT carry the Notion bearer. The MCP child reads its auth from
-    // the on-disk `[mcp_servers.lore.env]` block in the workspace
-    // `.codex/config.toml` (see `buildBenchWorkspace`), not from
-    // Codex's parent env. Clearing Notion-shaped keys from the
-    // Codex parent env is defense-in-depth so a future Codex
+    // NOT carry the Notion bearer. Bench auth is routed by the runner,
+    // not from Codex's parent env. Clearing Notion-shaped keys from
+    // the Codex parent env is defense-in-depth so a future Codex
     // env-passthrough behavior change cannot accidentally route the
-    // wrong token into the MCP child.
+    // wrong token into the child.
     const parent: NodeJS.ProcessEnv = {
       PATH: "/usr/bin",
       HOME: "/tmp/home",
+      CODEX_HOME: "/tmp/home/.codex",
+      CODEX_TRACE: "1",
       OPENAI_API_KEY: "sk-operator-day-to-day",
       LORE_BENCH_OPENAI_API_KEY: "sk-bench-only",
       NOTION_API_TOKEN: "ntn_OPERATOR_DAY_TO_DAY_TOKEN_MUST_NOT_LEAK",
+      NOTION_DEV_PAT: "development_ntn_OPERATOR_DEV_PAT_MUST_NOT_LEAK",
       LORE_BENCH_NOTION_TOKEN: "ntn_BENCH_TOKEN_ALSO_NOT_FORWARDED_VIA_ENV",
       GITHUB_TOKEN: "ghp_must_not_leak",
       ANTHROPIC_API_KEY: "sk-ant-must-not-leak",
@@ -1581,22 +1586,75 @@ describe("bench spawn argv carries NO secrets", () => {
     // the operator's day-to-day value.
     expect(childEnv["OPENAI_API_KEY"]).toBe("sk-bench-only")
     // Every Notion-bearer-shaped key must be absent from the child
-    // env partition. The MCP child's auth comes from the on-disk
-    // `.codex/config.toml`'s `[mcp_servers.lore.env]` block, not from
+    // env partition. Bench auth is routed by the runner, not from
     // env inheritance — the Codex parent env carries nothing
     // Notion-shaped.
     expect(childEnv["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(childEnv["NOTION_DEV_PAT"]).toBeUndefined()
     expect(childEnv["LORE_BENCH_NOTION_TOKEN"]).toBeUndefined()
     expect(childEnv["GITHUB_TOKEN"]).toBeUndefined()
     expect(childEnv["ANTHROPIC_API_KEY"]).toBeUndefined()
+    expect(childEnv["HOME"]).toBeUndefined()
+    expect(childEnv["CODEX_HOME"]).toBeUndefined()
+    expect(childEnv["CODEX_TRACE"]).toBeUndefined()
     // No bearer-shaped substring appears anywhere in the child env
     // (defense-in-depth against a future allowlist that admits the
     // wrong key).
     const joined = JSON.stringify(childEnv)
     expect(joined).not.toMatch(/ntn_OPERATOR/)
+    expect(joined).not.toMatch(/development_ntn_OPERATOR/)
     expect(joined).not.toMatch(/ntn_BENCH/)
     expect(joined).not.toMatch(/ghp_/)
     expect(joined).not.toMatch(/sk-ant/)
+  })
+
+  it("pins bench HOME and CODEX_HOME to an isolated config home", () => {
+    const childEnv = buildBenchCodexChildEnv(
+      {
+        PATH: "/usr/bin",
+        HOME: "/Users/example",
+        CODEX_HOME: "/Users/example/.codex",
+        CODEX_TRACE: "1",
+        LORE_BENCH_OPENAI_API_KEY: "sk-bench-only",
+      },
+      {
+        extraEnv: {
+          HOME: "/tmp/attacker-home",
+          CODEX_HOME: "/tmp/attacker-codex-home",
+        },
+        codexHome: "/tmp/lore-eval-codex-home-bench",
+      }
+    )
+
+    expect(childEnv["HOME"]).toBe("/tmp/lore-eval-codex-home-bench")
+    expect(childEnv["CODEX_HOME"]).toBe("/tmp/lore-eval-codex-home-bench")
+    expect(childEnv["CODEX_TRACE"]).toBeUndefined()
+    expect(childEnv["OPENAI_API_KEY"]).toBe("sk-bench-only")
+  })
+
+  it("exposes bench tool shims only when the workspace opted into them", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-bench-env-test-"))
+    try {
+      const withoutShims = buildBenchCodexChildEnv(
+        { PATH: "/usr/bin", LORE_BENCH_OPENAI_API_KEY: "sk-bench-only" },
+        { workspace }
+      )
+      expect(withoutShims["PATH"]).toBe("/usr/bin")
+      expect(withoutShims["LORE_BENCH_TOOL_NODE"]).toBeUndefined()
+      expect(withoutShims["LORE_BENCH_TOOL_CLI_JS"]).toBeUndefined()
+
+      await mkdir(join(workspace, BENCH_TOOL_SHIM_DIR))
+      const withShims = buildBenchCodexChildEnv(
+        { PATH: "/usr/bin", LORE_BENCH_OPENAI_API_KEY: "sk-bench-only" },
+        { workspace }
+      )
+      expect(withShims["PATH"]?.split(delimiter)[0]).toBe(
+        join(workspace, BENCH_TOOL_SHIM_DIR)
+      )
+      expect(withShims["LORE_BENCH_TOOL_NODE"]).toBe(process.execPath)
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
   })
 
   it("BENCH_CHILD_CLEARED_ENV_KEYS lists every Notion-bearer key", () => {
@@ -1605,6 +1663,7 @@ describe("bench spawn argv carries NO secrets", () => {
     // include canonical Notion auth plus any other operator-day-to-day
     // secrets the bench needs to clear.
     expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("NOTION_API_TOKEN")
+    expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("NOTION_DEV_PAT")
     expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("GITHUB_TOKEN")
     expect(BENCH_CHILD_CLEARED_ENV_KEYS).toContain("ANTHROPIC_API_KEY")
   })

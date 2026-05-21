@@ -212,6 +212,7 @@ export interface AgentRunInput {
   prompt: string
   workspace: string
   timeoutMs: number
+  extraEnv?: Record<string, string>
 }
 
 export interface AgentRunResult {
@@ -241,6 +242,10 @@ export interface AgentRunResult {
  */
 export interface AgentAdapter {
   readonly id: string
+  supportsBenchToolDrivenRetrieval?(): Promise<{
+    supported: boolean
+    reason: string | null
+  }>
   run(input: AgentRunInput): Promise<AgentRunResult>
 }
 

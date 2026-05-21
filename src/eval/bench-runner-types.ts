@@ -38,7 +38,29 @@ export const EXTRACTION_COST_MEASUREMENT_NOT_APPLICABLE = "not-applicable" as co
 export type ExtractionCostMeasurement =
   | typeof EXTRACTION_COST_MEASUREMENT_OPENAI_REPORTED
   | typeof EXTRACTION_COST_MEASUREMENT_NOT_APPLICABLE
+export type BenchRetrievalTiming = "before-agent-run" | "during-agent-run"
+export type BenchRetrievalSurface = "wake-up-prefetch" | "codex-shell-shim"
+export type BenchRetrievalCallStatus = "success" | "error"
 
+export interface BenchRetrievalCall {
+  tool: string
+  action: string | null
+  surface: BenchRetrievalSurface
+  timing: BenchRetrievalTiming
+  status: BenchRetrievalCallStatus
+  startedAt: string
+  finishedAt: string
+  surfacedMemoryIds: string[]
+  expandedMemoryIds: string[]
+  error: string | null
+}
+
+export interface BenchExampleRetrievalTrace {
+  strategy: string
+  surface: BenchRetrievalSurface
+  firstRetrievalTiming: BenchRetrievalTiming | null
+  calls: BenchRetrievalCall[]
+}
 export interface BenchExampleIngestion {
   tokensInput: number
   extractionTokensPrompt: number
@@ -74,6 +96,7 @@ export interface BenchExampleAgent {
    */
   tokensReasoningOutput: number
   toolCalls: number
+  retrieval: BenchExampleRetrievalTrace
   answer: string
   costMeasurement: CostMeasurement
 }

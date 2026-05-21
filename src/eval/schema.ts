@@ -263,17 +263,12 @@ export type BenchIngestionStrategy = (typeof BENCH_INGESTION_STRATEGIES)[number]
 /**
  * Retrieval strategy for the agent. Two values:
  *
- * - `tool-driven` (V1 default): the agent has Lore MCP tools
- *   (`lore-query`, `lore-memory`, `lore-context`) registered and
- *   decides for itself when to call them. Maps to mid-session
- *   followup behavior in production Lore. **Currently structurally
- *   unavailable under `codex exec`** — Codex 0.128.0 does not load
- *   MCP servers in its non-interactive exec mode (`enable_mcp_apps`
- *   feature flag is "under development"). The agent sees no tools
- *   and falls through to shell-command attempts that all fail with
- *   `command not found`. Listed here for documentation completeness
- *   and to keep the schema stable when a future Codex release or
- *   Claude Code headless adapter restores tool-driven retrieval.
+ * - `tool-driven` (V1 default): the agent gets live Lore read tools
+ *   and decides for itself when to call them. Codex bench runs expose
+ *   those tools through runner-installed `lore-query` / `lore-memory`
+ *   command shims, which call the same Lore services during the agent
+ *   run and trace every retrieval action into the artifact. This
+ *   measures selective mid-session retrieval, not preloaded context.
  *
  * - `wake-up-prefetch`: the bench-runner calls `loadWakeUpData` with
  *   `userQuery=<question>` BEFORE invoking the agent. The

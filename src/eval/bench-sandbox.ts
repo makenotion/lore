@@ -22,6 +22,7 @@ import type { BenchSandbox } from "./bench-runner.js"
  * focused, fits well within the agent's prompt budget.
  */
 const WAKE_UP_PREFETCH_LIMIT = 10
+const WAKE_UP_PREFETCH_FETCH_LIMIT = WAKE_UP_PREFETCH_LIMIT * 3
 /**
  * Per-memory body truncation when rendering the wake-up prefetch
  * block. LongMemEval transcripts can run to a few KB each; capping
@@ -100,23 +101,30 @@ export async function buildBenchSandbox(): Promise<BenchSandbox> {
         mode: "task-only",
         projectId: input.projectId,
         userQuery: input.userQuery,
-        taskMemoryLimit: WAKE_UP_PREFETCH_LIMIT,
+        taskMemoryLimit: WAKE_UP_PREFETCH_FETCH_LIMIT,
         includeMemoryContent: true,
       })
       const memories = wakeUp.taskMemories
-      if (memories.length === 0) return ""
+        .filter((memory) => memory.projectIds.includes(input.projectId))
+        .slice(0, WAKE_UP_PREFETCH_LIMIT)
+      if (memories.length === 0) {
+        return { renderedContext: "", surfacedMemoryIds: [] }
+      }
       const blocks = memories.map((memory, index) => {
         const body = (memory.content ?? "").slice(0, WAKE_UP_PREFETCH_BODY_CAP)
         return `### Memory ${index + 1}: ${memory.title}\n\n${body}`
       })
-      return [
-        "## Retrieved context (relevance-ranked for your current question)",
-        "",
-        "The memories below were retrieved by Lore's hybrid search seeded",
-        "with your question. Answer from these contents.",
-        "",
-        ...blocks,
-      ].join("\n")
+      return {
+        renderedContext: [
+          "## Retrieved context (relevance-ranked for your current question)",
+          "",
+          "The memories below were retrieved by Lore's hybrid search seeded",
+          "with your question. Answer from these contents.",
+          "",
+          ...blocks,
+        ].join("\n"),
+        surfacedMemoryIds: memories.map((memory) => memory.id),
+      }
     },
     async archiveProject(id) {
       await services.projects.archive(id)

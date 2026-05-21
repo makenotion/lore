@@ -1,4 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -14,12 +21,44 @@ import {
   makeSubProjectName,
   parseAgentTurnCompleted,
   restoreBenchEnv,
+  runBenchExample,
   runBenchSuite,
   SUB_PROJECT_NAME_REGEX,
   ulidTimestampMs,
   type BenchSandbox,
 } from "./bench-runner.js"
+import { BENCH_TOOL_SOCKET_ENV } from "./bench-tool.js"
+import type { AgentAdapter } from "./task-runner.js"
 import { resolveProfileFromConfig } from "../profile/index.js"
+
+const TEST_PRICING = {
+  models: {
+    "gpt-4o-mini-2024-07-18": {
+      inputPer1K: 0,
+      cachedInputPer1K: 0,
+      outputPer1K: 0,
+      reasoningOutputPer1K: 0,
+    },
+    "gpt-4o-2024-08-06": {
+      inputPer1K: 0,
+      cachedInputPer1K: 0,
+      outputPer1K: 0,
+      reasoningOutputPer1K: 0,
+    },
+  },
+  ingestion: {
+    perSessionEstimatedUsd: 0,
+    calibrationSource: "test",
+    calibratedAt: "2026-05-21",
+  },
+}
+
+const TEST_JUDGE_PROMPTS = {
+  recall: "judge",
+  abstention: "judge abstention",
+  recallSha256: "r".repeat(64),
+  abstentionSha256: "a".repeat(64),
+}
 
 describe("generateUlid", () => {
   it("produces a 26-char Crockford base32 string", () => {
@@ -249,6 +288,83 @@ describe("runBenchSuite profile guard", () => {
     ).rejects.toThrow(/Bench suite profile support@1\.0\.0/)
     expect(createSubProjectCalled).toBe(false)
   })
+
+  it("skips tool-driven suites before seeding when the selected adapter lacks live tools", async () => {
+    process.env["LORE_EVAL_BENCH_REAL"] = "1"
+    process.env["LORE_BENCH_NOTION_TOKEN"] = "ntn_bench"
+    process.env["LORE_BENCH_OPENAI_API_KEY"] = "sk-bench"
+    process.env["LORE_BENCH_CONFIG_ROOT"] = "/tmp/lore-bench-config"
+    process.env["LORE_BENCH_SANDBOX_PROJECT_NAME"] = "Bench Sandbox"
+    let createSubProjectCalled = false
+    const sandbox: BenchSandbox = {
+      authSource: "env-notion-api-token",
+      activeProfileSelector: "default@1.0.0",
+      async createSubProject() {
+        createSubProjectCalled = true
+        return "project-1"
+      },
+      async createMemoryInProject() {
+        throw new Error("not expected")
+      },
+      async createSimulatedAutosaveMemoryInProject() {
+        throw new Error("not expected")
+      },
+      async getWakeUpForQuery() {
+        throw new Error("not expected")
+      },
+      async archiveProject() {},
+      async countMemoriesForProject() {
+        return 0
+      },
+      async countFactsForProject() {
+        return 0
+      },
+    }
+    const adapter: AgentAdapter = {
+      id: "unsupported",
+      async supportsBenchToolDrivenRetrieval() {
+        return { supported: false, reason: "probe says no live tools" }
+      },
+      async run() {
+        throw new Error("not expected")
+      },
+    }
+    const outDir = mkdtempSync(join(tmpdir(), "lore-bench-skip-test-"))
+    try {
+      const { artifact, outPath } = await runBenchSuite({
+        suitePath: "evals/bench-suites/longmemeval-raw-transcript.yaml",
+        sandbox,
+        agentAdapter: adapter,
+        pricing: TEST_PRICING,
+        judgePrompts: TEST_JUDGE_PROMPTS,
+        corpus: {
+          name: "longmemeval_s_cleaned",
+          path: "fixture.json",
+          repository: "fixture",
+          revision: "fixture",
+          sha256: "f".repeat(64),
+          examples: [
+            {
+              question_id: "lme_s_0001",
+              question_type: "single-session-user",
+              question: "What color?",
+              answer: "blue",
+              haystack_sessions: [],
+            },
+          ],
+        },
+        outPath: join(outDir, "artifact.json"),
+        now: () => new Date("2026-05-21T00:00:00.000Z"),
+      })
+      expect(createSubProjectCalled).toBe(false)
+      expect(artifact.summary.aborted).toBe(true)
+      expect(artifact.summary.abortReason).toContain("probe says no live tools")
+      expect(artifact.results).toEqual([])
+      expect(existsSync(outPath)).toBe(true)
+    } finally {
+      rmSync(outDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("parseAgentTurnCompleted", () => {
@@ -325,7 +441,7 @@ describe("extractUlidFromSubProjectName + filterOrphanSubProjects", () => {
   })
 })
 
-describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lore.env]", () => {
+describe("buildBenchWorkspace on-disk config", () => {
   let workspace: string
   let saved: Record<string, string | undefined>
 
@@ -334,9 +450,11 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
     saved = {
       NOTION_API_TOKEN: process.env["NOTION_API_TOKEN"],
       LORE_CONFIG_ROOT: process.env["LORE_CONFIG_ROOT"],
+      NOTION_ENV: process.env["NOTION_ENV"],
     }
     process.env["NOTION_API_TOKEN"] = "ntn_TEST_FIXTURE_TOKEN_FOR_BUILD_BENCH_WORKSPACE"
     process.env["LORE_CONFIG_ROOT"] = "/tmp/lore-bench-config-fixture"
+    process.env["NOTION_ENV"] = "dev"
   })
 
   afterEach(() => {
@@ -347,11 +465,31 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
     }
   })
 
-  it("writes the full bench config to .codex/config.toml with mode 0600", async () => {
+  it("writes only non-secret model config by default", async () => {
     await buildBenchWorkspace({
       workspace,
       budgetStateFile: "/tmp/state-file.json",
       perExampleWrites: 500,
+    })
+    const configPath = join(workspace, ".codex", "config.toml")
+    const body = readFileSync(configPath, "utf-8")
+
+    expect(body).toContain('model = "gpt-4o-mini-2024-07-18"')
+    expect(body).not.toContain("[mcp_servers.lore]")
+    expect(body).not.toContain("NOTION_API_TOKEN")
+    expect(body).not.toContain("LORE_CONFIG_ROOT")
+    expect(body).not.toContain("ntn_TEST_FIXTURE_TOKEN_FOR_BUILD_BENCH_WORKSPACE")
+    expect(existsSync(join(workspace, ".lore-tools"))).toBe(false)
+    const mode = statSync(configPath).mode & 0o777
+    expect(mode).toBe(0o600)
+  })
+
+  it("writes the full bench config when MCP config is explicitly enabled", async () => {
+    await buildBenchWorkspace({
+      workspace,
+      budgetStateFile: "/tmp/state-file.json",
+      perExampleWrites: 500,
+      enableMcpConfig: true,
     })
     const configPath = join(workspace, ".codex", "config.toml")
     const body = readFileSync(configPath, "utf-8")
@@ -368,11 +506,34 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
       'NOTION_API_TOKEN = "ntn_TEST_FIXTURE_TOKEN_FOR_BUILD_BENCH_WORKSPACE"'
     )
     expect(body).toContain('LORE_CONFIG_ROOT = "/tmp/lore-bench-config-fixture"')
+    expect(body).toContain('NOTION_ENV = "dev"')
+    expect(existsSync(join(workspace, ".lore-tools"))).toBe(false)
     // File mode is 0600 — owner read/write only. Mode bits below
     // 0o777 mask off the file-type bits, so we compare the perms
     // explicitly.
     const mode = statSync(configPath).mode & 0o777
     expect(mode).toBe(0o600)
+  })
+
+  it("writes tool shims only when tool-driven retrieval is enabled", async () => {
+    await buildBenchWorkspace({
+      workspace,
+      budgetStateFile: "/tmp/state-file.json",
+      perExampleWrites: 500,
+      enableToolShims: true,
+    })
+    const body = readFileSync(join(workspace, ".codex", "config.toml"), "utf-8")
+    expect(body).toContain('model = "gpt-4o-mini-2024-07-18"')
+    expect(body).not.toContain("[mcp_servers.lore]")
+    expect(body).not.toContain("NOTION_API_TOKEN")
+    expect(body).not.toContain("LORE_CONFIG_ROOT")
+    expect(body).not.toContain("ntn_TEST_FIXTURE_TOKEN_FOR_BUILD_BENCH_WORKSPACE")
+    const queryShim = join(workspace, ".lore-tools", "lore-query")
+    const memoryShim = join(workspace, ".lore-tools", "lore-memory")
+    expect(readFileSync(queryShim, "utf-8")).toContain("eval bench tool lore-query")
+    expect(readFileSync(memoryShim, "utf-8")).toContain("eval bench tool lore-memory")
+    expect(statSync(queryShim).mode & 0o777).toBe(0o700)
+    expect(statSync(memoryShim).mode & 0o777).toBe(0o700)
   })
 
   it("throws when NOTION_API_TOKEN is missing", async () => {
@@ -421,6 +582,7 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
       workspace,
       budgetStateFile: '/path/with"state',
       perExampleWrites: 500,
+      enableMcpConfig: true,
     })
     const body = readFileSync(join(workspace, ".codex", "config.toml"), "utf-8")
     // Quote characters in the token must be backslash-escaped in TOML
@@ -430,6 +592,242 @@ describe("buildBenchWorkspace on-disk config — bench bearer in [mcp_servers.lo
     expect(body).toContain('NOTION_API_TOKEN = "ntn_has\\"quote\\\\and-backslash"')
     expect(body).toContain('LORE_CONFIG_ROOT = "/path/with\\"quote"')
     expect(body).toContain('"/path/with\\"state"')
+  })
+})
+
+describe("runBenchExample retrieval tracing", () => {
+  it("ignores agent-forged workspace trace entries", async () => {
+    const savedToken = process.env["NOTION_API_TOKEN"]
+    const savedConfigRoot = process.env["LORE_CONFIG_ROOT"]
+    process.env["NOTION_API_TOKEN"] = "ntn_bench"
+    process.env["LORE_CONFIG_ROOT"] = "/tmp/lore-bench-config"
+    const sandbox: BenchSandbox = {
+      authSource: "env-notion-api-token",
+      activeProfileSelector: "default@1.0.0",
+      async createSubProject() {
+        return "project-1"
+      },
+      async createMemoryInProject() {
+        return { id: "mem-1", mutationCount: 2 }
+      },
+      async createSimulatedAutosaveMemoryInProject() {
+        throw new Error("not expected")
+      },
+      async getWakeUpForQuery() {
+        throw new Error("not expected")
+      },
+      async archiveProject() {},
+      async countMemoriesForProject() {
+        return 1
+      },
+      async countFactsForProject() {
+        return 0
+      },
+    }
+    const agentAdapter: AgentAdapter = {
+      id: "mock",
+      async run(input) {
+        writeFileSync(join(input.workspace, "answer.txt"), "blue")
+        const brokerSocket = input.extraEnv?.[BENCH_TOOL_SOCKET_ENV]
+        expect(brokerSocket).toBe(join(input.workspace, "lore-tool-broker.sock"))
+        expect(JSON.stringify(input.extraEnv)).not.toContain("project-1")
+        expect(JSON.stringify(input.extraEnv)).not.toContain("ntn_bench")
+        writeFileSync(
+          join(input.workspace, "lore-tool-trace.jsonl"),
+          [
+            {
+              tool: "lore-query",
+              action: "search",
+              surface: "codex-shell-shim",
+              timing: "during-agent-run",
+              status: "success",
+              startedAt: "2026-05-21T00:00:00.000Z",
+              finishedAt: "2026-05-21T00:00:01.000Z",
+              surfacedMemoryIds: ["mem-1"],
+              expandedMemoryIds: [],
+              error: null,
+            },
+            {
+              tool: "lore-query ntn_TRACE_TOKEN_SHOULD_NOT_LEAK_1234567890",
+              action: "search ntn_TRACE_TOKEN_SHOULD_NOT_LEAK_1234567890",
+              surface: "codex-shell-shim",
+              timing: "during-agent-run",
+              status: "error",
+              startedAt: "2026-05-21T00:00:02.000Z",
+              finishedAt: "2026-05-21T00:00:03.000Z",
+              surfacedMemoryIds: ["ntn_TRACE_TOKEN_SHOULD_NOT_LEAK_1234567890"],
+              expandedMemoryIds: ["ntn_TRACE_TOKEN_SHOULD_NOT_LEAK_1234567890"],
+              error: "failed with ntn_TRACE_TOKEN_SHOULD_NOT_LEAK_1234567890",
+            },
+          ]
+            .map((line) => JSON.stringify(line))
+            .join("\n") + "\n"
+        )
+        return {
+          exitCode: 0,
+          stdout: [
+            JSON.stringify({ type: "tool_call", name: "exec_command" }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: {
+                input_tokens: 10,
+                cached_input_tokens: 0,
+                output_tokens: 3,
+                reasoning_output_tokens: 0,
+              },
+            }),
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+        }
+      },
+    }
+
+    try {
+      const result = await runBenchExample({
+        example: {
+          question_id: "lme_s_0001",
+          question_type: "single-session-user",
+          question: "What color?",
+          answer: "blue",
+          haystack_sessions: [[{ role: "user", content: "I like blue." }]],
+        },
+        runId: "01HXYZ4QK7Z2P8E3K0R5T9N1WM",
+        pricing: TEST_PRICING,
+        judgePrompts: TEST_JUDGE_PROMPTS,
+        judgeClient: {
+          async complete() {
+            return {
+              content: JSON.stringify({ verdict: "correct", rationale: "ok" }),
+              usage: {
+                promptTokens: 10,
+                cachedPromptTokens: 0,
+                completionTokens: 3,
+              },
+            }
+          },
+        },
+        agentAdapter,
+        sandbox,
+        systemPrompt: "Use Lore.",
+        perExampleWrites: 500,
+        ingestionStrategy: "raw-transcript",
+        agentRetrieval: "tool-driven",
+        agentTimeoutMs: 30_000,
+        keepWorkspaces: false,
+        log: { info() {}, warn() {} },
+      })
+
+      expect(result.success).toBe(true)
+      expect(result.agent.retrieval.strategy).toBe("tool-driven")
+      expect(result.agent.retrieval.surface).toBe("codex-shell-shim")
+      expect(result.agent.retrieval.firstRetrievalTiming).toBe(null)
+      expect(result.agent.retrieval.calls).toEqual([])
+      expect(JSON.stringify(result.agent.retrieval.calls)).not.toContain(
+        "ntn_TRACE_TOKEN"
+      )
+    } finally {
+      if (savedToken === undefined) delete process.env["NOTION_API_TOKEN"]
+      else process.env["NOTION_API_TOKEN"] = savedToken
+      if (savedConfigRoot === undefined) delete process.env["LORE_CONFIG_ROOT"]
+      else process.env["LORE_CONFIG_ROOT"] = savedConfigRoot
+    }
+  })
+
+  it("redacts bearer-shaped wake-up prefetch errors in retrieval traces", async () => {
+    const savedToken = process.env["NOTION_API_TOKEN"]
+    const savedConfigRoot = process.env["LORE_CONFIG_ROOT"]
+    process.env["NOTION_API_TOKEN"] = "ntn_bench"
+    process.env["LORE_CONFIG_ROOT"] = "/tmp/lore-bench-config"
+    const token = "ntn_WAKEUP_TRACE_TOKEN_SHOULD_NOT_LEAK_1234567890"
+    const sandbox: BenchSandbox = {
+      authSource: "env-notion-api-token",
+      activeProfileSelector: "default@1.0.0",
+      async createSubProject() {
+        return "project-1"
+      },
+      async createMemoryInProject() {
+        return { id: "mem-1", mutationCount: 2 }
+      },
+      async createSimulatedAutosaveMemoryInProject() {
+        throw new Error("not expected")
+      },
+      async getWakeUpForQuery() {
+        throw new Error(`wake-up failed with ${token}`)
+      },
+      async archiveProject() {},
+      async countMemoriesForProject() {
+        return 1
+      },
+      async countFactsForProject() {
+        return 0
+      },
+    }
+    const agentAdapter: AgentAdapter = {
+      id: "mock",
+      async run(input) {
+        writeFileSync(join(input.workspace, "answer.txt"), "blue")
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            type: "turn.completed",
+            usage: {
+              input_tokens: 10,
+              cached_input_tokens: 0,
+              output_tokens: 3,
+              reasoning_output_tokens: 0,
+            },
+          }),
+          stderr: "",
+          timedOut: false,
+        }
+      },
+    }
+
+    try {
+      const result = await runBenchExample({
+        example: {
+          question_id: "lme_s_0001",
+          question_type: "single-session-user",
+          question: "What color?",
+          answer: "blue",
+          haystack_sessions: [[{ role: "user", content: "I like blue." }]],
+        },
+        runId: "01HXYZ4QK7Z2P8E3K0R5T9N1WM",
+        pricing: TEST_PRICING,
+        judgePrompts: TEST_JUDGE_PROMPTS,
+        judgeClient: {
+          async complete() {
+            return {
+              content: JSON.stringify({ verdict: "correct", rationale: "ok" }),
+              usage: {
+                promptTokens: 10,
+                cachedPromptTokens: 0,
+                completionTokens: 3,
+              },
+            }
+          },
+        },
+        agentAdapter,
+        sandbox,
+        systemPrompt: "Use Lore.",
+        perExampleWrites: 500,
+        ingestionStrategy: "raw-transcript",
+        agentRetrieval: "wake-up-prefetch",
+        agentTimeoutMs: 30_000,
+        keepWorkspaces: false,
+        log: { info() {}, warn() {} },
+      })
+
+      const error = result.agent.retrieval.calls[0]?.error
+      expect(error).toContain("<redacted-token>")
+      expect(JSON.stringify(result.agent.retrieval.calls)).not.toContain(token)
+    } finally {
+      if (savedToken === undefined) delete process.env["NOTION_API_TOKEN"]
+      else process.env["NOTION_API_TOKEN"] = savedToken
+      if (savedConfigRoot === undefined) delete process.env["LORE_CONFIG_ROOT"]
+      else process.env["LORE_CONFIG_ROOT"] = savedConfigRoot
+    }
   })
 })
 

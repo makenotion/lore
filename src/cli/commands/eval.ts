@@ -1029,4 +1029,28 @@ benchCommand.addCommand(
     })
 )
 
+benchCommand.addCommand(
+  new Command("tool")
+    .description("Internal bench-only Lore tool shim")
+    .argument("<tool>", "Tool name, e.g. lore-query or lore-memory")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (tool: string) => {
+      try {
+        const { runBenchToolCli } = await import("../../eval/bench-tool.js")
+        const marker = process.argv.indexOf(tool)
+        const argv = marker >= 0 ? process.argv.slice(marker + 1) : []
+        const exitCode = await runBenchToolCli(tool, argv)
+        if (exitCode !== 0) process.exit(exitCode)
+      } catch (err) {
+        console.error(
+          "lore eval bench tool failed:",
+          err instanceof Error ? err.message : err
+        )
+        process.exit(1)
+      }
+    }),
+  { hidden: true }
+)
+
 evalCommand.addCommand(benchCommand)

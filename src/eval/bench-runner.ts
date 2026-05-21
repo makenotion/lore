@@ -26,7 +26,7 @@
 
 import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { performance } from "node:perf_hooks"
@@ -89,6 +89,9 @@ import {
   type BenchRunArtifact,
   type BenchSummary,
   type BenchSummaryCategoryStat,
+  type BenchExampleRetrievalTrace,
+  type BenchRetrievalCall,
+  type BenchRetrievalSurface,
 } from "./bench-runner-types.js"
 import { canonicalJsonStringify, computeConfigHash } from "./bench-baseline.js"
 import {
@@ -97,6 +100,8 @@ import {
   CodexAgentAdapter,
   type AgentAdapter,
   type AgentRunResult,
+  BENCH_TOOL_SHIM_DIR,
+  BENCH_TOOL_TRACE_FILE,
 } from "./task-runner.js"
 import {
   benchSuiteSchema,
@@ -109,45 +114,37 @@ import {
   type MemoryCaptureMode,
 } from "../memory-capture-mode.js"
 
+import { BENCH_TOOL_SOCKET_ENV, startBenchToolBroker } from "./bench-tool.js"
+import { redactBearerTokens } from "./bench-redaction.js"
+
 const SANDBOX_NAME_REGEX = /\b(sandbox|eval|test|scratch|staging|dev|playground)\b/i
 const PRODUCTION_NAME_REGEX = /\bproduction\b|\bprod\b/i
 
 /**
  * Bearer-shaped-prefix patterns redacted from any agent / judge
- * output that flows into the artifact. The bench's threat model
- * acknowledges that the evaluated Codex agent runs with shell access
- * (`--sandbox workspace-write` permits arbitrary shell commands) and
- * therefore CAN read the per-example workspace's
- * `.codex/config.toml` (mode 0600, holding the bench bearer in its
- * `[mcp_servers.lore.env]` table) from inside its sandbox. A prompt-
- * injected adversarial corpus row could exfiltrate the bench token
- * via `answer.txt`. This pre-judge / pre-artifact filter is
- * defense-in-depth: it cannot stop an agent that base64-encodes or
- * scrambles the token, but it catches the trivial verbatim copy
- * path, and forces the leak through a deliberately obfuscated
- * channel that's no longer publishable next to a Zep-comparable
- * headline number.
+ * output that flows into the artifact. Tool-driven bench runs keep
+ * Notion auth in the runner-owned broker process, but evaluated
+ * agents still have shell access and can echo arbitrary text into
+ * `answer.txt`. This pre-judge / pre-artifact filter is
+ * defense-in-depth for accidental bearer-shaped output.
  *
  * Operators should ALSO use a per-run, easily-revoked bench token
  * (the `LORE_BENCH_NOTION_TOKEN` env name is deliberately distinct
  * from `NOTION_API_TOKEN` for that reason); this filter is a second
  * layer.
  */
-const BEARER_REDACTION_PATTERNS: readonly RegExp[] = [
-  /ntn_[A-Za-z0-9_-]{20,}/g,
-  /development_ntn_[A-Za-z0-9_-]{20,}/g,
-  /secret_[A-Za-z0-9_-]{20,}/g,
-  /sk-[A-Za-z0-9_-]{20,}/g,
-]
-
-export function redactBearerTokens(text: string): string {
-  let out = text
-  for (const re of BEARER_REDACTION_PATTERNS) {
-    out = out.replace(re, "<redacted-token>")
-  }
-  return out
-}
-
+const TOOL_DRIVEN_SHELL_SHIM_INSTRUCTIONS = [
+  "## Lore tool access",
+  "",
+  "For this bench run, Lore read tools are available as executable commands in PATH.",
+  "Use key=value arguments:",
+  "",
+  '- `lore-query action=search query="<keywords>" limit=10 mode=hybrid`',
+  "- `lore-query action=recall limit=10`",
+  '- `lore-memory action=expand ids="<id1>,<id2>"`',
+  "",
+  "These commands are the live retrieval surface. Do not answer before using them.",
+].join("\n")
 /**
  * Crockford base32 alphabet for ULIDs. No `I`, `L`, `O`, `U` so
  * lexical sort matches numeric sort and ambiguous characters are
@@ -266,7 +263,10 @@ export interface BenchSandbox {
    * with bodies. Returns an empty string when no relevant memories surface
    * (the agent will abstain honestly).
    */
-  getWakeUpForQuery(input: { projectId: string; userQuery: string }): Promise<string>
+  getWakeUpForQuery(input: {
+    projectId: string
+    userQuery: string
+  }): Promise<{ renderedContext: string; surfacedMemoryIds: string[] }>
   /** Archive (not delete) a project — used in the cleanup teardown. */
   archiveProject(id: string): Promise<void>
   /**
@@ -333,10 +333,8 @@ export interface RunBenchResult {
  * operator's day-to-day token does NOT participate in the run AND
  * does NOT survive past it. Without this, the in-process services
  * could run under the operator's day-to-day auth while the spawned
- * MCP child (reading auth from the per-example workspace's
- * `.codex/config.toml` `[mcp_servers.lore.env]` block) ran under
- * the bench token — two Notion identities, two rate-limit buckets,
- * one artifact.
+ * agent retrieval path ran under the bench token — two Notion
+ * identities, two rate-limit buckets, one artifact.
  */
 export interface BenchEnvRestore {
   notionApiToken: string | undefined
@@ -396,11 +394,10 @@ export function assertBenchEnvReady(): BenchEnvRestore {
   // caller to recover — neither shape is desirable.
   // Without this authoritative overwrite, the in-process services
   // (which `buildBenchSandbox` initializes via `initServices`) would
-  // run under the operator's day-to-day auth while the spawned bench
-  // MCP child runs under the bench token (read from the workspace
-  // `.codex/config.toml`'s `[mcp_servers.lore.env]` block) —
-  // split-brain auth on a single artifact, potentially targeting
-  // the wrong vault for sandbox create / archive.
+  // run under the operator's day-to-day auth while the spawned agent
+  // retrieval path runs under the bench token — split-brain auth on
+  // a single artifact, potentially targeting the wrong vault for
+  // sandbox create / archive.
   process.env["NOTION_API_TOKEN"] = process.env["LORE_BENCH_NOTION_TOKEN"]
   process.env["LORE_CONFIG_ROOT"] = process.env["LORE_BENCH_CONFIG_ROOT"]
   return snapshot
@@ -457,11 +454,12 @@ export function assertBenchSandboxProfileMatchesSuite(input: {
 
 /**
  * Build a per-example workspace dir with the bench-mode sentinel and
- * a `.codex/config.toml` carrying the full bench config — model
- * literal AND the `[mcp_servers.lore]` block with transport, command,
- * args, and the auth env. File mode `0600`, directory chain mode
- * `0700`. The bench token lives ONLY on disk inside this
- * workspace-private mkdtemp; Codex's argv carries zero secrets.
+ * a `.codex/config.toml`. Runner-side retrieval workspaces receive only
+ * model config because retrieval is served before the agent runs. Tool-shim
+ * workspaces also get command shims backed by a runner-owned broker.
+ * Legacy MCP config is opt-in for tests or future adapter modes that
+ * explicitly need it. File mode is `0600`, directory chain mode `0700`,
+ * and Codex's argv carries zero secrets.
  *
  * Threat model:
  * - Other processes on the same machine cannot read the workspace
@@ -469,15 +467,11 @@ export function assertBenchSandboxProfileMatchesSuite(input: {
  *   0600). Process snapshots (`ps -wwwE`, `/proc/<codex-pid>/cmdline`,
  *   GHA runner accounting) capture argv; argv carries no secrets, so
  *   those channels surface nothing.
- * - Residual surface: an adversarial corpus-row prompt-injection
- *   reaching the agent could `cat <workspace>/.codex/config.toml` and
- *   read the token (the agent's `--sandbox workspace-write` permits
- *   reads of the workspace it executes in). LongMemEval mitigates this
- *   at the supply-chain layer: the corpus is HF-pinned and sha256-
- *   verified at fetch time, so injecting a malicious row requires
- *   compromising the pinned revision. Bearer redaction in
- *   `redactBearerTokens` is the defense-in-depth layer for the
- *   verbatim-copy exfil path.
+ * - Residual shell surface: an adversarial corpus-row prompt can run
+ *   arbitrary shell commands, but runner-side retrieval workspaces do
+ *   not contain the Notion bearer. Tool-driven agents receive only a
+ *   broker socket path; the broker fixes the project id and trace path
+ *   server-side.
  *
  * `--write-budget` and `--budget-state-file` flow through the MCP
  * server's CLI flags inside `mcp_servers.lore.args` so the spawned
@@ -491,6 +485,8 @@ export async function buildBenchWorkspace(input: {
   workspace: string
   budgetStateFile: string
   perExampleWrites: number
+  enableToolShims?: boolean
+  enableMcpConfig?: boolean
 }): Promise<void> {
   const workspace = input.workspace
   const token = process.env["NOTION_API_TOKEN"]
@@ -512,17 +508,12 @@ export async function buildBenchWorkspace(input: {
   await mkdir(workspace, { recursive: true, mode: 0o700 })
   await writeFile(join(workspace, BENCH_MODE_SENTINEL), "")
   await mkdir(join(workspace, ".codex"), { mode: 0o700, recursive: true })
-  // `transport = "stdio"` is required as of Codex 0.128.0; older
-  // versions tolerated its absence. Without it Codex aborts with
-  // `Error loading config.toml: invalid transport in mcp_servers.lore`
-  // before any model call. The whole `mcp_servers.lore` table —
-  // transport, command, args, env — lives in this on-disk config
-  // file. No `-c mcp_servers.lore.*` overrides are passed at spawn
-  // time: Codex 0.128.0 collapses an entire table when any of its
-  // leaf overrides is passed (a partial table + one leaf override
-  // would silently lose `transport`, `command`, `args`), so the
-  // on-disk single-source-of-truth shape is the structural
-  // workaround.
+  // Non-shim workspaces keep the MCP config on disk because
+  // `transport = "stdio"` is required as of Codex 0.128.0, and
+  // `-c mcp_servers.lore.*` overrides collapse partial tables in
+  // that release line. Tool-shim workspaces deliberately omit the
+  // MCP table so the readable workspace never contains the Notion
+  // bearer when the evaluated agent has shell access.
   //
   // `tomlEscape` covers backslash and double-quote (the two
   // characters TOML double-quoted strings require escaping). Its
@@ -532,29 +523,72 @@ export async function buildBenchWorkspace(input: {
   // here. Notion PAT shapes (`ntn_*`, `secret_*`, `development_ntn_*`)
   // are alphanumeric + underscore + hyphen by construction; the
   // bench config root path doesn't carry newlines either. The two
-  // call sites below (`NOTION_API_TOKEN` and `LORE_CONFIG_ROOT`)
-  // are the only writers — a future caller threading arbitrary
-  // text through this helper would need to widen the escape set.
+  // writers below are known bench values; a future caller threading
+  // arbitrary text through this helper would need to widen the
+  // escape set.
   const tomlEscape = (value: string): string =>
     value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
-  const configToml = [
-    `model = "${BENCH_AGENT_MODEL}"`,
-    ``,
-    `[mcp_servers.lore]`,
-    `transport = "stdio"`,
-    `command = "lore"`,
-    `args = ["mcp", "--write-budget", "${input.perExampleWrites}", "--budget-state-file", "${tomlEscape(input.budgetStateFile)}"]`,
-    ``,
-    `[mcp_servers.lore.env]`,
-    `NOTION_API_TOKEN = "${tomlEscape(token)}"`,
-    `LORE_CONFIG_ROOT = "${tomlEscape(configRoot)}"`,
-    ``,
-  ].join("\n")
+  const configToml =
+    input.enableMcpConfig === true
+      ? [
+          `model = "${BENCH_AGENT_MODEL}"`,
+          ``,
+          `[mcp_servers.lore]`,
+          `transport = "stdio"`,
+          `command = "lore"`,
+          `args = ["mcp", "--write-budget", "${input.perExampleWrites}", "--budget-state-file", "${tomlEscape(input.budgetStateFile)}"]`,
+          ``,
+          `[mcp_servers.lore.env]`,
+          `NOTION_API_TOKEN = "${tomlEscape(token)}"`,
+          `LORE_CONFIG_ROOT = "${tomlEscape(configRoot)}"`,
+          ...renderBenchNotionSelectorEnv(tomlEscape),
+          ``,
+        ].join("\n")
+      : [`model = "${BENCH_AGENT_MODEL}"`, ``].join("\n")
   await writeFile(join(workspace, ".codex", "config.toml"), configToml, {
     mode: 0o600,
   })
+  if (input.enableToolShims === true) {
+    await writeBenchToolShims(workspace)
+  }
 }
 
+function renderBenchNotionSelectorEnv(tomlEscape: (value: string) => string): string[] {
+  const keys = [
+    "LORE_NOTION_BASE_URL",
+    "NOTION_WORKSPACE_ID",
+    "NOTION_ENV",
+    "NOTION_BASE_URL",
+    "NOTION_API_BASE_URL",
+    "LORE_USER_NAME",
+  ] as const
+  return keys.flatMap((key) => {
+    const value = process.env[key]
+    return value && value.length > 0 ? [`${key} = "${tomlEscape(value)}"`] : []
+  })
+}
+
+async function writeBenchToolShims(workspace: string): Promise<void> {
+  const dir = join(workspace, BENCH_TOOL_SHIM_DIR)
+  await mkdir(dir, { recursive: true, mode: 0o700 })
+  for (const tool of ["lore-query", "lore-memory"]) {
+    const path = join(dir, tool)
+    await writeFile(path, renderBenchToolShim(tool), { mode: 0o700 })
+    await chmod(path, 0o700).catch(() => undefined)
+  }
+}
+
+function renderBenchToolShim(tool: string): string {
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    `if [ -n "\${LORE_BENCH_TOOL_CLI_JS:-}" ]; then`,
+    `  exec "\${LORE_BENCH_TOOL_NODE:-node}" "$LORE_BENCH_TOOL_CLI_JS" eval bench tool ${tool} "$@"`,
+    "fi",
+    `exec lore eval bench tool ${tool} "$@"`,
+    "",
+  ].join("\n")
+}
 /**
  * Parse the agent's `turn.completed` event off the JSONL stdout the
  * `--json` Codex run emits. Returns null when the event is missing or
@@ -704,6 +738,100 @@ function exampleIngestionFromResult(input: {
   }
 }
 
+function emptyRetrievalTrace(
+  strategy: "tool-driven" | "wake-up-prefetch"
+): BenchExampleRetrievalTrace {
+  return retrievalTraceFromCalls(strategy, retrievalSurfaceForStrategy(strategy), [])
+}
+
+function retrievalTraceFromCalls(
+  strategy: "tool-driven" | "wake-up-prefetch",
+  surface: BenchRetrievalSurface,
+  calls: BenchRetrievalCall[]
+): BenchExampleRetrievalTrace {
+  return {
+    strategy,
+    surface,
+    firstRetrievalTiming: calls[0]?.timing ?? null,
+    calls,
+  }
+}
+
+function retrievalSurfaceForStrategy(
+  strategy: "tool-driven" | "wake-up-prefetch"
+): BenchRetrievalSurface {
+  return strategy === "tool-driven" ? "codex-shell-shim" : "wake-up-prefetch"
+}
+
+async function readBenchToolTrace(traceFile: string): Promise<BenchRetrievalCall[]> {
+  if (!existsSync(traceFile)) return []
+  const raw = await readFile(traceFile, "utf-8")
+  const calls: BenchRetrievalCall[] = []
+  for (const line of raw.split(/\r?\n/u)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const parsed = normalizeBenchToolTraceCall(JSON.parse(trimmed))
+      if (parsed) calls.push(parsed)
+    } catch {
+      // Ignore malformed trace lines; the agent run itself remains the source of truth.
+    }
+  }
+  return calls.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+}
+
+function normalizeBenchToolTraceCall(value: unknown): BenchRetrievalCall | null {
+  if (!value || typeof value !== "object") return null
+  const obj = value as Record<string, unknown>
+  if (typeof obj.tool !== "string") return null
+  if (obj.surface !== "codex-shell-shim") return null
+  if (obj.timing !== "during-agent-run") return null
+  if (obj.status !== "success" && obj.status !== "error") return null
+  if (typeof obj.startedAt !== "string" || typeof obj.finishedAt !== "string") {
+    return null
+  }
+  const action = typeof obj.action === "string" ? redactBearerTokens(obj.action) : null
+  const error = typeof obj.error === "string" ? redactBearerTokens(obj.error) : null
+  return {
+    tool: redactBearerTokens(obj.tool),
+    action,
+    surface: obj.surface,
+    timing: obj.timing,
+    status: obj.status,
+    startedAt: redactBearerTokens(obj.startedAt),
+    finishedAt: redactBearerTokens(obj.finishedAt),
+    surfacedMemoryIds: normalizeTraceStringArray(obj.surfacedMemoryIds),
+    expandedMemoryIds: normalizeTraceStringArray(obj.expandedMemoryIds),
+    error,
+  }
+}
+
+function normalizeTraceStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => redactBearerTokens(item))
+}
+
+function buildWakeUpPrefetchCall(input: {
+  startedAt: string
+  finishedAt: string
+  surfacedMemoryIds: string[]
+  error: string | null
+}): BenchRetrievalCall {
+  return {
+    tool: "wake-up-prefetch",
+    action: "search",
+    surface: "wake-up-prefetch",
+    timing: "before-agent-run",
+    status: input.error ? "error" : "success",
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    surfacedMemoryIds: input.surfacedMemoryIds,
+    expandedMemoryIds: [],
+    error: input.error ? redactBearerTokens(input.error) : null,
+  }
+}
 export interface BenchRunnerLogSink {
   info(message: string): void
   warn(message: string): void
@@ -748,10 +876,8 @@ export async function runBenchExample(input: {
   extractionMaxTokens?: number
   tagVocabulary?: readonly string[]
   /**
-   * `tool-driven` (V1 default): agent has MCP tools registered and
-   * decides when to call them. Structurally unavailable under
-   * `codex exec` in Codex 0.128.0 (no MCP-in-exec) — the agent
-   * sees no tools and falls back to shell-command attempts.
+   * `tool-driven` (V1 default): agent receives live Lore command
+   * shims and decides when to call them during the answer attempt.
    * `wake-up-prefetch`: bench-runner calls
    * `sandbox.getWakeUpForQuery` before the agent runs and injects
    * the relevance-ranked memories into the user prompt. Mirrors
@@ -791,6 +917,7 @@ export async function runBenchExample(input: {
         tokensCompletion: 0,
         tokensReasoningOutput: 0,
         toolCalls: 0,
+        retrieval: emptyRetrievalTrace(input.agentRetrieval),
         answer: "",
         costMeasurement: COST_MEASUREMENT_CODEX_REPORTED,
       },
@@ -807,6 +934,7 @@ export async function runBenchExample(input: {
   }
 
   let workspace: string | null = null
+  let traceDir: string | null = null
   let result: BenchExampleResult | undefined
   // Capture pre-example env so the finally below can restore the
   // operator's `process.env` state. Without this, a non-bench
@@ -820,10 +948,12 @@ export async function runBenchExample(input: {
   const priorBudgetStateEnv = process.env["LORE_MCP_BUDGET_STATE_FILE"]
   try {
     workspace = await mkdtemp(join(tmpdir(), "lore-bench-"))
+    traceDir = await mkdtemp(join(tmpdir(), "lore-bench-trace-"))
     // Compute the budget-state file path BEFORE writing
     // .codex/config.toml so the same path is baked into the MCP
     // child's argv AND read back by the mining seam / bench-runner.
     const budgetStateFile = join(workspace, "write-budget-state.json")
+    const toolTraceFile = join(traceDir, BENCH_TOOL_TRACE_FILE)
     // Export the write-budget pair into this process's env so the
     // mining child's `buildSafeEnv` forwards them through `claude -p`
     // → spawned `lore mcp`. Without this the MCP server the mining
@@ -836,6 +966,7 @@ export async function runBenchExample(input: {
       workspace,
       budgetStateFile,
       perExampleWrites: input.perExampleWrites,
+      enableToolShims: input.agentRetrieval === "tool-driven",
     })
 
     // Mining children cwd into LORE_BENCH_CONFIG_ROOT so their
@@ -927,6 +1058,7 @@ export async function runBenchExample(input: {
           tokensCompletion: 0,
           tokensReasoningOutput: 0,
           toolCalls: 0,
+          retrieval: emptyRetrievalTrace(input.agentRetrieval),
           answer: "",
           costMeasurement: COST_MEASUREMENT_CODEX_REPORTED,
         },
@@ -943,21 +1075,40 @@ export async function runBenchExample(input: {
     } else {
       // `wake-up-prefetch` strategy: fetch the relevance-ranked
       // memory bundle BEFORE invoking the agent and inject it as a
-      // prompt addendum the agent reads inline. No MCP tool calls
-      // required, which sidesteps the Codex 0.128.0
-      // MCP-not-loaded-in-exec gap. See `BenchSandbox.getWakeUpForQuery`
-      // and `BENCH_AGENT_RETRIEVAL_STRATEGIES` for the full
-      // rationale.
+      // prompt addendum the agent reads inline. The retrieval trace
+      // records this as `before-agent-run`, unlike tool-driven calls
+      // made by the agent during its run.
       let wakeUpContext = ""
+      const retrievalCalls: BenchRetrievalCall[] = []
       if (input.agentRetrieval === "wake-up-prefetch") {
+        const startedAt = new Date().toISOString()
         try {
-          wakeUpContext = await input.sandbox.getWakeUpForQuery({
+          const wakeUp = await input.sandbox.getWakeUpForQuery({
             projectId,
             userQuery: input.example.question,
           })
+          wakeUpContext = wakeUp.renderedContext
+          retrievalCalls.push(
+            buildWakeUpPrefetchCall({
+              startedAt,
+              finishedAt: new Date().toISOString(),
+              surfacedMemoryIds: wakeUp.surfacedMemoryIds,
+              error: null,
+            })
+          )
         } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const safeMessage = redactBearerTokens(message)
           input.log.warn(
-            `wake-up prefetch failed for ${input.example.question_id}: ${err instanceof Error ? err.message : String(err)}`
+            `wake-up prefetch failed for ${input.example.question_id}: ${safeMessage}`
+          )
+          retrievalCalls.push(
+            buildWakeUpPrefetchCall({
+              startedAt,
+              finishedAt: new Date().toISOString(),
+              surfacedMemoryIds: [],
+              error: safeMessage,
+            })
           )
           // Continue with empty context; the agent will see only the
           // system prompt + question and likely abstain. The
@@ -970,13 +1121,42 @@ export async function runBenchExample(input: {
         ...(wakeUpContext.length > 0 ? [wakeUpContext] : []),
         input.example.question,
       ]
+      const toolBroker =
+        input.agentRetrieval === "tool-driven"
+          ? await startBenchToolBroker({
+              socketPath: join(workspace, "lore-tool-broker.sock"),
+              traceFile: toolTraceFile,
+              projectId,
+              projectName,
+              runtimeEnv: process.env,
+            })
+          : null
+      const toolDrivenExtraEnv = toolBroker
+        ? {
+            [BENCH_TOOL_SOCKET_ENV]: toolBroker.socketPath,
+          }
+        : undefined
       const agentT0 = performance.now()
-      const agentResult = await input.agentAdapter.run({
-        prompt: promptSections.join("\n\n"),
-        workspace,
-        timeoutMs: input.agentTimeoutMs,
-      })
+      let agentResult: AgentRunResult
+      try {
+        agentResult = await input.agentAdapter.run({
+          prompt: promptSections.join("\n\n"),
+          workspace,
+          timeoutMs: input.agentTimeoutMs,
+          extraEnv: toolDrivenExtraEnv,
+        })
+      } finally {
+        await toolBroker?.close()
+      }
       const agentElapsedMs = Math.round(performance.now() - agentT0)
+      if (input.agentRetrieval === "tool-driven") {
+        retrievalCalls.push(...(await readBenchToolTrace(toolTraceFile)))
+      }
+      const retrievalTrace = retrievalTraceFromCalls(
+        input.agentRetrieval,
+        retrievalSurfaceForStrategy(input.agentRetrieval),
+        retrievalCalls
+      )
       const parsed = parseAgentTurnCompleted(agentResult.stdout)
       const rawAnswer = await readAnswerFile(workspace)
       // Strip bearer-shaped substrings BEFORE the judge sees the
@@ -1000,6 +1180,7 @@ export async function runBenchExample(input: {
             tokensCompletion: parsed.usage?.output_tokens ?? 0,
             tokensReasoningOutput: parsed.usage?.reasoning_output_tokens ?? 0,
             toolCalls: parsed.toolCalls,
+            retrieval: retrievalTrace,
             answer,
             costMeasurement: COST_MEASUREMENT_CODEX_REPORTED,
           },
@@ -1042,6 +1223,7 @@ export async function runBenchExample(input: {
             tokensCompletion: parsed.usage?.output_tokens ?? 0,
             tokensReasoningOutput: parsed.usage?.reasoning_output_tokens ?? 0,
             toolCalls: parsed.toolCalls,
+            retrieval: retrievalTrace,
             answer,
             costMeasurement: COST_MEASUREMENT_CODEX_REPORTED,
           },
@@ -1084,6 +1266,15 @@ export async function runBenchExample(input: {
       } catch (err) {
         input.log.warn(
           `workspace cleanup failed for ${workspace}: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+    if (traceDir && !input.keepWorkspaces) {
+      try {
+        await rm(traceDir, { recursive: true, force: true })
+      } catch (err) {
+        input.log.warn(
+          `trace cleanup failed for ${traceDir}: ${err instanceof Error ? err.message : String(err)}`
         )
       }
     }
@@ -1180,7 +1371,11 @@ async function runBenchSuiteUnderBenchEnv(
       corpusPath: resolveAsset(suite.corpus.path),
     }))
   const systemPromptPath = resolveAsset(suite.agent.systemPrompt)
-  const systemPrompt = await readFile(systemPromptPath, "utf-8")
+  const baseSystemPrompt = await readFile(systemPromptPath, "utf-8")
+  const systemPrompt =
+    suite.agent.retrieval === "tool-driven"
+      ? `${baseSystemPrompt.trimEnd()}\n\n${TOOL_DRIVEN_SHELL_SHIM_INSTRUCTIONS}\n`
+      : baseSystemPrompt
   const systemPromptSha256 = sha256Hex(systemPrompt)
   const extractionPromptPath =
     suite.ingestion.strategy === "simulated-autosave"
@@ -1297,6 +1492,77 @@ async function runBenchSuiteUnderBenchEnv(
     },
   }
   const configHash = computeConfigHash(config)
+
+  if (
+    suite.agent.retrieval === "tool-driven" &&
+    agentAdapter.supportsBenchToolDrivenRetrieval
+  ) {
+    const support = await agentAdapter.supportsBenchToolDrivenRetrieval()
+    if (!support.supported) {
+      const finishedAt = now().toISOString()
+      const abortReason =
+        `tool-driven retrieval skipped for adapter "${agentAdapter.id}": ` +
+        (support.reason ?? "live Lore tools are unsupported")
+      log.warn(abortReason)
+      const summary: BenchSummary = {
+        configHash,
+        totalExamples: examples.length,
+        scoredExamples: 0,
+        temporalFidelityCaveat: TEMPORAL_FIDELITY_CAVEAT,
+        diagnosticCountCaveat: DIAGNOSTIC_COUNT_CAVEAT,
+        byCategory: buildEmptyByCategory(),
+        overall: {
+          n: examples.length,
+          scoredN: 0,
+          correct: 0,
+          accuracy: 0,
+          ingestion: {
+            p50Ms: 0,
+            p95Ms: 0,
+            totalNotionWrites: 0,
+          },
+          agent: {
+            p50Ms: 0,
+            p95Ms: 0,
+          },
+          judge: {
+            p50Ms: 0,
+            p95Ms: 0,
+          },
+          cost: {
+            agentUsd: 0,
+            judgeUsd: 0,
+            extractionUsd: 0,
+            runnerMeasuredUsd: 0,
+            ingestionEstimatedUsd: 0,
+            totalEstimatedUsd: 0,
+          },
+        },
+        failureBreakdown: emptyFailureBreakdown(),
+        cleanupFailures: [],
+        aborted: true,
+        abortReason,
+      }
+      const artifact: BenchRunArtifact = {
+        suite: suite.suite,
+        benchmark: "longmemeval",
+        runner: "bench",
+        runId,
+        config,
+        startedAt,
+        finishedAt,
+        results: [],
+        summary,
+      }
+      benchSuiteSchema.parse(loadedSuite.suite)
+      const outPath = resolve(
+        options.outPath ?? resolveAsset(`evals/results/bench-${runId}.json`)
+      )
+      await mkdir(resolve(outPath, ".."), { recursive: true })
+      await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
+      return { artifact, outPath }
+    }
+  }
 
   const results: BenchExampleResult[] = []
   const cleanupFailures: string[] = []

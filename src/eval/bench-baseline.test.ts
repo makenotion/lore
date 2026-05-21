@@ -76,6 +76,12 @@ function buildArtifact(overrides: Partial<BenchRunArtifact> = {}): BenchRunArtif
           tokensCompletion: 50,
           tokensReasoningOutput: 0,
           toolCalls: 1,
+          retrieval: {
+            strategy: "tool-driven",
+            surface: "codex-shell-shim",
+            firstRetrievalTiming: "during-agent-run",
+            calls: [],
+          },
           answer: "x",
           costMeasurement: "codex-reported",
         },
