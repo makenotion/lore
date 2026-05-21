@@ -113,6 +113,7 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
   blockedBy: string | undefined
   entity: string | undefined
   promotionSourceKey: string | undefined
+  expiresOn: string | undefined
 } {
   return {
     title: decodeTextEntities(input.title),
@@ -139,6 +140,8 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
       input.promotionSourceKey !== undefined
         ? decodeTextEntities(input.promotionSourceKey)
         : undefined,
+    expiresOn:
+      input.expiresOn !== undefined ? decodeTextEntities(input.expiresOn) : undefined,
   }
 }
 
@@ -363,6 +366,7 @@ export class MemoryCreate {
         topicKey: input.topicKey,
         revisionCount: input.revisionCount,
         promotionSourceKey: decoded.promotionSourceKey,
+        expiresOn: decoded.expiresOn,
         ...scopeInputToBuilderProps(input.scope),
         ...pinnedInputToBuilderProps(input.pinned),
       }),

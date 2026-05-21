@@ -962,6 +962,7 @@ export class MemoryTopicKey {
     topicId?: string
     synopsis?: string
     keywords?: string
+    expiresOn?: string
     tags?: string[]
     author?: string
     agent?: string
@@ -1010,6 +1011,7 @@ export class MemoryTopicKey {
         confidence: input.confidence,
         tags: input.tags,
         keywords: input.keywords,
+        expiresOn: input.expiresOn,
         synopsis: input.synopsis,
         author: input.author,
         agent: input.agent,

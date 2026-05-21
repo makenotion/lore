@@ -16,6 +16,7 @@ import type {
   Memory,
   MemoryConfidence,
   MemoryKind,
+  MemoryScopeInput,
   MemoryStatus,
 } from "../../../types.js"
 import { memoryScopeToInput } from "../../../types.js"
@@ -33,6 +34,29 @@ const PROCEDURE_REQUIRED_SECTIONS = [
   "## Steps",
   "## Sources",
 ] as const
+
+function mergeExpiresAtAlias(
+  scope: MemoryScopeInput | undefined,
+  expiresAt: string | null | undefined
+): MemoryScopeInput | undefined {
+  if (expiresAt === undefined) return scope
+  if (scope?.expiresAt !== undefined && scope.expiresAt !== expiresAt) {
+    throw new Error("expiresAt conflicts with scope.expiresAt.")
+  }
+  if (
+    expiresAt !== null &&
+    scope?.lifetime !== undefined &&
+    scope.lifetime !== "expires"
+  ) {
+    throw new Error("expiresAt requires scope.lifetime to be omitted or 'expires'.")
+  }
+  return {
+    ...(scope ?? {}),
+    lifetime:
+      expiresAt === null ? (scope?.lifetime ?? null) : (scope?.lifetime ?? "expires"),
+    expiresAt,
+  }
+}
 
 // Sections whose body must contain at least one nonblank line.
 // Mirrors the propose-time contract: `## Steps` is `min(1)` of
@@ -84,6 +108,8 @@ export interface UpdateArgs {
   alternatives?: string
   consequences?: string
   topicKey?: string
+  expiresAt?: string | null
+  expiresOn?: string
   scope?: import("../../../types.js").MemoryScopeInput
 }
 
@@ -432,6 +458,8 @@ export async function handleUpdate(
         }
       }
 
+      const scope = mergeExpiresAtAlias(args.scope, args.expiresAt)
+
       try {
         updated = await services.memories.update(args.memoryId, {
           title: args.title,
@@ -450,11 +478,12 @@ export async function handleUpdate(
           affectsIds: args.affectsIds,
           alternatives: args.alternatives,
           consequences: args.consequences,
+          expiresOn: args.expiresOn,
           // Scope / lifetime update. Same `MemoryScopeInput`
           // shape as save; absent fields leave columns untouched, explicit
           // `null` clears select / date columns, empty strings clear
           // rich_text columns.
-          scope: args.scope,
+          scope,
         })
       } catch (err) {
         if (

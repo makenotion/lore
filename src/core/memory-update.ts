@@ -106,6 +106,7 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
   synopsis: string | undefined
   blockedBy: string | undefined
   entity: string | undefined
+  expiresOn: string | undefined
 } {
   return {
     title: input.title !== undefined ? decodeTextEntities(input.title) : undefined,
@@ -125,6 +126,8 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
     blockedBy:
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
     entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
+    expiresOn:
+      input.expiresOn !== undefined ? decodeTextEntities(input.expiresOn) : undefined,
   }
 }
 
@@ -244,6 +247,11 @@ export class MemoryUpdate {
     if (decoded.entity !== undefined) {
       props[MEMORY_PROPS.ENTITY] = {
         rich_text: [{ text: { content: decoded.entity } }],
+      }
+    }
+    if (decoded.expiresOn !== undefined) {
+      props[MEMORY_PROPS.EXPIRES_ON] = {
+        rich_text: [{ text: { content: decoded.expiresOn } }],
       }
     }
     // Scope / lifetime. Mirror the `buildMemoryProps`

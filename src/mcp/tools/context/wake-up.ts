@@ -438,6 +438,7 @@ export async function handleWakeUp(
     taskLimit?: number
     userQuery?: string
     taskMemoryLimit?: number
+    includeExpired?: boolean
     debug?: boolean
     mode?: "full" | "task-only"
   }
@@ -549,6 +550,7 @@ export async function handleWakeUp(
       userQuery: args.userQuery,
       taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
+      includeExpired: args.includeExpired === true,
       includeCoverage: args.debug === true,
       todayDate: today,
       cache: services.wakeupCache,

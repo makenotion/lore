@@ -179,6 +179,8 @@ describe("memory save CLI", () => {
         confidence: "likely",
         reviewBy: "2026-06-01",
         decidedAt: "2026-05-14",
+        expiresAt: "2026-06-15",
+        expiresOn: "pr-closed:lore#891",
       },
       ["backend", "testing"]
     )
@@ -188,7 +190,23 @@ describe("memory save CLI", () => {
       expect(result.value.kind).toBe("runbook")
       expect(result.value.tags).toEqual(["backend", "testing"])
       expect(result.value.contentSource).toEqual({ kind: "inline", value: "Body" })
+      expect(result.value.expiresAt).toBe("2026-06-15")
+      expect(result.value.expiresOn).toBe("pr-closed:lore#891")
     }
+  })
+
+  it("rejects malformed --expires-on values", () => {
+    const result = parseMemorySaveCliOptions(
+      "Auth note",
+      {
+        content: "Body",
+        kind: "operational",
+        expiresOn: "pr-closed:lore#0",
+      },
+      []
+    )
+
+    expect(result.ok).toBe(false)
   })
 
   it("rejects missing and duplicate body sources", () => {
@@ -213,7 +231,15 @@ describe("memory save CLI", () => {
     const services = makeServices()
     const parsed = parseMemorySaveCliOptions(
       "Auth note",
-      { content: "Body", project: "Widget", topic: "Auth", tags: "backend" },
+      {
+        content: "Body",
+        project: "Widget",
+        topic: "Auth",
+        kind: "operational",
+        tags: "backend",
+        expiresAt: "2026-06-15",
+        expiresOn: "pr-closed:lore#891",
+      },
       ["backend"]
     )
     expect(parsed.ok).toBe(true)
@@ -229,7 +255,10 @@ describe("memory save CLI", () => {
         projectIds: ["p-widget"],
         topicId: "topic-1",
         source: "manual",
+        kind: "operational",
         tags: ["backend"],
+        expiresOn: "pr-closed:lore#891",
+        scope: { lifetime: "expires", expiresAt: "2026-06-15" },
       })
     )
     expect(result.data).toEqual(

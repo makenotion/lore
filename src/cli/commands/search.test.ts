@@ -66,6 +66,7 @@ describe("parseSearchCliOptions", () => {
       project: "Widget",
       tags: "cli, validation",
       limit: "10",
+      includeExpired: true,
       json: false,
     })
     expect(result.ok).toBe(true)
@@ -74,6 +75,7 @@ describe("parseSearchCliOptions", () => {
         projectName: "Widget",
         tags: ["cli", "validation"],
         limit: 10,
+        includeExpired: true,
         json: false,
       })
     }
@@ -112,6 +114,22 @@ describe("searchCommand", () => {
         query: "needle",
         projectId: "p-widget",
         limit: 10,
+      })
+    )
+  })
+
+  it("passes --include-expired through to memory search", async () => {
+    const services = makeServices()
+    vi.mocked(initServices).mockResolvedValue(services as never)
+
+    await searchCommand.parseAsync(["needle", "--include-expired"], {
+      from: "user",
+    })
+
+    expect(services.memories.search).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "needle",
+        includeExpired: true,
       })
     )
   })

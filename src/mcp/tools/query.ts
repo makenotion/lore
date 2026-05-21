@@ -15,6 +15,7 @@ import { ymdDateSchema } from "./date-schema.js"
 // drift contract.
 const KINDS = [
   "note",
+  "operational",
   "decision",
   "incident",
   "runbook",
@@ -77,6 +78,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     startCursor: z.string().min(1).optional(),
     includeContent: z.boolean().optional(),
     includeSynopsis: z.boolean().optional(),
+    includeExpired: z.boolean().optional(),
   }),
   z.object({
     action: z.literal("search"),
@@ -89,6 +91,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     limit: z.number().int().min(1).max(50).optional(),
     includeContent: z.boolean().optional(),
     includeSynopsis: z.boolean().optional(),
+    includeExpired: z.boolean().optional(),
     mode: z.enum(["contains", "semantic", "hybrid"]).optional(),
     explain: z.boolean().optional(),
     intent: z.string().optional(),
@@ -246,6 +249,12 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(recall | search) Render the memory's 1–2 sentence synopsis (when present) under the title (default true). Pass false to restore the byte-identical pre-synopsis title-only output for narrow terminals or callers that already plan to fetch bodies."
+          ),
+        includeExpired: z
+          .boolean()
+          .optional()
+          .describe(
+            "(recall | search) Include memories whose Expires At date is before today while still enforcing user/session/agent scope matching."
           ),
         // ask only
         includeContext: z

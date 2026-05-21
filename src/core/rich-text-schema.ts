@@ -43,6 +43,7 @@ type RichTextMetadataField =
   | "entity"
   | "topicKey"
   | "promotionSourceKey"
+  | "expiresOn"
 
 function richTextMetadataFieldsSchema(options: RichTextMetadataValidationOptions = {}) {
   const synopsisMaxChars = options.synopsisMaxChars ?? SYNOPSIS_MAX
@@ -59,6 +60,7 @@ function richTextMetadataFieldsSchema(options: RichTextMetadataValidationOptions
       entity: richTextPropertySchema("entity").optional(),
       topicKey: richTextPropertySchema("topicKey").optional(),
       promotionSourceKey: richTextPropertySchema("promotionSourceKey").optional(),
+      expiresOn: richTextPropertySchema("expiresOn").optional(),
     })
     .passthrough()
 }

@@ -16,6 +16,7 @@ export const contextDispatchSchema = z.discriminatedUnion("action", [
     taskLimit: z.number().int().min(0).max(50).optional(),
     userQuery: z.string().optional(),
     taskMemoryLimit: z.number().int().min(0).max(20).optional(),
+    includeExpired: z.boolean().optional(),
     debug: z.boolean().optional(),
   }),
   z.object({
@@ -94,6 +95,12 @@ export const contextInputSchema = {
       "(action='wake-up') Max memories surfaced for the user's current task (default " +
         DEFAULT_WAKEUP_TASK_MEMORY_LIMIT +
         "). Honored only when 'userQuery' is non-empty. Set 0 to skip the section entirely even when a query is provided."
+    ),
+  includeExpired: z
+    .boolean()
+    .optional()
+    .describe(
+      "(action='wake-up') Include expired memories in wake-up memory sections while still enforcing user/session/agent scope matching."
     ),
   debug: z
     .boolean()

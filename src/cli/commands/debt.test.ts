@@ -795,6 +795,8 @@ describe("renderDebtMarkdown", () => {
       staleTasksScanCapped: false,
       ownerlessMemories: 0,
       ownerlessScanCapped: false,
+      operationalMemories: 0,
+      operationalScanCapped: false,
       duplicateClusterPairs: 0,
       similarTopicGroups: 0,
       scopeAnomalies: 0,
@@ -818,6 +820,7 @@ describe("renderDebtMarkdown", () => {
           low_trust: 0,
           orphan_fact: 0,
           ownerless: 0,
+          operational_cleanup: 0,
           duplicate_cluster: 0,
           topic_sprawl: 0,
           overdue_governance: 0,
@@ -868,18 +871,29 @@ describe("renderDebtMarkdown", () => {
     expect(markdown).toContain("orphan_fact")
   })
 
+  it("surfaces a capped operationalScanCapped warning on an empty report", () => {
+    const report = makeReport({
+      stats: makeStats({ operationalScanCapped: true }),
+    })
+    const markdown = renderDebtMarkdown(report)
+    expect(markdown).not.toContain("The vault is clean.")
+    expect(markdown).toContain("operational_cleanup")
+  })
+
   it("lists every capped category in the empty-report warning", () => {
     const report = makeReport({
       stats: makeStats({
         orphanFactsCapped: true,
         staleTasksScanCapped: true,
         ownerlessScanCapped: true,
+        operationalScanCapped: true,
       }),
     })
     const markdown = renderDebtMarkdown(report)
     expect(markdown).toContain("orphan_fact")
     expect(markdown).toContain("overdue_governance (stale-task probe)")
     expect(markdown).toContain("ownerless")
+    expect(markdown).toContain("operational_cleanup")
   })
 
   it("does NOT say 'vault is clean' when the scope-anomaly probe is degraded on an empty report", () => {

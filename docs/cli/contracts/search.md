@@ -11,6 +11,8 @@ scripts.
   context when one exists.
 - `--tags <csv>` trims each comma-separated token and forwards the resulting
   list to memory search.
+- `--include-expired` forwards `includeExpired: true` to memory search so
+  audits and migration checks can inspect expired scoped memories.
 - `--limit <n>` must be a positive decimal integer and is parsed before service
   initialization.
 

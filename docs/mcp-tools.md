@@ -68,6 +68,11 @@ age; it does not include titles, facts, memory bodies, or the raw `userQuery`.
 In task-only debug output, digest freshness may be probed for observability even
 though the digest section stays suppressed.
 
+`wake-up` excludes expired scoped memories by default. Pass
+`includeExpired: true` for audits or migration checks that need expired
+memories in the wake-up surfaces; this affects memory-backed sections only,
+not fact/task expiry semantics.
+
 The active profile controls write-time tag validation, entity kind options,
 and writable fact predicates. Tag read filters remain permissive so agents can
 find legacy or out-of-profile rows. See [`profiles.md`](profiles.md).
@@ -124,6 +129,18 @@ does not leak into another session's recall.
   `until-task-closed` and `until-decision-superseded` are
   declarative — retrieval already drops closed tasks and superseded
   decisions via the existing state filters.
+- **Convenience expiry**: `lore-memory action='save'` and `update`
+  also accept top-level `expiresAt: "YYYY-MM-DD"`. This writes
+  `scope.lifetime = "expires"` and `scope.expiresAt`; on update,
+  `expiresAt: null` or `expiresAt: ""` clears the expiry unless the
+  caller supplies an explicit `scope.lifetime`.
+- **Operational expiry**: `kind: "operational"` marks short-lived
+  process state such as PR polling checkpoints. `expiresOn` stores an
+  event trigger (`pr-closed:<repo>#<number>`,
+  `pr-closed:<owner>/<repo>#<number>`, or `task-closed:<memoryId>`).
+  `lore debt scan` reports non-expired operational memories whose
+  linked PR/task is closed, and also reports operational rows with no
+  date or event expiry hint.
 
 On `update`, every field is optional with clear-aware semantics:
 omit to leave the column untouched, pass `null` on the select / date
@@ -161,6 +178,10 @@ log (AC #4).
 | `search` | Memory search; `mode` accepts `contains`, `semantic`, or `hybrid` and defaults to `hybrid`. `contains` is DS-scoped substring search with server-side filters, `semantic` is workspace-wide vector ranking over titles and bodies, and `hybrid` runs both lanes. |
 | `ask`    | Query facts and tasks about an entity. Pass `asOf: 'YYYY-MM-DD'` for transaction-time as-of recall (what Lore knew at that date), or `includeHistory: true` to surface invalidated facts inline (issue #284).                                                    |
 | `audit`  | List overdue facts, decisions, and tasks past their review date                                                                                                                                                                                                  |
+
+`recall` and `search` exclude expired scoped memories by default. Pass
+`includeExpired: true` for audits or migration checks that need to inspect
+rows whose `Expires At` date has passed.
 
 ## `lore-fact` — knowledge graph mutations
 

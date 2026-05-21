@@ -188,9 +188,15 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
  * so the title is a structured subject and the body holds the full
  * description — compare to facts where the Object field is a 2000-char
  * rich_text and structural queries fall apart on prose.
+ *
+ * `operational` memories carry short-lived process state, such as PR
+ * polling checkpoints or merge receipts. They remain memory-shaped for
+ * read ergonomics, but debt scanning treats them as cleanup-prone unless
+ * they carry an explicit expiry date or event.
  */
 export type MemoryKind =
   | "note"
+  | "operational"
   | "decision"
   | "incident"
   | "runbook"
@@ -416,6 +422,16 @@ export interface Memory {
    */
   compareNotes: string
   /**
+   * Event-bound expiry marker, e.g. `pr-closed:owner/repo#123` or
+   * `task-closed:<memoryId>`. Empty string when unset. Retrieval does
+   * not interpret this field directly; maintenance tooling uses it to
+   * find operational memories whose external event has finished.
+   *
+   * Optional on the exported type so older external fixtures stay
+   * source-compatible; `pageToMemory` always populates it.
+   */
+  expiresOn?: string
+  /**
    * System-managed idempotency key for cross-vault promotion target rows.
    * Empty string when unset. Optional on the exported type so older external
    * fixtures stay source-compatible; `pageToMemory` always populates it.
@@ -567,6 +583,12 @@ export interface CreateMemoryInput {
    */
   promotionSourceKey?: string
   /**
+   * Event-bound expiry marker. Accepted values are validated at the
+   * interface boundary; the service layer stores the rich_text value
+   * verbatim so migrations can preserve existing rows.
+   */
+  expiresOn?: string
+  /**
    * Scope and lifetime declaration. Omitted means "no scope
    * declared" — retrieval treats the resulting null column as
    * broadcast scope. Caller is responsible for keeping `kind` and
@@ -643,6 +665,7 @@ export interface UpdateMemoryInput {
   affectsIds?: string[]
   alternatives?: string
   consequences?: string
+  expiresOn?: string
   taskState?: TaskState
   blockedBy?: string
   entity?: string

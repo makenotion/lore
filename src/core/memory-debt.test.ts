@@ -17,7 +17,14 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { LoreServices } from "../services.js"
-import type { Decision, DecisionSummary, Fact, Memory, TaskSummary } from "../types.js"
+import type {
+  Decision,
+  DecisionSummary,
+  Fact,
+  Memory,
+  MemoryKind,
+  TaskSummary,
+} from "../types.js"
 import { findSimilarTopicGroups } from "./topic-merge.js"
 import {
   DEBT_CATEGORIES,
@@ -118,6 +125,7 @@ interface StubOpts {
   overdueDecisions?: DecisionSummary[]
   overdueTasks?: TaskSummary[]
   activeTasks?: TaskSummary[]
+  tasksById?: Record<string, TaskSummary>
   /**
    * Multi-page active-task return for pagination regression tests.
    * Each entry corresponds to one `services.tasks.list` call; the
@@ -130,6 +138,9 @@ interface StubOpts {
   ownerlessMemories?: Memory[]
   /** Multi-page paginated ownerless-memory return. Same shape as `activeTasksByPage`. */
   ownerlessByPage?: Memory[][]
+  operationalMemories?: Memory[]
+  /** Multi-page paginated operational-memory return. Same shape as `activeTasksByPage`. */
+  operationalByPage?: Memory[][]
   similarTopicGroups?: Awaited<
     ReturnType<typeof import("./topic-merge.js").findSimilarTopicGroups>
   >
@@ -169,7 +180,23 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
   const memoriesStub = {
     queryStaleConfidence: vi.fn(async () => opts.staleConfidence ?? []),
     listForScan: vi.fn(async () => opts.scanMemoriesByProject ?? projects.map(() => [])),
-    list: vi.fn(async (listOpts?: { startCursor?: string }) => {
+    list: vi.fn(async (listOpts?: { startCursor?: string; kind?: MemoryKind }) => {
+      if (listOpts?.kind === "operational") {
+        if (opts.operationalByPage && opts.operationalByPage.length > 0) {
+          const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
+          const page = opts.operationalByPage[cursorIndex] ?? []
+          const hasNext = cursorIndex + 1 < opts.operationalByPage.length
+          return {
+            items: page,
+            capped: false as const,
+            ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
+          }
+        }
+        return {
+          items: opts.operationalMemories ?? [],
+          capped: false as const,
+        }
+      }
       if (opts.ownerlessByPage && opts.ownerlessByPage.length > 0) {
         const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
         const page = opts.ownerlessByPage[cursorIndex] ?? []
@@ -219,6 +246,11 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
   }
   const tasksStub = {
     queryOverdue: vi.fn(async () => opts.overdueTasks ?? []),
+    getById: vi.fn(async (id: string) => {
+      const task = opts.tasksById?.[id]
+      if (task === undefined) throw new Error(`task ${id} not found`)
+      return task
+    }),
     list: vi.fn(async (listOpts?: { startCursor?: string }) => {
       if (opts.activeTasksByPage && opts.activeTasksByPage.length > 0) {
         const cursorIndex = listOpts?.startCursor ? Number(listOpts.startCursor) : 0
@@ -568,6 +600,139 @@ describe("scanDebt — category detection", () => {
     const items = report.items.filter((i) => i.category === "ownerless")
     expect(items.length).toBe(1)
     expect(items[0]!.entityId).toBe("m1")
+  })
+
+  it("detects operational memories when the linked task is closed", async () => {
+    const taskId = "11111111-1111-1111-1111-111111111111"
+    const operational = makeMemory({
+      id: "m-op",
+      title: "PR poll checkpoint",
+      kind: "operational",
+      expiresOn: `task-closed:${taskId}`,
+    })
+    const closedTask = makeMemory({
+      id: taskId,
+      title: "Close PR polling",
+      kind: "task",
+      taskState: "done",
+    }) as TaskSummary
+    const services = makeStubServices({
+      operationalMemories: [operational],
+      tasksById: { [taskId]: closedTask },
+    })
+    const report = await scanDebt(services, {
+      categories: ["operational_cleanup"],
+      today: TODAY,
+    })
+    expect(services.memories.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "operational",
+        includeOutOfScope: true,
+      })
+    )
+    const items = report.items.filter((i) => i.category === "operational_cleanup")
+    expect(items.length).toBe(1)
+    expect(items[0]!.entityId).toBe("m-op")
+    expect(items[0]!.reasons.some((r) => r.includes("is done"))).toBe(true)
+    expect(items[0]!.suggestedActions).toContain("archive_memory")
+  })
+
+  it("skips operational memories when the linked task is still open", async () => {
+    const taskId = "22222222-2222-2222-2222-222222222222"
+    const operational = makeMemory({
+      id: "m-op",
+      title: "PR poll checkpoint",
+      kind: "operational",
+      expiresOn: `task-closed:${taskId}`,
+    })
+    const openTask = makeMemory({
+      id: taskId,
+      title: "Close PR polling",
+      kind: "task",
+      taskState: "open",
+    }) as TaskSummary
+    const services = makeStubServices({
+      operationalMemories: [operational],
+      tasksById: { [taskId]: openTask },
+    })
+    const report = await scanDebt(services, {
+      categories: ["operational_cleanup"],
+      today: TODAY,
+    })
+    expect(report.items.filter((i) => i.category === "operational_cleanup")).toEqual([])
+  })
+
+  it("detects operational memories when the linked PR is closed", async () => {
+    const operational = makeMemory({
+      id: "m-op",
+      title: "Merged PR receipt",
+      kind: "operational",
+      expiresOn: "pr-closed:lore#891",
+    })
+    const services = makeStubServices({
+      operationalMemories: [operational],
+    })
+    const resolvePullRequestState = vi.fn(async () => "merged" as const)
+    const report = await scanDebt(services, {
+      categories: ["operational_cleanup"],
+      today: TODAY,
+      resolvePullRequestState,
+    })
+    expect(resolvePullRequestState).toHaveBeenCalledWith({
+      repo: "lore",
+      number: 891,
+    })
+    const items = report.items.filter((i) => i.category === "operational_cleanup")
+    expect(items.length).toBe(1)
+    expect(items[0]!.reasons.some((r) => r.includes("lore#891 is merged"))).toBe(true)
+  })
+
+  it("skips already-expired operational memories in the cleanup category", async () => {
+    const taskId = "33333333-3333-3333-3333-333333333333"
+    const operational = makeMemory({
+      id: "m-op",
+      title: "Expired checkpoint",
+      kind: "operational",
+      expiresOn: `task-closed:${taskId}`,
+      scope: {
+        kind: null,
+        key: "",
+        audience: "",
+        lifetime: "expires",
+        expiresAt: "2026-05-01",
+      },
+    })
+    const closedTask = makeMemory({
+      id: taskId,
+      title: "Close PR polling",
+      kind: "task",
+      taskState: "done",
+    }) as TaskSummary
+    const services = makeStubServices({
+      operationalMemories: [operational],
+      tasksById: { [taskId]: closedTask },
+    })
+    const report = await scanDebt(services, {
+      categories: ["operational_cleanup"],
+      today: TODAY,
+    })
+    expect(report.items.filter((i) => i.category === "operational_cleanup")).toEqual([])
+  })
+
+  it("flags operational memories that have no expiry hint", async () => {
+    const operational = makeMemory({
+      id: "m-op",
+      title: "Closed epic banner",
+      kind: "operational",
+    })
+    const services = makeStubServices({ operationalMemories: [operational] })
+    const report = await scanDebt(services, {
+      categories: ["operational_cleanup"],
+      today: TODAY,
+    })
+    const items = report.items.filter((i) => i.category === "operational_cleanup")
+    expect(items.length).toBe(1)
+    expect(items[0]!.reasons).toContain("No Expires At date or Expires On event is set")
   })
 
   it("does NOT flag ownerless when author or agent is set", async () => {
@@ -931,7 +1096,11 @@ describe("scanDebt — bounded probes (issue #585 review)", () => {
     const services = makeStubServices({
       ownerlessByPage: [[ownerless("m0")], [ownerless("m1")], [ownerless("m2")]],
     })
-    const report = await scanDebt(services, { today: TODAY, perCategoryLimit: 100 })
+    const report = await scanDebt(services, {
+      categories: ["ownerless"],
+      today: TODAY,
+      perCategoryLimit: 100,
+    })
     expect(services.memories.list).toHaveBeenCalledTimes(3)
     expect(report.stats.ownerlessMemories).toBe(3)
     expect(report.stats.ownerlessScanCapped).toBe(false)
@@ -955,7 +1124,11 @@ describe("scanDebt — bounded probes (issue #585 review)", () => {
     })
     // perCategoryLimit < total => the second page is partially
     // consumed and the flag must fire.
-    const report = await scanDebt(services, { today: TODAY, perCategoryLimit: 3 })
+    const report = await scanDebt(services, {
+      categories: ["ownerless"],
+      today: TODAY,
+      perCategoryLimit: 3,
+    })
     expect(report.stats.ownerlessScanCapped).toBe(true)
   })
 })
@@ -998,6 +1171,8 @@ describe("scanDebt — JSON contract", () => {
     )
     expect(Object.keys(json.stats).sort()).toEqual([
       "duplicateClusterPairs",
+      "operationalMemories",
+      "operationalScanCapped",
       "orphanFacts",
       "orphanFactsCapped",
       "overdueDecisions",

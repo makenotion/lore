@@ -33,6 +33,7 @@ function page(
   options: {
     title?: string
     confidenceScore?: number | null
+    expiresAt?: string
   } = {}
 ): PageObjectResponse {
   const title = options.title ?? id
@@ -71,6 +72,12 @@ function page(
         type: "number",
         number: confidenceScore,
       } as unknown,
+      [MEMORY_PROPS.EXPIRES_AT]: options.expiresAt
+        ? ({
+            type: "date",
+            date: { start: options.expiresAt, end: null },
+          } as unknown)
+        : ({ type: "date", date: null } as unknown),
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
 }
@@ -88,6 +95,7 @@ function makeSubject(
     containsPages?: PageObjectResponse[]
     semanticPages?: PageObjectResponse[]
     featureOverrides?: Partial<LoreFeatureFlags>
+    scopeFilterEnabled?: boolean
   } = {}
 ): {
   searcher: MemorySearch
@@ -119,7 +127,7 @@ function makeSubject(
       DB,
       features(args.featureOverrides),
       () => ({}),
-      () => false,
+      () => args.scopeFilterEnabled === true,
       materializeSpy
     ),
     querySpy,
@@ -162,6 +170,56 @@ describe("MemorySearch mode selection", () => {
         confidenceFactor: 1.0,
       },
     ])
+  })
+
+  it("contains mode includeExpired bypasses the client-side expired-row post-filter", async () => {
+    const expired = page("expired-hit", {
+      title: "expired checkpoint",
+      expiresAt: "2026-01-01",
+    })
+    const { searcher } = makeSubject({
+      containsPages: [expired],
+      scopeFilterEnabled: true,
+    })
+
+    const defaultResults = await searcher.search({
+      query: "expired",
+      mode: "contains",
+      includeContent: false,
+    })
+    const includeExpiredResults = await searcher.search({
+      query: "expired",
+      mode: "contains",
+      includeExpired: true,
+      includeContent: false,
+    })
+
+    expect(defaultResults.map((m) => m.id)).toEqual([])
+    expect(includeExpiredResults.map((m) => m.id)).toEqual(["expired-hit"])
+  })
+
+  it("hybrid mode can saturate on expired contains rows when includeExpired is true", async () => {
+    const expiredRows = [0, 1, 2].map((i) =>
+      page(`expired-${i}`, {
+        title: `expired checkpoint ${i}`,
+        expiresAt: "2026-01-01",
+      })
+    )
+    const { searcher } = makeSubject({
+      containsPages: expiredRows,
+      semanticPages: [page("semantic-fallback")],
+      scopeFilterEnabled: true,
+    })
+
+    const { memories, explain } = await searcher.searchWithExplain({
+      query: "expired",
+      mode: "hybrid",
+      includeExpired: true,
+      includeContent: false,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["expired-0", "expired-1", "expired-2"])
+    expect(explain.every((entry) => entry.branch === "contains-saturated")).toBe(true)
   })
 
   it("semantic mode uses client.search and explains semantic ranks", async () => {

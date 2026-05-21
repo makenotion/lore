@@ -77,14 +77,14 @@ import type {
   PageObjectResponse,
   QueryDataSourceParameters,
 } from "@notionhq/client"
-import type { DatabaseRef, Memory } from "../types.js"
+import type { DatabaseRef, Memory, MemoryScopeContext } from "../types.js"
 import {
   CONFIDENCE_DISPLAY_THRESHOLD,
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
 } from "../types.js"
 import { MEMORY_PROPS, encodeCompareNotesRichText } from "../notion/schema.js"
-import { projectOrUnscopedFilter } from "../notion/filters.js"
+import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { isLiveFullPage } from "../notion/extractors.js"
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
@@ -100,6 +100,7 @@ import {
   withCleanupOrphanExclusion,
 } from "./memory-filters.js"
 import { reviewTerminalStatusExclusionFilters } from "./memory-review-state.js"
+import { matchesDefaultScope } from "./memory-scope.js"
 
 type PageToMemory = (page: PageObjectResponse, content: string) => Promise<Memory>
 
@@ -114,8 +115,18 @@ export class MemoryConfidence {
   constructor(
     private client: Client,
     private db: DatabaseRef,
-    private readonly pageToMemory: PageToMemory
+    private readonly pageToMemory: PageToMemory,
+    private readonly getScopeContext: () => MemoryScopeContext = () => ({}),
+    private readonly isScopeFilterEnabled: () => boolean = () => false
   ) {}
+
+  private get scopeCtx(): MemoryScopeContext {
+    return this.getScopeContext()
+  }
+
+  private get scopeFilterEnabled(): boolean {
+    return this.isScopeFilterEnabled()
+  }
 
   /**
    * Advisory read-side confidence touch. Writes `Last Referenced At`
@@ -276,6 +287,7 @@ export class MemoryConfidence {
      * triage lists. The inbox-review flow opts in.
      */
     includeProposed?: boolean
+    includeExpired?: boolean
   }): Promise<Memory[]> {
     const neglectCutoff = new Date(
       new Date(opts.today).getTime() - STALE_CONFIDENCE_DAYS * MS_PER_DAY
@@ -318,7 +330,15 @@ export class MemoryConfidence {
     // surface real low-confidence memories.
     filters.push(cleanupOrphanExclusionFilter())
 
-    const filter = { and: filters } as QueryDataSourceParameters["filter"]
+    const baseFilter = { and: filters } as Record<string, unknown>
+    const scopeFilterActive = this.scopeFilterEnabled
+    const filter = (
+      scopeFilterActive
+        ? withDefaultScopeFilter(baseFilter, this.scopeCtx, opts.today, undefined, {
+            includeExpired: opts.includeExpired === true,
+          })
+        : baseFilter
+    ) as QueryDataSourceParameters["filter"]
 
     // Pre-migration vaults that haven't yet run `lore migrate` against
     // the 0.8.0 schema lack the `Confidence Score` and
@@ -352,6 +372,12 @@ export class MemoryConfidence {
             page_size,
             start_cursor,
           }),
+        extraFilter: scopeFilterActive
+          ? (page) =>
+              matchesDefaultScope(page.properties, this.scopeCtx, opts.today, undefined, {
+                includeExpired: opts.includeExpired === true,
+              })
+          : undefined,
       })
     } catch (err) {
       if (isMissingPropertyError(err)) return []

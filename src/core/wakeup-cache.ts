@@ -331,6 +331,7 @@ const KEY_OPTION_FIELDS = [
   "includeDecisions",
   "includeStaleConfidence",
   "includeProposedMemories",
+  "includeExpired",
   "proposedMemoryLimit",
   "includeCoverage",
   "todayDate",

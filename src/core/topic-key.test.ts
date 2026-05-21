@@ -52,6 +52,11 @@ describe("suggestTopicKey — example table (issue 0.9.0/07)", () => {
       expected: null,
     },
     {
+      title: "PR poll checkpoint",
+      kind: "operational",
+      expected: null,
+    },
+    {
       title: "Investigate PR #1234 latency regression",
       kind: "task",
       expected: null,
@@ -86,6 +91,15 @@ describe("suggestTopicKey — acceptance criteria (issue 0.9.0/07)", () => {
     })
     expect(result.key).toBeNull()
     expect(result.reason).toMatch(/task/i)
+  })
+
+  it("returns null with an operational-specific reason for kind='operational'", () => {
+    const result = suggestTopicKey({
+      title: "PR polling checkpoint",
+      kind: "operational",
+    })
+    expect(result.key).toBeNull()
+    expect(result.reason).toMatch(/operational/i)
   })
 
   it("returns null with reason='empty title' for an empty title", () => {

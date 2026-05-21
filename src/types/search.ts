@@ -111,6 +111,13 @@ export interface SearchMemoriesInput {
    * `client.search` lacks property-filter support.
    */
   includeOutOfScope?: boolean
+  /**
+   * When `true`, keep rows whose `Expires At` date is before today while
+   * still enforcing narrow-scope kind/key matching. Defaults to `false`.
+   * Operator inspection paths use this to include expired rows without
+   * also widening recall to other sessions, users, agents, or runs.
+   */
+  includeExpired?: boolean
 }
 
 /**

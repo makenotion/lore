@@ -22,6 +22,7 @@ import {
 
 const MEMORY_KINDS = [
   "note",
+  "operational",
   "decision",
   "incident",
   "runbook",
@@ -29,6 +30,8 @@ const MEMORY_KINDS = [
   "policy",
 ] as const satisfies readonly MemoryKind[]
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
+const EXPIRES_ON_PATTERN =
+  /^(?:pr-closed:[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?#[1-9][0-9]*|task-closed:[0-9a-fA-F-]{32,36})$/
 
 export interface MemorySaveCliOptions {
   title: string
@@ -41,6 +44,8 @@ export interface MemorySaveCliOptions {
   confidence: MemoryConfidence | undefined
   reviewBy: string | undefined
   decidedAt: string | undefined
+  expiresAt: string | undefined
+  expiresOn: string | undefined
   synopsis: string | undefined
 }
 
@@ -74,6 +79,8 @@ export function parseMemorySaveCliOptions(
     confidence?: string
     reviewBy?: string
     decidedAt?: string
+    expiresAt?: string
+    expiresOn?: string
     synopsis?: string
   },
   tagVocabulary: readonly string[]
@@ -95,6 +102,15 @@ export function parseMemorySaveCliOptions(
   if (!reviewBy.ok) return reviewBy
   const decidedAt = validateYmd(raw.decidedAt, "--decided-at")
   if (!decidedAt.ok) return decidedAt
+  const expiresAt = validateYmd(raw.expiresAt, "--expires-at")
+  if (!expiresAt.ok) return expiresAt
+  if (raw.expiresOn !== undefined && !EXPIRES_ON_PATTERN.test(raw.expiresOn)) {
+    return {
+      ok: false,
+      message:
+        "--expires-on must be pr-closed:<repo>#<number>, pr-closed:<owner>/<repo>#<number>, or task-closed:<memoryId>",
+    }
+  }
 
   return {
     ok: true,
@@ -109,6 +125,8 @@ export function parseMemorySaveCliOptions(
       confidence: confidence.value,
       reviewBy: reviewBy.value,
       decidedAt: decidedAt.value,
+      expiresAt: expiresAt.value,
+      expiresOn: raw.expiresOn,
       synopsis: raw.synopsis,
     },
   }
@@ -149,6 +167,13 @@ export async function runMemorySave(
     confidence: opts.confidence,
     reviewBy: opts.reviewBy,
     decidedAt: opts.decidedAt,
+    expiresOn: opts.expiresOn,
+    scope: opts.expiresAt
+      ? {
+          lifetime: "expires",
+          expiresAt: opts.expiresAt,
+        }
+      : undefined,
     synopsis: opts.synopsis,
   }
   const memory = await services.memories.create(input)
@@ -193,6 +218,11 @@ const saveCommand = new Command("save")
   .option("--confidence <value>", `Confidence: ${CONFIDENCES.join(" | ")}`)
   .option("--review-by <YYYY-MM-DD>", "Review-by date")
   .option("--decided-at <YYYY-MM-DD>", "Canonical decision date")
+  .option("--expires-at <YYYY-MM-DD>", "Expiry date for temporary memories")
+  .option(
+    "--expires-on <event>",
+    "Event-bound expiry marker, e.g. pr-closed:repo#123 or task-closed:<memoryId>"
+  )
   .option("--synopsis <text>", "1-2 sentence synopsis")
   .option("--json", "Emit the result as JSON")
   .action(
@@ -209,6 +239,8 @@ const saveCommand = new Command("save")
         confidence?: string
         reviewBy?: string
         decidedAt?: string
+        expiresAt?: string
+        expiresOn?: string
         synopsis?: string
         json?: boolean
       }

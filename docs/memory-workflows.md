@@ -25,10 +25,10 @@ That action also halves the originating memory's numeric `Confidence Score`, so
 use it for real contradictions rather than soft uncertainty.
 
 For recurring corpus hygiene — low-trust memories, orphan facts, overdue
-governance, duplicate clusters, topic sprawl, ownerless rows, and scope
-anomalies — run [`lore debt scan`](./memory-debt.md) periodically. The
-scanner is read-only by default; `docs/memory-debt.md` describes the seven
-categories, scoring, recommended monthly cadence, and the opt-in
+governance, operational cleanup, duplicate clusters, topic sprawl, ownerless
+rows, and scope anomalies — run [`lore debt scan`](./memory-debt.md)
+periodically. The scanner is read-only by default; `docs/memory-debt.md`
+describes the categories, scoring, recommended monthly cadence, and the opt-in
 `lore debt create-tasks` Phase-2 surface.
 
 Memory `synopsis` values are scan hooks, not mini-bodies. `lore-memory`
@@ -246,6 +246,60 @@ activation entity matches the user's current query.
   work.
 - When saving a memory that resolves tracked work, check wake-up context for
   related active tasks and close any resolved ones.
+
+## Operational Memory Expiry
+
+Use `kind: "operational"` for short-lived process state that is useful as
+memory while a workflow is active but should not become durable project
+knowledge. Common examples are PR polling checkpoints, short-lived merged-PR
+receipts, and coordination banners tied to a closing task or PR.
+
+Creation can set expiry in either form:
+
+```json
+{
+  "action": "save",
+  "title": "PR 891 polling checkpoint",
+  "kind": "operational",
+  "expiresAt": "2026-06-15",
+  "content": "Last review cursor observed by the polling job."
+}
+```
+
+```json
+{
+  "action": "save",
+  "title": "PR 891 polling checkpoint",
+  "kind": "operational",
+  "expiresOn": "pr-closed:lore#891",
+  "content": "Last review cursor observed by the polling job."
+}
+```
+
+`expiresAt` is a convenience alias for
+`scope: { "lifetime": "expires", "expiresAt": "YYYY-MM-DD" }`. Default
+wake-up, recall, and search exclude rows whose expiry date has passed; pass
+`includeExpired: true` to wake-up/recall/search when auditing stale rows.
+`expiresOn` stores an event marker for debt detection. Supported event forms
+are `pr-closed:<repo>#<number>`, `pr-closed:<owner>/<repo>#<number>`, and
+`task-closed:<memoryId>`.
+
+Migration path for stale entries already in a vault:
+
+```json
+{
+  "action": "update",
+  "memoryId": "<memory-id>",
+  "kind": "operational",
+  "expiresAt": "2026-05-21"
+}
+```
+
+Use `expiresAt` for entries with a known end date. Use `expiresOn` when a PR
+or task closure is the actual lifecycle boundary. After migration, run
+`lore debt scan --category operational_cleanup` to find non-expired
+operational rows whose linked PR/task is closed or whose expiry hint is
+missing.
 
 ### Task Review And Expiry Policy
 

@@ -154,6 +154,7 @@ export const MEMORY_PROPS = {
   REVISION_COUNT: "Revision Count",
   COMPARE_NOTES: "Compare Notes",
   PROMOTION_SOURCE_KEY: "Promotion Source Key",
+  EXPIRES_ON: "Expires On",
   REVIEW_BY: "Review By",
   DONE_AT: "Done At",
   DECIDED_AT: "Decided At",
@@ -240,6 +241,7 @@ export function memoriesProperties(
       select: {
         options: [
           { name: "note", color: "default" },
+          { name: "operational", color: "gray" },
           { name: "decision", color: "blue" },
           { name: "incident", color: "red" },
           { name: "runbook", color: "green" },
@@ -328,6 +330,7 @@ export function memoriesProperties(
     // Populated only by `promoteMemory` on target-vault rows, and probed
     // before create to make retries reuse the original promoted row.
     [MEMORY_PROPS.PROMOTION_SOURCE_KEY]: { rich_text: {} },
+    [MEMORY_PROPS.EXPIRES_ON]: { rich_text: {} },
     [MEMORY_PROPS.REVIEW_BY]: { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
     // transitions to a terminal state — either via `TaskService.close()`
@@ -1041,6 +1044,7 @@ export function buildMemoryProps(input: {
   comparedWith?: string[]
   compareNotes?: string
   promotionSourceKey?: string
+  expiresOn?: string
   /**
    * Scope / lifetime fields. Each carries clear-cell
    * semantics: `undefined` leaves the column untouched, `null` (for
@@ -1213,6 +1217,11 @@ export function buildMemoryProps(input: {
   if (input.promotionSourceKey !== undefined) {
     props[MEMORY_PROPS.PROMOTION_SOURCE_KEY] = {
       rich_text: [{ text: { content: input.promotionSourceKey } }],
+    }
+  }
+  if (input.expiresOn !== undefined) {
+    props[MEMORY_PROPS.EXPIRES_ON] = {
+      rich_text: [{ text: { content: input.expiresOn } }],
     }
   }
   // Scope / lifetime. Tristate semantics on the select +

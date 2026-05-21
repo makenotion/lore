@@ -43,6 +43,8 @@ export function createMemoryDispatchSchema(
       confidence: z.enum(CONFIDENCES).optional(),
       reviewBy: ymdDateSchema.optional(),
       decidedAt: ymdDateSchema.optional(),
+      expiresAt: ymdDateSchema.optional(),
+      expiresOn: expiresOnSchema.optional(),
       tags: tagsSchema.optional(),
       keywords: keywordsSchema.optional(),
       synopsis: synopsisSchema.optional(),
@@ -75,6 +77,8 @@ export function createMemoryDispatchSchema(
       confidence: z.enum(CONFIDENCES).optional(),
       reviewBy: clearableYmdDateSchema.optional(),
       decidedAt: clearableYmdDateSchema.optional(),
+      expiresAt: clearableYmdDateSchema.optional(),
+      expiresOn: z.union([expiresOnSchema, z.literal("")]).optional(),
       supersedesIds: z.array(notionPageIdSchema).optional(),
       affectsIds: z.array(notionPageIdSchema).optional(),
       alternatives: richTextPropertySchema("alternatives").optional(),
@@ -147,3 +151,11 @@ export function createMemoryDispatchSchema(
     }),
   ])
 }
+
+export const EXPIRES_ON_REGEX =
+  /^(?:pr-closed:[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?#[1-9][0-9]*|task-closed:[0-9a-fA-F-]{32,36})$/
+
+export const expiresOnSchema = richTextPropertySchema("expiresOn").regex(
+  EXPIRES_ON_REGEX,
+  "Must be 'pr-closed:<repo>#<number>', 'pr-closed:<owner>/<repo>#<number>', or 'task-closed:<memoryId>'"
+)

@@ -11,6 +11,7 @@ export type ToolResult = {
 
 export const KINDS = [
   "note",
+  "operational",
   "decision",
   "incident",
   "runbook",
@@ -38,6 +39,7 @@ export const KINDS = [
  */
 export const SUGGEST_KIND_VALUES = [
   "note",
+  "operational",
   "decision",
   "incident",
   "runbook",

@@ -118,6 +118,7 @@ export interface ListMemoriesOptions {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  includeExpired?: boolean
   sortBy?: "created_time" | "last_edited_time"
   direction?: "ascending" | "descending"
   startCursor?: string
@@ -413,7 +414,9 @@ export class MemoryList {
     const scopedFilter =
       opts?.includeOutOfScope === true || !this.scopeFilterEnabled
         ? baseFilter
-        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
+        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc(), undefined, {
+            includeExpired: opts?.includeExpired === true,
+          })
     const filter = withCleanupOrphanExclusion(scopedFilter)
 
     const limit = Math.min(opts?.limit ?? 20, 100)
@@ -433,7 +436,9 @@ export class MemoryList {
       opts?.includeOutOfScope === true || !this.scopeFilterEnabled
         ? undefined
         : (page: PageObjectResponse) =>
-            matchesDefaultScope(page.properties, this.scopeCtx, today)
+            matchesDefaultScope(page.properties, this.scopeCtx, today, undefined, {
+              includeExpired: opts?.includeExpired === true,
+            })
     const result = await collectLivePages({
       limit,
       startCursor: opts?.startCursor,

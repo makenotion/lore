@@ -20,10 +20,10 @@ import type { MemoryKind } from "../types.js"
 
 /**
  * Map memory Kind to a topic-key family prefix. Closed and matches
- * `MemoryKind` exactly. `note` and `task` map to `null` because notes
- * are the catch-all default (no recurring topic) and tasks transition
- * through lifecycle states (`open` / `blocked` / `done`) rather than
- * upsert revisions.
+ * `MemoryKind` exactly. `note`, `operational`, and `task` map to
+ * `null` because notes are the catch-all default, operational rows are
+ * short-lived checkpoints, and tasks transition through lifecycle
+ * states (`open` / `blocked` / `done`) rather than upsert revisions.
  *
  * Adding a `MemoryKind` value requires adding an entry here.
  * `Record<MemoryKind, ...>` makes the omission a compile error rather
@@ -31,6 +31,7 @@ import type { MemoryKind } from "../types.js"
  */
 const KIND_TO_FAMILY: Record<MemoryKind, string | null> = {
   note: null,
+  operational: null,
   decision: "decision",
   incident: "incident",
   runbook: "runbook",
@@ -175,7 +176,7 @@ export interface TopicKeySuggestion {
 /**
  * Suggest a stable topic key from `title + kind`. Pure function — same
  * input always returns the same output. Returns `{ key: null }` when
- * the kind has no family (note, task) or the title produces no
+ * the kind has no family (note, operational, task) or the title produces no
  * meaningful tokens after stoplist filtering.
  */
 export function suggestTopicKey(input: {
@@ -195,6 +196,12 @@ export function suggestTopicKey(input: {
       return {
         key: null,
         reason: "Kind 'task' transitions through lifecycle states, not upsert revisions.",
+      }
+    }
+    if (input.kind === "operational") {
+      return {
+        key: null,
+        reason: "Kind 'operational' is short-lived process state, not a recurring topic.",
       }
     }
     return {

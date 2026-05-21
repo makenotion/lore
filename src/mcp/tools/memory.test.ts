@@ -4828,6 +4828,32 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
     )
   })
 
+  it("threads expiresAt through update as an expiring scope alias", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", expiresAt: "2026-06-01" } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({
+        scope: { lifetime: "expires", expiresAt: "2026-06-01" },
+      })
+    )
+  })
+
+  it("normalizes expiresAt: null to an explicit scope expiry clear", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", expiresAt: null } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({
+        scope: { lifetime: null, expiresAt: null },
+      })
+    )
+  })
+
   it("omitted reviewBy and decidedAt stay undefined", async () => {
     const { lore, update } = setUpUpdateHarness()
 
@@ -4876,6 +4902,7 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
     expect(inputSchema.shape.decidedAt.description).toBe(
       "(save | update) Canonical decision date YYYY-MM-DD. Save: must be YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
     )
+    expect(inputSchema.shape.expiresAt.description).toContain("Convenience expiry date")
     expect(inputSchema.shape.synopsis.description).toContain(
       "On update, omit to keep, pass empty string to clear."
     )
@@ -4947,6 +4974,72 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect(create).not.toHaveBeenCalled()
+  })
+
+  it("threads expiresAt through save as an expiring scope alias", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-expiring")
+    const create = vi.fn().mockResolvedValue(created)
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Saved",
+      content: "body",
+      expiresAt: "2026-06-01",
+    } as never)
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: { lifetime: "expires", expiresAt: "2026-06-01" },
+      })
+    )
+  })
+
+  it("threads expiresOn through save", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-event-expiring")
+    const create = vi.fn().mockResolvedValue(created)
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Saved",
+      content: "body",
+      kind: "operational",
+      expiresOn: "pr-closed:lore#891",
+    } as never)
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "operational",
+        expiresOn: "pr-closed:lore#891",
+      })
+    )
   })
 })
 

@@ -15,6 +15,8 @@
  * the scanner stays strictly read-only by default.
  */
 
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import { Command } from "commander"
 import { initServices, type LoreServices } from "../../services.js"
 import { redactDebugError } from "../../debug-redact.js"
@@ -23,6 +25,8 @@ import {
   scanDebt,
   type DebtCategory,
   type DebtItem,
+  type PullRequestRef,
+  type PullRequestState,
   type DebtReport,
 } from "../../core/memory-debt.js"
 import { DEBT_CATEGORIES } from "../../core/memory-debt.js"
@@ -31,6 +35,8 @@ import {
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { parsePositiveDecimalInteger } from "../parse.js"
+
+const execFileAsync = promisify(execFile)
 
 interface DebtScanCliOptions {
   projectName: string | undefined
@@ -185,6 +191,48 @@ async function resolveTargetProject(
   return { id: project.id, name: project.name }
 }
 
+async function resolvePullRequestStateWithGh(
+  ref: PullRequestRef
+): Promise<PullRequestState> {
+  const repo = ref.repo.includes("/")
+    ? ref.repo
+    : ((await qualifyRepoWithCurrentGitHubOwner(ref.repo)) ?? ref.repo)
+  try {
+    const { stdout } = await execFileAsync(
+      "gh",
+      ["pr", "view", String(ref.number), "--repo", repo, "--json", "state,mergedAt"],
+      { timeout: 10_000, maxBuffer: 128 * 1024 }
+    )
+    const parsed = JSON.parse(stdout) as {
+      state?: string
+      mergedAt?: string | null
+    }
+    if (parsed.mergedAt) return "merged"
+    if (parsed.state === "MERGED") return "merged"
+    if (parsed.state === "CLOSED") return "closed"
+    if (parsed.state === "OPEN") return "open"
+    return "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+async function qualifyRepoWithCurrentGitHubOwner(repo: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["config", "--get", "remote.origin.url"],
+      { timeout: 5_000, maxBuffer: 16 * 1024 }
+    )
+    const origin = stdout.trim()
+    const match = /github\.com[:/]([^/]+)\/([^/.]+)(?:\.git)?$/.exec(origin)
+    if (!match) return null
+    return `${match[1]}/${repo}`
+  } catch {
+    return null
+  }
+}
+
 export function renderDebtMarkdown(report: DebtReport): string {
   const lines: string[] = []
   const scope = report.project ? `project "${report.project}"` : "all projects"
@@ -208,6 +256,7 @@ export function renderDebtMarkdown(report: DebtReport): string {
   if (report.stats.staleTasksScanCapped)
     cappedCategories.push("overdue_governance (stale-task probe)")
   if (report.stats.ownerlessScanCapped) cappedCategories.push("ownerless")
+  if (report.stats.operationalScanCapped) cappedCategories.push("operational_cleanup")
   // `scopeAnomalies === null` is the degraded-probe signal ONLY when
   // the probe was actually attempted. A category-filtered scan that
   // excluded `scope_anomaly` (`--category orphan_fact`) sets
@@ -317,7 +366,7 @@ export function renderDebtJson(report: DebtReport): string {
 
 const scanSubcommand = new Command("scan")
   .description(
-    "Inventory memory debt across the vault: low-trust memories, orphan facts, overdue governance, duplicate clusters, topic sprawl, scope anomalies, and ownerless rows."
+    "Inventory memory debt across the vault: low-trust memories, orphan facts, overdue governance, operational cleanup, duplicate clusters, topic sprawl, scope anomalies, and ownerless rows."
   )
   .option("-p, --project <name>", "Restrict scan to one project (default: all projects)")
   .option(
@@ -363,6 +412,7 @@ const scanSubcommand = new Command("scan")
             ? { perCategoryLimit: parsed.value.perCategoryLimit }
             : {}),
           ...(parsed.value.categories ? { categories: parsed.value.categories } : {}),
+          resolvePullRequestState: resolvePullRequestStateWithGh,
         })
         if (parsed.value.json) {
           process.stdout.write(renderDebtJson(report))
@@ -488,6 +538,7 @@ const createTasksSubcommand = new Command("create-tasks")
         )
         const report = await scanDebt(services, {
           ...(project ? { projectId: project.id, projectLabel: project.name } : {}),
+          resolvePullRequestState: resolvePullRequestStateWithGh,
         })
         const eligible = report.items.filter((item) => {
           if (parsed.value.priorityFloor === "P1") return item.priority === "P1"

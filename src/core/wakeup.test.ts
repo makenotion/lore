@@ -184,6 +184,7 @@ type ListCall = {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  includeExpired?: boolean
   sortBy?: "created_time" | "last_edited_time"
   direction?: "ascending" | "descending"
 }
@@ -193,6 +194,7 @@ type SearchCall = {
   projectId?: string
   limit?: number
   includeContent?: boolean
+  includeExpired?: boolean
   mode?: "contains" | "semantic" | "hybrid"
 }
 
@@ -205,6 +207,7 @@ type StaleConfidenceCall = {
   projectId?: string
   limit: number
   today: string
+  includeExpired?: boolean
 }
 
 interface StubServices extends WakeUpServices {
@@ -1037,6 +1040,40 @@ describe("loadWakeUpData", () => {
     const knowledgeCall = services.factsListRecentCalls[0]
     expect(knowledgeCall.projectId).toBe("p1")
     expect(knowledgeCall.limit).toBe(DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
+  })
+
+  it("threads includeExpired into wake-up memory reads when requested", async () => {
+    const services = stubServices({
+      rawMemories: [buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" })],
+      digestMemories: [],
+      staleConfidence: [
+        buildMemory({ id: "m-stale", createdAt: "2026-04-19T00:00:00Z" }),
+      ],
+      tasks: [
+        buildTask({
+          id: "t1",
+          title: "Track PR #891",
+          entity: "PR #891",
+        }),
+      ],
+    })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      includeExpired: true,
+      now: NOW,
+    })
+
+    expect(services.memoriesCalls.length).toBeGreaterThan(0)
+    expect(services.memoriesCalls.every((call) => call.includeExpired === true)).toBe(
+      true
+    )
+    expect(
+      services.staleConfidenceCalls.every((call) => call.includeExpired === true)
+    ).toBe(true)
+    expect(
+      services.memoriesSearchCalls.every((call) => call.includeExpired === true)
+    ).toBe(true)
   })
 
   it("forwards a caller-supplied knowledgeFactLimit into the server-side query", async () => {

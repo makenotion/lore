@@ -21,6 +21,7 @@ import type {
   MemoryKind,
   MemorySource,
   MemoryStatus,
+  MemoryScopeInput,
   TaskSummary,
 } from "../../../types.js"
 import type { ToolResult } from "./types.js"
@@ -42,6 +43,24 @@ const AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT = 50
 
 /** Max candidates to surface in the response. */
 const NEAR_DUPLICATE_SURFACE_LIMIT = 3
+
+function mergeExpiresAtAlias(
+  scope: MemoryScopeInput | undefined,
+  expiresAt: string | undefined
+): MemoryScopeInput | undefined {
+  if (expiresAt === undefined) return scope
+  if (scope?.expiresAt !== undefined && scope.expiresAt !== expiresAt) {
+    throw new Error("expiresAt conflicts with scope.expiresAt.")
+  }
+  if (scope?.lifetime !== undefined && scope.lifetime !== "expires") {
+    throw new Error("expiresAt requires scope.lifetime to be omitted or 'expires'.")
+  }
+  return {
+    ...(scope ?? {}),
+    lifetime: "expires",
+    expiresAt,
+  }
+}
 
 function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
   const lines: string[] = []
@@ -185,6 +204,8 @@ export interface SaveArgs {
   agent?: string
   session?: string
   topicKey?: string
+  expiresAt?: string
+  expiresOn?: string
   scope?: import("../../../types.js").MemoryScopeInput
 }
 
@@ -220,11 +241,18 @@ export async function handleSave(
     // `kind`) would silently land in an upsert chain on a
     // `note`-defaulted memory.
     const resolvedKind = (args.kind as MemoryKind | undefined) ?? "note"
-    if (args.topicKey && (resolvedKind === "note" || resolvedKind === "task")) {
+    if (
+      args.topicKey &&
+      (resolvedKind === "note" ||
+        resolvedKind === "operational" ||
+        resolvedKind === "task")
+    ) {
       const reason =
         resolvedKind === "note"
           ? "notes are the catch-all default"
-          : "tasks are lifecycle records owned by lore-task"
+          : resolvedKind === "operational"
+            ? "operational memories are short-lived process state"
+            : "tasks are lifecycle records owned by lore-task"
 
       throw new Error(
         `topicKey is not valid on kind: '${resolvedKind}'. Topic keys group ` +
@@ -256,6 +284,8 @@ export async function handleSave(
           "Use lore-procedure action='propose' instead."
       )
     }
+
+    const scope = mergeExpiresAtAlias(args.scope, args.expiresAt)
 
     const resolved = await resolveProjectIds(
       services,
@@ -448,6 +478,7 @@ export async function handleSave(
             topicId,
             tags: args.tags,
             keywords: args.keywords,
+            expiresOn: args.expiresOn,
             synopsis: args.synopsis,
             author: resolvedAuthor,
             agent: args.agent,
@@ -457,7 +488,7 @@ export async function handleSave(
             // Scope / lifetime — fresh-create branch lands the scope
             // verbatim; append-revision branch silently preserves the
             // existing row's scope.
-            scope: args.scope,
+            scope,
           })
           .then((result) => ({
             ...result,
@@ -477,6 +508,7 @@ export async function handleSave(
           decidedAt: args.decidedAt,
           tags: args.tags,
           keywords: args.keywords,
+          expiresOn: args.expiresOn,
           synopsis: args.synopsis,
           author: resolvedAuthor,
           agent: args.agent,
@@ -484,7 +516,7 @@ export async function handleSave(
           // Scope / lifetime. The Zod schema accepts the
           // `MemoryScopeInput` shape verbatim; pass through as-is so the
           // service layer translates it onto the Notion column writes.
-          scope: args.scope,
+          scope,
           autosaveLearningDedupScope,
           autosaveLearningScopeId: services.context.vault?.pageId ?? services.configRoot,
           prepareFreshCreate,

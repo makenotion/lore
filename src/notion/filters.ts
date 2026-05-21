@@ -157,7 +157,8 @@ function scopeKeyForKind(
 export function defaultScopeInclusionFilter(
   ctx: MemoryScopeContext,
   today: string,
-  props: ScopeFilterProps = MEMORY_SCOPE_PROPS
+  props: ScopeFilterProps = MEMORY_SCOPE_PROPS,
+  opts: { includeExpired?: boolean } = {}
 ): Record<string, unknown> {
   const scopeKindOr: Array<Record<string, unknown>> = [
     { property: props.scopeKind, select: { is_empty: true } },
@@ -181,17 +182,16 @@ export function defaultScopeInclusionFilter(
     })
   }
 
-  return {
-    and: [
-      { or: scopeKindOr },
-      {
-        or: [
-          { property: props.expiresAt, date: { is_empty: true } },
-          { property: props.expiresAt, date: { on_or_after: today } },
-        ],
-      },
-    ],
+  const clauses: Array<Record<string, unknown>> = [{ or: scopeKindOr }]
+  if (opts.includeExpired !== true) {
+    clauses.push({
+      or: [
+        { property: props.expiresAt, date: { is_empty: true } },
+        { property: props.expiresAt, date: { on_or_after: today } },
+      ],
+    })
   }
+  return { and: clauses }
 }
 
 /**
@@ -223,9 +223,10 @@ export function withDefaultScopeFilter(
   filter: Record<string, unknown> | undefined,
   ctx: MemoryScopeContext,
   today: string,
-  props: ScopeFilterProps = MEMORY_SCOPE_PROPS
+  props: ScopeFilterProps = MEMORY_SCOPE_PROPS,
+  opts: { includeExpired?: boolean } = {}
 ): Record<string, unknown> | undefined {
-  const scopeFilter = defaultScopeInclusionFilter(ctx, today, props)
+  const scopeFilter = defaultScopeInclusionFilter(ctx, today, props, opts)
   const scopeClauses = (scopeFilter["and"] as Array<Record<string, unknown>>) ?? []
   if (filter === undefined) {
     return scopeFilter

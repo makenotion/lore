@@ -80,6 +80,7 @@ export interface WakeUpServices {
       includeContent?: boolean
       includeUnscoped?: boolean
       includeProposed?: boolean
+      includeExpired?: boolean
       sortBy?: "created_time" | "last_edited_time"
       direction?: "ascending" | "descending"
     }): Promise<{ items: Memory[]; nextCursor?: string }>
@@ -88,6 +89,7 @@ export interface WakeUpServices {
       projectId?: string
       limit?: number
       includeContent?: boolean
+      includeExpired?: boolean
       mode?: "contains" | "semantic" | "hybrid"
     }): Promise<Memory[]>
     /**
@@ -104,6 +106,7 @@ export interface WakeUpServices {
       projectId?: string
       limit: number
       today: string
+      includeExpired?: boolean
     }): Promise<Memory[]>
     /**
      * True proposed-memory inbox depth. Required on the
@@ -132,6 +135,7 @@ export interface WakeUpServices {
       includeContent?: boolean
       audienceFilter?: boolean
       includeOutOfScope?: boolean
+      includeExpired?: boolean
     }): Promise<Memory[]>
     /** Active-pinned-block count (issue #282). Backs the abuse-
      *  warning surfaced by the wake-up renderer when the total
@@ -231,6 +235,12 @@ export interface WakeUpOptions {
    * is always fetched with content since it IS the content.
    */
   includeMemoryContent?: boolean
+  /**
+   * Include memories whose `Expires At` is before `todayDate` while still
+   * enforcing narrow-scope kind/key matching. Defaults to false so expired
+   * operational rows stay out of normal session priming.
+   */
+  includeExpired?: boolean
   /**
    * When false, skip the proposed + overdue decision queries. The hook
    * wake-up path renders no decision sections, so it has no reason to
@@ -536,6 +546,7 @@ async function runWakeUpFanOut(
   const taskLimit = taskOnly ? 0 : (opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT)
   const taskMemoryLimit = opts.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
+  const includeExpired = opts.includeExpired === true
   const includeDecisions = taskOnly ? false : (opts.includeDecisions ?? true)
   const includeStaleConfidence = taskOnly ? false : (opts.includeStaleConfidence ?? true)
   const includeProposedMemories = taskOnly
@@ -611,6 +622,7 @@ async function runWakeUpFanOut(
         projectId,
         limit: STALE_CONFIDENCE_LIMIT,
         today: todayDate,
+        includeExpired,
       })
     : Promise.resolve([] as Memory[])
 
@@ -655,6 +667,7 @@ async function runWakeUpFanOut(
           today: todayDate,
           readerContext: opts.pinnedReaderContext,
           includeContent: false,
+          includeExpired,
         })
       : Promise.resolve([] as Memory[])
   // Total active pinned-block count for the abuse-warning gate.
@@ -693,6 +706,7 @@ async function runWakeUpFanOut(
         includeContent: false,
         sortBy: "created_time",
         direction: "ascending",
+        includeExpired,
       })
     : Promise.resolve({ items: [] as Memory[] })
   const proposedMemoriesTotalQuery = includeProposedSection
@@ -739,6 +753,7 @@ async function runWakeUpFanOut(
           projectId,
           limit: memoryLimit + 1,
           includeContent,
+          includeExpired,
         })
       : // Both memory limits are zero — render no memories regardless of
         // whether a digest exists. Skip the Notion query rather than
@@ -758,6 +773,7 @@ async function runWakeUpFanOut(
           sortBy: "created_time",
           // The wake-up renderer prints the stored digest body verbatim.
           includeContent: true,
+          includeExpired,
         })
       : Promise.resolve({ items: [] as Memory[] }),
     projectId && knowledgeLimit > 0
@@ -788,6 +804,7 @@ async function runWakeUpFanOut(
           projectId,
           limit: taskFetchLimit,
           includeContent,
+          includeExpired,
         })
       : Promise.resolve([] as Memory[]),
     staleConfidenceQuery,
@@ -849,6 +866,7 @@ async function runWakeUpFanOut(
         limit: fetchLimit,
         includeContent,
         mode: "semantic",
+        includeExpired,
       })
       relatedMemories = candidates
         .filter((m) => !alreadySurfaced.has(m.id))

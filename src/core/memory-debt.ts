@@ -54,6 +54,7 @@ export type DebtCategory =
   | "low_trust"
   | "orphan_fact"
   | "ownerless"
+  | "operational_cleanup"
   | "duplicate_cluster"
   | "topic_sprawl"
   | "overdue_governance"
@@ -89,11 +90,19 @@ export const DEBT_CATEGORIES: DebtCategory[] = [
   "low_trust",
   "orphan_fact",
   "ownerless",
+  "operational_cleanup",
   "duplicate_cluster",
   "topic_sprawl",
   "overdue_governance",
   "scope_anomaly",
 ]
+
+export type PullRequestState = "open" | "closed" | "merged" | "unknown"
+
+export interface PullRequestRef {
+  repo: string
+  number: number
+}
 
 /**
  * Map a numeric debt score to its priority bucket. Single source of
@@ -201,6 +210,13 @@ export interface DebtStats {
    * `perCategoryLimit` before walking every memory in scope.
    */
   ownerlessScanCapped: boolean
+  operationalMemories: number
+  /**
+   * `true` when the operational-memory probe stopped at
+   * `perCategoryLimit` before walking every non-expired operational
+   * memory in scope.
+   */
+  operationalScanCapped: boolean
   duplicateClusterPairs: number
   similarTopicGroups: number
   /**
@@ -270,6 +286,12 @@ export interface ScanDebtOpts {
    * snapshot would need to redact the timestamp on every run.
    */
   scannedAt?: string
+  /**
+   * Optional external resolver for `expiresOn: pr-closed:<repo>#<n>`.
+   * The core scanner stays read-only and dependency-free; the CLI
+   * wires this to `gh pr view` when available.
+   */
+  resolvePullRequestState?: (ref: PullRequestRef) => Promise<PullRequestState>
 }
 
 const DEFAULT_LIMIT = 200
@@ -285,6 +307,7 @@ const DEFAULT_PER_CATEGORY_LIMIT = 200
 const SEVERITY_WEIGHT: Record<DebtCategory, number> = {
   orphan_fact: 55,
   overdue_governance: 35,
+  operational_cleanup: 35,
   scope_anomaly: 25,
   duplicate_cluster: 25,
   low_trust: 20,
@@ -322,6 +345,8 @@ export async function scanDebt(
     staleTasksScanCapped: false,
     ownerlessMemories: 0,
     ownerlessScanCapped: false,
+    operationalMemories: 0,
+    operationalScanCapped: false,
     duplicateClusterPairs: 0,
     similarTopicGroups: 0,
     // Default to `0` (probe not run, no anomalies observed) rather
@@ -480,7 +505,69 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 4. Duplicate and near-duplicate clusters
+  // 4. Operational memories whose cleanup trigger has fired
+  //    Operational rows are legitimate short-lived state. They
+  //    become debt when their event-bound cleanup trigger is closed,
+  //    or when the writer marked them operational without any end-of-
+  //    life hint. Default memory reads already exclude rows whose
+  //    `expiresAt` date has passed; this probe adds a defensive
+  //    client-side skip so stale fixtures and legacy services cannot
+  //    double-report already-expired rows.
+  // ---------------------------------------------------------------
+  if (wantCategory("operational_cleanup")) {
+    let operationalCount = 0
+    let operationalInspected = 0
+    let operationalCursor: string | undefined = undefined
+    let operationalCapped = false
+    let firstOperationalPage = true
+    while (firstOperationalPage || operationalCursor !== undefined) {
+      firstOperationalPage = false
+      if (operationalInspected >= perCategoryLimit) {
+        operationalCapped = true
+        break
+      }
+      const remaining = perCategoryLimit - operationalInspected
+      const page: {
+        items: MemoryWithoutContent[]
+        nextCursor?: string
+        capped: boolean
+      } = await services.memories.list({
+        ...(opts.projectId ? { projectId: opts.projectId } : {}),
+        kind: "operational",
+        limit: Math.min(100, remaining),
+        includeContent: false,
+        includeOutOfScope: true,
+        ...(operationalCursor !== undefined ? { startCursor: operationalCursor } : {}),
+      })
+      for (const memory of page.items) {
+        if (operationalInspected >= perCategoryLimit) {
+          operationalCapped = true
+          break
+        }
+        operationalInspected++
+        if (memoryExpiresBeforeToday(memory, today)) continue
+        const reason = await operationalCleanupReason(
+          services,
+          memory,
+          opts.resolvePullRequestState
+        )
+        if (reason === null) continue
+        operationalCount++
+        items.push(buildOperationalCleanupItem(memory, today, reason))
+      }
+      if (operationalCapped) break
+      operationalCursor = page.nextCursor
+      if (operationalCursor !== undefined && operationalInspected >= perCategoryLimit) {
+        operationalCapped = true
+        break
+      }
+    }
+    stats.operationalMemories = operationalCount
+    stats.operationalScanCapped = operationalCapped
+  }
+
+  // ---------------------------------------------------------------
+  // 5. Duplicate and near-duplicate clusters
   //    Two complementary signals: trigram pair candidates from
   //    findConflictCandidates (lexical overlap, no LLM); plus topic-key
   //    revision chains via the revisionCount column. The conflict
@@ -539,7 +626,7 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 5. Topic and entity sprawl
+  // 6. Topic and entity sprawl
   //    findSimilarTopicGroups returns normalized-equivalent topic
   //    groups (stored names differ but normalize to the same key).
   //    Each group surfaces as one debt item; the suggested action is
@@ -564,7 +651,7 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 6. Scope and lifetime anomalies
+  // 7. Scope and lifetime anomalies
   //    expiringScopedStats already aggregates expired / expiringSoon /
   //    narrow-scope-out-of-context counters. We synthesize one debt
   //    item per non-zero counter (not per-row, because the counters
@@ -625,7 +712,7 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 7. Ownerless / unclassifiable memories
+  // 8. Ownerless / unclassifiable memories
   //    We list memories scoped to the project (or vault-wide); flag
   //    rows whose Topic is null in a project with topics. The signal
   //    is intentionally narrow in phase 1: empty Topic where peers
@@ -737,6 +824,7 @@ function emptyByCategory(): Record<DebtCategory, number> {
     low_trust: 0,
     orphan_fact: 0,
     ownerless: 0,
+    operational_cleanup: 0,
     duplicate_cluster: 0,
     topic_sprawl: 0,
     overdue_governance: 0,
@@ -943,6 +1031,112 @@ function buildStaleTaskItem(task: TaskSummary, staleDays: number): DebtItem {
     suggestedActions: ["close_task", "cancel", "escalate_blocker"],
     safeToAutoFix: false,
     projects: task.projectIds.length > 0 ? task.projectIds : undefined,
+  }
+}
+
+type OperationalCleanupReason =
+  | { kind: "missing_expiry" }
+  | { kind: "task_closed"; taskId: string; taskTitle: string; taskState: string }
+  | { kind: "pr_closed"; repo: string; number: number; state: "closed" | "merged" }
+
+type OperationalExpiryEvent =
+  | { kind: "task"; taskId: string }
+  | { kind: "pr"; repo: string; number: number }
+
+function parseOperationalExpiryEvent(
+  raw: string | undefined
+): OperationalExpiryEvent | null {
+  const value = raw?.trim()
+  if (!value) return null
+  const taskMatch = /^task-closed:([0-9a-fA-F-]{32,36})$/.exec(value)
+  if (taskMatch) {
+    return { kind: "task", taskId: taskMatch[1]! }
+  }
+  const prMatch =
+    /^pr-closed:([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?)#([1-9][0-9]*)$/.exec(value)
+  if (prMatch) {
+    return { kind: "pr", repo: prMatch[1]!, number: Number(prMatch[2]!) }
+  }
+  return null
+}
+
+async function operationalCleanupReason(
+  services: LoreServices,
+  memory: MemoryWithoutContent,
+  resolvePullRequestState:
+    | ((ref: PullRequestRef) => Promise<PullRequestState>)
+    | undefined
+): Promise<OperationalCleanupReason | null> {
+  const event = parseOperationalExpiryEvent(memory.expiresOn)
+  if (event === null) {
+    if (memory.scope?.expiresAt) return null
+    return { kind: "missing_expiry" }
+  }
+  if (event.kind === "task") {
+    let task: TaskSummary
+    try {
+      task = await services.tasks.getById(event.taskId)
+    } catch {
+      return null
+    }
+    if (task.taskState !== "done" && task.taskState !== "cancelled") return null
+    return {
+      kind: "task_closed",
+      taskId: event.taskId,
+      taskTitle: task.title,
+      taskState: task.taskState,
+    }
+  }
+  if (resolvePullRequestState === undefined) return null
+  const state = await resolvePullRequestState({
+    repo: event.repo,
+    number: event.number,
+  })
+  if (state !== "closed" && state !== "merged") return null
+  return { kind: "pr_closed", repo: event.repo, number: event.number, state }
+}
+
+function buildOperationalCleanupItem(
+  memory: MemoryWithoutContent,
+  today: string,
+  reason: OperationalCleanupReason
+): DebtItem {
+  const reasons: string[] = [`Kind is operational`]
+  const suggestedActions = ["set_memory_expiry", "archive_memory"]
+  let triggerWeight = 0
+  if (reason.kind === "missing_expiry") {
+    reasons.push("No Expires At date or Expires On event is set")
+    suggestedActions.unshift("add_expires_at_or_expires_on")
+  } else if (reason.kind === "task_closed") {
+    reasons.push(
+      `Expires On task ${reason.taskId} is ${reason.taskState}: "${reason.taskTitle}"`
+    )
+    triggerWeight = 20
+  } else {
+    reasons.push(`Expires On PR ${reason.repo}#${reason.number} is ${reason.state}`)
+    triggerWeight = reason.state === "merged" ? 25 : 20
+  }
+  const ageDays = daysBetween(memory.createdAt, today)
+  if (ageDays !== null) {
+    reasons.push(`Created ${ageDays}d ago`)
+  }
+  const blended =
+    SEVERITY_WEIGHT.operational_cleanup +
+    triggerWeight +
+    retrievalRiskFromMemory(memory, today) +
+    (ageDays !== null ? Math.min(15, Math.floor(ageDays / 7)) : 0)
+  return {
+    id: `operational_cleanup::${memory.id}`,
+    priority: priorityForScore(blended),
+    category: "operational_cleanup",
+    entityType: "memory",
+    entityId: memory.id,
+    title: `Operational memory needs cleanup: ${memory.title}`,
+    score: Math.round(blended),
+    reasons,
+    suggestedActions,
+    safeToAutoFix: false,
+    projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
   }
 }
 
@@ -1161,6 +1355,15 @@ function daysBetween(iso: string | null | undefined, today: string): number | nu
   const b = new Date(today).getTime()
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null
   return Math.max(0, Math.floor((b - a) / MS_PER_DAY))
+}
+
+function memoryExpiresBeforeToday(
+  memory: Pick<MemoryWithoutContent, "scope">,
+  today: string
+): boolean {
+  const expiresAt = memory.scope?.expiresAt
+  if (!expiresAt) return false
+  return expiresAt < today
 }
 
 /**

@@ -303,6 +303,7 @@ describe("computeWakeUpCacheKey", () => {
       "includeDecisions",
       "includeStaleConfidence",
       "includeProposedMemories",
+      "includeExpired",
       "includeCoverage",
       // Issue #286 — toggling `includeInheritedMemories` swings
       // the upstream fan-out on/off; without including it a

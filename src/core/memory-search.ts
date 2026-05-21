@@ -736,7 +736,9 @@ export class MemorySearch {
     const scopedFilter =
       input.includeOutOfScope === true || !this.scopeFilterEnabled
         ? baseFilter
-        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc())
+        : withDefaultScopeFilter(baseFilter, this.scopeCtx, todayUtc(), undefined, {
+            includeExpired: input.includeExpired === true,
+          })
     const filter = withCleanupOrphanExclusion(scopedFilter)
 
     if (limit <= 0) return { pages: [], capped: false }
@@ -749,7 +751,15 @@ export class MemorySearch {
       input.includeOutOfScope === true || !this.scopeFilterEnabled
         ? undefined
         : (page: PageObjectResponse) =>
-            matchesDefaultScope(page.properties, this.scopeCtx, containsToday)
+            matchesDefaultScope(
+              page.properties,
+              this.scopeCtx,
+              containsToday,
+              undefined,
+              {
+                includeExpired: input.includeExpired === true,
+              }
+            )
 
     const result = await collectLivePages({
       limit,
@@ -1428,7 +1438,9 @@ export class MemorySearch {
     if (input.includeOutOfScope !== true && this.scopeFilterEnabled) {
       const today = todayUtc()
       filtered = filtered.filter((page) =>
-        matchesDefaultScope(page.properties, this.scopeCtx, today)
+        matchesDefaultScope(page.properties, this.scopeCtx, today, undefined, {
+          includeExpired: input.includeExpired === true,
+        })
       )
     }
 

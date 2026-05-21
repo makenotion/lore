@@ -23,6 +23,7 @@ export interface RecallArgs {
   startCursor?: string
   includeContent?: boolean
   includeSynopsis?: boolean
+  includeExpired?: boolean
 }
 
 export async function handleRecall(
@@ -60,6 +61,7 @@ export async function handleRecall(
       limit: args.limit ?? 10,
       includeContent: withContent,
       startCursor: args.startCursor,
+      includeExpired: args.includeExpired,
     })
 
     if (memories.length === 0) {
@@ -125,6 +127,7 @@ export interface SearchArgs {
   limit?: number
   includeContent?: boolean
   includeSynopsis?: boolean
+  includeExpired?: boolean
   mode?: SearchMode
   explain?: boolean
   intent?: string
@@ -173,6 +176,7 @@ export async function handleSearch(
           ? Math.min((args.limit ?? 10) * 2, 50)
           : (args.limit ?? 10),
       includeContent: withContent,
+      includeExpired: args.includeExpired,
       mode: resolvedMode,
       intent: args.intent,
     }

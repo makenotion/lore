@@ -277,8 +277,12 @@ export class MemoryService {
       () => this.scopeFilterEnabled,
       (pages, includeContent) => this.materializeMemories(pages, includeContent)
     )
-    this.confidence = new MemoryConfidence(client, db, (page, content) =>
-      this.pageToMemory(page, content)
+    this.confidence = new MemoryConfidence(
+      client,
+      db,
+      (page, content) => this.pageToMemory(page, content),
+      () => this.scopeCtx,
+      () => this.scopeFilterEnabled
     )
     this.topicKey = new MemoryTopicKey(
       client,
@@ -1235,6 +1239,7 @@ export class MemoryService {
     limit: number
     today: string
     includeProposed?: boolean
+    includeExpired?: boolean
   }): Promise<Memory[]> {
     return this.confidence.queryStaleConfidence(opts)
   }
@@ -1247,6 +1252,7 @@ export class MemoryService {
     includeContent?: boolean
     audienceFilter?: boolean
     includeOutOfScope?: boolean
+    includeExpired?: boolean
   }): Promise<Memory[]> {
     return this.pinned.listPinnedBlocks(opts)
   }

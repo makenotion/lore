@@ -477,25 +477,48 @@ describe("lore-query action='ask' — touch-on-read wiring (issue 0.8.0/05)", ()
 })
 
 describe("lore-query KINDS enum accepts every memory kind", () => {
-  // The recall/search KINDS enum must accept every kind the write
-  // path produces. Without `procedure` in the enum, agents cannot
-  // filter retrieval by that kind through the read-path tool — the
-  // surface procedures are supposed to feed.
+  // The recall/search KINDS enum must accept every kind the write path
+  // produces. Otherwise agents can create a kind they cannot later
+  // filter through the read-path tool.
 
-  it("recall accepts kind: 'procedure' at the dispatch boundary", () => {
+  it.each(["procedure", "operational"] as const)(
+    "recall accepts kind: '%s' at the dispatch boundary",
+    (kind) => {
+      const result = queryDispatchSchema.safeParse({
+        action: "recall",
+        kind,
+        limit: 5,
+      })
+      expect(result.success).toBe(true)
+    }
+  )
+
+  it.each(["procedure", "operational"] as const)(
+    "search accepts kind: '%s' at the dispatch boundary",
+    (kind) => {
+      const result = queryDispatchSchema.safeParse({
+        action: "search",
+        query: "PR-1234",
+        kind,
+      })
+      expect(result.success).toBe(true)
+    }
+  )
+
+  it("recall accepts includeExpired for expiry audits", () => {
     const result = queryDispatchSchema.safeParse({
       action: "recall",
-      kind: "procedure",
+      includeExpired: true,
       limit: 5,
     })
     expect(result.success).toBe(true)
   })
 
-  it("search accepts kind: 'procedure' at the dispatch boundary", () => {
+  it("search accepts includeExpired for expiry audits", () => {
     const result = queryDispatchSchema.safeParse({
       action: "search",
       query: "PR-1234",
-      kind: "procedure",
+      includeExpired: true,
     })
     expect(result.success).toBe(true)
   })
