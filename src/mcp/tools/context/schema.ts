@@ -8,6 +8,7 @@ export const contextDispatchSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("status") }),
   z.object({
     action: z.literal("wake-up"),
+    mode: z.enum(["full", "task-only"]).optional(),
     projectName: z.string().optional(),
     expand: z.boolean().optional(),
     limit: z.number().int().min(1).max(50).optional(),
@@ -38,6 +39,12 @@ export const contextInputSchema = {
     .optional()
     .describe("(action='wake-up' or 'digest') Override the auto-detected project."),
   // wake-up
+  mode: z
+    .enum(["full", "task-only"])
+    .optional()
+    .describe(
+      "(action='wake-up') Retrieval shape. 'full' (default) renders the normal session-start bundle; 'task-only' renders only userQuery-ranked memories plus minimal framing/debug metadata."
+    ),
   expand: z
     .boolean()
     .optional()

@@ -256,11 +256,11 @@ export interface BenchSandbox {
    * answers from pre-retrieved context, no MCP tool calls required.
    * Mirrors how Lore's wake-up hook works at session start.
    *
-   * Production impl calls `loadWakeUpData({ projectId, userQuery,
-   * includeMemoryContent: true })` against the just-seeded sub-project
-   * and renders the relevance-ranked top memories with bodies. Returns
-   * an empty string when no relevant memories surface (the agent will
-   * abstain honestly).
+   * Production impl calls `loadWakeUpData({ mode: "task-only",
+   * projectId, userQuery, includeMemoryContent: true })` against the
+   * just-seeded sub-project and renders the relevance-ranked top memories
+   * with bodies. Returns an empty string when no relevant memories surface
+   * (the agent will abstain honestly).
    */
   getWakeUpForQuery(input: { projectId: string; userQuery: string }): Promise<string>
   /** Archive (not delete) a project — used in the cleanup teardown. */

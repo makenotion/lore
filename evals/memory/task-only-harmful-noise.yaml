@@ -1,0 +1,29 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Full wake-up recents contain unrelated context that task-only retrieval should suppress.
+memories:
+  - id: note/sprint-catering
+    title: Sprint catering menu
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - operations
+    keywords: catering lunch snacks office
+    synopsis: The team lunch order moved to the office catering vendor.
+    content: |
+      This row is intentionally newest, so full wake-up's recents section would surface it.
+      It is unrelated to the requested code path.
+  - id: decision/payment-retry-backoff
+    title: Payment retry backoff decision
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - payments
+      - reliability
+    keywords: payment retry backoff validator exponential
+    synopsis: Payment retry code must use capped exponential backoff.
+    content: |
+      Payment retry paths should use capped exponential backoff in the validator.
+      Do not add a fixed-interval retry loop.

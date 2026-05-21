@@ -51,7 +51,11 @@ import {
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
   NOTION_PAGE_SIZE,
 } from "./wakeup-constants.js"
-import { computeWakeUpCoverage, type WakeUpCoverageMetrics } from "./wakeup-coverage.js"
+import {
+  computeWakeUpCoverage,
+  type WakeUpCoverageMetrics,
+  type WakeUpRetrievalMode,
+} from "./wakeup-coverage.js"
 import {
   loadInheritedMemorySections,
   type InheritedMemorySection,
@@ -179,6 +183,12 @@ export interface WakeUpServices {
 }
 
 export interface WakeUpOptions {
+  /**
+   * `full` renders session-start context. `task-only` runs only the
+   * user-query relevance search and suppresses broad wake-up sections
+   * such as digest, recents, facts, task inventory, and triage lists.
+   */
+  mode?: WakeUpRetrievalMode
   projectId?: string
   /** Max non-digest memories when no fresh digest exists. */
   memoryLimit?: number
@@ -510,18 +520,27 @@ async function runWakeUpFanOut(
   todayDate: string
 ): Promise<WakeUpData> {
   const projectId = opts.projectId
-  const memoryLimit = opts.memoryLimit ?? DEFAULT_WAKEUP_MEMORY_LIMIT
-  const memoryLimitWithDigest =
-    opts.memoryLimitWithDigest ?? DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST
+  const wakeUpMode = opts.mode ?? "full"
+  const taskOnly = wakeUpMode === "task-only"
+  const memoryLimit = taskOnly ? 0 : (opts.memoryLimit ?? DEFAULT_WAKEUP_MEMORY_LIMIT)
+  const memoryLimitWithDigest = taskOnly
+    ? 0
+    : (opts.memoryLimitWithDigest ?? DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST)
   const freshnessDays = opts.digestFreshnessDays ?? DEFAULT_DIGEST_FRESHNESS_DAYS
-  const knowledgeLimit = opts.knowledgeFactLimit ?? DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT
-  const relatedLimit = opts.relatedMemoryLimit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
-  const taskLimit = opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
+  const knowledgeLimit = taskOnly
+    ? 0
+    : (opts.knowledgeFactLimit ?? DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
+  const relatedLimit = taskOnly
+    ? 0
+    : (opts.relatedMemoryLimit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT)
+  const taskLimit = taskOnly ? 0 : (opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT)
   const taskMemoryLimit = opts.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
-  const includeDecisions = opts.includeDecisions ?? true
-  const includeStaleConfidence = opts.includeStaleConfidence ?? true
-  const includeProposedMemories = opts.includeProposedMemories ?? true
+  const includeDecisions = taskOnly ? false : (opts.includeDecisions ?? true)
+  const includeStaleConfidence = taskOnly ? false : (opts.includeStaleConfidence ?? true)
+  const includeProposedMemories = taskOnly
+    ? false
+    : (opts.includeProposedMemories ?? true)
   const proposedMemoryLimit =
     opts.proposedMemoryLimit ?? DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT
   const userQuery = sanitizeUserQuery(opts.userQuery)
@@ -626,7 +645,7 @@ async function runWakeUpFanOut(
   // undefined`) still fires the query — `listPinnedBlocks` returns
   // every pinned row regardless of project scope when no project
   // id is supplied.
-  const includePinnedBlocks = opts.includePinnedBlocks ?? true
+  const includePinnedBlocks = taskOnly ? false : (opts.includePinnedBlocks ?? true)
   const pinnedBlockLimit = opts.pinnedBlockLimit ?? DEFAULT_PINNED_BLOCK_LIMIT
   const pinnedBlocksQuery =
     includePinnedBlocks && pinnedBlockLimit > 0
@@ -645,6 +664,7 @@ async function runWakeUpFanOut(
     includePinnedBlocks && pinnedBlockLimit > 0
       ? services.memories.countPinnedBlocks()
       : Promise.resolve(null as number | null)
+  const shouldProbeDigest = Boolean(projectId && (!taskOnly || opts.includeCoverage))
 
   const includeProposedSection = includeProposedMemories && proposedMemoryLimit > 0
   const proposedMemoriesQuery = includeProposedSection
@@ -727,7 +747,7 @@ async function runWakeUpFanOut(
         // candidate arms so every limit-bearing query in the fan-out
         // shares the same `0 = skip` discipline.
         Promise.resolve({ items: [] as Memory[] }),
-    projectId
+    shouldProbeDigest
       ? // Sort by creation so freshness (`createdAt`) aligns with "latest":
         // an edit to an older digest must not mask a newer one.
         services.memories.list({
@@ -780,7 +800,8 @@ async function runWakeUpFanOut(
   const overdueDecisions = overdueDecisionWindow.items
 
   const latestDigest = latestDigestList[0] ?? null
-  const digest = isFreshDigest(latestDigest, freshnessDays, now) ? latestDigest : null
+  const latestDigestIsFresh = isFreshDigest(latestDigest, freshnessDays, now)
+  const digest = !taskOnly && latestDigestIsFresh ? latestDigest : null
 
   const digestCreatedAt = digest ? new Date(digest.createdAt).getTime() : null
   const nonDigestMemories = rawMemories.filter((m) => {
@@ -870,6 +891,7 @@ async function runWakeUpFanOut(
 
   const coverage = opts.includeCoverage
     ? computeWakeUpCoverage({
+        wakeUpMode,
         userQuery,
         now,
         rankedSearchAttempted,
@@ -895,7 +917,9 @@ async function runWakeUpFanOut(
   // Bounded per-upstream cap keeps the prompt-noise multiplier in
   // check; the fan-out posture (failure isolation, redaction at
   // capture) is documented inside `loadInheritedMemorySections`.
-  const includeInheritedMemories = opts.includeInheritedMemories ?? true
+  const includeInheritedMemories = taskOnly
+    ? false
+    : (opts.includeInheritedMemories ?? true)
   const inheritedMemoryLimit =
     opts.inheritedMemoryLimit ?? DEFAULT_WAKEUP_INHERITED_MEMORY_LIMIT
   const inheritedMemories: InheritedMemorySection[] =

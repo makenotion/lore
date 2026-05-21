@@ -313,6 +313,22 @@ const ZEROED_SECTION_OPTIONS: Partial<WakeUpOptions> = {
  */
 const RELATED_TASK_SEED_LIMIT = 5
 
+function extractTaskOnlyMemoryIds(data: WakeUpData): string[] {
+  const ids: string[] = []
+  if (data.digest) ids.push(data.digest.id)
+  for (const memory of data.taskMemories) ids.push(memory.id)
+  for (const memory of data.memories) ids.push(memory.id)
+  for (const memory of data.relatedMemories) ids.push(memory.id)
+  for (const memory of data.proposedMemories) ids.push(memory.id)
+  for (const memory of data.staleConfidence) ids.push(memory.id)
+  for (const memory of data.pinnedBlocks) ids.push(memory.id)
+  for (const section of data.inheritedMemories) {
+    if (section.error !== null) continue
+    for (const memory of section.memories) ids.push(memory.id)
+  }
+  return Array.from(new Set(ids))
+}
+
 const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
   "wake-up.taskMemories": {
     configureOptions: (limit, prompt) => ({
@@ -321,6 +337,14 @@ const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
       taskMemoryLimit: limit,
     }),
     extract: (data, _limit) => data.taskMemories.map((m) => m.id),
+  },
+  "wake-up.taskOnly": {
+    configureOptions: (limit, prompt) => ({
+      mode: "task-only",
+      userQuery: prompt,
+      taskMemoryLimit: limit,
+    }),
+    extract: (data, _limit) => extractTaskOnlyMemoryIds(data),
   },
   "wake-up.memories": {
     configureOptions: (limit) => ({

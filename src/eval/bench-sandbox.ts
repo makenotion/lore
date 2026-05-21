@@ -12,6 +12,7 @@ import { initServices } from "../services.js"
 import { resolveFeatureFlags } from "../feature-flags.js"
 import { resolveProjectByName } from "../core/project-scope.js"
 import { emitAutoMentions } from "../core/auto-mentions.js"
+import { loadWakeUpData } from "../core/wakeup.js"
 import type { BenchSandbox } from "./bench-runner.js"
 
 /**
@@ -89,23 +90,20 @@ export async function buildBenchSandbox(): Promise<BenchSandbox> {
       }
     },
     async getWakeUpForQuery(input) {
-      // The `wake-up-prefetch` retrieval strategy fans out one
-      // relevance-ranked search seeded by the bench question — the
-      // same primitive Lore's `lore-context action='wake-up'`
-      // `taskMemories` section uses internally. For a one-shot
-      // bench question the digest / recent-memories / active-tasks
-      // sections of full wake-up are noise (none map to the
-      // specific question), so the bench renders ONLY the
-      // query-relevance slice. `includeContent: true` pulls bodies
-      // so the agent can answer without an MCP `expand` round-trip
-      // it can't make under `codex exec`.
-      const memories = await services.memories.search({
-        query: input.userQuery,
+      // The `wake-up-prefetch` retrieval strategy uses the same
+      // narrow task-only wake-up shape exposed by MCP: one
+      // relevance-ranked search seeded by the bench question, with
+      // digest / recents / active task inventory suppressed. That
+      // keeps LongMemEval measuring retrieval of the right memory
+      // instead of unrelated session-start context injection.
+      const wakeUp = await loadWakeUpData(services, {
+        mode: "task-only",
         projectId: input.projectId,
-        limit: WAKE_UP_PREFETCH_LIMIT,
-        includeContent: true,
-        mode: "hybrid",
+        userQuery: input.userQuery,
+        taskMemoryLimit: WAKE_UP_PREFETCH_LIMIT,
+        includeMemoryContent: true,
       })
+      const memories = wakeUp.taskMemories
       if (memories.length === 0) return ""
       const blocks = memories.map((memory, index) => {
         const body = (memory.content ?? "").slice(0, WAKE_UP_PREFETCH_BODY_CAP)

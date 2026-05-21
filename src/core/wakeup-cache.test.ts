@@ -260,6 +260,16 @@ describe("computeWakeUpCacheKey", () => {
     )
   })
 
+  it("varies on task-only mode while treating explicit full as the default", () => {
+    const base = { projectId: "p", userQuery: "fix bug" } satisfies WakeUpOptions
+    expect(computeWakeUpCacheKey({ ...base, mode: "full" })).toBe(
+      computeWakeUpCacheKey(base)
+    )
+    expect(computeWakeUpCacheKey({ ...base, mode: "task-only" })).not.toBe(
+      computeWakeUpCacheKey(base)
+    )
+  })
+
   it("varies on every option that affects the fan-out output", () => {
     const base: WakeUpOptions = { projectId: "p" }
     const fields: Array<keyof WakeUpOptions> = [

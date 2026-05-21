@@ -439,6 +439,7 @@ export async function handleWakeUp(
     userQuery?: string
     taskMemoryLimit?: number
     debug?: boolean
+    mode?: "full" | "task-only"
   }
 ): Promise<ToolResult> {
   try {
@@ -452,6 +453,8 @@ export async function handleWakeUp(
       isCatchAllFallback: resolvedCatchAllFallback,
     } = await resolveReadProjectScope(services, args.projectName)
     const warnings: string[] = []
+    const wakeUpMode = args.mode ?? "full"
+    const taskOnly = wakeUpMode === "task-only"
 
     const includeContent = args.expand === true
     // When `userQuery` is set, the MCP surface uses the shell hook's
@@ -537,6 +540,7 @@ export async function handleWakeUp(
       inheritedMemories,
     } = await loadWakeUpData(services, {
       projectId: projectId ?? undefined,
+      mode: wakeUpMode,
       memoryLimit: recentOverfetch,
       memoryLimitWithDigest: recentOverfetch,
       relatedMemoryLimit: relatedOverfetch,
@@ -560,15 +564,15 @@ export async function handleWakeUp(
 
     const sections: string[] = []
     const renderedCoverageCounts: WakeUpSectionCounts = {
-      digest: digest ? 1 : 0,
+      digest: !taskOnly && digest ? 1 : 0,
       currentTaskMemories: 0,
       recentMemories: 0,
       relatedMemories: 0,
       tasks: 0,
-      knowledgeFacts: knowledgeFacts.length,
-      decisions: proposedDecisions.length + overdueDecisions.length,
-      proposedDecisions: proposedDecisions.length,
-      overdueDecisions: overdueDecisions.length,
+      knowledgeFacts: taskOnly ? 0 : knowledgeFacts.length,
+      decisions: taskOnly ? 0 : proposedDecisions.length + overdueDecisions.length,
+      proposedDecisions: taskOnly ? 0 : proposedDecisions.length,
+      overdueDecisions: taskOnly ? 0 : overdueDecisions.length,
       // True inbox depth, NOT the rendered slice. Operators reading
       // `lore-context action='wake-up' debug=true` need to see the
       // same number that lands in the section heading and the
@@ -576,8 +580,8 @@ export async function handleWakeUp(
       // with a 20-row cap reports `sections.proposedMemories=25`,
       // not 20. The rendered slice is a triage budget; coverage is
       // a depth signal.
-      proposedMemories: proposedMemoriesTotal,
-      staleConfidence: staleConfidence.length,
+      proposedMemories: taskOnly ? 0 : proposedMemoriesTotal,
+      staleConfidence: taskOnly ? 0 : staleConfidence.length,
     }
 
     const projectContext = composeProjectContext(
@@ -623,7 +627,7 @@ export async function handleWakeUp(
     // even when the matching slice is empty.
     const abuseWarningActive =
       pinnedBlocksTotal !== null && pinnedBlocksTotal > PINNED_BLOCKS_ABUSE_THRESHOLD
-    if (pinnedBlocks.length > 0 || abuseWarningActive) {
+    if (!taskOnly && (pinnedBlocks.length > 0 || abuseWarningActive)) {
       const headerCount =
         pinnedBlocksTotal !== null && pinnedBlocksTotal > pinnedBlocks.length
           ? `${pinnedBlocks.length} of ${pinnedBlocksTotal}`
@@ -673,7 +677,7 @@ export async function handleWakeUp(
       }
     }
 
-    if (digest) {
+    if (!taskOnly && digest) {
       // The digest section bypasses `formatMemoryListItem` and therefore
       // does NOT render a trust indicator. Intentional: the digest
       // is a synthesis surface (one bold-title row + a body paragraph),
@@ -704,11 +708,11 @@ export async function handleWakeUp(
     // agent actually sees, not what the data layer fetched.
     const surfacedIds = new Set<string>()
     const inputMemoriesById = new Map<string, Memory>()
-    if (digest) inputMemoriesById.set(digest.id, digest)
+    if (!taskOnly && digest) inputMemoriesById.set(digest.id, digest)
     for (const m of memories) inputMemoriesById.set(m.id, m)
     for (const m of relatedMemories) inputMemoriesById.set(m.id, m)
     for (const m of taskMemories) inputMemoriesById.set(m.id, m)
-    if (digest) surfacedIds.add(digest.id)
+    if (!taskOnly && digest) surfacedIds.add(digest.id)
     const recordSurfaced = (group: CollapsedMemoryGroup): void => {
       surfacedIds.add(group.keep.id)
       for (const id of group.collapsedIds) surfacedIds.add(id)
@@ -724,7 +728,9 @@ export async function handleWakeUp(
     if (taskMemories.length > 0) {
       sections.push("## For Your Current Task\n")
       sections.push(
-        "*Memories ranked by relevance to your `userQuery`. Deduped against the digest, Recent Memories, and Related sections so the same page never renders twice.*\n"
+        taskOnly
+          ? "*Memories ranked by relevance to your `userQuery`.*\n"
+          : "*Memories ranked by relevance to your `userQuery`. Deduped against the digest, Recent Memories, and Related sections so the same page never renders twice.*\n"
       )
       const groups = collapseOverlappingMemories(taskMemories).slice(0, taskCap)
       renderedCoverageCounts.currentTaskMemories = groups.length
@@ -734,7 +740,7 @@ export async function handleWakeUp(
       }
     }
 
-    if (memories.length > 0) {
+    if (!taskOnly && memories.length > 0) {
       const heading = digest
         ? "## Recent Memories (since digest)\n"
         : "## Recent Memories\n"
@@ -758,8 +764,10 @@ export async function handleWakeUp(
           sections.push(...renderMemoryEntry(mem, group, includeContent, 4))
         }
       }
-    } else if (!digest) {
+    } else if (!taskOnly && !digest) {
       sections.push("No memories found for this context.\n")
+    } else if (taskOnly && taskMemories.length === 0) {
+      sections.push("No task-relevant memories found for this context.\n")
     }
 
     // Stale Confidence subsection. Triage view for memories whose
@@ -779,7 +787,7 @@ export async function handleWakeUp(
     // action='invalidate'`, `lore-decision action='supersede'` — the
     // touch / decrement happens through the appropriate read-/write-
     // path wrapper and is the right time for the score to move.
-    if (staleConfidence.length > 0) {
+    if (!taskOnly && staleConfidence.length > 0) {
       // Heading explicitly names BOTH OR-branch criteria so the agent
       // can disambiguate which branch fired per row. A high-stored-
       // score row in this section was surfaced via the neglect-only
@@ -813,7 +821,7 @@ export async function handleWakeUp(
     // approves / rejects via the inbox review flow; reading them via
     // `lore-memory action='expand'` routes through the normal touch
     // path at the right moment.
-    if (proposedMemories.length > 0) {
+    if (!taskOnly && proposedMemories.length > 0) {
       // Heading uses the true count (`proposedMemoriesTotal`), not
       // the rendered slice — operators with deeper inboxes need to
       // see depth even when only `proposedMemoryLimit` rows fit in
@@ -853,7 +861,7 @@ export async function handleWakeUp(
       }
     }
 
-    if (relatedMemories.length > 0) {
+    if (!taskOnly && relatedMemories.length > 0) {
       sections.push("## Related to Active Tasks\n")
       sections.push(
         "*Memories surfaced by a relevance query seeded from your active task entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n"
@@ -867,9 +875,10 @@ export async function handleWakeUp(
     }
 
     if (
-      proposedDecisions.length > 0 ||
-      overdueDecisions.length > 0 ||
-      overdueDecisionsCapped
+      !taskOnly &&
+      (proposedDecisions.length > 0 ||
+        overdueDecisions.length > 0 ||
+        overdueDecisionsCapped)
     ) {
       sections.push("## Decisions Requiring Attention\n")
       // Trust indicator. Bullet-shaped surface,
@@ -917,9 +926,11 @@ export async function handleWakeUp(
       }
     }
 
-    const factTitleMap = await resolveReferencedTitles(knowledgeFacts, services)
+    const factTitleMap = taskOnly
+      ? new Map<string, string>()
+      : await resolveReferencedTitles(knowledgeFacts, services)
 
-    if (tasks.length > 0) {
+    if (!taskOnly && tasks.length > 0) {
       // Mutually-exclusive bucketing: Overdue > Stale > Active. An
       // overdue task is by definition not stale (overdue is the
       // stronger urgency signal); a stale task is by definition not
@@ -1038,7 +1049,7 @@ export async function handleWakeUp(
       }
     }
 
-    if (knowledgeFacts.length > 0) {
+    if (!taskOnly && knowledgeFacts.length > 0) {
       sections.push("## Active Facts\n")
       for (const fact of knowledgeFacts) {
         sections.push(
@@ -1117,7 +1128,8 @@ export async function handleWakeUp(
     // surface on the public `WakeUpData` shape). The renderer
     // passes the field through verbatim; double-redaction would be
     // a no-op but the single capture-side pass is the contract.
-    for (const section of inheritedMemories) {
+    const inheritedSectionsToRender = taskOnly ? [] : inheritedMemories
+    for (const section of inheritedSectionsToRender) {
       const safeLabel = sanitizeUpstreamLabel(section.label)
       sections.push(`## Inherited from ${safeLabel}\n`)
       if (section.error !== null) {
@@ -1156,16 +1168,20 @@ export async function handleWakeUp(
         sectionCounts: renderedCoverageCounts,
       }
       const coverageCaps: WakeUpCoverageCaps = {
-        memoryLimit: recentCap,
-        relatedMemoryLimit: relatedCap,
-        knowledgeFactLimit,
+        ...(taskOnly
+          ? {}
+          : {
+              memoryLimit: recentCap,
+              relatedMemoryLimit: relatedCap,
+              knowledgeFactLimit,
+            }),
         taskMemoryLimit: taskCap,
       }
       sections.push("", "## Wake-Up Coverage\n")
       sections.push(`\`${formatWakeUpCoverage(renderedCoverage, coverageCaps)}\`\n`)
     }
 
-    const inheritedMemoryRows = inheritedMemories.reduce(
+    const inheritedMemoryRows = inheritedSectionsToRender.reduce(
       (sum, section) => sum + (section.error === null ? section.memories.length : 0),
       0
     )
@@ -1174,9 +1190,9 @@ export async function handleWakeUp(
       renderedCoverageCounts.currentTaskMemories +
       renderedCoverageCounts.recentMemories +
       renderedCoverageCounts.relatedMemories +
-      proposedMemories.length +
+      (taskOnly ? 0 : proposedMemories.length) +
       renderedCoverageCounts.staleConfidence +
-      pinnedBlocks.length +
+      (taskOnly ? 0 : pinnedBlocks.length) +
       inheritedMemoryRows
 
     const response: ToolResult = {
@@ -1223,7 +1239,11 @@ export async function handleWakeUp(
     // Score` + `Last Referenced At` keeps the fact-side dynamics in
     // step with the memory-side wiring above. The facts are already
     // in-memory from `loadWakeUpData`, so no extra round-trip.
-    await fireFactTouchOnRead(services.facts, knowledgeFacts, "lore-context (wake-up)")
+    await fireFactTouchOnRead(
+      services.facts,
+      taskOnly ? [] : knowledgeFacts,
+      "lore-context (wake-up)"
+    )
 
     return response
   } catch (err) {

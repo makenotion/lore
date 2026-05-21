@@ -29,15 +29,13 @@ export const HELP_RECIPES = [
     summary:
       "Prime a session with the memories, facts, tasks, and decisions most likely to matter now.",
     whenToUse:
-      "Use this after /clear, after reconnecting, or after the user pivots topics. Pass userQuery with the current task so Lore can rank task-relevant memories above the normal recent-memory list.",
+      "Use this after /clear, after reconnecting, or after the user pivots topics. Pass userQuery with the current task so Lore can rank task-relevant memories above the normal recent-memory list; add mode='task-only' for narrow one-shot retrieval.",
     example: {
       action: "wake-up",
       projectName: "Lore",
+      mode: "task-only",
       userQuery: "Implement MCP help resources for polymorphic tool actions",
       expand: false,
-      limit: 8,
-      knowledgeFactLimit: 15,
-      taskLimit: 10,
       debug: true,
     },
     cautions: [

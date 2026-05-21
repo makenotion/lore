@@ -105,9 +105,10 @@ or `$TMPDIR/lore-hook-state/`.
 
 Set `LORE_DEBUG=1` to inspect wake-up coverage counters on stderr. The log line
 does not include query text, memory titles, facts, or page bodies; it reports
-only the retrieval mode, ranked caps, digest freshness, and per-section counts.
-Use `mode=ranked|default|error` to verify whether the user-query ranker
-actually ran, `reason=already-ranked-for-session` to identify Codex debounce
+only the retrieval mode, wake-up shape, ranked caps, digest freshness, and
+per-section counts. Use `mode=ranked|default|error` and
+`shape=full|task-only` to verify whether the user-query ranker actually ran,
+`reason=already-ranked-for-session` to identify Codex debounce
 cache hits, `reason=load-failed` to count failed wake-up loads, `digestFresh` /
 `digestAgeDays` to judge whether the digest is carrying the session, and
 `sections.*` counts to spot when wake-up is too noisy or too thin. Operators

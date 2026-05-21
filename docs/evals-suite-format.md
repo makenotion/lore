@@ -43,7 +43,8 @@ exercises only the surface under test.
 
 | Surface                          | Driver                                                                                                                                        |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wake-up.taskMemories` (default) | The task's `prompt` becomes `userQuery`; relevance search ranks fixture memories.                                                             |
+| `wake-up.taskMemories` (default) | The task's `prompt` becomes `userQuery`; relevance search ranks fixture memories within the full wake-up data shape.                          |
+| `wake-up.taskOnly`               | The task's `prompt` becomes `userQuery`; only query-ranked memories are loaded, so digest / recents / facts / task inventory noise is absent. |
 | `wake-up.memories`               | Recents -- fixture `memories` array order is the recency order.                                                                               |
 | `wake-up.relatedMemories`        | Active tasks in the fixture's top-level `tasks: [...]` block seed entity-based search. The `entity` field on each task drives the seed query. |
 | `wake-up.staleConfidence`        | Fixture memories with `isStaleConfidence: true` populate the surface.                                                                         |

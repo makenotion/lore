@@ -3,11 +3,11 @@
   "suite": "lore-core",
   "runner": "retrieval",
   "capturedAt": "2026-05-03T12:00:00.000Z",
-  "notes": "Phase 3 baseline — 21 tasks, recents limit:1, related limit:5 with shouldNotSurface",
+  "notes": "Task-only wake-up baseline — 22 tasks, task-only harmful-noise coverage",
   "summary": {
-    "tasks": 21,
-    "totalResults": 69,
-    "passedResults": 69,
+    "tasks": 22,
+    "totalResults": 72,
+    "passedResults": 72,
     "failedResults": 0,
     "retrieval": {
       "averageRecall": 1,
@@ -541,6 +541,30 @@
       "taskId": "surfaces-recent-policy-update",
       "scenario": "no-lore",
       "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "task-only-avoids-harmful-wakeup-noise",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskOnly",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "task-only-avoids-harmful-wakeup-noise",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskOnly",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "task-only-avoids-harmful-wakeup-noise",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskOnly",
       "success": true,
       "recall": null,
       "precision": null

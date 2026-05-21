@@ -10,11 +10,15 @@ historical timeline.
 
 ## `lore-context` — vault context
 
-| Action    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`  | Show vault status, active profile, topology health when configured, database counts, active project, task summary, proposed-memory inbox count, wake-up coverage counters, configured projects, and background hook failure markers                                                                                                                                                                                                                                 |
-| `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, memories related to active tasks, and inherited upstream memories per configured `upstreamVaults` entry (issue #286 — sparse and labeled per upstream, bounded per `inheritedMemoryLimit` default 3; failed upstreams render as `> upstream unavailable: <message>` without suppressing surviving sections; see [`topology-inheritance.md`](topology-inheritance.md)) |
-| `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                                                                                                                                                                                                                                                                                                                                                             |
+| Action    | Description                                                                                                                                                                                                                                                                                                                            |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`  | Show vault status, active profile, topology health when configured, database counts, active project, task summary, proposed-memory inbox count, wake-up coverage counters, configured projects, and background hook failure markers                                                                                                    |
+| `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, memories related to active tasks, and inherited upstream memories per configured `upstreamVaults` entry. `mode: "task-only"` suppresses broad sections and renders only `userQuery`-ranked memories plus minimal framing/debug metadata. |
+| `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                                                                                                                                                                                                                                |
+
+Full wake-up inherited upstream sections remain sparse and labeled per
+configured upstream, with failures rendered inline without suppressing
+surviving sections; see [`topology-inheritance.md`](topology-inheritance.md).
 
 `lore-context action='status'` includes a `Background hooks` JSON block. The
 object is shaped for agents to inspect directly:
@@ -52,10 +56,17 @@ Pass `userQuery` to `wake-up` when rerunning context after `/clear`, a resume,
 or a topic pivot; the response adds a **For Your Current Task** section ranked
 against that prompt.
 
+Pass `mode: "task-only"` with `userQuery` for narrow one-shot retrieval. That
+shape renders project framing plus query-ranked memories and suppresses digest,
+recents, active task inventory, broad facts, governance triage, pinned, and
+inherited sections.
+
 Pass `debug: true` to `wake-up` when investigating why a context load is too
 thin or too noisy. The response appends privacy-conscious coverage counters
-for mode, caps, section counts, and digest age; it does not include titles,
-facts, memory bodies, or the raw `userQuery`.
+for ranked/default mode, full/task-only shape, caps, section counts, and digest
+age; it does not include titles, facts, memory bodies, or the raw `userQuery`.
+In task-only debug output, digest freshness may be probed for observability even
+though the digest section stays suppressed.
 
 The active profile controls write-time tag validation, entity kind options,
 and writable fact predicates. Tag read filters remain permissive so agents can

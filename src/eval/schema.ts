@@ -51,6 +51,7 @@ export const REQUIRED_ABLATION_SCENARIOS = [
 
 export const EVAL_SURFACES = [
   "wake-up.taskMemories",
+  "wake-up.taskOnly",
   "wake-up.memories",
   "wake-up.relatedMemories",
   "wake-up.staleConfidence",
@@ -84,8 +85,8 @@ const evalTaskSchema = z
       .string()
       .min(1)
       .describe(
-        "Prompt for the task. Consumed as `userQuery` only on the " +
-          "wake-up.taskMemories surface. Decorative on memories, " +
+        "Prompt for the task. Consumed as `userQuery` on the " +
+          "wake-up.taskMemories and wake-up.taskOnly surfaces. Decorative on memories, " +
           "relatedMemories, and staleConfidence surfaces, which route " +
           "through queries that ignore the prompt. See docs/evals-suite-format.md " +
           '("Wake-up surfaces") for the per-surface contract.'
@@ -269,9 +270,9 @@ export type BenchIngestionStrategy = (typeof BENCH_INGESTION_STRATEGIES)[number]
  *   Claude Code headless adapter restores tool-driven retrieval.
  *
  * - `wake-up-prefetch`: the bench-runner calls `loadWakeUpData` with
- *   `userQuery=<question>` BEFORE invoking the agent. The
- *   relevance-ranked top memories (bodies included) are rendered as
- *   a system-prompt addendum the agent reads inline. No MCP tools
+ *   `mode="task-only"` and `userQuery=<question>` BEFORE invoking the
+ *   agent. The relevance-ranked top memories (bodies included) are
+ *   rendered as a system-prompt addendum the agent reads inline. No MCP tools
  *   required — the agent just answers from the injected context.
  *   Maps to how Lore's wake-up hook actually works at session start:
  *   the hook calls `lore-context action='wake-up' userQuery=<task>`

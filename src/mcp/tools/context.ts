@@ -19,7 +19,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
         "- `action: 'status'` — vault page id, topology health when configured, database counts, active project, configured projects, background hook failures, a task summary line (active / overdue / stale / in-progress / blocked, plus a closure-rate line on vaults with the `Done At` column), and a proposed-memory inbox count line when proposed learnings exist (excludes proposed-state decisions, which surface via `lore-decision` instead).\n" +
-        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question. Pass `debug: true` to append privacy-conscious coverage counters.\n" +
+        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session pivot to rank pages for the current question. Use `mode: 'task-only'` for narrow retrieval. Pass `debug: true` for coverage counters.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: contextInputSchema,
       annotations: { readOnlyHint: true },

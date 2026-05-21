@@ -116,8 +116,8 @@ logs do not overwhelm Notion query budget or relevance.
 
 `LORE_DEBUG=1` emits one stderr line per wake-up attempt in the
 `[lore] <subsystem>: key=value` shape. The line is content-free: no query text,
-memory titles, fact text, or page bodies. It reports only mode, caps, digest
-freshness, and counts.
+memory titles, fact text, or page bodies. It reports only ranked/default mode,
+full/task-only shape, caps, digest freshness, and counts.
 
 Successful loads include section counts. Cache hits and load failures use the
 same formatter with zero counts so operators can aggregate outcomes without
@@ -125,28 +125,28 @@ stitching together separate log schemas. The examples below are wrapped for
 readability; the hook emits each event as one line.
 
 ```text
-[lore] wakeup: mode=ranked ranked=true queryLen=42 memory=3 related=0
+[lore] wakeup: mode=ranked shape=full ranked=true queryLen=42 memory=3 related=0
 knowledge=10 taskMemories=3 digestAvailable=true digestFresh=true
 digestAgeDays=1 sections.digest=1 sections.currentTask=3 sections.recent=3
 sections.related=0 sections.tasks=0 sections.facts=10 sections.decisions=0
 sections.proposedDecisions=0 sections.overdueDecisions=0
 sections.proposedMemories=0 sections.staleConfidence=0
 
-[lore] wakeup: mode=default ranked=false reason=no-ranked-search
+[lore] wakeup: mode=default shape=full ranked=false reason=no-ranked-search
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
 sections.currentTask=0 sections.recent=10 sections.related=0 sections.tasks=0
 sections.facts=25 sections.decisions=0 sections.proposedDecisions=0
 sections.overdueDecisions=0 sections.proposedMemories=0
 sections.staleConfidence=0
 
-[lore] wakeup: mode=default ranked=false reason=already-ranked-for-session
+[lore] wakeup: mode=default shape=full ranked=false reason=already-ranked-for-session
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
 sections.currentTask=0 sections.recent=0 sections.related=0 sections.tasks=0
 sections.facts=0 sections.decisions=0 sections.proposedDecisions=0
 sections.overdueDecisions=0 sections.proposedMemories=0
 sections.staleConfidence=0
 
-[lore] wakeup: mode=error ranked=false reason=load-failed digestAvailable=false
+[lore] wakeup: mode=error shape=full ranked=false reason=load-failed digestAvailable=false
 digestFresh=false digestAgeDays=none sections.digest=0 sections.currentTask=0
 sections.recent=0 sections.related=0 sections.tasks=0 sections.facts=0
 sections.decisions=0 sections.proposedDecisions=0 sections.overdueDecisions=0

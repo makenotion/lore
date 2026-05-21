@@ -20,8 +20,8 @@ caps:
   perSuiteWrites: 250000
 notes: |
   Wake-up-prefetch retrieval variant: the bench-runner calls
-  `loadWakeUpData`-style relevance search seeded by the user's
-  question BEFORE invoking the agent, and injects the top-10
+  `loadWakeUpData` with `mode: "task-only"` and a relevance search
+  seeded by the user's question BEFORE invoking the agent, and injects the top-10
   matching memory bodies into the agent's prompt as a "Retrieved
   context" block. The agent answers from the injected context — no
   MCP tool calls required.

@@ -166,7 +166,7 @@ export interface BenchArtifactConfig {
     /**
      * Which retrieval surface the agent had at run time. `tool-driven`
      * exposes MCP tools; `wake-up-prefetch` injects a pre-fetched
-     * relevance bundle into the prompt and does not require MCP.
+     * task-only relevance bundle into the prompt and does not require MCP.
      * See `BENCH_AGENT_RETRIEVAL_STRATEGIES` in `eval/schema.ts`.
      */
     retrieval: string

@@ -430,6 +430,7 @@ function passingResult(
   scenario: string,
   surface:
     | "wake-up.taskMemories"
+    | "wake-up.taskOnly"
     | "wake-up.memories"
     | "wake-up.relatedMemories"
     | "wake-up.staleConfidence"
@@ -458,6 +459,7 @@ function failingResult(
   scenario: string,
   surface:
     | "wake-up.taskMemories"
+    | "wake-up.taskOnly"
     | "wake-up.memories"
     | "wake-up.relatedMemories"
     | "wake-up.staleConfidence"

@@ -163,6 +163,23 @@ tasks:
         shouldNotSurface:
           - note/dashboard-color-palette
 
+  - id: task-only-avoids-harmful-wakeup-noise
+    prompt: |
+      Implement payment retry backoff in the validator without using fixed-interval retries.
+    surface: wake-up.taskOnly
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/task-only-harmful-noise.yaml
+    retrieval:
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payment-retry-backoff
+        shouldNotSurface:
+          - note/sprint-catering
+
   # ── wake-up.memories (recents) surface ────────────────────────────────────
 
   - id: surfaces-recent-architecture-decision

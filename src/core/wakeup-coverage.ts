@@ -3,6 +3,7 @@ import { DEFAULT_DIGEST_FRESHNESS_DAYS } from "./wakeup-constants.js"
 import { digestAgeDays, isFreshDigest, sanitizeUserQuery } from "./wakeup-utils.js"
 
 export type WakeUpCoverageMode = "ranked" | "default" | "error"
+export type WakeUpRetrievalMode = "full" | "task-only"
 export type WakeUpCoverageReason =
   | "no-ranked-search"
   | "already-ranked-for-session"
@@ -25,7 +26,7 @@ export interface WakeUpSectionCounts {
 export interface WakeUpDigestCoverage {
   /** Whether a latest digest row existed, regardless of freshness. */
   available: boolean
-  /** Whether that digest was fresh enough to render in wake-up. */
+  /** Whether that digest was fresh enough by age for full wake-up. */
   fresh: boolean
   /** Age of the latest digest in whole days, or null when absent/future-dated. */
   ageDays: number | null
@@ -33,6 +34,8 @@ export interface WakeUpDigestCoverage {
 
 export interface WakeUpCoverageMetrics {
   mode: WakeUpCoverageMode
+  /** Full session-start context or narrow current-task-only retrieval. */
+  wakeUpMode: WakeUpRetrievalMode
   /** Why ranked retrieval did not produce a normal ranked coverage line. */
   reason?: WakeUpCoverageReason
   /** Length of the sanitized user query. Zero when ranked search did not run. */
@@ -50,6 +53,7 @@ export interface WakeUpCoverageOverrides extends Omit<
 }
 
 export interface WakeUpCoverageInput {
+  wakeUpMode?: WakeUpRetrievalMode
   userQuery?: string
   now?: number
   /** True only when the user-query relevance search actually ran. */
@@ -108,10 +112,12 @@ function emptyWakeUpSectionCounts(): WakeUpSectionCounts {
 
 export function emptyWakeUpCoverageMetrics(
   mode: Exclude<WakeUpCoverageMode, "ranked">,
-  reason: WakeUpCoverageReason
+  reason: WakeUpCoverageReason,
+  wakeUpMode: WakeUpRetrievalMode = "full"
 ): WakeUpCoverageMetrics {
   return {
     mode,
+    wakeUpMode,
     reason,
     queryLength: 0,
     digest: { available: false, fresh: false, ageDays: null },
@@ -124,6 +130,7 @@ export function buildEmptyWakeUpCoverage(
 ): WakeUpCoverageMetrics {
   return {
     mode: overrides.mode ?? "default",
+    wakeUpMode: overrides.wakeUpMode ?? "full",
     reason: overrides.reason,
     queryLength: overrides.queryLength ?? 0,
     digest: {
@@ -152,6 +159,8 @@ export function buildEmptyWakeUpCoverage(
 export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverageMetrics {
   const userQuery = sanitizeUserQuery(input.userQuery)
   const ranked = Boolean(userQuery && input.rankedSearchAttempted)
+  const wakeUpMode = input.wakeUpMode ?? "full"
+  const taskOnly = wakeUpMode === "task-only"
   const proposedDecisionCount = input.proposedDecisions.length
   const overdueDecisionCount = input.overdueDecisions.length
   const taskSectionCount = input.renderedTaskCount ?? input.tasks.length
@@ -164,6 +173,7 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
 
   return {
     mode: ranked ? "ranked" : "default",
+    wakeUpMode,
     reason: ranked ? undefined : "no-ranked-search",
     queryLength: ranked ? (userQuery?.length ?? 0) : 0,
     digest: {
@@ -172,7 +182,7 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       ageDays: digestAgeDays(input.latestDigest, now),
     },
     sectionCounts: {
-      digest: digestFresh ? 1 : 0,
+      digest: !taskOnly && digestFresh ? 1 : 0,
       currentTaskMemories: input.taskMemories.length,
       recentMemories: input.memories.length,
       relatedMemories: input.relatedMemories.length,
@@ -204,6 +214,7 @@ export function formatWakeUpCoverage(
   const parts = [
     "[lore] wakeup:",
     `mode=${coverage.mode}`,
+    `shape=${coverage.wakeUpMode}`,
     `ranked=${coverage.mode === "ranked"}`,
   ]
 

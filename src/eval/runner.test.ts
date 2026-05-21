@@ -21,10 +21,10 @@ describe("runEvalSuite", () => {
 
     expect(writtenPath).toBe(outPath)
     expect(artifact.summary).toMatchObject({
-      tasks: 21,
+      tasks: 22,
       trials: 1,
-      totalResults: 69,
-      passedResults: 69,
+      totalResults: 72,
+      passedResults: 72,
       failedResults: 0,
     })
     expect(artifact.summary.scenarios).toEqual([
@@ -41,6 +41,7 @@ describe("runEvalSuite", () => {
         "wake-up.relatedMemories",
         "wake-up.staleConfidence",
         "wake-up.taskMemories",
+        "wake-up.taskOnly",
       ],
       requestedTrials: 1,
       executedTrials: 1,
@@ -688,6 +689,56 @@ tasks:
     await expect(runEvalSuite(suitePath, { runner: "notion" })).rejects.toThrow(
       "notionServices"
     )
+  })
+
+  it("extracts task-only surfaced ids without full wake-up recents", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+description: Full wake-up recents include unrelated noise, task-only retrieval should not.
+memories:
+  - id: note/sprint-catering
+    title: Sprint catering menu
+    synopsis: Unrelated recent team logistics.
+    keywords: catering lunch snacks
+  - id: decision/payment-retry-backoff
+    title: Payment retry backoff decision
+    synopsis: Payment retry code must use exponential backoff.
+    keywords: payment retry backoff validator
+`,
+      },
+      suite: `version: 1
+name: task-only-suite
+runner: retrieval
+tasks:
+  - id: task-only-avoids-recents-noise
+    prompt: Implement payment retry backoff in the validator.
+    surface: wake-up.taskOnly
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payment-retry-backoff
+        shouldNotSurface:
+          - note/sprint-catering
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.taskOnly"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/payment-retry-backoff"],
+      retrieval: { surface: "wake-up.taskOnly" },
+    })
   })
 
   it("extracts surfaced ids from the wake-up.staleConfidence surface", async () => {

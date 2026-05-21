@@ -317,6 +317,7 @@ export class WakeUpCache {
  * `todayDate` still see distinct keys across day boundaries.
  */
 const KEY_OPTION_FIELDS = [
+  "mode",
   "projectId",
   "userQuery",
   "memoryLimit",
@@ -386,6 +387,10 @@ export function computeWakeUpCacheKey(opts: WakeUpOptions): string {
   const normalized: Record<string, unknown> = {}
   for (const field of KEY_OPTION_FIELDS) {
     const value = opts[field]
+    if (field === "mode") {
+      if (value === "task-only") normalized[field] = value
+      continue
+    }
     if (field === "userQuery" && typeof value === "string") {
       const trimmed = value.trim().toLowerCase()
       if (trimmed.length > 0) normalized[field] = trimmed

@@ -1351,6 +1351,72 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     const matches = text.match(/Both recent and relevant/g) ?? []
     expect(matches.length).toBe(1)
   })
+
+  it("task-only mode renders only current-task context and debug metadata", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      digest: makeMemory("digest", {
+        title: "Broad digest",
+        source: "digest",
+        createdAt: new Date().toISOString(),
+      }),
+      memories: [makeMemory("recent-noise", { title: "Recent unrelated memory" })],
+      taskQuery: "fix payment retry",
+      taskMemories: [makeMemory("task-hit", { title: "Payment retry decision" })],
+      facts: [makeFact({ id: "fact-1", subject: "Payments", predicate: "uses" })],
+      tasks: [makeTask({ id: "task-1", title: "Open payment task" })],
+      relatedMemories: [makeMemory("related-noise", { title: "Active task related" })],
+      staleConfidence: [makeMemory("stale-1", { title: "Stale confidence row" })],
+      proposedMemories: [makeMemory("proposal-1", { title: "Proposed row" })],
+      proposedDecisions: [
+        makeDecisionSummary({ id: "decision-1", title: "Proposed decision" }),
+      ],
+      pinnedBlocks: [makeMemory("pin-1", { title: "Pinned block" })],
+      upstreamSections: [
+        {
+          label: "Upstream",
+          memories: [makeMemory("upstream-1", { title: "Inherited row" })],
+        },
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({
+      mode: "task-only",
+      userQuery: "fix payment retry",
+      debug: true,
+    } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Project: Widget")
+    expect(text).toContain("## For Your Current Task")
+    expect(text).toContain("Payment retry decision")
+    expect(text).toContain("## Wake-Up Coverage")
+    expect(text).toContain("mode=ranked")
+    expect(text).toContain("shape=task-only")
+    expect(text).toContain("digestAvailable=true")
+    expect(text).toContain("sections.digest=0")
+    expect(text).toContain("sections.currentTask=1")
+    expect(text).toContain("sections.recent=0")
+    expect(text).not.toContain("Latest Digest")
+    expect(text).not.toContain("Recent Memories")
+    expect(text).not.toContain("Related to Active Tasks")
+    expect(text).not.toContain("Active Facts")
+    expect(text).not.toContain("Tasks")
+    expect(text).not.toContain("Decisions Requiring Attention")
+    expect(text).not.toContain("Proposed Memories")
+    expect(text).not.toContain("Stale Confidence")
+    expect(text).not.toContain("Pinned Context")
+    expect(text).not.toContain("Inherited from")
+    expect(services._calls.memoriesList).toHaveBeenCalledTimes(1)
+    expect(services._calls.memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "digest" })
+    )
+    expect(services._calls.factsListRecent).not.toHaveBeenCalled()
+    expect(services._calls.queryStaleConfidence).not.toHaveBeenCalled()
+    expect(services._calls.memoriesSearch).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe("lore-wake-up — coverage counters (issue #361)", () => {

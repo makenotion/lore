@@ -202,17 +202,16 @@ The bench supports two retrieval surfaces, selected via the suite YAML's
   release or a Claude Code headless adapter restores tool-driven retrieval.
 - **`wake-up-prefetch`**
   ([`longmemeval-wake-up.yaml`](../evals/bench-suites/longmemeval-wake-up.yaml))
-  -- the bench-runner calls `services.memories.search(...)` with
-  `includeContent: true` and `mode: "hybrid"` BEFORE invoking the agent, then
-  injects the top-10 matching memory bodies into the user prompt as a
-  "Retrieved context" block. The agent answers from the injected context -- no
-  MCP tool calls required, which sidesteps the MCP-in-exec gap. Mirrors how
-  Lore's wake-up hook actually works at session start: the hook calls
-  `lore-context action='wake-up' userQuery=<task>` via the agent's MCP
-  integration and the response is pasted into the agent's context window. For a
+  -- the bench-runner calls `loadWakeUpData({ mode: "task-only",
+userQuery: <question>, includeMemoryContent: true })` BEFORE invoking the
+  agent, then injects the top-10 matching memory bodies into the user prompt as
+  a "Retrieved context" block. The agent answers from the injected context --
+  no MCP tool calls required, which sidesteps the MCP-in-exec gap. This uses
+  the same narrow wake-up shape as
+  `lore-context action='wake-up' mode='task-only' userQuery=<task>`: for a
   one-shot bench question the relevance-ranked taskMemories section is the
-  load-bearing part -- digest / recent / active-tasks sections of full wake-up
-  are noise for a single question.
+  load-bearing part, while digest / recent / active-tasks sections of full
+  wake-up are noise.
 
 The two strategies compose with `ingestion.strategy` independently:
 

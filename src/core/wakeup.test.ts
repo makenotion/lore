@@ -438,6 +438,7 @@ describe("wake-up coverage counters", () => {
     })
 
     expect(coverage.mode).toBe("ranked")
+    expect(coverage.wakeUpMode).toBe("full")
     expect(coverage.queryLength).toBe("Fix retrieval metrics".length)
     expect(coverage.digest).toEqual({ available: true, fresh: true, ageDays: 1 })
     expect(coverage.sectionCounts).toEqual({
@@ -579,6 +580,7 @@ describe("wake-up coverage counters", () => {
     )
 
     expect(line).toContain("mode=ranked")
+    expect(line).toContain("shape=full")
     expect(line).toContain("ranked=true")
     expect(line).toContain("queryLen=42")
     expect(line).toContain("memory=3")
@@ -597,6 +599,7 @@ describe("wake-up coverage counters", () => {
     )
 
     expect(cacheHit).toContain("mode=default")
+    expect(cacheHit).toContain("shape=full")
     expect(cacheHit).toContain("ranked=false")
     expect(cacheHit).toContain("reason=already-ranked-for-session")
     expect(cacheHit).toContain("sections.recent=0")
@@ -719,6 +722,7 @@ describe("loadWakeUpData", () => {
     expect(data.coverage).not.toBeNull()
     if (!data.coverage) throw new Error("Expected coverage counters")
     expect(data.coverage.mode).toBe("ranked")
+    expect(data.coverage.wakeUpMode).toBe("full")
     expect(data.coverage.digest).toEqual({
       available: true,
       fresh: true,
@@ -733,6 +737,98 @@ describe("loadWakeUpData", () => {
       knowledgeFacts: 1,
       decisions: 1,
     })
+  })
+
+  it("task-only mode fetches only query-ranked memories and suppresses full wake-up noise", async () => {
+    const noisyRecent = buildMemory({
+      id: "note/sprint-catering",
+      title: "Sprint catering menu",
+      createdAt: "2026-04-20T00:00:00Z",
+    })
+    const freshDigest = buildMemory({
+      id: "digest/payment",
+      title: "Payments digest",
+      source: "digest",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const relevant = buildMemory({
+      id: "decision/payment-retry-backoff",
+      title: "Payment retry backoff decision",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const fullServices = stubServices({
+      rawMemories: [noisyRecent],
+      facts: [buildFact({ id: "fact/payment-retry" })],
+      tasks: [buildTask({ id: "task/payment-retry", entity: "payment retry" })],
+      taskQuery: "payment retry backoff",
+      taskMemories: [relevant],
+    })
+
+    const full = await loadWakeUpData(fullServices, {
+      projectId: "p1",
+      userQuery: "payment retry backoff",
+      includeCoverage: true,
+      now: NOW,
+    })
+    expect(full.memories.map((memory) => memory.id)).toContain("note/sprint-catering")
+    expect(full.taskMemories.map((memory) => memory.id)).toContain(
+      "decision/payment-retry-backoff"
+    )
+    expect(full.coverage?.wakeUpMode).toBe("full")
+
+    const taskOnlyServices = stubServices({
+      rawMemories: [noisyRecent],
+      digestMemories: [freshDigest],
+      facts: [buildFact({ id: "fact/payment-retry" })],
+      tasks: [buildTask({ id: "task/payment-retry", entity: "payment retry" })],
+      taskQuery: "payment retry backoff",
+      taskMemories: [relevant],
+    })
+    const taskOnly = await loadWakeUpData(taskOnlyServices, {
+      mode: "task-only",
+      projectId: "p1",
+      userQuery: "payment retry backoff",
+      includeCoverage: true,
+      now: NOW,
+    })
+
+    expect(taskOnly.digest).toBeNull()
+    expect(taskOnly.memories).toEqual([])
+    expect(taskOnly.relatedMemories).toEqual([])
+    expect(taskOnly.knowledgeFacts).toEqual([])
+    expect(taskOnly.tasks).toEqual([])
+    expect(taskOnly.proposedDecisions).toEqual([])
+    expect(taskOnly.proposedMemories).toEqual([])
+    expect(taskOnly.staleConfidence).toEqual([])
+    expect(taskOnly.pinnedBlocks).toEqual([])
+    expect(taskOnly.inheritedMemories).toEqual([])
+    expect(taskOnly.taskMemories.map((memory) => memory.id)).toEqual([
+      "decision/payment-retry-backoff",
+    ])
+    expect(taskOnly.coverage?.wakeUpMode).toBe("task-only")
+    expect(taskOnly.coverage?.digest).toEqual({
+      available: true,
+      fresh: true,
+      ageDays: 1,
+    })
+    expect(taskOnly.coverage?.sectionCounts).toMatchObject({
+      digest: 0,
+      currentTaskMemories: 1,
+      recentMemories: 0,
+      relatedMemories: 0,
+      tasks: 0,
+      knowledgeFacts: 0,
+      decisions: 0,
+      proposedMemories: 0,
+      staleConfidence: 0,
+    })
+    expect(taskOnlyServices.memoriesCalls).toEqual([
+      expect.objectContaining({ source: "digest" }),
+    ])
+    expect(taskOnlyServices.factsListRecentCalls).toEqual([])
+    expect(taskOnlyServices.decisionsListCalls).toEqual([])
+    expect(taskOnlyServices.tasksListCalls).toEqual([])
+    expect(taskOnlyServices.staleConfidenceCalls).toEqual([])
   })
 
   it("reports rendered task coverage instead of the over-fetched task window", async () => {
