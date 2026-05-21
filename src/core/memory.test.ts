@@ -8916,9 +8916,11 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
       "branch",
       "confidenceFactor",
       "containsRank",
+      "effectiveConfidenceFactor",
       "memoryId",
       "rrfScore",
       "semanticRank",
+      "storedConfidenceFactor",
     ])
   })
 })

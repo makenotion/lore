@@ -5,6 +5,8 @@ import {
   confidenceFactor,
   decayConfidenceScore,
   decrementConfidenceScore,
+  effectiveConfidenceFactor,
+  effectiveConfidenceScore,
   seedConfidenceScore,
 } from "./decay.js"
 
@@ -186,5 +188,35 @@ describe("confidenceFactor", () => {
         process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
       }
     }
+  })
+})
+
+describe("effectiveConfidenceScore", () => {
+  const TODAY = "2026-04-29"
+
+  it("returns null for unscored rows", () => {
+    expect(effectiveConfidenceScore(null, "2025-10-31", TODAY)).toBeNull()
+  })
+
+  it("applies neglect decay without mutating the stored score", () => {
+    const stored = 0.9
+    const effective = effectiveConfidenceScore(stored, "2025-10-31", TODAY)
+
+    expect(stored).toBe(0.9)
+    expect(effective).toBeCloseTo(0.9 * Math.pow(0.99, 120), 6)
+  })
+})
+
+describe("effectiveConfidenceFactor", () => {
+  const TODAY = "2026-04-29"
+
+  it("uses the decayed effective score for ranking", () => {
+    const factor = effectiveConfidenceFactor(0.9, "2025-10-31", TODAY)
+
+    expect(factor).toBeCloseTo(0.5 + 0.5 * (0.9 * Math.pow(0.99, 120)), 6)
+  })
+
+  it("keeps null scores neutral", () => {
+    expect(effectiveConfidenceFactor(null, "2025-10-31", TODAY)).toBe(1.0)
   })
 })

@@ -5515,7 +5515,9 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
           semanticRank: null,
           rrfScore: null,
           branch: "contains-only",
-          confidenceFactor: 1.0,
+          confidenceFactor: 0.55,
+          storedConfidenceFactor: 0.95,
+          effectiveConfidenceFactor: 0.55,
         },
       ],
     })
@@ -5542,6 +5544,9 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     const traceIdx = text.indexOf("## Score trace")
     expect(synopsisIdx).toBeGreaterThan(-1)
     expect(traceIdx).toBeGreaterThan(synopsisIdx)
+    expect(text).toContain(
+      "confidenceFactor=0.550 storedConfidenceFactor=0.950 effectiveConfidenceFactor=0.550"
+    )
   })
 
   it("surfaces truncated contains-search windows even when no rows were returned", async () => {

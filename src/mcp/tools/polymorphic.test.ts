@@ -1018,7 +1018,7 @@ describe("lore-query polymorphic dispatcher", () => {
     const text = extractText(result)
     expect(text).toContain("## Score trace")
     expect(text).toContain(
-      "mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200 confidenceFactor=1.000"
+      "mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200 confidenceFactor=1.000 storedConfidenceFactor=1.000 effectiveConfidenceFactor=1.000"
     )
   })
 

@@ -34,11 +34,13 @@ function page(
     title?: string
     confidenceScore?: number | null
     pinned?: boolean
+    lastReferencedAt?: string | null
   } = {}
 ): PageObjectResponse {
   const title = options.title ?? id
   const confidenceScore = options.confidenceScore ?? null
   const pinned = options.pinned ?? false
+  const lastReferencedAt = options.lastReferencedAt ?? null
   return {
     object: "page",
     id,
@@ -77,8 +79,23 @@ function page(
         type: "checkbox",
         checkbox: pinned,
       } as unknown,
+      [MEMORY_PROPS.LAST_REFERENCED_AT]: {
+        type: "date",
+        date: lastReferencedAt ? { start: lastReferencedAt } : null,
+      } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
+}
+
+function expectedConfidenceFactors(
+  storedConfidenceFactor = 1.0,
+  effectiveConfidenceFactor = storedConfidenceFactor
+) {
+  return {
+    confidenceFactor: effectiveConfidenceFactor,
+    storedConfidenceFactor,
+    effectiveConfidenceFactor,
+  }
 }
 
 function missingPinnedPropertyError(): Error & { code: string } {
@@ -234,7 +251,7 @@ describe("MemorySearch mode selection", () => {
         semanticRank: null,
         rrfScore: null,
         branch: "contains-only",
-        confidenceFactor: 1.0,
+        ...expectedConfidenceFactors(),
       },
     ])
   })
@@ -266,7 +283,7 @@ describe("MemorySearch mode selection", () => {
         semanticRank: 0,
         rrfScore: null,
         branch: "semantic-only",
-        confidenceFactor: 1.0,
+        ...expectedConfidenceFactors(),
       },
     ])
   })
@@ -333,9 +350,56 @@ describe("MemorySearch hybrid ranking", () => {
         semanticRank: null,
         rrfScore: null,
         branch: "contains-saturated",
-        confidenceFactor: 1.0,
+        ...expectedConfidenceFactors(),
       }))
     )
+  })
+
+  it("hybrid saturation reranks contains results by effective confidence", async () => {
+    const { searcher } = makeSubject({
+      containsPages: [
+        page("stale-stored-high", {
+          confidenceScore: 0.9,
+          lastReferencedAt: "2000-01-01",
+        }),
+        page("fresh-stored-lower", {
+          confidenceScore: 0.8,
+          lastReferencedAt: "2999-01-01",
+        }),
+        page("fresh-third", {
+          confidenceScore: 0.7,
+          lastReferencedAt: "2999-01-01",
+        }),
+      ],
+      semanticPages: [page("semantic-only")],
+    })
+
+    const { memories, explain } = await searcher.searchWithExplain({
+      query: "saturated",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual([
+      "fresh-stored-lower",
+      "fresh-third",
+      "stale-stored-high",
+    ])
+    expect(memories.map((m) => m.id)).not.toContain("semantic-only")
+    expect(explain.every((entry) => entry.branch === "contains-saturated")).toBe(true)
+    expect(
+      explain.map((entry) => ({
+        id: entry.memoryId,
+        containsRank: entry.containsRank,
+      }))
+    ).toEqual([
+      { id: "fresh-stored-lower", containsRank: 1 },
+      { id: "fresh-third", containsRank: 2 },
+      { id: "stale-stored-high", containsRank: 0 },
+    ])
+    const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
+    expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
+    expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)
   })
 
   it("uses reciprocal-rank fusion for overlapping and branch-only rows", async () => {
@@ -362,7 +426,7 @@ describe("MemorySearch hybrid ranking", () => {
         semanticRank: 1,
         rrfScore: expect.closeTo(1 / 61 + 1 / 62, 10),
         branch: "rrf",
-        confidenceFactor: 1.0,
+        ...expectedConfidenceFactors(),
       },
       {
         memoryId: "semantic-only",
@@ -370,7 +434,7 @@ describe("MemorySearch hybrid ranking", () => {
         semanticRank: 0,
         rrfScore: expect.closeTo(1 / 61, 10),
         branch: "rrf",
-        confidenceFactor: 1.0,
+        ...expectedConfidenceFactors(),
       },
       {
         memoryId: "contains-only",
@@ -378,7 +442,7 @@ describe("MemorySearch hybrid ranking", () => {
         semanticRank: null,
         rrfScore: expect.closeTo(1 / 62, 10),
         branch: "rrf",
-        confidenceFactor: 1.0,
+        ...expectedConfidenceFactors(),
       },
     ])
   })
@@ -399,6 +463,87 @@ describe("MemorySearch hybrid ranking", () => {
 
     expect(memories.map((m) => m.id)).toEqual(["rank-1-trusted", "rank-0-decayed"])
     expect(explain.map((entry) => entry.confidenceFactor)).toEqual([1.0, 0.5])
+  })
+
+  it("contains mode ranks by effective confidence decay", async () => {
+    const { searcher } = makeSubject({
+      containsPages: [
+        page("stale-stored-high", {
+          confidenceScore: 0.9,
+          lastReferencedAt: "2000-01-01",
+        }),
+        page("fresh-stored-lower", {
+          confidenceScore: 0.8,
+          lastReferencedAt: "2999-01-01",
+        }),
+      ],
+    })
+
+    const { memories, explain } = await searcher.searchWithExplain({
+      query: "confidence",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
+    expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
+    expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)
+    expect(stale.confidenceFactor).toBe(stale.effectiveConfidenceFactor)
+  })
+
+  it("semantic mode ranks by effective confidence decay", async () => {
+    const { searcher } = makeSubject({
+      semanticPages: [
+        page("stale-stored-high", {
+          confidenceScore: 0.9,
+          lastReferencedAt: "2000-01-01",
+        }),
+        page("fresh-stored-lower", {
+          confidenceScore: 0.8,
+          lastReferencedAt: "2999-01-01",
+        }),
+      ],
+    })
+
+    const { memories, explain } = await searcher.searchWithExplain({
+      query: "confidence",
+      mode: "semantic",
+      includeContent: false,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
+    expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
+    expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)
+  })
+
+  it("hybrid RRF ranks by effective confidence decay", async () => {
+    const { searcher } = makeSubject({
+      containsPages: [
+        page("stale-stored-high", {
+          confidenceScore: 0.9,
+          lastReferencedAt: "2000-01-01",
+        }),
+        page("fresh-stored-lower", {
+          confidenceScore: 0.8,
+          lastReferencedAt: "2999-01-01",
+        }),
+      ],
+      semanticPages: [],
+    })
+
+    const { memories, explain } = await searcher.searchWithExplain({
+      query: "confidence",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    expect(explain.every((entry) => entry.branch === "rrf")).toBe(true)
+    const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
+    expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
+    expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)
   })
 
   it("pins the final deterministic page-id tie-break", () => {

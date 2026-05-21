@@ -216,7 +216,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .boolean()
           .optional()
           .describe(
-            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did."
+            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, RRF score, and stored/effective confidence factors. Useful for diagnosing why a row sorted where it did."
           ),
         // search only
         intent: z.string().optional().describe(INTENT_DESCRIPTION),

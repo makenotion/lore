@@ -9,16 +9,11 @@
  * ## Write-realized lazy decay
  *
  * Every mutation of a stored Confidence Score realizes the time decay accrued
- * since the last touch before applying its own bump or decrement. RRF reads the
- * stored value verbatim through `confidenceFactor`: no decay computation at
- * read time and no divergence between the score visible in Notion and the
- * score used in retrieval. Decay accrues only on touch, decrement, and the
- * confidence backfill migration; a never-touched-after-creation memory keeps
- * its post-migration value until something disturbs it.
- *
- * Decay-at-read is intentionally not the model. It would force retrieval to
- * read `lastReferencedAt` and run time arithmetic per row per query, and it
- * would let stored values diverge from observable ranking contributions.
+ * since the last touch before applying its own bump or decrement. Retrieval
+ * ranking computes an effective score in memory through
+ * `effectiveConfidenceFactor`; that calculation is ranking-only and does not
+ * write the decayed value back to Notion. Authoritative persistence still
+ * happens on touch, decrement, and the confidence backfill migration.
  *
  * ## Algebra
  *
@@ -28,7 +23,8 @@
  * | `bumpConfidenceScore(s)` | `s + (1 - s) * BUMP_RATE` (`BUMP_RATE = 0.05`) | After decay realization on every read citation |
  * | `decrementConfidenceScore(s)` | `s * DECREMENT_FACTOR` (`DECREMENT_FACTOR = 0.5`) | After decay realization on contradiction and supersession signals |
  * | `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days - STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In flight on every touch, decrement, and migration |
- * | `confidenceFactor(s)` | `CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * s`, `null -> 1` | Read-side, in the RRF accumulator |
+ * | `confidenceFactor(s)` | `CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * s`, `null -> 1` | Stored-score factor mapper |
+ * | `effectiveConfidenceFactor(s, ref, today)` | `confidenceFactor(decayConfidenceScore(s, ref, today))`, `null -> 1` | Ranking-time factor, no writes |
  *
  * The asymmetry is deliberate: slow recovery, slow neglect decay, and
  * aggressive contradiction reflect different signal quality. A single citation
@@ -186,4 +182,37 @@ export function confidenceFactor(
   if (!features.confidenceFactor) return 1.0
   if (score === null) return 1.0
   return CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * score
+}
+
+/**
+ * Ranking-time effective score. Applies the same neglect decay algebra as the
+ * write-realized paths, but returns the in-memory value without touching
+ * Notion. `null` stays neutral so unmigrated rows keep the same behavior as
+ * `confidenceFactor(null)`.
+ */
+export function effectiveConfidenceScore(
+  score: number | null,
+  lastReferencedAt: string | null,
+  today: string
+): number | null {
+  if (score === null) return null
+  return decayConfidenceScore(score, lastReferencedAt, today)
+}
+
+/**
+ * Confidence factor used by retrieval ranking. This is intentionally separate
+ * from `confidenceFactor` so callers that need to display stored-score
+ * behavior can still do so, while search scoring uses the decayed effective
+ * value.
+ */
+export function effectiveConfidenceFactor(
+  score: number | null,
+  lastReferencedAt: string | null,
+  today: string,
+  features: Pick<LoreFeatureFlags, "confidenceFactor"> = resolveFeatureFlags()
+): number {
+  return confidenceFactor(
+    effectiveConfidenceScore(score, lastReferencedAt, today),
+    features
+  )
 }

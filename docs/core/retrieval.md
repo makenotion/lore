@@ -190,9 +190,12 @@ HYBRID_FALLBACK_THRESHOLD` is read by both the post-`allSettled`
   `Σ (1 / (RRF_K + rank + 1)) * weight * confidenceFactor` summed across
   the branches it appears in; `RRF_K = 60` (Cormack 2009 / qmd default).
   `confidenceFactor` is the per-row `[CONFIDENCE_FACTOR_MIN, 1.0]`
-  multiplier from `decay.ts` (0.8.0/#08); the factor is applied **once
-  per per-branch contribution** inside the `MemorySearch.searchByHybridPages`
-  accumulator. Cross-branch agreement is
+  multiplier from `decay.ts`, computed from the ranking-time effective
+  score rather than the raw stored score. The
+  effective score applies neglect decay from `Last Referenced At` in
+  memory and does not write the decayed value back to Notion. The factor
+  is applied **once per per-branch contribution** inside the
+  `MemorySearch.searchByHybridPages` accumulator. Cross-branch agreement is
   the signal RRF surfaces — a row ranked #1 in both branches with
   `confidenceFactor=1.0` scores `2/61` and beats a row ranked #1 in
   only one branch (`1/61`). The earlier concat-then-fill heuristic
@@ -378,11 +381,16 @@ The explain shape (`SearchExplain` in `src/types.ts`) carries:
 - `branch` — the canonical signal: `"contains-only"`, `"semantic-only"`,
   `"contains-saturated"`, or `"rrf"`. Reflects the **resolved** mode (after
   `LORE_FORCE_SEMANTIC_SEARCH=1` is applied), not the caller's request.
-- `confidenceFactor` — 0.8.0/#08. The factor multiplied into this row's
-  per-branch RRF score: `[CONFIDENCE_FACTOR_MIN, 1.0]`, default `1.0`
+- `confidenceFactor` — the applied effective factor multiplied into this
+  row's per-branch RRF score: `[CONFIDENCE_FACTOR_MIN, 1.0]`, default `1.0`
   for unscored or fully-trusted rows. Populated on every branch.
-  Pre-0.8.0 trace fixtures (deserialized from disk) lack the field;
-  consumers tolerate the absence.
+- `storedConfidenceFactor` / `effectiveConfidenceFactor` — diagnostic
+  factors for explain output. The stored factor maps the Notion
+  `Confidence Score` as-is; the effective factor applies ranking-time decay
+  from `Last Referenced At`. Live traces set `confidenceFactor` equal to
+  `effectiveConfidenceFactor`.
+  Serialized trace fixtures that lack these fields are still tolerated by
+  consumers.
 
 **Branch-field rules** (pinned by tests):
 
@@ -404,11 +412,11 @@ action='search'` via the optional `explain: boolean` field, rendered as a
 `explain` pay zero output-token cost.
 
 Field names (`containsRank`, `semanticRank`, `rrfScore`, `branch`,
-`confidenceFactor`) are canonical to lore and a test pins them. qmd uses
-`lexRank` for the contains lane; we keep `containsRank` because the
-underlying Notion query is a `contains` filter, not a lexical index. A
-future contributor chasing qmd's vocabulary would silently break the
-contract.
+`confidenceFactor`, `storedConfidenceFactor`, `effectiveConfidenceFactor`) are
+canonical to lore and a test pins them. qmd uses `lexRank` for the contains
+lane; we keep `containsRank` because the underlying Notion query is a
+`contains` filter, not a lexical index. A future contributor chasing qmd's
+vocabulary would silently break the contract.
 
 ### Materialization is a single pass
 
@@ -426,18 +434,18 @@ hybrid never fetches markdown for a row that isn't in the final response.
 `retrieveMarkdown` round-trip. Use it when the caller renders only title /
 date / tags (e.g. the shell wake-up hook's related-memories section).
 
-### Fetch/sort pipeline split (0.8.0/#08)
+### Fetch/sort pipeline split
 
-The single-branch and hybrid paths each apply `confidenceFactor` to the
-RRF score **exactly once**. The split keeps that contract enforceable:
+The single-branch and hybrid paths each apply the effective confidence factor
+to the RRF score **exactly once**. The split keeps that contract enforceable:
 
-| Layer  | Function                               | Confidence-aware?                                    |
-| ------ | -------------------------------------- | ---------------------------------------------------- |
-| Fetch  | `fetchContainsPages(input)`            | No — raw Notion result                               |
-| Fetch  | `fetchSemanticPages(input, intent)`    | No — raw Notion result                               |
-| Public | `searchByContainsPages(input)`         | Yes — fetch + factor + sort                          |
-| Public | `searchBySemanticPages(input, intent)` | Yes — fetch + factor + sort                          |
-| Public | `searchByHybridPages(...)`             | Yes — composes raw fetch + factor in RRF accumulator |
+| Layer  | Function                               | Confidence-aware?                                              |
+| ------ | -------------------------------------- | -------------------------------------------------------------- |
+| Fetch  | `fetchContainsPages(input)`            | No — raw Notion result                                         |
+| Fetch  | `fetchSemanticPages(input, intent)`    | No — raw Notion result                                         |
+| Public | `searchByContainsPages(input)`         | Yes — fetch + effective factor + sort                          |
+| Public | `searchBySemanticPages(input, intent)` | Yes — fetch + effective factor + sort                          |
+| Public | `searchByHybridPages(...)`             | Yes — composes raw fetch + effective factor in RRF accumulator |
 
 Hybrid composes the **raw** fetch helpers, not the public confidence-
 aware wrappers. If hybrid called `searchByContainsPages` /
@@ -448,28 +456,27 @@ documented `[CONFIDENCE_FACTOR_MIN, 1.0]` floor to
 score 0.0 would multiply by 0.25, not 0.5).
 
 `rerankByConfidence` (private, in `memory-search.ts`) is the shared
-factor-then-sort applier used by both single-branch public wrappers.
+effective-factor-then-sort applier used by both single-branch public wrappers.
 It short-circuits when every input row is unscored
-(`Confidence Score = null`) so pre-migration vaults see byte-identical
-pre-0.8.0 ordering — without that gate, the page-id-ascending fall-
-through in `tieBreakingRrfCompare` would re-sort otherwise-tied rows
-into id order, masking Notion's recency / relevance ordering on
-unmigrated vaults.
+(`Confidence Score = null`) so vaults without confidence scores keep raw
+Notion ordering — without that gate, the page-id-ascending fall-through in
+`tieBreakingRrfCompare` would re-sort otherwise-tied rows into id order,
+masking Notion's recency / relevance ordering.
 
 **Saturation cutoff is unchanged**. The cutoff already has a documented
-bypass under `intent !== null`; 0.8.0 deliberately does NOT add a
-"saturated-but-low-confidence" bypass. Even when contains saturates,
-`confidenceFactor` reranks within the contains branch — a heavily-
-decayed row at contains-rank 1 can sort below a fresh row at
-contains-rank 2. Adding another bypass would be an observable ordering
-change and should be handled as a coordinated retrieval change.
+bypass under `intent !== null`; effective confidence deliberately does NOT add
+a "saturated-but-low-confidence" bypass. Even when contains saturates, the
+effective factor reranks within the contains branch — a high-stored-score row
+with an old `Last Referenced At` can sort below a fresher comparable row.
+Adding another bypass would be an observable ordering change and should be
+handled as a coordinated retrieval change.
 
-### `LORE_DISABLE_CONFIDENCE_FACTOR=1` kill switch (0.8.0/#08)
+### `LORE_DISABLE_CONFIDENCE_FACTOR=1` kill switch
 
 Operator escape hatch at the top of `confidenceFactor` (`decay.ts`).
 With the env var set, every call returns `1.0` unconditionally — a
-sustained-failure rollback to pre-0.8.0 ranking, not a default. Same
-posture as `LORE_FORCE_SEMANTIC_SEARCH` and
+sustained-failure rollback to unweighted confidence ranking, not a default.
+Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
 `LORE_DISABLE_NEAR_DUPLICATE_PROBE`. The check lives at the helper
 boundary so single-branch and hybrid paths share one bypass.
 

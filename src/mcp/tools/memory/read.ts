@@ -269,7 +269,9 @@ export async function handleSearch(
  *
  * The `branch` field is the canonical signal; `containsRank` /
  * `semanticRank` / `rrfScore` carry rank/score detail when applicable.
- * Agents that don't pass `explain` pay zero output-token cost.
+ * Stored and effective confidence factors render side by side so ranking-time
+ * decay is diagnosable without reading the Notion row. Agents that don't pass
+ * `explain` pay zero output-token cost.
  */
 function formatScoreTrace(explain: SearchExplain[]): string {
   if (explain.length === 0) return ""
@@ -290,7 +292,9 @@ function formatScoreTrace(explain: SearchExplain[]): string {
     // deeper precision would surface arithmetic noise without
     // diagnostic value.
     const cf = e.confidenceFactor.toFixed(3)
-    return `${e.memoryId} branch=${e.branch} contains=${contains} semantic=${semantic} rrf=${rrf} confidenceFactor=${cf}`
+    const storedCf = (e.storedConfidenceFactor ?? e.confidenceFactor).toFixed(3)
+    const effectiveCf = (e.effectiveConfidenceFactor ?? e.confidenceFactor).toFixed(3)
+    return `${e.memoryId} branch=${e.branch} contains=${contains} semantic=${semantic} rrf=${rrf} confidenceFactor=${cf} storedConfidenceFactor=${storedCf} effectiveConfidenceFactor=${effectiveCf}`
   })
   return `\n\n## Score trace\n\n${lines.join("\n")}`
 }

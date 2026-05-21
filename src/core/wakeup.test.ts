@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import type { Client } from "@notionhq/client"
-import { APIErrorCode } from "@notionhq/client"
+import { APIErrorCode, type Client, type PageObjectResponse } from "@notionhq/client"
 import {
   DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
@@ -30,6 +29,7 @@ import type {
   TaskSummary,
 } from "../types.js"
 import { DEFAULT_PINNED_BLOCK_LIMIT } from "../types.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 
 const NOW = new Date("2026-04-20T12:00:00Z").getTime()
 
@@ -71,6 +71,55 @@ function buildMemory(overrides: Partial<Memory> & { createdAt: string }): Memory
   }
 }
 
+function buildWakeUpSearchPage(
+  id: string,
+  options: {
+    title: string
+    confidenceScore: number
+    lastReferencedAt: string
+  }
+): PageObjectResponse {
+  return {
+    object: "page",
+    id,
+    created_time: "2026-01-01T00:00:00.000Z",
+    last_edited_time: "2026-01-01T00:00:00.000Z",
+    archived: false,
+    url: `https://notion.so/${id}`,
+    parent: { type: "data_source_id", data_source_id: "memories-ds" },
+    properties: {
+      [MEMORY_PROPS.TITLE]: {
+        type: "title",
+        title: [{ plain_text: options.title }],
+      } as unknown,
+      [MEMORY_PROPS.PROJECT]: { type: "relation", relation: [] } as unknown,
+      [MEMORY_PROPS.TOPIC]: { type: "relation", relation: [] } as unknown,
+      [MEMORY_PROPS.SOURCE]: {
+        type: "select",
+        select: { name: "manual" },
+      } as unknown,
+      [MEMORY_PROPS.KIND]: {
+        type: "select",
+        select: { name: "note" },
+      } as unknown,
+      [MEMORY_PROPS.STATUS]: {
+        type: "select",
+        select: { name: "informational" },
+      } as unknown,
+      [MEMORY_PROPS.TAGS]: { type: "multi_select", multi_select: [] } as unknown,
+      [MEMORY_PROPS.KEYWORDS]: { type: "rich_text", rich_text: [] } as unknown,
+      [MEMORY_PROPS.SYNOPSIS]: { type: "rich_text", rich_text: [] } as unknown,
+      [MEMORY_PROPS.CONFIDENCE_SCORE]: {
+        type: "number",
+        number: options.confidenceScore,
+      } as unknown,
+      [MEMORY_PROPS.LAST_REFERENCED_AT]: {
+        type: "date",
+        date: { start: options.lastReferencedAt },
+      } as unknown,
+    } as PageObjectResponse["properties"],
+  } as PageObjectResponse
+}
 let nextFactId = 0
 function buildFact(overrides: Partial<Fact>): Fact {
   nextFactId += 1
@@ -1965,6 +2014,67 @@ describe("loadWakeUpData", () => {
       )
       expect(taskCall).toBeDefined()
       expect(taskCall?.projectId).toBe("p1")
+    })
+
+    it("uses effective confidence ranking for taskMemories", async () => {
+      const querySpy = vi.fn(async () => ({
+        results: [
+          buildWakeUpSearchPage("stale-stored-high", {
+            title: "Auth stale high stored confidence",
+            confidenceScore: 0.9,
+            lastReferencedAt: "2000-01-01",
+          }),
+          buildWakeUpSearchPage("fresh-stored-lower", {
+            title: "Auth fresh lower stored confidence",
+            confidenceScore: 0.8,
+            lastReferencedAt: "2999-01-01",
+          }),
+        ],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => ({
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const updateSpy = vi.fn()
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: {
+          update: updateSpy,
+          retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
+        },
+      } as unknown as Client
+      const memoryService = new MemoryService(client, {
+        databaseId: "memories-db",
+        dataSourceId: "memories-ds",
+      })
+      const base = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+      })
+      const services: WakeUpServices = {
+        ...base,
+        memories: {
+          ...base.memories,
+          search: memoryService.search.bind(memoryService),
+        },
+      }
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        includeMemoryContent: false,
+        now: NOW,
+      })
+
+      expect(data.taskMemories.map((m) => m.id)).toEqual([
+        "fresh-stored-lower",
+        "stale-stored-high",
+      ])
+      expect(updateSpy).not.toHaveBeenCalled()
     })
 
     it("returns empty taskMemories when userQuery is absent", async () => {
