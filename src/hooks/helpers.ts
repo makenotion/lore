@@ -271,6 +271,35 @@ function reportHookConfigWarnings(configPath: string, warnings: string[]): void 
   }
 }
 
+function resolveMemoryCaptureModeForStop(
+  config: HookConfig,
+  context?: StopFailureContext
+): HookConfig["memoryCaptureMode"] {
+  if (context?.config?.hooks?.memoryCaptureMode !== undefined) {
+    return config.memoryCaptureMode
+  }
+  if (context?.config?.profile?.startsWith("conversational@")) {
+    return "conversational"
+  }
+  return config.memoryCaptureMode
+}
+
+function isConversationalProfileSelector(selector?: string): boolean {
+  return selector?.startsWith("conversational@") === true
+}
+
+function resolveProfilePromptsForStop(context?: StopFailureContext) {
+  if (!context?.config) {
+    return undefined
+  }
+  if (isConversationalProfileSelector(context.config.profile)) {
+    return undefined
+  }
+  return context.configRoot
+    ? resolveProfileFromConfigAtRoot(context.config, context.configRoot).prompts
+    : resolveProfileFromConfig(context.config).prompts
+}
+
 async function loadHookState(): Promise<HookState> {
   const found = await findConfigFile(process.cwd())
   if (!found) {
@@ -597,22 +626,13 @@ export async function handleStop(
         // can't be silently re-enabled by a config-default.
         const learningExtractionEnabled =
           config.learningExtraction && config.features.learningExtraction
-        // Proposed-by-default routing. The flag is false by default,
-        // so existing installs see byte-identical autosave behavior.
-        // Operators opt in via `hooks.proposeAutosaveLearnings: true`
-        // in .lore.yaml to route auto-extracted learnings through
-        // the review inbox instead of writing them directly to
-        // accepted recall.
+        // Durable mode keeps accepted-by-default behavior unless the
+        // operator opts into proposed learning saves. Conversational
+        // mode gets its safer proposed default inside the prompt
+        // builder when this option is left undefined.
         const proposeLearnings =
-          learningExtractionEnabled && config.proposeAutosaveLearnings
-        const profilePrompts = failureContext?.config
-          ? failureContext.configRoot
-            ? resolveProfileFromConfigAtRoot(
-                failureContext.config,
-                failureContext.configRoot
-              ).prompts
-            : resolveProfileFromConfig(failureContext.config).prompts
-          : undefined
+          learningExtractionEnabled && config.proposeAutosaveLearnings ? true : undefined
+        const profilePrompts = resolveProfilePromptsForStop(failureContext)
         const prompt = buildBackgroundSavePrompt(
           config.subProjects,
           config.catchAllName,
@@ -624,6 +644,7 @@ export async function handleStop(
             proposeLearnings,
             authorName: deriveAuthorName(event),
             profilePrompts,
+            memoryCaptureMode: resolveMemoryCaptureModeForStop(config, failureContext),
           }
         )
         // Only advance the save counter when a background process actually

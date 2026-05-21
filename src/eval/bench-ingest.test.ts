@@ -161,6 +161,41 @@ describe("runBenchIngest", () => {
     })
     expect(result.notionWrites).toBe(8)
   })
+
+  it("passes conversational memory capture options to mining", async () => {
+    const calls: Array<{
+      memoryCaptureMode?: string
+      proposeLearnings?: boolean
+    }> = []
+    await runBenchIngest({
+      example: buildExample(1),
+      cwd: "/tmp/cwd",
+      subProjects: ["lme-test"],
+      catchAllName: null,
+      budgetStateFile: "/tmp/state.json",
+      projectId: "project-1",
+      memoryCaptureMode: "conversational",
+      proposeLearnings: false,
+      runMining: async (_transcript, options): Promise<MiningResult> => {
+        calls.push({
+          memoryCaptureMode: options.memoryCaptureMode,
+          proposeLearnings: options.proposeLearnings,
+        })
+        return {
+          elapsedMs: 100,
+          writeBudgetExceeded: false,
+          exitCode: 0,
+          exitSignal: null,
+        }
+      },
+      readBudgetCount: () => 1,
+      countMemoriesForProject: async () => 1,
+      countFactsForProject: async () => 0,
+    })
+    expect(calls).toEqual([
+      { memoryCaptureMode: "conversational", proposeLearnings: false },
+    ])
+  })
 })
 
 describe("runBenchRawTranscriptIngest", () => {

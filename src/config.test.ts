@@ -87,6 +87,41 @@ hooks:
     expect(warnings).toEqual(["Ignoring invalid hooks config and using hook defaults."])
   })
 
+  it("parses hooks.memoryCaptureMode as durable or conversational", () => {
+    const durable = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+hooks:
+  memoryCaptureMode: durable
+`)
+    expect(durable.warnings).toEqual([])
+    expect(durable.config.hooks).toEqual({ memoryCaptureMode: "durable" })
+
+    const conversational = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+hooks:
+  memoryCaptureMode: conversational
+`)
+    expect(conversational.warnings).toEqual([])
+    expect(conversational.config.hooks).toEqual({
+      memoryCaptureMode: "conversational",
+    })
+  })
+
+  it("rejects invalid hooks.memoryCaptureMode values", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+hooks:
+  memoryCaptureMode: chatty
+`)
+
+    expect(config.vault.pageId).toBe("abc123")
+    expect(config.hooks).toBeUndefined()
+    expect(warnings).toEqual(["Ignoring invalid hooks config and using hook defaults."])
+  })
+
   it("rejects non-boolean hooks.learningExtraction the same way it rejects other invalid hook flags", () => {
     // Same fail-open posture as the existing wakeUp regression: a
     // typo'd value drops the entire hooks section and warns rather

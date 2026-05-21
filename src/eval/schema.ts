@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { isProfileSelector } from "../profile/index.js"
+import { MEMORY_CAPTURE_MODES } from "../memory-capture-mode.js"
 import {
   SIMULATED_AUTOSAVE_EXTRACTION_MAX_TOKENS,
   SIMULATED_AUTOSAVE_EXTRACTION_MODEL,
@@ -324,6 +325,7 @@ export const benchSuiteSchema = z
     ingestion: z
       .object({
         strategy: z.enum(BENCH_INGESTION_STRATEGIES).default("lore-mine"),
+        memoryCaptureMode: z.enum(MEMORY_CAPTURE_MODES).optional(),
         extractionPrompt: z.string().min(1).optional(),
         extractionModel: z.literal(SIMULATED_AUTOSAVE_EXTRACTION_MODEL).optional(),
         extractionMaxTokens: z
@@ -337,6 +339,17 @@ export const benchSuiteSchema = z
           "extractionModel",
           "extractionMaxTokens",
         ] as const
+        if (
+          ingestion.strategy !== "lore-mine" &&
+          ingestion.memoryCaptureMode !== undefined
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["memoryCaptureMode"],
+            message:
+              'memoryCaptureMode is only valid when ingestion.strategy is "lore-mine"',
+          })
+        }
         if (ingestion.strategy === "simulated-autosave") {
           for (const field of extractionFields) {
             if (ingestion[field] === undefined) {

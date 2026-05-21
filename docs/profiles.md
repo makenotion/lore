@@ -11,6 +11,10 @@ profile: default@1.0.0
 profile: support@1.0.0
 ```
 
+```yaml
+profile: conversational@1.0.0
+```
+
 When `.lore.yaml` omits `profile`, Lore resolves the same selector in memory.
 Read-only startup paths do not rewrite `.lore.yaml`. New `lore init` configs
 write the selector explicitly so fresh installs are pinned to the runtime
@@ -134,24 +138,24 @@ need a non-default taxonomy, schema, or prompt fixture.
 
 `support@1.0.0` is the first non-default pilot profile. Its start contract is:
 
-| Field | Value |
-| --- | --- |
-| Pilot team | Support Escalations, with the Lore maintainers owning the code rollout. |
-| Data policy | Fixtures are synthetic/redacted only. Do not commit real customer content, PHI, regulated data, production workspace ids, or live ticket payloads. Live-vault evals are operator-dispatched only against sandbox vaults. |
-| Profile name | `support` |
-| Target use case | Help support engineers preserve escalation symptoms, owners, mitigations, product areas, and root-cause findings for later triage. |
-| Additive schema | Memories: `Support Severity` select, `Customer Impact` rich_text. Entities: `Support Entity Role` select. Facts: `Evidence Link` url. |
-| Tag vocabulary | `admin`, `api`, `billing`, `customer-report`, `data-loss`, `desktop`, `docs-gap`, `escalation`, `integration`, `latency`, `mobile`, `outage`, `permissions`, `product-area`, `root-cause`, `workaround`. |
-| Entity kind vocabulary | `account`, `customer`, `feature`, `integration`, `person`, `plan`, `product-area`, `support-ticket`, `system`, `team`, `workspace`. |
-| Writable fact predicates | `affects`, `caused_by`, `mitigated_by`, `owned_by`, `reported_by`, `reproduced_by`, plus the core generic predicates. |
-| Prompt keys to override | Autosave extraction filter, autosave tool guidance, and simulated-autosave eval extraction. Atomic learning, digest, and conflict judge use default prompt fallback. |
-| Retrieval/wake-up stance | Default core behavior. No support-specific ranking, section suppression, or cap changes. |
-| Debt/procedure stance | Default core policy. Procedure review gates, proposal/deprecation flow, conflict detection, stale-confidence handling, temporal facts, auto-mentions, and cross-vault trust markers remain unchanged. |
-| Eval runner | `lore eval run evals/profile-suites/support.yaml` for deterministic CI-safe scorer checks; `lore eval run --runner bench evals/bench-suites/support-simulated-autosave.yaml` for operator-dispatched model-backed extraction runs. |
-| Eval metric | Entity-kind recall, predicate precision, hallucinated-fact rate, required-field completeness, and invalid-taxonomy rate. |
-| Minimum threshold | Entity-kind recall >= 0.80, predicate precision >= 0.85, hallucinated-fact rate <= 0.05, required-field completeness >= 0.90, invalid-taxonomy rate = 0. |
-| Latest measured result | The committed deterministic support suite passes 1/1 cases: entity-kind recall 1.00, predicate precision 1.00, hallucinated-fact rate 0.00, required-field completeness 1.00, invalid-taxonomy rate 0.00. |
-| Pilot success signal | Support engineers can bootstrap a sandbox vault with `support@1.0.0`, run synthetic scorer fixtures in CI, and use operator-dispatched bench artifacts to inspect prompt/taxonomy quality before any live pilot data is written. |
+| Field                    | Value                                                                                                                                                                                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pilot team               | Support Escalations, with the Lore maintainers owning the code rollout.                                                                                                                                                            |
+| Data policy              | Fixtures are synthetic/redacted only. Do not commit real customer content, PHI, regulated data, production workspace ids, or live ticket payloads. Live-vault evals are operator-dispatched only against sandbox vaults.           |
+| Profile name             | `support`                                                                                                                                                                                                                          |
+| Target use case          | Help support engineers preserve escalation symptoms, owners, mitigations, product areas, and root-cause findings for later triage.                                                                                                 |
+| Additive schema          | Memories: `Support Severity` select, `Customer Impact` rich_text. Entities: `Support Entity Role` select. Facts: `Evidence Link` url.                                                                                              |
+| Tag vocabulary           | `admin`, `api`, `billing`, `customer-report`, `data-loss`, `desktop`, `docs-gap`, `escalation`, `integration`, `latency`, `mobile`, `outage`, `permissions`, `product-area`, `root-cause`, `workaround`.                           |
+| Entity kind vocabulary   | `account`, `customer`, `feature`, `integration`, `person`, `plan`, `product-area`, `support-ticket`, `system`, `team`, `workspace`.                                                                                                |
+| Writable fact predicates | `affects`, `caused_by`, `mitigated_by`, `owned_by`, `reported_by`, `reproduced_by`, plus the core generic predicates.                                                                                                              |
+| Prompt keys to override  | Autosave extraction filter, autosave tool guidance, and simulated-autosave eval extraction. Atomic learning, digest, and conflict judge use default prompt fallback.                                                               |
+| Retrieval/wake-up stance | Default core behavior. No support-specific ranking, section suppression, or cap changes.                                                                                                                                           |
+| Debt/procedure stance    | Default core policy. Procedure review gates, proposal/deprecation flow, conflict detection, stale-confidence handling, temporal facts, auto-mentions, and cross-vault trust markers remain unchanged.                              |
+| Eval runner              | `lore eval run evals/profile-suites/support.yaml` for deterministic CI-safe scorer checks; `lore eval run --runner bench evals/bench-suites/support-simulated-autosave.yaml` for operator-dispatched model-backed extraction runs. |
+| Eval metric              | Entity-kind recall, predicate precision, hallucinated-fact rate, required-field completeness, and invalid-taxonomy rate.                                                                                                           |
+| Minimum threshold        | Entity-kind recall >= 0.80, predicate precision >= 0.85, hallucinated-fact rate <= 0.05, required-field completeness >= 0.90, invalid-taxonomy rate = 0.                                                                           |
+| Latest measured result   | The committed deterministic support suite passes 1/1 cases: entity-kind recall 1.00, predicate precision 1.00, hallucinated-fact rate 0.00, required-field completeness 1.00, invalid-taxonomy rate 0.00.                          |
+| Pilot success signal     | Support engineers can bootstrap a sandbox vault with `support@1.0.0`, run synthetic scorer fixtures in CI, and use operator-dispatched bench artifacts to inspect prompt/taxonomy quality before any live pilot data is written.   |
 
 The tag vocabulary is intentionally centered on routing, customer impact, and
 triage outcome rather than ticket status. Ticket status remains task state;
@@ -172,6 +176,24 @@ not change core safety, review, or maintenance policy.
 The support profile is deliberately a profile-bundle exercise, not a profile
 distribution exercise. It does not add profile memory kinds, registry install,
 profile migration, `profile.yaml extends`, or a broad profile-management CLI.
+
+## Built-In Conversational Recall Profile
+
+`conversational@1.0.0` is a first-party profile for broad chat-memory pilots.
+It keeps the default taxonomy and schema, but overrides autosave extraction,
+tool guidance, and atomic-learning prompts to preserve user-stated preferences,
+personal or work context, reminders, commitments, and other future-useful
+conversation facts. It is intentionally distinct from the default durable
+engineering profile: the default filter skips most casual conversational facts,
+while this profile treats them as the product surface.
+
+For hook-driven installs, prefer `hooks.memoryCaptureMode: conversational` when
+the operator wants the runtime mode without changing the profile selector. If a
+hook install selects `profile: conversational@1.0.0` and leaves
+`hooks.memoryCaptureMode` unset, the hook treats autosave as conversational so
+the same proposed-memory routing applies. Shared-vault conversational pilots
+should let the proposed-memory routing stand so broad capture is reviewed
+before it enters default recall.
 
 ## Profile Distribution
 
@@ -216,14 +238,14 @@ never writes to the project-authored local path.
 
 `lore profile install` is intentionally fail-closed. The matrix:
 
-| State | Behavior |
-| --- | --- |
-| Target directory does not exist | install proceeds after validation + confirmation |
-| Target exists, same `manifestDigest` | no-op; only the lock entry is refreshed |
-| Target exists, different `manifestDigest` | install fails with `Refusing to install … already exists with a different manifest digest`. There is no `--force`; pick a new version or remove the directory manually |
-| Target exists but is not a valid profile bundle | install fails closed; the installer never writes into an ambiguous existing directory |
-| Local profile at same selector with different digest | install fails because the local override would shadow the install |
-| Built-in profile at same selector with different digest | install fails because built-in resolution wins over installed external |
+| State                                                   | Behavior                                                                                                                                                               |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Target directory does not exist                         | install proceeds after validation + confirmation                                                                                                                       |
+| Target exists, same `manifestDigest`                    | no-op; only the lock entry is refreshed                                                                                                                                |
+| Target exists, different `manifestDigest`               | install fails with `Refusing to install … already exists with a different manifest digest`. There is no `--force`; pick a new version or remove the directory manually |
+| Target exists but is not a valid profile bundle         | install fails closed; the installer never writes into an ambiguous existing directory                                                                                  |
+| Local profile at same selector with different digest    | install fails because the local override would shadow the install                                                                                                      |
+| Built-in profile at same selector with different digest | install fails because built-in resolution wins over installed external                                                                                                 |
 
 ### Lock file
 

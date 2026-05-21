@@ -109,7 +109,8 @@ export function buildInitConfigYaml(
     // extraction knob and the inbox-routing knob.
     hooks.comment =
       " learningExtraction: true  # 0.9.0/08 — autosave atomic-learning extraction\n" +
-      " proposeAutosaveLearnings: false  # issue #281 — route auto-extracted learnings through the proposed-memory review inbox"
+      " proposeAutosaveLearnings: false  # issue #281 — route auto-extracted learnings through the proposed-memory review inbox\n" +
+      " memoryCaptureMode: durable  # issue #897 — opt into conversational recall with `conversational`"
   }
   return doc.toString()
 }

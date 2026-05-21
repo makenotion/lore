@@ -104,6 +104,10 @@ import {
   type BenchIngestionStrategy,
 } from "./schema.js"
 import { resolveProfileFromConfig, type ResolvedProfile } from "../profile/index.js"
+import {
+  DEFAULT_MEMORY_CAPTURE_MODE,
+  type MemoryCaptureMode,
+} from "../memory-capture-mode.js"
 
 const SANDBOX_NAME_REGEX = /\b(sandbox|eval|test|scratch|staging|dev|playground)\b/i
 const PRODUCTION_NAME_REGEX = /\bproduction\b|\bprod\b/i
@@ -737,6 +741,7 @@ export async function runBenchExample(input: {
    * the autosave filter for Zep-comparable apples-to-apples.
    */
   ingestionStrategy: BenchIngestionStrategy
+  memoryCaptureMode?: MemoryCaptureMode
   extractionPrompt?: string
   extractionClient?: BenchExtractionClient
   extractionModel?: string
@@ -878,6 +883,13 @@ export async function runBenchExample(input: {
         projectId,
         authSource: input.sandbox.authSource,
         perSessionTimeoutMs: input.perSessionMiningTimeoutMs,
+        memoryCaptureMode: input.memoryCaptureMode,
+        // Bench sandboxes need to measure recall after ingestion, not
+        // review-inbox invisibility. Production conversational hooks keep
+        // proposed routing by default; bench conversational runs force the
+        // accepted path to model post-review recall quality.
+        proposeLearnings:
+          input.memoryCaptureMode === "conversational" ? false : undefined,
         countMemoriesForProject: input.sandbox.countMemoriesForProject,
         countFactsForProject: input.sandbox.countFactsForProject,
       })
@@ -1138,6 +1150,9 @@ async function runBenchSuiteUnderBenchEnv(
     sandbox: options.sandbox,
     profile,
   })
+  const memoryCaptureMode =
+    suite.ingestion.memoryCaptureMode ??
+    (profile?.name === "conversational" ? "conversational" : DEFAULT_MEMORY_CAPTURE_MODE)
   // Asset paths in the suite YAML may be absolute (operator-supplied
   // smoke suites) or repo-relative (the committed
   // evals/bench-suites/longmemeval.yaml). Absolute paths bypass the
@@ -1244,6 +1259,7 @@ async function runBenchSuiteUnderBenchEnv(
     },
     ingestion: {
       strategy: suite.ingestion.strategy,
+      memoryCaptureMode,
       // Seam name reflects the chosen strategy so artifact consumers
       // see exactly which path produced the row counts.
       seam:
@@ -1356,6 +1372,7 @@ async function runBenchSuiteUnderBenchEnv(
       sandbox: options.sandbox,
       perExampleWrites: suite.caps.perExampleWrites,
       ingestionStrategy: suite.ingestion.strategy,
+      memoryCaptureMode,
       extractionPrompt: extractionPrompt ?? undefined,
       extractionClient,
       extractionModel: suite.ingestion.extractionModel,

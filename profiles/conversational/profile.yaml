@@ -1,0 +1,6 @@
+name: conversational
+version: 1.0.0
+prompts:
+  autosaveExtractionFilter: prompts/autosave-extraction-filter.txt
+  autosaveToolGuidance: prompts/autosave-tool-guidance.txt
+  atomicLearningExtraction: prompts/atomic-learning-extraction.txt

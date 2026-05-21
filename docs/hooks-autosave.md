@@ -85,6 +85,34 @@ be saved as their own `note` memories. Extraction happens inside the background
 sub-agent. Foreground output is unchanged, and the foreground agent has no
 `Key Learnings` convention to enumerate.
 
+## Capture Modes
+
+`hooks.memoryCaptureMode` selects the autosave capture policy:
+
+- `durable` is the default production mode. It preserves engineering memories
+  a future agent would need months later: non-obvious constraints, decisions,
+  runbooks, system facts, and out-of-scope open loops.
+- `conversational` is an explicit opt-in for broad chat recall. It preserves
+  user-stated preferences, personal or work context, reminders, commitments,
+  and similar future-useful conversational facts that the durable filter skips.
+  It still rejects secrets, weak inferences, one-off small talk, and transcript
+  summaries.
+
+Conversational mode defaults its auto-captured memory saves to `Status =
+proposed`, routing them through the proposed-memory inbox before default
+recall. The durable mode keeps the historical accepted-by-default behavior
+unless `hooks.proposeAutosaveLearnings: true` is set.
+
+Selecting `profile: conversational@1.0.0` without a `hooks.memoryCaptureMode`
+override also activates conversational autosave and the proposed-memory default.
+Set `hooks.memoryCaptureMode: durable` explicitly when that profile should apply
+outside hook autosave without broadening Stop-hook capture.
+
+When `hooks.learningExtraction: false` or `LORE_DISABLE_LEARNING_EXTRACTION=1`
+is active, conversational capture is suppressed with the learning block. The
+autosave prompt falls back to the durable synopsis-only shape rather than
+running broad recall capture without the per-spawn cap.
+
 Each autosave run may save at most `PER_SPAWN_LEARNING_LIMIT` atomic learnings
 from `prompts.ts` (currently 5). A noisy session must rank by durability and
 skip the long tail; overlapping transcripts let later autosaves recover

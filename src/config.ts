@@ -1,10 +1,11 @@
-import { access, readFile } from "node:fs/promises"
-import { resolve, dirname } from "node:path"
-import { parse as parseYaml, parseDocument } from "yaml"
-import { z } from "zod"
-import { parseProfileSelector } from "./profile/index.js"
-import { SYNOPSIS_MAX } from "./types/domain.js"
 import type { LoreConfig } from "./types.js"
+import { MEMORY_CAPTURE_MODES } from "./memory-capture-mode.js"
+import { SYNOPSIS_MAX } from "./types/domain.js"
+import { access, readFile } from "node:fs/promises"
+import { parse as parseYaml, parseDocument } from "yaml"
+import { parseProfileSelector } from "./profile/index.js"
+import { resolve, dirname } from "node:path"
+import { z } from "zod"
 
 const CONFIG_FILENAME = ".lore.yaml"
 const PLACEHOLDER_PAGE_ID_PATTERN = /^<.+>$/
@@ -16,6 +17,7 @@ const hookConfigSchema = z
     autoDigest: z.boolean().optional(),
     learningExtraction: z.boolean().optional(),
     proposeAutosaveLearnings: z.boolean().optional(),
+    memoryCaptureMode: z.enum(MEMORY_CAPTURE_MODES).optional(),
     saveInterval: z.number().int().min(1).optional(),
     backgroundAgent: z
       .object({

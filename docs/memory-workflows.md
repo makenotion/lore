@@ -132,6 +132,15 @@ responses, and do not double-save a discovery you already wrote explicitly.
 Operators can disable extraction with `LORE_DISABLE_LEARNING_EXTRACTION=1` or
 `hooks.learningExtraction: false` in `.lore.yaml`.
 
+`hooks.memoryCaptureMode: durable` is the default engineering-memory policy.
+`hooks.memoryCaptureMode: conversational` is an explicit opt-in for broad
+chat recall: user-stated preferences, personal or work context, reminders,
+commitments, and other future-useful conversational facts the durable filter
+would skip. Conversational mode routes auto-captured memory saves as proposed
+by default so broad recall candidates are reviewed before entering default
+recall. Disabling learning extraction suppresses conversational capture and
+falls back to durable synopsis-only autosave.
+
 For shared-vault deployments, set `hooks.proposeAutosaveLearnings: true` in
 `.lore.yaml` to route every auto-extracted learning through the
 proposed-memory review inbox (`Status = proposed`) instead of writing it

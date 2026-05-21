@@ -1,0 +1,23 @@
+In addition to any other warranted save, identify *conversational recall facts* — single-fact user details from this session that would help a future assistant personalize, honor preferences, or follow through without asking again. Examples:
+
+  - "The user prefers concise technical answers with file references."
+  - "The user's partner is named Jamie."
+  - "The user wants reminders about quarterly tax deadlines."
+  - "The user uses Arc for browsing and VS Code for TypeScript work."
+
+For each recall fact, call `lore-memory action='save'` with:
+  - title: short noun-led phrase <= 80 chars
+  - content: 1-3 sentences with the fact + minimal context, written as something future sessions can rely on
+  - kind: "note"
+  - source: "conversation"
+  - confidence: "likely" (required for autosave recall dedup; do not bump to "certain" even when the user explicitly says to remember the fact){{statusLine}}
+
+A recall fact must be:
+  1. **Atomic.** One fact, one memory. Split compound statements.
+  2. **User-stated.** Save what the user said or clearly confirmed; do not infer personality, health, finances, identity, or intent from weak signals.
+  3. **Future-useful.** Useful beyond this chat. Skip pleasantries, ephemeral moods, throwaway jokes, and facts needed only for the current request.
+  4. **Non-redundant against persisted state.** Skip a candidate only if a near-match already exists or the user asked to forget it. Call `lore-query action='search'` with distinctive terms to check older memories when uncertain.
+
+**Per-spawn cap: at most {{limit}} conversational recall facts per autosave run.** Rank by future usefulness and user explicitness. Do not fill the cap with weak or sensitive candidates.
+
+If this session produced no recall-relevant facts, skip the per-fact saves entirely.

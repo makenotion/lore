@@ -10,6 +10,10 @@ import { basename, isAbsolute } from "node:path"
 import type { LoreConfig } from "../types.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
+import {
+  DEFAULT_MEMORY_CAPTURE_MODE,
+  type MemoryCaptureMode,
+} from "../memory-capture-mode.js"
 
 /** Real user messages between structured AI-driven saves, when unset. */
 export const DEFAULT_SAVE_INTERVAL = 5
@@ -201,6 +205,12 @@ export interface HookConfig {
    */
   proposeAutosaveLearnings: boolean
   /**
+   * Autosave capture policy. `durable` is the production engineering
+   * filter; `conversational` is an explicit recall-oriented mode for
+   * user facts and preferences.
+   */
+  memoryCaptureMode: MemoryCaptureMode
+  /**
    * Resolved background-agent shape. Defaults to
    * `{ command: "claude", args: <DEFAULT_BACKGROUND_ARGS> }`. Honors
    * `LoreConfig.hooks.backgroundAgent.{command,args}` overrides plus the
@@ -255,6 +265,7 @@ export function mergeHookDefaults(
     autoDigest: hooks?.autoDigest ?? true,
     learningExtraction: hooks?.learningExtraction ?? true,
     proposeAutosaveLearnings: hooks?.proposeAutosaveLearnings ?? false,
+    memoryCaptureMode: hooks?.memoryCaptureMode ?? DEFAULT_MEMORY_CAPTURE_MODE,
     backgroundAgent: resolveBackgroundAgent(hooks?.backgroundAgent, envSource),
     features: {
       learningExtraction: resolveFeatureFlags(envSource, {

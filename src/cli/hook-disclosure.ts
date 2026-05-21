@@ -141,7 +141,9 @@ export function buildHookYamlCommentBefore(): string {
   lines.push(
     " - saveInterval: numeric minutes between autosaves in one session",
     "   (positive integer; setting it to `false` is invalid and silently",
-    "   falls back to defaults, re-enabling autoSave/wakeUp)."
+    "   falls back to defaults, re-enabling autoSave/wakeUp).",
+    " - memoryCaptureMode: durable | conversational; conversational is",
+    "   opt-in broad recall for user facts and preferences."
   )
   for (const line of buildOptOutHint()) {
     lines.push(` ${line}`)

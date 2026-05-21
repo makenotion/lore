@@ -3,6 +3,7 @@
  */
 import type { Project } from "./domain.js"
 import type { Vault } from "./persistence.js"
+import type { MemoryCaptureMode } from "../memory-capture-mode.js"
 
 // ---------------------------------------------------------------------------
 // Config (.lore.yaml)
@@ -325,6 +326,13 @@ export interface LoreConfig {
      * write-side opt-in.
      */
     proposeAutosaveLearnings?: boolean
+    /**
+     * Autosave capture policy. `durable` preserves the production engineering
+     * filter; `conversational` is an explicit opt-in for broad recall facts
+     * such as user preferences, personal details, and future commitments.
+     * Default: "durable".
+     */
+    memoryCaptureMode?: MemoryCaptureMode
     /** Real user messages between structured AI-driven saves. Default: 5. */
     saveInterval?: number
     /**

@@ -194,6 +194,7 @@ export interface BenchArtifactConfig {
   }
   ingestion: {
     strategy: string
+    memoryCaptureMode: string
     seam: string
     temporalApproach: string
     vault: string

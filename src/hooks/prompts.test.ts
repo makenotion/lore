@@ -43,6 +43,15 @@ describe("buildProjectSelectionGuidance", () => {
     // Should not claim there are sub-projects when the list is empty
     expect(guidance).not.toMatch(/sub-projects:\s*\./)
   })
+
+  it("lets conversational capture leave user-wide facts unscoped", () => {
+    const guidance = buildProjectSelectionGuidance(["Widget Backend"], "Widget", {
+      memoryCaptureMode: "conversational",
+    })
+    expect(guidance).toContain("leave project scope empty")
+    expect(guidance).toContain("only when the recalled fact is clearly about")
+    expect(guidance).not.toContain("on every lore-memory")
+  })
 })
 
 describe("buildBackgroundSavePrompt", () => {
@@ -643,6 +652,52 @@ describe("buildBackgroundSavePrompt", () => {
     )
     expect(prompt).not.toContain('status: "proposed"')
     expect(prompt).not.toContain("atomic learnings")
+  })
+
+  it("conversational capture mode swaps in recall-oriented guidance", () => {
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "user: I prefer terse answers and my partner is Jamie.",
+      undefined,
+      undefined,
+      { memoryCaptureMode: "conversational" }
+    )
+    expect(prompt).toContain("conversational recall facts")
+    expect(prompt).toContain("Preferences, dislikes, communication style")
+    expect(prompt).toContain("The user's partner is named Jamie")
+    expect(prompt).toContain('status: "proposed"')
+    expect(prompt).toContain("required for autosave recall dedup")
+    expect(prompt).not.toContain("A non-obvious discovery — gotcha")
+  })
+
+  it("conversational capture mode can explicitly suppress proposed status", () => {
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "user: I prefer terse answers.",
+      undefined,
+      undefined,
+      { memoryCaptureMode: "conversational", proposeLearnings: false }
+    )
+    expect(prompt).toContain("conversational recall facts")
+    expect(prompt).not.toContain('status: "proposed"')
+    expect(prompt).not.toContain("review inbox")
+  })
+
+  it("falls back to durable synopsis-only guidance when extraction is disabled in conversational mode", () => {
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "user: Please remember that I prefer terse answers.",
+      undefined,
+      undefined,
+      { memoryCaptureMode: "conversational", extractLearnings: false }
+    )
+    expect(prompt).toContain("extracting durable knowledge")
+    expect(prompt).toContain("A non-obvious discovery — gotcha")
+    expect(prompt).not.toContain("conversational recall facts")
+    expect(prompt).not.toContain('status: "proposed"')
   })
 })
 

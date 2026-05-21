@@ -49,6 +49,7 @@ import {
 import { openHookStateFileSync } from "./marker-key.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
 import type { ResolvedPromptRegistry } from "../profile/index.js"
+import type { MemoryCaptureMode } from "../memory-capture-mode.js"
 
 /**
  * Default wall-clock cap for one mining child. Per-session mining of
@@ -143,13 +144,15 @@ export interface RunConversationMiningOptions {
    */
   authSource?: AuthSource
   /**
-   * Atomic-learning extraction toggles. Defaults preserve the
-   * production autosave shape (`extractLearnings: true`,
-   * `proposeLearnings: false`); callers running review-inbox-gated
-   * fleets opt into `proposeLearnings: true`.
+   * Atomic-learning extraction toggles. Defaults preserve the durable
+   * production autosave shape (`extractLearnings: true`, accepted by
+   * default). Conversational capture mode applies proposed routing by
+   * default unless `proposeLearnings` is explicitly supplied.
    */
   extractLearnings?: boolean
   proposeLearnings?: boolean
+  /** Autosave capture policy for prompt construction. */
+  memoryCaptureMode?: MemoryCaptureMode
   profilePrompts?: Pick<
     ResolvedPromptRegistry,
     "autosaveExtractionFilter" | "autosaveToolGuidance" | "atomicLearningExtraction"
@@ -303,9 +306,10 @@ export function runConversationMining(
     options.agentName,
     {
       extractLearnings: options.extractLearnings ?? true,
-      proposeLearnings: options.proposeLearnings ?? false,
+      proposeLearnings: options.proposeLearnings,
       authorName: options.authorName,
       profilePrompts: options.profilePrompts,
+      memoryCaptureMode: options.memoryCaptureMode,
     }
   )
 

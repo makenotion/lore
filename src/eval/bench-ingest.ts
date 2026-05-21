@@ -30,6 +30,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import type { AuthSource } from "../config.js"
+import type { MemoryCaptureMode } from "../memory-capture-mode.js"
 import {
   runConversationMining,
   type MiningResult,
@@ -132,6 +133,10 @@ export interface RunBenchIngestInput {
    * disk-resident `.lore.yaml`.
    */
   authSource?: AuthSource
+  /** Autosave capture policy for the mining prompt. Defaults to durable. */
+  memoryCaptureMode?: MemoryCaptureMode
+  /** Override proposed-memory routing for autosave learning saves. */
+  proposeLearnings?: boolean
 }
 
 /**
@@ -201,6 +206,8 @@ export async function runBenchIngest(
         sessionId,
         agentName: input.agentName,
         authSource: input.authSource,
+        memoryCaptureMode: input.memoryCaptureMode,
+        proposeLearnings: input.proposeLearnings,
         budgetStateFile: input.budgetStateFile,
         timeoutMs: input.perSessionTimeoutMs,
       })

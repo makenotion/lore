@@ -39,14 +39,35 @@ each as its own `note` memory. Two `.lore.yaml` flags govern this behavior:
   Proposed memories line and the wake-up Proposed Memories section. Has no
   effect when `learningExtraction` is `false`.
 
+Autosave capture policy is separate from whether hooks are installed:
+
+- `hooks.memoryCaptureMode: durable` — default production mode. The autosave
+  prompt preserves durable engineering knowledge: gotchas, decisions, runbooks,
+  facts, and out-of-scope open loops.
+- `hooks.memoryCaptureMode: conversational` — explicit opt-in for broad chat
+  recall. The autosave prompt preserves user-stated preferences, personal or
+  work context, reminders, commitments, and other future-useful conversational
+  facts that the durable filter intentionally skips. Conversational capture
+  defaults auto-captured memory saves to `Status = proposed`; reviewers approve
+  or reject them before they enter default recall. Disabling learning extraction
+  also suppresses conversational capture and falls back to durable synopsis-only
+  autosave.
+
+Selecting `profile: conversational@1.0.0` without a `hooks.memoryCaptureMode`
+override also activates conversational autosave semantics, including proposed
+routing. Set `hooks.memoryCaptureMode: durable` explicitly only when you want
+that profile's non-hook surfaces without broad hook capture.
+
 ## Shared-vault hook configuration
 
 For shared-vault deployments where many engineers share a single Lore
-workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml`. This
-routes every auto-extracted learning through the proposed-memory review inbox
-(`Status = proposed`) instead of writing it directly to accepted recall. The
-trust boundary keeps a noisy session from polluting recall for everyone before
-a human reviewer approves the learning. Reviewers act on the inbox via
+workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml` for
+durable mode. This routes every auto-extracted learning through the
+proposed-memory review inbox (`Status = proposed`) instead of writing it
+directly to accepted recall. Conversational mode applies the proposed-memory
+route by default because broad recall can be noisier than engineering autosave.
+The trust boundary keeps a noisy session from polluting recall for everyone
+before a human reviewer approves the learning. Reviewers act on the inbox via
 `lore inbox list` / `lore inbox approve <id>` /
 `lore inbox reject <id>` / `lore inbox archive <id>` (CLI), or
 `lore-memory action='approve'` / `lore-memory action='reject'` (MCP); both

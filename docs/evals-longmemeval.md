@@ -87,8 +87,11 @@ cost + drift gate are trusted.
 ### Ingestion Strategies
 
 Three strategies ship; the suite YAML's `ingestion.strategy` chooses between
-them. All produce the same artifact shape; the `config.ingestion.strategy` and
-`config.ingestion.seam` fields record which path produced the numbers.
+them. `lore-mine` can also set `ingestion.memoryCaptureMode:
+conversational` to compare production autosave's durable filter with the
+opt-in conversational recall filter on the same corpus. All produce the same
+artifact shape; the `config.ingestion.strategy` and `config.ingestion.seam`
+fields record which path produced the numbers.
 
 - **`lore-mine`** (V1 default,
   [`longmemeval.yaml`](../evals/bench-suites/longmemeval.yaml)) -- each session
@@ -100,6 +103,15 @@ them. All produce the same artifact shape; the `config.ingestion.strategy` and
   memory per ~30-session haystack and the agent recalls little. This number
   measures "Lore's production filter against the LongMemEval workload" -- honest
   but not directly comparable to memory systems that ingest every token.
+- **`lore-mine` + `memoryCaptureMode: conversational`**
+  ([`longmemeval-conversational-autosave.yaml`](../evals/bench-suites/longmemeval-conversational-autosave.yaml))
+  -- each session still runs through `runConversationMining` and the hook-native
+  background-agent path, but the autosave prompt uses the opt-in conversational
+  recall policy. This is the product-path comparison for user preferences,
+  casual facts, personal details, and LongMemEval-style chat memory without
+  bypassing the production write seam. Bench sandboxes force these writes to
+  accepted status so the retrieval phase measures post-review recall quality
+  rather than proposed-inbox invisibility.
 - **`raw-transcript`**
   ([`longmemeval-raw-transcript.yaml`](../evals/bench-suites/longmemeval-raw-transcript.yaml))
   -- each haystack session is stored verbatim as one memory (title
@@ -123,10 +135,12 @@ them. All produce the same artifact shape; the `config.ingestion.strategy` and
 All strategies share the same per-example / per-suite write caps and the same
 retrieval surface (the agent does not know which path populated the vault).
 Publishing a number alongside a Zep-comparable headline means picking
-`raw-transcript`; publishing a number that reflects what Lore writes in
-production means picking `lore-mine`. Use `simulated-autosave` when comparing
-against systems that enrich conversation turns at ingest time, and report the
-production-filter bypass trade-off with the result.
+`raw-transcript`; publishing a number that reflects default Lore production
+autosave means picking `lore-mine`; publishing the opt-in conversational product
+path means picking `longmemeval-conversational-autosave.yaml`. Use
+`simulated-autosave` when comparing against systems that enrich conversation
+turns at ingest time, and report the production-filter bypass trade-off with
+the result.
 
 Manual comparison for `simulated-autosave`: run the simulated suite and the
 same-sample wake-up suite with the same `--limit` and artifact paths, then

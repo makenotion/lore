@@ -9,6 +9,10 @@
 import { safeFilenameSegment } from "./marker-key.js"
 import { indentUntrustedText } from "./untrusted-text.js"
 import type { ResolvedPromptRegistry } from "../profile/index.js"
+import {
+  DEFAULT_MEMORY_CAPTURE_MODE,
+  type MemoryCaptureMode,
+} from "../memory-capture-mode.js"
 
 type SavePromptRegistry = Pick<
   ResolvedPromptRegistry,
@@ -33,7 +37,8 @@ function renderProfileTemplate(
  */
 export function buildProjectSelectionGuidance(
   subProjects: string[],
-  catchAllName: string | null
+  catchAllName: string | null,
+  options?: { memoryCaptureMode?: MemoryCaptureMode }
 ): string {
   if (subProjects.length === 0 && !catchAllName) return ""
 
@@ -47,10 +52,17 @@ export function buildProjectSelectionGuidance(
         `Never default to it for sub-project-specific memories.`
     )
   }
-  lines.push(
-    `Pass projectName (single sub-project) or projectNames (multiple) on every lore-memory / lore-fact / lore-decision / lore-task call. ` +
-      `If work spans multiple sub-projects, prefer multi-project saves over the catch-all.`
-  )
+  if (options?.memoryCaptureMode === "conversational") {
+    lines.push(
+      `For user-wide preferences or personal context, leave project scope empty so recall works outside this repo. ` +
+        `Pass projectName or projectNames only when the recalled fact is clearly about configured project work.`
+    )
+  } else {
+    lines.push(
+      `Pass projectName (single sub-project) or projectNames (multiple) on every lore-memory / lore-fact / lore-decision / lore-task call. ` +
+        `If work spans multiple sub-projects, prefer multi-project saves over the catch-all.`
+    )
+  }
   return lines.join("\n")
 }
 
@@ -157,6 +169,36 @@ If the session produced none of these, respond exactly "No Lore context to save.
 }
 
 /**
+ * Recall-oriented filter used only when an operator explicitly opts into
+ * conversational capture. It is intentionally separate from the durable
+ * engineering filter so default autosave behavior remains byte-stable.
+ */
+function buildConversationalExtractionFilter(): string {
+  return `You are not logging the session. You are extracting conversational recall facts from it. A good memory helps a future assistant remember the user, their preferences, commitments, or stable context without rereading the chat.
+
+Save only details the user stated or clearly confirmed, such as:
+1. Preferences, dislikes, communication style, recurring choices, or explicit corrections
+2. Stable personal or work context: roles, names, relationships, places, teams, accounts, or long-running projects
+3. Plans, commitments, deadlines, reminders, or follow-ups the user expects future sessions to honor
+4. Reusable constraints for future conversations: accessibility needs, tools, formatting expectations, or durable operating preferences
+5. "Remember this" / "forget this" instructions or corrections to prior memory
+
+Do not save:
+1. Secrets, credentials, tokens, private keys, or authentication material
+2. Highly sensitive personal data unless the user explicitly asked Lore to remember it
+3. One-off moods, jokes, pleasantries, transient small talk, or facts useful only inside this conversation
+4. Speculation about the user or facts inferred from weak signals
+5. Full transcript summaries or "we talked about..." session narration
+
+Prefer one atomic memory per recall fact. If the session produced no recall-relevant user fact, respond exactly "No Lore context to save." and stop.`
+}
+
+function buildConversationalStatusGuidance(proposeByDefault: boolean): string {
+  if (!proposeByDefault) return ""
+  return `\n\nConversational capture is broad. Pass status: "proposed" on every lore-memory action='save' call in this mode so broad recall candidates land in the review inbox before entering default recall.`
+}
+
+/**
  * Single source of truth for sourceMemoryId wording. Kept in its own helper
  * so future contract wording changes stay in one helper-body edit rather
  * than a merge across multiple inline bullet sentences (which are also
@@ -202,6 +244,24 @@ Fill every field you can confidently populate — empty fields hurt recall later
 If any tool result begins with \`WriteBudgetExceeded:\`, stop calling tools and exit normally. The MCP server has enforced its per-session mutation cap and any further write call will be rejected.`
 }
 
+function buildConversationalToolGuidance(proposeByDefault: boolean): string {
+  const statusClause = proposeByDefault
+    ? ` Pass status: "proposed" for review-inbox routing.`
+    : ""
+  return `When a save is warranted, call lore-* tools now. For each one, pick the project based on the user's context when a configured project clearly applies; otherwise leave project scope empty rather than forcing a repo bucket.
+
+• lore-memory action='save' — Save one user-stated recall fact. Pass kind: "note", source: "conversation", confidence: "likely", relevant tags/keywords, and topicName when a durable topic exists.${statusClause}
+• lore-fact action='create' — Use only for durable entity relationships that will help retrieval, and only after saving or finding a source memory. Do not turn every personal preference into a fact edge.
+• lore-decision action='create' — Use only when the user makes an explicit durable decision with rationale and consequences.
+• lore-task action='create' — Use only for explicit future work, reminders, or blocked commitments the user expects Lore to track. Do not invent tasks from casual mentions.
+
+${buildSourceLinkGuidance()}
+
+Fill every field you can confidently populate. Leave a field empty when you'd be guessing, and never save sensitive material just to fill a schema slot.
+
+If any tool result begins with \`WriteBudgetExceeded:\`, stop calling tools and exit normally. The MCP server has enforced its per-session mutation cap and any further write call will be rejected.`
+}
+
 /**
  * Per-spawn cap for atomic learnings the autosave sub-agent may save in one
  * run. Hard-coded into `buildLearningExtractionGuidance` via string
@@ -243,11 +303,37 @@ export const PER_SPAWN_LEARNING_LIMIT = 5
 function buildLearningExtractionGuidance(opts?: {
   proposeByDefault?: boolean
   template?: string
+  memoryCaptureMode?: MemoryCaptureMode
 }): string {
   const statusLine =
     opts?.proposeByDefault === true
       ? `\n  - status: "proposed" (review-inbox routing — this fleet is configured to gate auto-extracted learnings on human or authorized-agent approval before they enter default recall)`
       : ""
+  if (opts?.memoryCaptureMode === "conversational" && !opts.template) {
+    return `In addition to any other warranted save, identify *conversational recall facts* — single-fact user details from this session that would help a future assistant personalize, honor preferences, or follow through without asking again. Examples:
+
+  - "The user prefers concise technical answers with file references."
+  - "The user's partner is named Jamie."
+  - "The user wants reminders about quarterly tax deadlines."
+  - "The user uses Arc for browsing and VS Code for TypeScript work."
+
+For each recall fact, call \`lore-memory action='save'\` with:
+  - title: short noun-led phrase <= 80 chars
+  - content: 1-3 sentences with the fact + minimal context, written as something future sessions can rely on
+  - kind: "note"
+  - source: "conversation"
+  - confidence: "likely" (required for autosave recall dedup; do not bump to "certain" even when the user explicitly says to remember the fact)${statusLine}
+
+A recall fact must be:
+  1. **Atomic.** One fact, one memory. Split compound statements.
+  2. **User-stated.** Save what the user said or clearly confirmed; do not infer personality, health, finances, identity, or intent from weak signals.
+  3. **Future-useful.** Useful beyond this chat. Skip pleasantries, ephemeral moods, throwaway jokes, and facts needed only for the current request.
+  4. **Non-redundant against persisted state.** Skip a candidate only if a near-match already exists or the user asked to forget it. Call \`lore-query action='search'\` with distinctive terms to check older memories when uncertain.
+
+**Per-spawn cap: at most ${PER_SPAWN_LEARNING_LIMIT} conversational recall facts per autosave run.** Rank by future usefulness and user explicitness. Do not fill the cap with weak or sensitive candidates.
+
+If this session produced no recall-relevant facts, skip the per-fact saves entirely.`
+  }
   if (opts?.template) {
     return renderProfileTemplate(opts.template, {
       limit: String(PER_SPAWN_LEARNING_LIMIT),
@@ -285,25 +371,27 @@ If this session produced no atomic learnings (a routine task, status check, unbl
  * only reference tools that are actually in the allowlist (the
  * `spawnBackgroundSave` helper carries the canonical list).
  *
- * `options.extractLearnings` — when true (default) appends the
- * atomic-learning extraction block. When false, the prompt reproduces
- * the synopsis-only shape byte-for-byte. Toggled by the dual kill
+ * `options.extractLearnings` — when true (default) appends the extraction
+ * block for the active capture mode. When false in durable mode, the prompt
+ * reproduces the synopsis-only shape byte-for-byte. Toggled by the dual kill
  * switches (`LORE_DISABLE_LEARNING_EXTRACTION=1` env var or
- * `hooks.learningExtraction: false` in .lore.yaml); resolved by the
- * hook helpers.
+ * `hooks.learningExtraction: false` in .lore.yaml); resolved by the hook
+ * helpers.
  *
- * `options.proposeLearnings` — when true (default false) instructs
- * the sub-agent to set `status: "proposed"` on every atomic-learning
- * save so the rows land in the review inbox instead of default
- * recall. Resolved by the helper layer from
- * `hooks.proposeAutosaveLearnings` in .lore.yaml. Has no effect
- * when `extractLearnings` is false — the learning block is omitted
- * entirely in that case.
+ * `options.proposeLearnings` — when true instructs the sub-agent to set
+ * `status: "proposed"` on autosave memory saves so the rows land in the
+ * review inbox instead of default recall. When omitted, durable mode
+ * defaults to false and conversational mode defaults to true. Has no
+ * effect on the learning block when `extractLearnings` is false.
  *
  * `options.authorName` — engineer-author display name to inject into
  * the identity block (DEFERRED-ATTRIBUTION). Resolved by the caller
  * via `deriveAuthorName` from `LORE_USER_NAME` env; absence is the
  * no-op pre-DEFERRED-ATTRIBUTION shape.
+ *
+ * `options.memoryCaptureMode` — defaults to the durable engineering
+ * autosave filter. `conversational` is an explicit opt-in for
+ * recall-oriented user facts and preferences.
  */
 export function buildBackgroundSavePrompt(
   subProjects: string[],
@@ -316,17 +404,34 @@ export function buildBackgroundSavePrompt(
     proposeLearnings?: boolean
     authorName?: string
     profilePrompts?: SavePromptRegistry
+    memoryCaptureMode?: MemoryCaptureMode
   }
 ): string {
   const identitySection = buildIdentityBlock(sessionId, agentName, options?.authorName)
-  const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)
   const prompts = options?.profilePrompts
-  const filter = prompts?.autosaveExtractionFilter.text ?? buildExtractionFilter()
+  const memoryCaptureMode = options?.memoryCaptureMode ?? DEFAULT_MEMORY_CAPTURE_MODE
+  const conversationalCaptureEnabled =
+    memoryCaptureMode === "conversational" && options?.extractLearnings !== false
+  const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName, {
+    memoryCaptureMode: conversationalCaptureEnabled ? "conversational" : "durable",
+  })
+  const proposeLearnings = options?.proposeLearnings ?? conversationalCaptureEnabled
+  const filter = conversationalCaptureEnabled
+    ? buildConversationalExtractionFilter()
+    : (prompts?.autosaveExtractionFilter.text ?? buildExtractionFilter())
+  const statusGuidance = conversationalCaptureEnabled
+    ? buildConversationalStatusGuidance(proposeLearnings)
+    : ""
+  const learningTemplate = conversationalCaptureEnabled
+    ? undefined
+    : prompts?.atomicLearningExtraction.text
   const learningGuidance =
     options?.extractLearnings !== false
-      ? `\n\n${buildLearningExtractionGuidance({ proposeByDefault: options?.proposeLearnings === true, template: prompts?.atomicLearningExtraction.text })}`
+      ? `\n\n${buildLearningExtractionGuidance({ proposeByDefault: proposeLearnings, template: learningTemplate, memoryCaptureMode: conversationalCaptureEnabled ? "conversational" : "durable" })}`
       : ""
-  const tools = prompts?.autosaveToolGuidance.text ?? buildToolGuidance()
+  const tools = conversationalCaptureEnabled
+    ? buildConversationalToolGuidance(proposeLearnings)
+    : (prompts?.autosaveToolGuidance.text ?? buildToolGuidance())
 
   return `[Lore autosave] You are reviewing a Claude Code or Codex session in progress.
 
@@ -337,7 +442,7 @@ ${indentUntrustedText(sessionContent)}
 
 Assess whether this session produced context worth saving.${identitySection}${projectSection}
 
-${filter}${learningGuidance}
+${filter}${statusGuidance}${learningGuidance}
 
 ${tools}
 

@@ -172,6 +172,7 @@ function defaultConfig(overrides: Partial<HookConfig> = {}): HookConfig {
     autoDigest: true,
     learningExtraction: true,
     proposeAutosaveLearnings: false,
+    memoryCaptureMode: "durable",
     backgroundAgent: {
       command: DEFAULT_BACKGROUND_COMMAND,
       args: [...DEFAULT_BACKGROUND_ARGS],
@@ -876,6 +877,22 @@ describe("handleStop", () => {
     return options?.extractLearnings
   }
 
+  function lastPromptOptions(): {
+    extractLearnings?: boolean
+    proposeLearnings?: boolean
+    memoryCaptureMode?: "durable" | "conversational"
+    profilePrompts?: unknown
+  } {
+    expect(buildBackgroundSavePromptMock).toHaveBeenCalled()
+    const call = buildBackgroundSavePromptMock.mock.calls.at(-1)!
+    return (call[5] ?? {}) as {
+      extractLearnings?: boolean
+      proposeLearnings?: boolean
+      memoryCaptureMode?: "durable" | "conversational"
+      profilePrompts?: unknown
+    }
+  }
+
   it("passes extractLearnings: true to buildBackgroundSavePrompt by default", async () => {
     writeTranscript(transcriptPath, 3)
     await handleStop(
@@ -888,6 +905,137 @@ describe("handleStop", () => {
     )
 
     expect(lastExtractLearnings()).toBe(true)
+  })
+
+  it("passes memoryCaptureMode to buildBackgroundSavePrompt", async () => {
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-conversational-mode",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ memoryCaptureMode: "conversational" })
+    )
+
+    expect(lastPromptOptions()).toMatchObject({
+      extractLearnings: true,
+      memoryCaptureMode: "conversational",
+    })
+    expect(lastPromptOptions().proposeLearnings).toBeUndefined()
+  })
+
+  it("treats the built-in conversational profile as conversational capture when hooks do not override mode", async () => {
+    const context = failureContext(tmpDir)
+    context.config.profile = "conversational@1.0.0"
+    context.config.hooks = {}
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-conversational-profile-mode",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ memoryCaptureMode: "durable" }),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    expect(lastPromptOptions().memoryCaptureMode).toBe("conversational")
+    expect(lastPromptOptions().profilePrompts).toBeUndefined()
+  })
+
+  it("lets hooks.memoryCaptureMode override the built-in conversational profile without broad autosave prompts", async () => {
+    const context = failureContext(tmpDir)
+    context.config.profile = "conversational@1.0.0"
+    context.config.hooks = { memoryCaptureMode: "durable" }
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-conversational-profile-durable-override",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ memoryCaptureMode: "durable" }),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    const options = lastPromptOptions()
+    expect(options.memoryCaptureMode).toBe("durable")
+    expect(options.profilePrompts).toBeUndefined()
+
+    const actualPrompts =
+      await vi.importActual<typeof import("./prompts.js")>("./prompts.js")
+    const rendered = actualPrompts.buildBackgroundSavePrompt(
+      [],
+      null,
+      "User: Please remember that my partner is Jamie.",
+      "sess-conversational-profile-durable-override",
+      "Codex",
+      {
+        extractLearnings: options.extractLearnings,
+        proposeLearnings: options.proposeLearnings,
+        memoryCaptureMode: options.memoryCaptureMode,
+      }
+    )
+    expect(rendered).toContain("Do not paraphrase the session")
+    expect(rendered).not.toContain("conversational recall facts")
+    expect(rendered).not.toContain(`status: "proposed"`)
+  })
+
+  it("falls back to durable synopsis-only autosave when the conversational profile has learning extraction disabled", async () => {
+    const context = failureContext(tmpDir)
+    context.config.profile = "conversational@1.0.0"
+    context.config.hooks = { learningExtraction: false }
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-conversational-profile-learning-disabled",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ learningExtraction: false, memoryCaptureMode: "durable" }),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    const options = lastPromptOptions()
+    expect(options.extractLearnings).toBe(false)
+    expect(options.memoryCaptureMode).toBe("conversational")
+    expect(options.profilePrompts).toBeUndefined()
+
+    const actualPrompts =
+      await vi.importActual<typeof import("./prompts.js")>("./prompts.js")
+    const rendered = actualPrompts.buildBackgroundSavePrompt(
+      [],
+      null,
+      "User: Please remember that my partner is Jamie.",
+      "sess-conversational-profile-learning-disabled",
+      "Codex",
+      {
+        extractLearnings: options.extractLearnings,
+        proposeLearnings: options.proposeLearnings,
+        memoryCaptureMode: options.memoryCaptureMode,
+      }
+    )
+    expect(rendered).toContain("Do not paraphrase the session")
+    expect(rendered).not.toContain("conversational recall facts")
+    expect(rendered).not.toContain(`status: "proposed"`)
+  })
+
+  it("passes explicit proposeLearnings only when the proposed-learning knob is enabled", async () => {
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-propose-learnings",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ proposeAutosaveLearnings: true })
+    )
+
+    expect(lastPromptOptions().proposeLearnings).toBe(true)
   })
 
   it("resolves installed external profile prompts for Stop autosave", async () => {

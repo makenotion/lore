@@ -126,6 +126,12 @@ describe("buildHookYamlCommentBefore (yaml-lib commentBefore shape)", () => {
     expect(text).toContain("setting it to `false` is invalid")
   })
 
+  it("describes the opt-in memoryCaptureMode values", () => {
+    const text = buildHookYamlCommentBefore()
+    expect(text).toContain("memoryCaptureMode: durable | conversational")
+    expect(text).toContain("broad recall for user facts")
+  })
+
   it("names every default-true hook and every env override", () => {
     const text = buildHookYamlCommentBefore()
     for (const row of HOOK_DISCLOSURE_ROWS) {

@@ -134,3 +134,6 @@ hooks:
   # Honors LORE_DISABLE_LEARNING_EXTRACTION=1 as well — either knob set to
   # disabled wins.
   # learningExtraction: true
+  # proposeAutosaveLearnings: false
+  # memoryCaptureMode: durable  # set to conversational for user preferences,
+  # personal facts, and broad chat-memory recall.

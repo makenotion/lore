@@ -15,6 +15,7 @@ describe("mergeHookDefaults", () => {
     expect(config.autoSave).toBe(true)
     expect(config.autoDigest).toBe(true)
     expect(config.learningExtraction).toBe(true)
+    expect(config.memoryCaptureMode).toBe("durable")
     expect(config.saveInterval).toBe(5)
     expect(config.catchAllName).toBeNull()
     expect(config.subProjects).toEqual([])
@@ -71,6 +72,14 @@ describe("mergeHookDefaults", () => {
     expect(config.learningExtraction).toBe(true)
     expect(config.autoSave).toBe(true)
     expect(config.autoDigest).toBe(true)
+  })
+
+  it("respects hooks.memoryCaptureMode: conversational without affecting other knobs", () => {
+    const config = mergeHookDefaults({ memoryCaptureMode: "conversational" })
+    expect(config.memoryCaptureMode).toBe("conversational")
+    expect(config.learningExtraction).toBe(true)
+    expect(config.proposeAutosaveLearnings).toBe(false)
+    expect(config.autoSave).toBe(true)
   })
 
   it("respects hooks.autoDigest: false without affecting autoSave", () => {

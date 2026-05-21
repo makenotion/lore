@@ -37,6 +37,7 @@ function buildArtifact(overrides: Partial<BenchRunArtifact> = {}): BenchRunArtif
       },
       ingestion: {
         strategy: "lore-mine",
+        memoryCaptureMode: "durable",
         seam: "runConversationMining",
         temporalApproach: "C-caveat-only",
         vault: "bench-sandbox",
@@ -199,11 +200,21 @@ describe("computeConfigHash", () => {
     expect(computeConfigHash(modified)).not.toBe(computeConfigHash(baseline))
   })
 
+  it("changes when ingestion memoryCaptureMode changes", () => {
+    const baseline = buildArtifact().config
+    const modified = {
+      ...baseline,
+      ingestion: { ...baseline.ingestion, memoryCaptureMode: "conversational" },
+    }
+    expect(computeConfigHash(modified)).not.toBe(computeConfigHash(baseline))
+  })
+
   it("changes when simulated-autosave extraction config changes", () => {
     const baseline = {
       ...buildArtifact().config,
       ingestion: {
         strategy: "simulated-autosave",
+        memoryCaptureMode: "durable",
         seam: "structured-extract-create-with-auto-mentions",
         temporalApproach: "C-caveat-only",
         vault: "bench-sandbox",

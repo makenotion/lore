@@ -233,6 +233,19 @@ memoryKinds:
     expect(profile.prompts.atomicLearningExtraction.source).toBe("core-default")
   })
 
+  it("resolves the built-in conversational profile by exact selector", () => {
+    const profile = resolveProfileFromConfig({ profile: "conversational@1.0.0" })
+
+    expect(profile.selector).toBe("conversational@1.0.0")
+    expect(profile.source).toBe("built-in")
+    expect(profile.taxonomy.tags).toContain("architecture")
+    expect(profile.prompts.autosaveExtractionFilter.source).toBe("active-profile")
+    expect(profile.prompts.autosaveExtractionFilter.text).toContain(
+      "conversational recall facts"
+    )
+    expect(profile.prompts.atomicLearningExtraction.source).toBe("active-profile")
+  })
+
   it("rejects an exact built-in selector whose version does not match the bundle", () => {
     expect(() => resolveProfileFromConfig({ profile: "support@9.9.9" })).toThrow(
       /does not match/

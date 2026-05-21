@@ -243,6 +243,14 @@ describe("bench suite schema ingestion extraction fields", () => {
     expect(loaded.suite.ingestion.strategy).toBe("simulated-autosave")
   })
 
+  it("validates the committed conversational autosave suite", async () => {
+    const loaded = await loadBenchSuite(
+      "evals/bench-suites/longmemeval-conversational-autosave.yaml"
+    )
+    expect(loaded.suite.ingestion.strategy).toBe("lore-mine")
+    expect(loaded.suite.ingestion.memoryCaptureMode).toBe("conversational")
+  })
+
   it("accepts simulated-autosave with required extraction fields", () => {
     const parsed = benchSuiteSchema.parse({
       ...BENCH_BASE,
@@ -254,6 +262,33 @@ describe("bench suite schema ingestion extraction fields", () => {
       },
     })
     expect(parsed.ingestion.strategy).toBe("simulated-autosave")
+  })
+
+  it("accepts conversational memory capture mode for lore-mine ingestion", () => {
+    const parsed = benchSuiteSchema.parse({
+      ...BENCH_BASE,
+      ingestion: {
+        strategy: "lore-mine",
+        memoryCaptureMode: "conversational",
+      },
+    })
+    expect(parsed.ingestion.memoryCaptureMode).toBe("conversational")
+  })
+
+  it("rejects memoryCaptureMode outside lore-mine ingestion", () => {
+    const result = benchSuiteSchema.safeParse({
+      ...BENCH_BASE,
+      ingestion: {
+        strategy: "raw-transcript",
+        memoryCaptureMode: "conversational",
+      },
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.message)).toContain(
+        'memoryCaptureMode is only valid when ingestion.strategy is "lore-mine"'
+      )
+    }
   })
 
   it("accepts optional profile metadata on bench suites", () => {

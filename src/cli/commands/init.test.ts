@@ -116,7 +116,14 @@ describe("buildInitConfigYaml", () => {
     )
   })
 
-  it("places both commented-default lines AFTER the saveInterval entry inside hooks", () => {
+  it("includes the memoryCaptureMode commented-default line under hooks: (issue #897)", () => {
+    const text = buildInitConfigYaml("abc123")
+    expect(text).toContain(
+      "  # memoryCaptureMode: durable  # issue #897 — opt into conversational recall with `conversational`"
+    )
+  })
+
+  it("places commented-default lines AFTER the saveInterval entry inside hooks", () => {
     // Order is contract: an operator scanning the hooks: block reads
     // the active settings first, then the commented opt-outs. Snapshotting
     // the slice from `hooks:` to the comments defends against a future
@@ -126,10 +133,12 @@ describe("buildInitConfigYaml", () => {
     const saveIntervalIdx = text.indexOf("saveInterval: 5")
     const commentIdx = text.indexOf("# learningExtraction:")
     const proposeIdx = text.indexOf("# proposeAutosaveLearnings:")
+    const modeIdx = text.indexOf("# memoryCaptureMode:")
     expect(hooksIdx).toBeGreaterThan(-1)
     expect(saveIntervalIdx).toBeGreaterThan(hooksIdx)
     expect(commentIdx).toBeGreaterThan(saveIntervalIdx)
     expect(proposeIdx).toBeGreaterThan(commentIdx)
+    expect(modeIdx).toBeGreaterThan(proposeIdx)
   })
 
   it("emits a YAML document whose comment-stripped re-parse matches the typed shape", () => {
@@ -137,12 +146,14 @@ describe("buildInitConfigYaml", () => {
     // `YAMLMap.comment` renders: if either commented line somehow
     // leaked into the active config (e.g. wrong escape, missing `#`),
     // `yamlParse` would either throw or return an extra
-    // `learningExtraction` / `proposeAutosaveLearnings` key. Both
+    // `learningExtraction` / `proposeAutosaveLearnings` /
+    // `memoryCaptureMode` key. Both
     // would fail this assertion.
     const text = buildInitConfigYaml("abc123")
     const parsed = yamlParse(text) as { hooks: Record<string, unknown> }
     expect(parsed.hooks).not.toHaveProperty("learningExtraction")
     expect(parsed.hooks).not.toHaveProperty("proposeAutosaveLearnings")
+    expect(parsed.hooks).not.toHaveProperty("memoryCaptureMode")
     expect(Object.keys(parsed.hooks).sort()).toEqual([
       "autoSave",
       "saveInterval",
