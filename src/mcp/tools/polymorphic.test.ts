@@ -2234,7 +2234,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
     )
   })
 
-  it("rejects synopsis longer than 500 chars at the dispatch boundary on every write tool", async () => {
+  it("rejects synopsis above each tool's dispatch cap on every write tool", async () => {
     const overCap = "x".repeat(501)
     const cases: Array<{ tool: string; args: Record<string, unknown> }> = [
       {

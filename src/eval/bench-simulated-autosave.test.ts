@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { TAG_VOCABULARY, SYNOPSIS_MAX } from "../types.js"
+import { DEFAULT_MEMORY_SYNOPSIS_MAX, TAG_VOCABULARY } from "../types.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "../core/rich-text-schema.js"
 import {
   FetchBenchExtractionClient,
@@ -221,7 +221,7 @@ describe("normalizeSimulatedAutosaveMemories", () => {
         memories: [
           {
             title: ` ${"T".repeat(90)} `,
-            synopsis: "S".repeat(SYNOPSIS_MAX + 20),
+            synopsis: "S".repeat(DEFAULT_MEMORY_SYNOPSIS_MAX + 20),
             keywords: "PR-1234   beta",
             tags: ["backend", "personal", "backend"],
             content: "  User prefers the Notion API path. ",
@@ -244,7 +244,7 @@ describe("normalizeSimulatedAutosaveMemories", () => {
       agent: "bench-simulated-autosave",
       autosaveLearningDedupScope: "off",
     })
-    expect(plans[0]?.createInput.synopsis).toHaveLength(SYNOPSIS_MAX)
+    expect(plans[0]?.createInput.synopsis).toHaveLength(DEFAULT_MEMORY_SYNOPSIS_MAX)
     expect(plans[0]?.createInput.keywords).toContain("PR-1234 beta")
     expect(plans[0]?.createInput.keywords).toContain("Notion API")
     expect(plans[0]?.createInput.keywords).toContain("personal")

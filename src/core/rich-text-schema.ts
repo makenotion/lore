@@ -23,10 +23,12 @@ export function richTextPropertySchema(fieldName: string): z.ZodString {
   )
 }
 
-function synopsisPropertySchema(): z.ZodString {
-  return z
-    .string()
-    .max(SYNOPSIS_MAX, `synopsis must be ${SYNOPSIS_MAX} characters or fewer.`)
+export interface RichTextMetadataValidationOptions {
+  synopsisMaxChars?: number
+}
+
+function synopsisPropertySchema(maxChars = SYNOPSIS_MAX): z.ZodString {
+  return z.string().max(maxChars, `synopsis must be ${maxChars} characters or fewer.`)
 }
 
 type RichTextMetadataField =
@@ -42,21 +44,24 @@ type RichTextMetadataField =
   | "topicKey"
   | "promotionSourceKey"
 
-const richTextMetadataFieldsSchema = z
-  .object({
-    alternatives: richTextPropertySchema("alternatives").optional(),
-    consequences: richTextPropertySchema("consequences").optional(),
-    author: richTextPropertySchema("author").optional(),
-    agent: richTextPropertySchema("agent").optional(),
-    keywords: richTextPropertySchema("keywords").optional(),
-    synopsis: synopsisPropertySchema().optional(),
-    session: richTextPropertySchema("session").optional(),
-    blockedBy: richTextPropertySchema("blockedBy").optional(),
-    entity: richTextPropertySchema("entity").optional(),
-    topicKey: richTextPropertySchema("topicKey").optional(),
-    promotionSourceKey: richTextPropertySchema("promotionSourceKey").optional(),
-  })
-  .passthrough()
+function richTextMetadataFieldsSchema(options: RichTextMetadataValidationOptions = {}) {
+  const synopsisMaxChars = options.synopsisMaxChars ?? SYNOPSIS_MAX
+  return z
+    .object({
+      alternatives: richTextPropertySchema("alternatives").optional(),
+      consequences: richTextPropertySchema("consequences").optional(),
+      author: richTextPropertySchema("author").optional(),
+      agent: richTextPropertySchema("agent").optional(),
+      keywords: richTextPropertySchema("keywords").optional(),
+      synopsis: synopsisPropertySchema(synopsisMaxChars).optional(),
+      session: richTextPropertySchema("session").optional(),
+      blockedBy: richTextPropertySchema("blockedBy").optional(),
+      entity: richTextPropertySchema("entity").optional(),
+      topicKey: richTextPropertySchema("topicKey").optional(),
+      promotionSourceKey: richTextPropertySchema("promotionSourceKey").optional(),
+    })
+    .passthrough()
+}
 
 function isRichTextMetadataFieldName(
   fieldName: string
@@ -91,9 +96,10 @@ function formatRichTextMetadataIssue(issue: z.ZodIssue): string {
  */
 export function validateRichTextMetadataFields(
   input: Partial<Record<RichTextMetadataField, string | undefined>>,
-  caller: string
+  caller: string,
+  options: RichTextMetadataValidationOptions = {}
 ): void {
-  const result = richTextMetadataFieldsSchema.safeParse(input)
+  const result = richTextMetadataFieldsSchema(options).safeParse(input)
   if (result.success) return
 
   const message = result.error.issues

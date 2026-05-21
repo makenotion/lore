@@ -156,6 +156,15 @@ export interface CostTrackingConfig {
   pricing?: CostTrackingPricingConfig
 }
 
+export interface MemoryAuthoringConfig {
+  /**
+   * Maximum characters accepted for `lore-memory` synopses on save/update.
+   * Defaults to 150 so wake-up and recall stay scan-friendly. May be raised
+   * up to the structural `SYNOPSIS_MAX` storage ceiling.
+   */
+  synopsisMaxChars?: number
+}
+
 export interface LoreConfig {
   vault: {
     pageId: string
@@ -185,6 +194,11 @@ export interface LoreConfig {
    * Notion page bodies, or Notion response payloads.
    */
   costTracking?: CostTrackingConfig
+  /**
+   * Memory-authoring policy knobs. These affect plain `lore-memory` writes,
+   * not decision/task services that have their own synopsis surfaces.
+   */
+  memory?: MemoryAuthoringConfig
   /**
    * Read-only vaults whose memories can be inherited by topology-aware read
    * paths. The primary vault remains the only normal write target.

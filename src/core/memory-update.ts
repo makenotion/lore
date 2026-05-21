@@ -3,6 +3,7 @@
 
 import type { Client, CreatePageParameters } from "@notionhq/client"
 import type { Memory, UpdateMemoryInput } from "../types.js"
+import { DEFAULT_MEMORY_SYNOPSIS_MAX } from "../types.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
@@ -130,11 +131,14 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
 export class MemoryUpdate {
   constructor(
     private readonly client: Client,
-    private readonly deps: MemoryUpdateDeps
+    private readonly deps: MemoryUpdateDeps,
+    private readonly options: { synopsisMaxChars?: number } = {}
   ) {}
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
-    validateRichTextMetadataFields(input, "MemoryService.update")
+    validateRichTextMetadataFields(input, "MemoryService.update", {
+      synopsisMaxChars: this.options.synopsisMaxChars ?? DEFAULT_MEMORY_SYNOPSIS_MAX,
+    })
 
     await this.deps.preflightPinnedUpdate(id, input)
 

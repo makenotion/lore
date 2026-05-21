@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { formatDispatchError, toolError, withWakeUpCacheBump } from "../helpers.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "../../core/rich-text-schema.js"
-import { SYNOPSIS_MAX } from "../../types.js"
+import { resolveMemorySynopsisMaxChars } from "../../policy/memory-synopsis.js"
 import { clearableYmdDateSchema } from "./date-schema.js"
 import { notionPageIdSchema } from "../../notion/page-id-schema.js"
 import { scopeInputSchema } from "./scope-schema.js"
@@ -35,7 +35,10 @@ export { handleRecall, handleSearch } from "./memory/read.js"
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
   const tagsSchema = createTagsSchema(services.profile?.taxonomy.tags)
-  const memoryDispatchSchema = createMemoryDispatchSchema(tagsSchema)
+  const synopsisMaxChars = resolveMemorySynopsisMaxChars(services.config)
+  const memoryDispatchSchema = createMemoryDispatchSchema(tagsSchema, {
+    synopsisMaxChars,
+  })
 
   // -------------------------------------------------------------------------
   // lore-memory — polymorphic dispatcher
@@ -167,10 +170,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .describe("(save | update) Free-form keywords."),
         synopsis: z
           .string()
-          .max(SYNOPSIS_MAX)
+          .max(
+            synopsisMaxChars,
+            `synopsis must be ${synopsisMaxChars} characters or fewer.`
+          )
           .optional()
           .describe(
-            `(save | update) 1-2 sentence synopsis surfaced under the title on recall/search/wake-up listings (≤${SYNOPSIS_MAX} chars). On update, omit to keep, pass empty string to clear.`
+            `(save | update) 1-2 sentence synopsis surfaced under the title on recall/search/wake-up listings (≤${synopsisMaxChars} chars). On update, omit to keep, pass empty string to clear.`
           ),
         author: z
           .string()

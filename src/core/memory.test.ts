@@ -34,6 +34,7 @@ import { AutosaveLearningDuplicateProbeError } from "./near-duplicate.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
 import {
   PINNED_BLOCKS_HARD_CAP,
+  DEFAULT_MEMORY_SYNOPSIS_MAX,
   SYNOPSIS_MAX,
   type CreateMemoryInput,
   type DatabaseRef,
@@ -487,7 +488,11 @@ describe("MemoryService.create — rich_text metadata cap", () => {
           RICH_TEXT_PROPERTY_MAX_LEN,
         ] as const
     ),
-    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+    [
+      "synopsis",
+      { synopsis: "x".repeat(DEFAULT_MEMORY_SYNOPSIS_MAX + 1) },
+      DEFAULT_MEMORY_SYNOPSIS_MAX,
+    ],
   ]
 
   function makeCreateClient() {
@@ -530,9 +535,28 @@ describe("MemoryService.create — rich_text metadata cap", () => {
     }
   )
 
-  it("accepts synopsis at SYNOPSIS_MAX", async () => {
+  it("accepts synopsis at the default memory authoring cap", async () => {
     const { client, createSpy } = makeCreateClient()
     const service = new MemoryService(client, db)
+    const atCap = "x".repeat(DEFAULT_MEMORY_SYNOPSIS_MAX)
+
+    await service.create({
+      title: "Keep metadata capped",
+      content: "",
+      synopsis: atCap,
+    })
+
+    const props = createSpy.mock.calls[0]![0].properties as {
+      Synopsis: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Synopsis.rich_text[0].text.content).toBe(atCap)
+  })
+
+  it("accepts synopsis at an opt-up memory authoring cap", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db, undefined, {
+      synopsisMaxChars: SYNOPSIS_MAX,
+    })
     const atCap = "x".repeat(SYNOPSIS_MAX)
 
     await service.create({
@@ -1429,7 +1453,11 @@ describe("MemoryService.update — rich_text metadata cap", () => {
           RICH_TEXT_PROPERTY_MAX_LEN,
         ] as const
     ),
-    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+    [
+      "synopsis",
+      { synopsis: "x".repeat(DEFAULT_MEMORY_SYNOPSIS_MAX + 1) },
+      DEFAULT_MEMORY_SYNOPSIS_MAX,
+    ],
   ]
 
   function makeUpdateClient() {
@@ -1475,9 +1503,24 @@ describe("MemoryService.update — rich_text metadata cap", () => {
     }
   )
 
-  it("accepts synopsis at SYNOPSIS_MAX", async () => {
+  it("accepts synopsis at the default memory authoring cap", async () => {
     const { client, updateSpy } = makeUpdateClient()
     const service = new MemoryService(client, db)
+    const atCap = "x".repeat(DEFAULT_MEMORY_SYNOPSIS_MAX)
+
+    await service.update("mem-1", { synopsis: atCap })
+
+    const props = updateSpy.mock.calls[0]![0].properties as {
+      Synopsis: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Synopsis.rich_text[0].text.content).toBe(atCap)
+  })
+
+  it("accepts synopsis at an opt-up memory authoring cap", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db, undefined, {
+      synopsisMaxChars: SYNOPSIS_MAX,
+    })
     const atCap = "x".repeat(SYNOPSIS_MAX)
 
     await service.update("mem-1", { synopsis: atCap })
@@ -2690,7 +2733,11 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       { session: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) },
       RICH_TEXT_PROPERTY_MAX_LEN,
     ],
-    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+    [
+      "synopsis",
+      { synopsis: "x".repeat(DEFAULT_MEMORY_SYNOPSIS_MAX + 1) },
+      DEFAULT_MEMORY_SYNOPSIS_MAX,
+    ],
   ]
 
   it.each(upsertRejectCases)(

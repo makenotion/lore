@@ -28,6 +28,7 @@ import type {
   MemoryScopeContext,
   DatabaseRef,
 } from "../types.js"
+import { DEFAULT_MEMORY_SYNOPSIS_MAX } from "../types.js"
 import { EXPIRING_SOON_DAYS, MS_PER_DAY } from "../types.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
@@ -264,9 +265,10 @@ export class MemoryService {
     private client: Client,
     private db: DatabaseRef,
     scopeCtx?: MemoryScopeContext,
-    options?: { features?: LoreFeatureFlags }
+    options?: { features?: LoreFeatureFlags; synopsisMaxChars?: number }
   ) {
     this.features = options?.features ?? resolveFeatureFlags()
+    const synopsisMaxChars = options?.synopsisMaxChars ?? DEFAULT_MEMORY_SYNOPSIS_MAX
     this.mapper = new MemoryMapper(client)
     this.pinned = new MemoryPinned(
       client,
@@ -278,12 +280,18 @@ export class MemoryService {
     this.confidence = new MemoryConfidence(client, db, (page, content) =>
       this.pageToMemory(page, content)
     )
-    this.topicKey = new MemoryTopicKey(client, db, this.features, {
-      create: (input) => this.create(input),
-      getById: (id) => this.getById(id),
-      pageToMemory: (page, content) => this.pageToMemory(page, content),
-      titleCache: this.titleCache,
-    })
+    this.topicKey = new MemoryTopicKey(
+      client,
+      db,
+      this.features,
+      {
+        create: (input) => this.create(input),
+        getById: (id) => this.getById(id),
+        pageToMemory: (page, content) => this.pageToMemory(page, content),
+        titleCache: this.titleCache,
+      },
+      { synopsisMaxChars }
+    )
     this.compare = new MemoryCompare(client)
     this.lister = new MemoryList(
       client,
@@ -303,19 +311,29 @@ export class MemoryService {
       (pages, includeContent) => this.materializeMemories(pages, includeContent)
     )
     this.reviewer = new MemoryReview(client, (id) => this.getPropertiesById(id))
-    this.updater = new MemoryUpdate(client, {
-      preflightPinnedUpdate: (id, input) => this.pinned.preflightUpdate(id, input),
-      invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
-      deleteTitleCache: (id) => this.titleCache.delete(id),
-      setTitleCache: (id, title) => this.titleCache.set(id, title),
-      getById: (id) => this.getById(id),
-    })
-    this.creator = new MemoryCreate(client, db, this.features, {
-      duplicateLister: this.lister,
-      preflightPinnedCreate: (input) => this.pinned.preflightCreate(input),
-      invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
-      pageToMemory: (page, content) => this.pageToMemory(page, content),
-    })
+    this.updater = new MemoryUpdate(
+      client,
+      {
+        preflightPinnedUpdate: (id, input) => this.pinned.preflightUpdate(id, input),
+        invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
+        deleteTitleCache: (id) => this.titleCache.delete(id),
+        setTitleCache: (id, title) => this.titleCache.set(id, title),
+        getById: (id) => this.getById(id),
+      },
+      { synopsisMaxChars }
+    )
+    this.creator = new MemoryCreate(
+      client,
+      db,
+      this.features,
+      {
+        duplicateLister: this.lister,
+        preflightPinnedCreate: (input) => this.pinned.preflightCreate(input),
+        invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
+        pageToMemory: (page, content) => this.pageToMemory(page, content),
+      },
+      { synopsisMaxChars }
+    )
     if (scopeCtx) {
       this.scopeCtx = scopeCtx
       this.scopeFilterEnabled = true

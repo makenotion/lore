@@ -226,6 +226,38 @@ costTracking:
     })
   })
 
+  it("parses memory authoring policy config", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+memory:
+  synopsisMaxChars: 220
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.memory).toEqual({ synopsisMaxChars: 220 })
+  })
+
+  it("rejects memory synopsis caps outside the storage ceiling", () => {
+    expect(() =>
+      parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+memory:
+  synopsisMaxChars: 501
+`)
+    ).toThrow(/less than or equal to 500/)
+
+    expect(() =>
+      parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+memory:
+  synopsisMaxChars: 0
+`)
+    ).toThrow(/greater than or equal to 1/)
+  })
+
   it("keeps cost tracking disabled by default when omitted", () => {
     const { config, warnings } = parseConfigAllowingInvalidHooks(`
 vault:

@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { richTextPropertySchema } from "../../../core/rich-text-schema.js"
-import { SYNOPSIS_MAX } from "../../../types.js"
+import { DEFAULT_MEMORY_SYNOPSIS_MAX } from "../../../types.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "../date-schema.js"
 import { notionPageIdSchema } from "../../../notion/page-id-schema.js"
 import { scopeInputSchema } from "../scope-schema.js"
@@ -18,8 +18,13 @@ import {
 } from "./types.js"
 
 export function createMemoryDispatchSchema(
-  tagsSchema: ReturnType<typeof createTagsSchema>
+  tagsSchema: ReturnType<typeof createTagsSchema>,
+  options: { synopsisMaxChars?: number } = {}
 ) {
+  const synopsisMaxChars = options.synopsisMaxChars ?? DEFAULT_MEMORY_SYNOPSIS_MAX
+  const synopsisSchema = z
+    .string()
+    .max(synopsisMaxChars, `synopsis must be ${synopsisMaxChars} characters or fewer.`)
   return z.discriminatedUnion("action", [
     z.object({
       action: z.literal("save"),
@@ -40,7 +45,7 @@ export function createMemoryDispatchSchema(
       decidedAt: ymdDateSchema.optional(),
       tags: tagsSchema.optional(),
       keywords: keywordsSchema.optional(),
-      synopsis: z.string().max(SYNOPSIS_MAX).optional(),
+      synopsis: synopsisSchema.optional(),
       author: z.string().optional(),
       agent: z.string().optional(),
       session: z.string().optional(),
@@ -60,7 +65,7 @@ export function createMemoryDispatchSchema(
       content: z.string().optional(),
       tags: tagsSchema.optional(),
       keywords: keywordsSchema.optional(),
-      synopsis: z.string().max(SYNOPSIS_MAX).optional(),
+      synopsis: synopsisSchema.optional(),
       projectName: z.string().optional(),
       projectNames: z.array(z.string()).optional(),
       topicName: z.string().optional(),

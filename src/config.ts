@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path"
 import { parse as parseYaml, parseDocument } from "yaml"
 import { z } from "zod"
 import { parseProfileSelector } from "./profile/index.js"
+import { SYNOPSIS_MAX } from "./types/domain.js"
 import type { LoreConfig } from "./types.js"
 
 const CONFIG_FILENAME = ".lore.yaml"
@@ -115,6 +116,12 @@ const costTrackingConfigSchema = z
   })
   .optional()
 
+const memoryAuthoringConfigSchema = z
+  .object({
+    synopsisMaxChars: z.number().int().min(1).max(SYNOPSIS_MAX).optional(),
+  })
+  .optional()
+
 const configSchema = z.object({
   vault: z.object({
     pageId: pageIdSchema("vault.pageId is required"),
@@ -123,6 +130,7 @@ const configSchema = z.object({
   profiles: profilesConfigSchema,
   features: featuresConfigSchema,
   costTracking: costTrackingConfigSchema,
+  memory: memoryAuthoringConfigSchema,
   upstreamVaults: z
     .array(
       namedVaultRefSchema.extend({

@@ -413,15 +413,12 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
  * from the synopsis content; plain-text readers see the underscores
  * literally — still parseable, still readable.
  *
- * The synopsis is defensively truncated at `SYNOPSIS_MAX`. The service
- * layer accepts up to the Notion 2000-char ceiling and only the MCP
- * write Zod enforces the 500-char
- * soft cap — internal callers (bulk migrations, `--backfill-synopses`
- * synthesizer, future scripts) can write longer values, and a 1500-char
- * synopsis on a wake-up listing would blow up the page. Truncation
- * snaps back to the last word boundary at or before the cap. No
- * ellipsis marker is appended — adding `…` would diverge from how
- * other text fields handle truncation in this codebase.
+ * The synopsis is defensively truncated at `SYNOPSIS_MAX`. The normal
+ * memory authoring path rejects over-budget synopses before writing, but
+ * older rows, migrations, or direct Notion edits can still leave longer
+ * values behind. Truncation snaps back to the last word boundary at or
+ * before the cap. No ellipsis marker is appended — adding `…` would
+ * diverge from how other text fields handle truncation in this codebase.
  */
 export function formatMemoryListItem(
   memory: MemoryListItem,

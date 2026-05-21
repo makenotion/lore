@@ -1,5 +1,9 @@
 import { z } from "zod"
-import { SYNOPSIS_MAX, TAG_VOCABULARY, type CreateMemoryInput } from "../types.js"
+import {
+  DEFAULT_MEMORY_SYNOPSIS_MAX,
+  TAG_VOCABULARY,
+  type CreateMemoryInput,
+} from "../types.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "../core/rich-text-schema.js"
 import { MAX_AUTO_MENTION_ENTITIES } from "../core/auto-mentions.js"
 
@@ -396,7 +400,10 @@ function normalizeSimulatedAutosaveMemory(input: {
   const content = cleanText(input.memory.content)
   if (title.length === 0 || content.length === 0) return null
 
-  const synopsis = capString(cleanText(input.memory.synopsis), SYNOPSIS_MAX)
+  const synopsis = capString(
+    cleanText(input.memory.synopsis),
+    DEFAULT_MEMORY_SYNOPSIS_MAX
+  )
   const { tags, invalidTags } = normalizeTags(
     input.memory.tags,
     input.tagVocabulary ?? TAG_VOCABULARY

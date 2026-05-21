@@ -893,8 +893,8 @@ describe("promoteMemory", () => {
   })
 
   it("at-cap reason + at-cap synopsis + large body all flow through pages.updateMarkdown without rejection", async () => {
-    // The audit block embeds the source synopsis (capped at 500
-    // chars by the MCP boundary / service layer per `SYNOPSIS_MAX`)
+    // The audit block embeds the source synopsis (structurally capped at
+    // 500 chars per `SYNOPSIS_MAX`)
     // and an optional reason (capped at `PROMOTION_REASON_MAX_LEN =
     // 1000` here). Concatenated with a large body, the whole thing
     // is written via `pages.updateMarkdown` — Notion's markdown API

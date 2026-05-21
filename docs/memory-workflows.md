@@ -31,6 +31,18 @@ scanner is read-only by default; `docs/memory-debt.md` describes the seven
 categories, scoring, recommended monthly cadence, and the opt-in
 `lore debt create-tasks` Phase-2 surface.
 
+Memory `synopsis` values are scan hooks, not mini-bodies. `lore-memory`
+save/update rejects synopses over `memory.synopsisMaxChars`; the default is
+150 characters. Vaults that want longer wake-up/recall lines can set:
+
+```yaml
+memory:
+  synopsisMaxChars: 220
+```
+
+The configurable cap cannot exceed 500 characters, which remains the
+structural storage ceiling for the Synopsis property.
+
 ## Confidence
 
 The Memories database carries two confidence columns:

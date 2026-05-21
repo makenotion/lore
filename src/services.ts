@@ -61,6 +61,7 @@ import {
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
 import { resolveProfileFromConfigAtRoot, type ResolvedProfile } from "./profile/index.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "./feature-flags.js"
+import { resolveMemorySynopsisMaxChars } from "./policy/memory-synopsis.js"
 import type {
   LoreConfig,
   MemoryScopeContext,
@@ -537,6 +538,7 @@ export async function initServicesFromConfig(
 ): Promise<LoreServices> {
   const profile = resolveProfileFromConfigAtRoot(config, configRoot)
   const features = resolveFeatureFlags(process.env, config)
+  const memorySynopsisMaxChars = resolveMemorySynopsisMaxChars(config)
   const costTracking = resolveCostTracking(config, configRoot)
   const auth = await resolveAuth(config, configRoot)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
@@ -689,6 +691,7 @@ export async function initServicesFromConfig(
   // parallel rate-limit gate.
   const memories = new MemoryService(client, db.memories, effectiveScopeCtx, {
     features,
+    synopsisMaxChars: memorySynopsisMaxChars,
   })
   const facts = new FactService(client, db.facts, effectiveScopeCtx, {
     useRunToolBatchCreates: features.runTool.batchCreates,

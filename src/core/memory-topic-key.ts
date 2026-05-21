@@ -275,6 +275,7 @@ import type {
   MemorySource,
   MemoryStatus,
 } from "../types.js"
+import { DEFAULT_MEMORY_SYNOPSIS_MAX } from "../types.js"
 import { buildMemoryProps, MEMORY_PROPS } from "../notion/schema.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { isLiveFullPage } from "../notion/extractors.js"
@@ -754,7 +755,8 @@ export class MemoryTopicKey {
     private client: Client,
     private db: DatabaseRef,
     private features: LoreFeatureFlags,
-    private deps: MemoryTopicKeyDependencies
+    private deps: MemoryTopicKeyDependencies,
+    private options: { synopsisMaxChars?: number } = {}
   ) {}
 
   /**
@@ -980,7 +982,9 @@ export class MemoryTopicKey {
     upserted: boolean
     promotionAdvisory: PromotionAdvisory | null
   }> {
-    validateRichTextMetadataFields(input, "MemoryService.upsertByTopicKey")
+    validateRichTextMetadataFields(input, "MemoryService.upsertByTopicKey", {
+      synopsisMaxChars: this.options.synopsisMaxChars ?? DEFAULT_MEMORY_SYNOPSIS_MAX,
+    })
 
     if (input.projectIds.length === 0) {
       throw new Error(

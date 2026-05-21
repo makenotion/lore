@@ -14,7 +14,7 @@ session has no substantive facts, return an empty memories array.
 For each memory:
 
 - title: descriptive, 80 characters or fewer, never "Session N".
-- synopsis: 1-2 sentences, 500 characters or fewer.
+- synopsis: 1-2 sentences, 150 characters or fewer.
 - keywords: free-form search tokens. Include people, dates, products, PRs,
   ticket ids, locations, and other exact terms useful for retrieval.
 - tags: only use the closed engineering vocabulary from the schema. Do not use

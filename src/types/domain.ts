@@ -75,17 +75,22 @@ export const TAG_VOCABULARY = DEFAULT_TAG_VOCABULARY
 export type Tag = (typeof DEFAULT_TAG_VOCABULARY)[number]
 
 /**
- * Soft cap on the Synopsis property at the MCP and service boundaries.
- * The Notion rich_text per-block ceiling is 2000; 500 is the value tools
- * and services enforce via Zod and the value tests pin. Bump only with a coordinated
- * design-doc update — agents that have learned to write 500-char
- * synopses would silently see truncation without one.
+ * Structural cap on the Synopsis property. The Notion rich_text per-block
+ * ceiling is 2000; 500 is Lore's storage/rendering ceiling for this field.
+ * Normal memory authoring uses `DEFAULT_MEMORY_SYNOPSIS_MAX` unless the
+ * vault opts into a different `memory.synopsisMaxChars` value.
  *
  * Lives here because the cap is structural to the property, not specific
- * to any one consumer. The write-side Zod, the renderer, and the backfill
- * synthesizer all import it.
+ * to any one consumer. The renderer and the backfill synthesizer import it.
  */
 export const SYNOPSIS_MAX = 500
+
+/**
+ * Default authoring cap for `lore-memory` synopses. Wake-up, recall, and
+ * downstream index mirrors render synopses as scan hooks, so fresh memory
+ * writes default to a tighter budget than the structural storage ceiling.
+ */
+export const DEFAULT_MEMORY_SYNOPSIS_MAX = 150
 
 /**
  * Days since `last_edited_time` past which an active task is considered
@@ -510,8 +515,9 @@ export interface CreateMemoryInput {
   tags?: string[]
   keywords?: string
   /**
-   * 1–2 sentence synopsis. Capped at 500 chars by the MCP boundary and
-   * service layer so CLI/hooks/internal callers fail before Notion writes.
+   * 1–2 sentence synopsis. `lore-memory` authoring defaults to 150 chars
+   * and can opt up through `memory.synopsisMaxChars`; 500 remains the
+   * structural storage ceiling.
    */
   synopsis?: string
   session?: string

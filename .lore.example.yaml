@@ -85,6 +85,14 @@ projects:
 #     builtinTable: openai-2026-05
 #     overridesPath: ~/.config/lore/pricing.json
 
+# Memory authoring policy (optional).
+# `lore-memory` synopses are scan hooks shown in wake-up, recall, and
+# downstream index mirrors. New saves/updates default to 150 chars so those
+# surfaces stay terse. Raise up to 500 if your vault intentionally carries
+# longer synopses.
+# memory:
+#   synopsisMaxChars: 150
+
 # AI assistant hook settings
 #
 # Lore wires four background hooks into your assistant by default. Writes

@@ -14,6 +14,7 @@ import { decodeTextEntities } from "../notion/html-entities.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
 import type { LoreFeatureFlags } from "../feature-flags.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
+import { DEFAULT_MEMORY_SYNOPSIS_MAX } from "../types.js"
 import {
   findAutosaveLearningDuplicate,
   MEMORY_CLEANUP_ORPHAN_SENTINEL,
@@ -197,11 +198,14 @@ export class MemoryCreate {
     private readonly client: Client,
     private readonly db: DatabaseRef,
     private readonly features: LoreFeatureFlags,
-    private readonly deps: MemoryCreateDeps
+    private readonly deps: MemoryCreateDeps,
+    private readonly options: { synopsisMaxChars?: number } = {}
   ) {}
 
   async createWithResult(input: CreateMemoryInput): Promise<MemoryCreateResult> {
-    validateRichTextMetadataFields(input, "MemoryService.create")
+    validateRichTextMetadataFields(input, "MemoryService.create", {
+      synopsisMaxChars: this.options.synopsisMaxChars ?? DEFAULT_MEMORY_SYNOPSIS_MAX,
+    })
 
     const duplicateConfig = this.autosaveLearningDuplicateConfig(input)
     const lockKey = duplicateConfig

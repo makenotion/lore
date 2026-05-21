@@ -475,6 +475,63 @@ describe("initServicesFromConfig — lazy author identity", () => {
     }
   })
 
+  it("threads memory.synopsisMaxChars into the initialized MemoryService", async () => {
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "init-token",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+    const pageCreate = vi.fn(async () => {
+      throw new Error("page create reached")
+    })
+    vi.mocked(createClient).mockImplementation(
+      () =>
+        ({
+          users: { me: serviceClientUsersMe },
+          dataSources: {
+            retrieve: vi.fn(async () => ({
+              properties: {
+                "Scope Kind": {},
+                "Expires At": {},
+              },
+            })),
+          },
+          pages: {
+            create: pageCreate,
+          },
+        }) as unknown as Client
+    )
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", {
+        ...config,
+        memory: { synopsisMaxChars: 220 },
+      })
+
+      await expect(
+        services.memories.create({
+          title: "configured synopsis",
+          content: "",
+          synopsis: "S".repeat(220),
+          autosaveLearningDedupScope: "off",
+        })
+      ).rejects.toThrow("page create reached")
+      expect(pageCreate).toHaveBeenCalledOnce()
+    } finally {
+      loadSpy.mockRestore()
+    }
+  })
+
   it("allows staging auth when RunTool batch creates are disabled", async () => {
     process.env["LORE_USE_RUNTOOL_BATCH_CREATES"] = "0"
     vi.mocked(resolveAuth).mockResolvedValue({

@@ -5062,7 +5062,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
     expect(args.synopsis).toBeUndefined()
   })
 
-  it("rejects synopsis longer than 500 chars at the Zod boundary", async () => {
+  it("rejects synopsis longer than the default memory authoring cap at the Zod boundary", async () => {
     const mockServer = createMockServer()
     const services = {
       projects: { findByName: vi.fn() },
@@ -5079,7 +5079,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
 
     registerMemoryTools(mockServer.server, services as never)
     const remember = mockServer.getActionHandler("lore-memory", "save")
-    const overCap = "x".repeat(501)
+    const overCap = "x".repeat(151)
 
     const result = await remember({
       title: "Saved",
@@ -5090,7 +5090,38 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
     const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
     expect(wrapped.isError).toBe(true)
     expect(wrapped.content[0].text).toContain("synopsis")
+    expect(wrapped.content[0].text).toContain("150")
     // The save was rejected; create was never invoked.
+    expect(services.memories.create).not.toHaveBeenCalled()
+  })
+
+  it("honors memory.synopsisMaxChars when validating lore-memory input", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [], memory: { synopsisMaxChars: 220 } },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Saved",
+      content: "body",
+      synopsis: "x".repeat(221),
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("220")
     expect(services.memories.create).not.toHaveBeenCalled()
   })
 

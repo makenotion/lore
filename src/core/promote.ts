@@ -62,7 +62,12 @@ import { VaultManager } from "./vault.js"
 import { MemoryService } from "./memory.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import type { PromotionTargetTopologyRef } from "./topology.js"
-import type { Memory, MemoryKind, MemoryStatus } from "../types.js"
+import {
+  SYNOPSIS_MAX,
+  type Memory,
+  type MemoryKind,
+  type MemoryStatus,
+} from "../types.js"
 
 /**
  * Notion's `rich_text` cap on the audit block we prepend to the
@@ -217,7 +222,9 @@ export async function promoteMemory(
   await targetVault.load({ driftCheck: false })
   const targetMemories = new MemoryService(
     services.client,
-    targetVault.databases.memories
+    targetVault.databases.memories,
+    undefined,
+    { synopsisMaxChars: SYNOPSIS_MAX }
   )
   await assertPromotionSourceKeyColumn(
     services.client,

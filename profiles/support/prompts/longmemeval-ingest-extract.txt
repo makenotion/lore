@@ -14,7 +14,7 @@ the session has no substantive support facts, return an empty memories array.
 For each memory:
 
 - title: descriptive, 80 characters or fewer, never "Session N".
-- synopsis: 1-2 sentences, 500 characters or fewer.
+- synopsis: 1-2 sentences, 150 characters or fewer.
 - keywords: free-form search tokens. Include ticket ids, workspace/account ids,
   customer names, plan names, product areas, integrations, error strings, API
   endpoints, owners, and dates useful for retrieval.
