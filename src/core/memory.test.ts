@@ -4708,7 +4708,7 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
     )
   })
 
-  it.each([["runbook"], ["incident"], ["postmortem"], ["policy"]] as const)(
+  it.each([["runbook"], ["incident"], ["postmortem"], ["policy"], ["state"]] as const)(
     "returns the non-decision suggestion (no supersedesIds, no placeholder) for kind=%s",
     (kind) => {
       // Non-decision kinds are valid topic-key chains (per the

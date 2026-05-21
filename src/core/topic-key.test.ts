@@ -47,6 +47,11 @@ describe("suggestTopicKey — example table (issue 0.9.0/07)", () => {
       expected: "policy/code-review-min-reviewers",
     },
     {
+      title: "Lore auth current state",
+      kind: "state",
+      expected: null,
+    },
+    {
       title: "Quick observation about caching",
       kind: "note",
       expected: null,
@@ -86,6 +91,16 @@ describe("suggestTopicKey — acceptance criteria (issue 0.9.0/07)", () => {
     })
     expect(result.key).toBeNull()
     expect(result.reason).toMatch(/task/i)
+  })
+
+  it("returns null with a state-specific reason for kind='state'", () => {
+    const result = suggestTopicKey({
+      title: "Lore auth current state",
+      kind: "state",
+    })
+    expect(result.key).toBeNull()
+    expect(result.reason).toMatch(/subject/i)
+    expect(result.reason).toMatch(/replace=true/)
   })
 
   it("returns null with reason='empty title' for an empty title", () => {

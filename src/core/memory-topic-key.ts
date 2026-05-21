@@ -143,7 +143,8 @@
  * heuristic, not a Notion structural cap.
  *
  * Promotion-advisory suggestion wording is kind-aware. Topic-key chains are
- * valid for `decision`, `runbook`, `incident`, `postmortem`, and `policy`.
+ * valid for `decision`, `runbook`, `incident`, `postmortem`, `policy`,
+ * and `state`.
  * Only decision memories can be referenced by `lore-decision action='create'`
  * with `supersedesIds`, because the decision service resolver rejects
  * non-decision kinds. Decision chains get supersede-and-split wording with a
@@ -713,12 +714,12 @@ function analyzeLatestTopicUpsert(
  * preserve that order.
  *
  * **Suggestion wording is kind-aware.** Topic-key chains are valid
- * for `decision`, `runbook`, `incident`, `postmortem`, and `policy`
+ * for `decision`, `runbook`, `incident`, `postmortem`, `policy`, and `state`
  * kinds. Only `kind: 'decision'` memories can be superseded via
  * `lore-decision action='create'` with `supersedesIds`:
  * `DecisionService.getById` (the resolver the create handler runs
  * for every supersedesIds entry) throws on non-decision kinds, so a
- * footer that handed a runbook/incident/postmortem/policy operator
+ * footer that handed a runbook/incident/postmortem/policy/state operator
  * `supersedesIds: [<this-id>]` would be a ready-to-paste BROKEN
  * command. Decisions get the supersede-and-split wording; other
  * kinds get the split-and-archive path that doesn't depend on a

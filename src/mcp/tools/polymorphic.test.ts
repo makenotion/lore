@@ -722,6 +722,20 @@ describe("lore-memory polymorphic dispatcher", () => {
     expect(text.toLowerCase()).toContain("task")
   })
 
+  it("renders the no-suggestion branch for kind='state'", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "Lore auth current state",
+      kind: "state",
+    } as never)
+    const text = extractText(result)
+    expect(text).toContain("No suggestion")
+    expect(text.toLowerCase()).toContain("subject")
+    expect(text).toContain("replace=true")
+  })
+
   it("rejects action='suggest-topic-key' without title", async () => {
     const mock = createMockServer()
     registerMemoryTools(mock.server, makeServices() as never)

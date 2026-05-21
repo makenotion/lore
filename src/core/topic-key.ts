@@ -2,7 +2,8 @@
  * Topic-key suggester.
  *
  * Pure heuristic over `(title, kind)` that returns a stable kebab-case
- * key suitable for `lore-memory action='save'`'s `topicKey` parameter.
+ * key suitable for `lore-memory action='save'`'s `topicKey` parameter
+ * for durable non-state memory kinds.
  * The function is deliberately deterministic and
  * side-effect free: an agent calling this with the same input twice
  * MUST get the same key, otherwise upsert grouping fragments across
@@ -23,7 +24,8 @@ import type { MemoryKind } from "../types.js"
  * `MemoryKind` exactly. `note` and `task` map to `null` because notes
  * are the catch-all default (no recurring topic) and tasks transition
  * through lifecycle states (`open` / `blocked` / `done`) rather than
- * upsert revisions.
+ * upsert revisions. `state` also maps to `null`: subject-canonical
+ * keys are derived from explicit `subject` saves, not title heuristics.
  *
  * Adding a `MemoryKind` value requires adding an entry here.
  * `Record<MemoryKind, ...>` makes the omission a compile error rather
@@ -36,6 +38,7 @@ const KIND_TO_FAMILY: Record<MemoryKind, string | null> = {
   runbook: "runbook",
   postmortem: "postmortem",
   policy: "policy",
+  state: null,
   task: null,
   procedure: "procedure",
 }
@@ -175,7 +178,7 @@ export interface TopicKeySuggestion {
 /**
  * Suggest a stable topic key from `title + kind`. Pure function — same
  * input always returns the same output. Returns `{ key: null }` when
- * the kind has no family (note, task) or the title produces no
+ * the kind has no family (note, task, state) or the title produces no
  * meaningful tokens after stoplist filtering.
  */
 export function suggestTopicKey(input: {
@@ -195,6 +198,13 @@ export function suggestTopicKey(input: {
       return {
         key: null,
         reason: "Kind 'task' transitions through lifecycle states, not upsert revisions.",
+      }
+    }
+    if (input.kind === "state") {
+      return {
+        key: null,
+        reason:
+          "Kind 'state' uses subject-canonical saves; pass subject with replace=true instead of a title-derived topicKey.",
       }
     }
     return {

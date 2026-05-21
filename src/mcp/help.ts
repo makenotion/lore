@@ -127,6 +127,18 @@ export const HELP_RECIPES = [
   },
   {
     tool: "lore-memory",
+    action: "history",
+    summary: "Read the revision-chain body for a subject-canonical state memory.",
+    whenToUse:
+      "Use this after saving repeated current-state updates with subject + replace=true and you need the preserved history behind the single wake-up row.",
+    example: {
+      action: "history",
+      subject: "Lore auth",
+      projectName: "Lore",
+    },
+  },
+  {
+    tool: "lore-memory",
     action: "suggest-topic-key",
     summary: "Generate a kebab-case topic key from a title and durable memory kind.",
     whenToUse:

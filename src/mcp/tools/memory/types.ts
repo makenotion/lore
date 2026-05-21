@@ -16,6 +16,7 @@ export const KINDS = [
   "runbook",
   "postmortem",
   "policy",
+  "state",
   "procedure",
 ] as const
 
@@ -43,6 +44,7 @@ export const SUGGEST_KIND_VALUES = [
   "runbook",
   "postmortem",
   "policy",
+  "state",
   "task",
   "procedure",
 ] as const satisfies readonly MemoryKind[]

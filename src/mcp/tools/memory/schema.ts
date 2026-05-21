@@ -49,6 +49,8 @@ export function createMemoryDispatchSchema(
       author: z.string().optional(),
       agent: z.string().optional(),
       session: z.string().optional(),
+      subject: nonBlankString.optional(),
+      replace: z.boolean().optional(),
       topicKey: z
         .string()
         .regex(
@@ -57,6 +59,12 @@ export function createMemoryDispatchSchema(
         )
         .optional(),
       scope: scopeInputSchema,
+    }),
+    z.object({
+      action: z.literal("history"),
+      subject: nonBlankString,
+      projectName: z.string().optional(),
+      projectNames: z.array(z.string()).optional(),
     }),
     z.object({
       action: z.literal("update"),

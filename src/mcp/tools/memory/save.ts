@@ -4,6 +4,7 @@ import { debugLogPartialFailures } from "../../../observability/partial-failure.
 import { resolveProjectIds } from "../../resolve.js"
 import { resolveAuthorForWrite } from "../../../auth/identity.js"
 import { emitAutoMentions } from "../../../core/auto-mentions.js"
+import { subjectToTopicKey } from "../../../core/memory-subject.js"
 import type { MemoryCreateResult, PromotionAdvisory } from "../../../core/memory.js"
 import {
   findAutosaveLearningDuplicate,
@@ -184,6 +185,8 @@ export interface SaveArgs {
   author?: string
   agent?: string
   session?: string
+  subject?: string
+  replace?: boolean
   topicKey?: string
   scope?: import("../../../types.js").MemoryScopeInput
 }
@@ -194,10 +197,44 @@ export async function handleSave(
 ): Promise<ToolResult> {
   try {
     const features = services.features ?? resolveFeatureFlags()
+    const subject = args.subject?.trim()
+    if (args.replace === true && !subject) {
+      throw new Error("replace=true requires subject for subject-canonical saves.")
+    }
+    if (subject && args.replace !== true) {
+      throw new Error(
+        "subject-canonical saves require replace=true so the replacement semantics are explicit."
+      )
+    }
+    if (subject && args.topicKey) {
+      throw new Error(
+        "Pass either subject or topicKey, not both. Subject-canonical saves derive topicKey automatically."
+      )
+    }
+    if (subject && args.kind !== undefined && args.kind !== "state") {
+      throw new Error(
+        "subject-canonical saves must use kind='state' or omit kind so it defaults to 'state'."
+      )
+    }
+    if (!subject && args.kind === "state") {
+      throw new Error(
+        "kind='state' saves must use subject with replace=true so Lore can derive the canonical state topic key."
+      )
+    }
+    if (!subject && args.topicKey?.startsWith("state/")) {
+      throw new Error(
+        "state topic keys are derived from subject-canonical saves. Use subject with replace=true instead of passing a state/... topicKey directly."
+      )
+    }
+    const subjectTopicKey = subject ? subjectToTopicKey(subject) : undefined
+    const topicKeyForWrite = args.topicKey ?? subjectTopicKey
     // Validate the topicKey + kind contract BEFORE any service call.
     //
     // Topic keys group recurring decision/runbook/policy/incident/
-    // postmortem topics. Notes are the catch-all default and tasks are
+    // postmortem topics. Subject-canonical state uses the same upsert
+    // machinery, but its key is derived from `subject` above rather than
+    // accepted as a direct `topicKey` input. Notes are the catch-all
+    // default and tasks are
     // lifecycle records owned by `lore-task`, so neither forms a
     // recurring topic — the suggester (`action='suggest-topic-key'`)
     // returns null for `kind: 'note'` and `kind: 'task'` for the same
@@ -219,8 +256,9 @@ export async function handleSave(
     // the default check, an agent that passes only `topicKey` (no
     // `kind`) would silently land in an upsert chain on a
     // `note`-defaulted memory.
-    const resolvedKind = (args.kind as MemoryKind | undefined) ?? "note"
-    if (args.topicKey && (resolvedKind === "note" || resolvedKind === "task")) {
+    const resolvedKind =
+      (args.kind as MemoryKind | undefined) ?? (subjectTopicKey ? "state" : "note")
+    if (topicKeyForWrite && (resolvedKind === "note" || resolvedKind === "task")) {
       const reason =
         resolvedKind === "note"
           ? "notes are the catch-all default"
@@ -232,6 +270,7 @@ export async function handleSave(
           "do not form a recurring topic. " +
           "Either omit topicKey, or set kind to one of: decision, " +
           "runbook, incident, postmortem, policy. " +
+          "For current-state rows, use subject with replace=true. " +
           "Procedures are not written through lore-memory action='save' — " +
           "use lore-procedure action='propose' instead."
       )
@@ -376,7 +415,7 @@ export async function handleSave(
     let topicLabel = "none"
     const shouldDeferAutosaveTopic =
       autosaveLearningSave &&
-      !args.topicKey &&
+      !topicKeyForWrite &&
       Boolean(args.topicName) &&
       resolved.ids.length > 0
     const prepareFreshCreate: (() => Promise<FreshCreatePreparation>) | undefined =
@@ -434,10 +473,10 @@ export async function handleSave(
       promotionAdvisory: PromotionAdvisory | null
       autosaveLearningDuplicate: AutosaveLearningDuplicateMatch | null
       freshCreatePreparation: FreshCreatePreparation | null
-    }> = args.topicKey
+    }> = topicKeyForWrite
       ? services.memories
           .upsertByTopicKey({
-            topicKey: args.topicKey,
+            topicKey: topicKeyForWrite,
             projectIds: resolved.ids,
             title: args.title,
             content: args.content,
@@ -572,10 +611,14 @@ export async function handleSave(
     // agent knows which path fired without parsing for revision count.
     // "Created (revision 1, topic key 'X')" / "Appended as revision N
     // (topic key 'X')" wording matches the upsert spec.
-    const headerLine = args.topicKey
-      ? writeResult.upserted
-        ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${args.topicKey}')`
-        : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, topic key '${args.topicKey}')`
+    const headerLine = topicKeyForWrite
+      ? subject
+        ? writeResult.upserted
+          ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (subject '${subject}', topic key '${topicKeyForWrite}')`
+          : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, subject '${subject}', topic key '${topicKeyForWrite}')`
+        : writeResult.upserted
+          ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${topicKeyForWrite}')`
+          : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, topic key '${topicKeyForWrite}')`
       : `Saved memory: "${memory.title}" (${memory.id})`
     const lines = [headerLine, `Project: ${projectLabel}`, `Topic: ${topicLabel}`]
     if (resolved.warnings.length > 0) {

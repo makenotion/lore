@@ -296,6 +296,7 @@ const SEVERITY_WEIGHT: Record<DebtCategory, number> = {
 const HIGH_RETRIEVAL_KINDS = new Set<MemoryKind>([
   "decision",
   "policy",
+  "state",
   "runbook",
   "postmortem",
 ])
@@ -1130,6 +1131,8 @@ function governanceRiskFromKind(kind: MemoryKind): number {
       return 15
     case "policy":
       return 12
+    case "state":
+      return 10
     case "runbook":
       return 10
     case "postmortem":

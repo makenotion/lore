@@ -499,4 +499,21 @@ describe("lore-query KINDS enum accepts every memory kind", () => {
     })
     expect(result.success).toBe(true)
   })
+
+  it("recall/search accept kind: 'state' at the dispatch boundary", () => {
+    expect(
+      queryDispatchSchema.safeParse({
+        action: "recall",
+        kind: "state",
+        limit: 5,
+      }).success
+    ).toBe(true)
+    expect(
+      queryDispatchSchema.safeParse({
+        action: "search",
+        query: "auth",
+        kind: "state",
+      }).success
+    ).toBe(true)
+  })
 })

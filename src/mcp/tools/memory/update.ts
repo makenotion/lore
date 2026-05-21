@@ -107,6 +107,12 @@ export async function handleUpdate(
           "(it usually shouldn't)."
       )
     }
+    if (args.topicKey?.startsWith("state/")) {
+      throw new Error(
+        "Cannot re-key a memory into the reserved `state/` namespace. " +
+          "State topic keys are derived from subject-canonical saves with subject and replace=true."
+      )
+    }
 
     // Detect whether anything beyond the framing fields (`action`,
     // `memoryId`, `topicKey`) was passed. A topicKey-only update is a
@@ -182,6 +188,12 @@ export async function handleUpdate(
         memoryId: args.memoryId,
         newTopicKey: args.topicKey,
       })
+      if (result.memory.kind === "state") {
+        throw new Error(
+          "Cannot re-key a state memory through lore-memory action='update'. " +
+            "State topic keys are derived from subject-canonical saves with subject and replace=true."
+        )
+      }
       preflight = {
         oldTopicKey: result.oldTopicKey,
         willRekey: result.willRekey,
@@ -192,6 +204,26 @@ export async function handleUpdate(
       // the topicName scope fallback don't re-issue a second Notion
       // read for the same id.
       primeCurrent(result.memory)
+    }
+
+    const stateGuardedFields: string[] = []
+    if (args.content !== undefined) {
+      stateGuardedFields.push("content")
+    }
+    if (args.projectName !== undefined || args.projectNames !== undefined) {
+      stateGuardedFields.push("project scope")
+    }
+    if (stateGuardedFields.length > 0) {
+      const current = await loadCurrent()
+      if (current?.kind === "state") {
+        throw new Error(
+          `lore-memory action='update' cannot change a state memory's ${stateGuardedFields.join(
+            " and "
+          )}. ` +
+            "State memories are subject-canonical current-state rows; use lore-memory action='save' " +
+            "with subject and replace=true so Lore appends a revision and preserves the exact project scope used for future history lookups."
+        )
+      }
     }
 
     let topicId: string | undefined
@@ -253,6 +285,19 @@ export async function handleUpdate(
     // reads more directly.
     if (args.kind !== undefined || args.status !== undefined) {
       const current = await loadCurrent()
+      if (args.kind === "state" && current.kind !== "state") {
+        throw new Error(
+          `lore-memory action='update' cannot promote kind='${current.kind}' to kind='state'. ` +
+            "State memories must be created through subject-canonical saves with subject and replace=true, " +
+            "so Lore derives one stable state topic key and preserves history in the revision chain."
+        )
+      }
+      if (current.kind === "state" && args.kind !== undefined && args.kind !== "state") {
+        throw new Error(
+          `lore-memory action='update' cannot demote a state memory to kind='${args.kind}'. ` +
+            "State memory identity is tied to its subject-canonical topic key; changing kind would corrupt the current-state chain."
+        )
+      }
       // (1) Cross-kind promotion to procedure.
       if (args.kind === "procedure" && current.kind !== "procedure") {
         throw new Error(

@@ -14,6 +14,7 @@ import { createTagsSchema, keywordsSchema } from "./tag-schema.js"
 import { handleArchive } from "./memory/archive.js"
 import { handleCompare } from "./memory/compare.js"
 import { handleExpand } from "./memory/expand.js"
+import { handleHistory } from "./memory/history.js"
 import { handlePromote } from "./memory/promote.js"
 import { handleReview } from "./memory/review.js"
 import { handleSave } from "./memory/save.js"
@@ -48,15 +49,16 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     {
       title: "Memory operations",
       description:
-        "Save, update, archive, batch-expand, suggest a topic key, record a compare verdict, or review a proposed memory. Action-dispatched:\n\n" +
-        "- `action: 'save'` — create a new memory page; runs a near-duplicate probe in parallel. With `topicKey` set, upserts onto an existing memory with the same key AND project-set (appends a revision block instead of creating a new row).\n" +
+        "Save, update, archive, expand, history, suggest a topic key, compare, or review memory. Action-dispatched:\n\n" +
+        "- `action: 'save'` — create a memory; duplicate-probes in parallel. With `topicKey`, upserts by key + project-set and appends a revision. With `subject` + `replace: true`, writes current state under `state/<slug>`: one wake-up row, revision history intact.\n" +
         "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched. Rejects with `MemoryReadOnlyError` on read-only pinned blocks; use `lore-pinned action='update'` with `force: true` to override.\n" +
         "- `action: 'archive'` — soft-delete a memory by ID (Notion archive flag).\n" +
-        "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
-        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Notes and tasks return null.\n" +
+        "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs; companion to title-tier recall/search results.\n" +
+        "- `action: 'history'` — read the full revision-chain body for a subject state memory.\n" +
+        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Note/task/state return null.\n" +
         "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n" +
         "- `action: 'approve'` / `'reject'` — inbox-review a `Status: proposed` memory (#281); flips Status and appends a Reviewed audit block.\n" +
-        "- `action: 'promote'` — copy to a `promotionTargets` entry with origin audit; review-required creates land as `Status: proposed`; reruns reuse by `Promotion Source Key`. See docs/topology-promotion.md.\n\n" +
+        "- `action: 'promote'` — copy to a `promotionTargets` entry with origin audit; review-required targets create `Status: proposed`; reruns reuse `Promotion Source Key`.\n\n" +
         "For pinned context blocks (always-visible governing memory rendered in wake-up before relevance-ranked sections), use `lore-pinned`.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
@@ -67,6 +69,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
             "update",
             "archive",
             "expand",
+            "history",
             "suggest-topic-key",
             "compare",
             "approve",
@@ -74,7 +77,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
             "promote",
           ])
           .describe(
-            "Operation: save | update | archive | expand | suggest-topic-key | compare | approve | reject | promote."
+            "Operation: save | update | archive | expand | history | suggest-topic-key | compare | approve | reject | promote."
           ),
         // save
         title: z
@@ -113,12 +116,14 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "(save | update) Project name. Defaults to auto-detected project from cwd."
+            "(save | update | history) Project name. Defaults to auto-detected project from cwd."
           ),
         projectNames: z
           .array(z.string())
           .optional()
-          .describe("(save | update) Multiple project names for cross-project memories."),
+          .describe(
+            "(save | update | history) Multiple project names for cross-project memories."
+          ),
         topicName: z
           .string()
           .optional()
@@ -192,6 +197,18 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe("(action='save') Session ID to group related memories."),
+        subject: z
+          .string()
+          .optional()
+          .describe(
+            "(save replace=true | history) Canonical state subject; maps to `state/<slug>` and defaults kind to `state`."
+          ),
+        replace: z
+          .boolean()
+          .optional()
+          .describe(
+            "(save) Required with `subject`; keeps one wake-up row while preserving revisions."
+          ),
         topicKey: z
           .string()
           .regex(
@@ -200,12 +217,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           )
           .optional()
           .describe(
-            "Kebab-case path like 'decision/jwt-auth'. On save: upserts when a memory " +
-              "exists with same key/project-set (appends a revision, bumps Revision Count); " +
-              "requires `kind` ∈ {decision, runbook, " +
-              "incident, postmortem, policy}. On update: re-keys, appending a " +
-              "`## Re-keyed` audit block; cannot be combined with `kind`. " +
-              "See docs/memory-workflows.md#topic-keys."
+            "Kebab-case path like 'decision/jwt-auth'. Save upserts by key + project-set and requires kind decision/runbook/incident/postmortem/policy. State uses `subject` + `replace:true`. Update re-keys and cannot combine with `kind`."
           ),
         // update only
         supersedesIds: z
@@ -318,6 +330,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           )
         case "expand":
           return handleExpand(services, data)
+        case "history":
+          return handleHistory(services, data)
         case "suggest-topic-key":
           return handleSuggestTopicKey(data)
         case "compare":

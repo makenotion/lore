@@ -83,11 +83,15 @@ future scans skip it.
 
 ## Topic Keys
 
-Use `topicKey` when saving a non-procedure memory about a recurring topic: a
-governance decision, runbook, incident, postmortem, or policy that may evolve.
-The `lore-memory action='save'` path upserts on `Topic Key` plus identical
-project relation set. A matching memory receives a revision block instead of a
-new row.
+Use `topicKey` when saving a non-procedure, non-state memory about a recurring
+topic: a governance decision, runbook, incident, postmortem, or policy that may
+evolve. The `lore-memory action='save'` path upserts on `Topic Key` plus
+identical project relation set. A matching memory receives a revision block
+instead of a new row.
+
+Subject-canonical state memories also use Topic Key internally, but callers
+should not pass `topicKey` directly for them. Use `subject` with `replace: true`
+so Lore derives the canonical `state/<subject-slug>` key consistently.
 
 Use stable kebab-case paths grouped by kind:
 
@@ -96,6 +100,7 @@ Use stable kebab-case paths grouped by kind:
 - `incident/login-redirect-502`
 - `postmortem/payment-gateway-timeout`
 - `policy/data-retention`
+- `state/auth`
 - `procedure/cache-miss-investigation`
 
 Procedure topic keys use the `procedure/` family, but pass them to
@@ -104,8 +109,28 @@ procedure propose path uses `topicKey` for proposal idempotency and conflict
 detection: it reuses an existing proposed row for the same project set and
 conflicts with accepted or deprecated rows instead of appending revision blocks.
 
-If unsure, call `lore-memory action='suggest-topic-key'` with the title and
-kind. Do not use `topicKey` on `kind: 'note'` or `kind: 'task'`.
+If unsure for a non-state durable memory, call
+`lore-memory action='suggest-topic-key'` with the title and kind. Do not use
+`topicKey` on `kind: 'note'`, `kind: 'task'`, or `kind: 'state'`; state uses
+the subject-canonical save shape below.
+
+For current-state summaries whose subject evolves through events, prefer the
+subject-canonical save shape:
+
+```json
+{
+  "action": "save",
+  "title": "Auth current state",
+  "content": "External operators use per-user PATs; internal engineers use ntn.",
+  "subject": "auth",
+  "replace": true
+}
+```
+
+Lore stores this as `Kind = state` with topic key `state/auth`. The next save
+for the same subject appends a revision to that row instead of creating a
+second wake-up entry. Use `lore-memory action='history' subject='auth'` to read
+the full revision chain.
 
 When a non-procedure `lore-memory` upsert chain grows beyond roughly 5 KB or 5
 revisions, the save response surfaces a promotion advisory. For decision chains,

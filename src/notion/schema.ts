@@ -245,6 +245,7 @@ export function memoriesProperties(
           { name: "runbook", color: "green" },
           { name: "postmortem", color: "orange" },
           { name: "policy", color: "purple" },
+          { name: "state", color: "gray" },
           { name: "task", color: "yellow" },
           { name: "procedure", color: "pink" },
         ],

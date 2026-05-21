@@ -20,6 +20,7 @@ const KINDS = [
   "runbook",
   "postmortem",
   "policy",
+  "state",
   "procedure",
 ] as const
 

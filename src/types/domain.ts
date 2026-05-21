@@ -188,6 +188,10 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
  * so the title is a structured subject and the body holds the full
  * description — compare to facts where the Object field is a 2000-char
  * rich_text and structural queries fall apart on prose.
+ *
+ * `state` memories are subject-canonical current-state projections. They use
+ * topic-key upsert chains (`state/<subject>`) so repeated writes replace the
+ * wake-up-visible row while preserving prior revisions in the page body.
  */
 export type MemoryKind =
   | "note"
@@ -196,6 +200,7 @@ export type MemoryKind =
   | "runbook"
   | "postmortem"
   | "policy"
+  | "state"
   | "task"
   | "procedure"
 

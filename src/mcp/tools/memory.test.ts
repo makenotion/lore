@@ -6043,6 +6043,137 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     expect(text).not.toContain("Appended as revision")
   })
 
+  it("maps subject-canonical replace saves onto state topic-key upserts", async () => {
+    const mockServer = createMockServer()
+    const upserted = makeMemory("mem-state", {
+      title: "Lore auth current state",
+      projectIds: ["proj-a"],
+      kind: "state",
+      topicKey: "state/lore-auth",
+      revisionCount: 2,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: upserted,
+      revisionCount: 2,
+      upserted: true,
+    })
+    const create = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Lore auth current state",
+      content: "PATs are primary for external operators.",
+      subject: "Lore auth",
+      replace: true,
+    } as never)
+
+    expect(upsertByTopicKey).toHaveBeenCalledTimes(1)
+    expect(create).not.toHaveBeenCalled()
+    const args = upsertByTopicKey.mock.calls[0]![0]
+    expect(args.topicKey).toBe("state/lore-auth")
+    expect(args.kind).toBe("state")
+    expect(args.projectIds).toEqual(["proj-a"])
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Appended as revision 2")
+    expect(text).toContain("subject 'Lore auth'")
+    expect(text).toContain("topic key 'state/lore-auth'")
+  })
+
+  it("rejects subject-canonical saves unless replace=true is explicit", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey: vi.fn(),
+        list: vi.fn(),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn() },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Lore auth current state",
+      content: "body",
+      subject: "auth",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("subject-canonical saves require replace=true")
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+    expect(services.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(services.memories.create).not.toHaveBeenCalled()
+    expect(services.memories.upsertByTopicKey).not.toHaveBeenCalled()
+    expect(services.memories.list).not.toHaveBeenCalled()
+    expect(services.tasks.list).not.toHaveBeenCalled()
+  })
+
+  it("rejects direct state saves so the subject owns the canonical key", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey: vi.fn(),
+        list: vi.fn(),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn() },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Lore auth current state",
+      content: "body",
+      kind: "state",
+      topicKey: "state/lore-auth",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("kind='state' saves must use subject")
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+    expect(services.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(services.memories.create).not.toHaveBeenCalled()
+    expect(services.memories.upsertByTopicKey).not.toHaveBeenCalled()
+    expect(services.memories.list).not.toHaveBeenCalled()
+    expect(services.tasks.list).not.toHaveBeenCalled()
+  })
+
   it("preserves the legacy create path byte-identically when topicKey is omitted", async () => {
     // 0.8.x callers — and the catch-all default path — never set
     // topicKey. The acceptance criterion: "behaves byte-identical to
@@ -6350,6 +6481,265 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("cannot promote kind='note' to kind='procedure'")
     expect(text).toContain("lore-procedure action='propose'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update with kind: 'state' when current row is non-state", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue(
+          makeMemory("11111111111111111111111111111111", {
+            kind: "note",
+            title: "Existing note",
+            projectIds: ["proj-a"],
+          })
+        ),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      kind: "state",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot promote kind='note' to kind='state'")
+    expect(text).toContain("subject-canonical saves")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update re-keying a non-state row into the state namespace", async () => {
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn(),
+        validateRekey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      topicKey: "state/auth",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("reserved `state/` namespace")
+    expect(validateRekey).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update demoting a state row to a different kind", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue(
+          makeMemory("11111111111111111111111111111111", {
+            kind: "state",
+            title: "Auth current state",
+            projectIds: ["proj-a"],
+            topicKey: "state/auth",
+          })
+        ),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      kind: "policy",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot demote a state memory to kind='policy'")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects update re-keying a state row through the generic update path", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const validateRekey = vi.fn().mockResolvedValue({
+      oldTopicKey: "state/auth",
+      willRekey: true,
+      memory: makeMemory("11111111111111111111111111111111", {
+        kind: "state",
+        title: "Auth current state",
+        projectIds: ["proj-a"],
+        topicKey: "state/auth",
+      }),
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn(),
+        validateRekey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      topicKey: "policy/auth",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Cannot re-key a state memory")
+    expect(validateRekey).toHaveBeenCalledWith({
+      memoryId: "11111111111111111111111111111111",
+      newTopicKey: "policy/auth",
+    })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects content updates on state rows through the generic update path", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue(
+          makeMemory("11111111111111111111111111111111", {
+            kind: "state",
+            title: "Auth current state",
+            projectIds: ["proj-a"],
+            topicKey: "state/auth",
+          })
+        ),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      content: "Updated current state through the wrong path.",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot change a state memory's content")
+    expect(text).toContain("subject and replace=true")
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("rejects project-scope updates on state rows through the generic update path", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn()
+    const getOrCreate = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-b", name: "b" }) },
+      topics: { getOrCreate },
+      memories: {
+        update,
+        upsertByTopicKey: vi.fn(),
+        getById: vi.fn().mockResolvedValue(
+          makeMemory("11111111111111111111111111111111", {
+            kind: "state",
+            title: "Auth current state",
+            projectIds: ["proj-a"],
+            topicKey: "state/auth",
+          })
+        ),
+        validateRekey: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateHandler = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateHandler({
+      memoryId: "11111111111111111111111111111111",
+      projectName: "b",
+      topicName: "Should not be created",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("cannot change a state memory's project scope")
+    expect(text).toContain("subject and replace=true")
+    expect(getOrCreate).not.toHaveBeenCalled()
     expect(update).not.toHaveBeenCalled()
   })
 
@@ -7731,6 +8121,98 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
     // non-decision wording to include the placeholder while
     // forgetting to add the substitution.
     expect(text).not.toContain("<this-memory-id>")
+  })
+})
+
+describe("lore-memory action='history' subject-canonical state", () => {
+  it("finds the state topic key for the current project and returns the full revision body", async () => {
+    const mockServer = createMockServer()
+    const propertyOnly = makeMemory("mem-state", {
+      title: "Lore auth current state",
+      projectIds: ["proj-a"],
+      kind: "state",
+      topicKey: "state/auth",
+      revisionCount: 2,
+      content: "",
+    })
+    const hydrated = makeMemory("mem-state", {
+      title: "Lore auth current state",
+      projectIds: ["proj-a"],
+      kind: "state",
+      topicKey: "state/auth",
+      revisionCount: 2,
+      content: [
+        "Initial auth state.",
+        "",
+        "---",
+        "",
+        "## Revision 2 (2026-05-21)",
+        "",
+        "**Title at this revision:** Lore auth current state",
+        "",
+        "PATs are primary for external operators.",
+      ].join("\n"),
+    })
+    const findByTopicKey = vi.fn().mockResolvedValue(propertyOnly)
+    const getById = vi.fn().mockResolvedValue(hydrated)
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { findByTopicKey, getById },
+      context: { project: { id: "proj-a", name: "Lore" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const history = mockServer.getActionHandler("lore-memory", "history")
+
+    const result = await history({ subject: "auth" } as never)
+
+    expect(findByTopicKey).toHaveBeenCalledWith({
+      topicKey: "state/auth",
+      projectIds: ["proj-a"],
+    })
+    expect(getById).toHaveBeenCalledWith("mem-state")
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Subject history: \"auth\" (topic key 'state/auth')")
+    expect(text).toContain("Revision Count: 2")
+    expect(text).toContain("Initial auth state.")
+    expect(text).toContain("## Revision 2 (2026-05-21)")
+  })
+
+  it("refuses to render a non-state row found in the reserved state namespace", async () => {
+    const mockServer = createMockServer()
+    const findByTopicKey = vi.fn().mockResolvedValue(
+      makeMemory("mem-note", {
+        title: "Auth note in wrong namespace",
+        projectIds: ["proj-a"],
+        kind: "note",
+        topicKey: "state/auth",
+      })
+    )
+    const getById = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { findByTopicKey, getById },
+      context: { project: { id: "proj-a", name: "Lore" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const history = mockServer.getActionHandler("lore-memory", "history")
+
+    const result = await history({ subject: "auth" } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("matched a non-state memory")
+    expect(text).toContain("refusing to render it as subject history")
+    expect(getById).not.toHaveBeenCalled()
   })
 })
 
