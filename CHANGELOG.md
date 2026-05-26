@@ -11,6 +11,27 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-05-26
+
+### Added
+
+- Added task-only wake-up and conversational recall capture modes so agents can
+  request narrower wake-up context or save recall-oriented observations without
+  pulling unrelated inventory. (#904, #905)
+- Added subject-canonical state memories and retrieval support for headless
+  bench evals, improving canonical subject context and automation coverage.
+  (#903, #907)
+- Added memory expiry and summary-quality debt audits for maintenance workflows.
+  (#908)
+
+### Changed
+
+- Query-focused wake-up now constrains retrieved context more tightly, and
+  retrieval ranking applies effective confidence decay before ordering results.
+  (#900, #902)
+- Memory synopsis authoring now enforces the documented cap during capture.
+  (#901)
+
 ## [0.15.1] - 2026-05-20
 
 ### Fixed
@@ -1094,7 +1115,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/makenotion/lore/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/makenotion/lore/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/makenotion/lore/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/makenotion/lore/compare/v0.13.1...v0.14.0
