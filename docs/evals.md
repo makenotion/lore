@@ -176,15 +176,17 @@ with component-level topics, not as a monorepo.
 
 A larger PR-derived and generalized candidate bank lives at
 `evals/task-suites/longitudinal-github-cli-powered-candidates.yaml`, backed by
-`evals/vault-seeds/github-cli-powered.yaml`. It has 75 candidate scenarios
-segmented into 25 easy, 25 medium, and 25 hard slots. The suite deliberately
-exceeds the current 50-pair planning estimate so unstable tasks can be culled
-or repaired after smoke validation while still preserving a balanced 25/25/25
-validated dataset. Those 75 scenarios are candidate slots, not 75 independent
-statistical units: many intentionally cluster around the same source memory or
-source pull request. Do not publish it as the powered benchmark result until
-candidates have been validated for prompt bounds, no-op baseline failure,
-verifier stability, runtime, and cost.
+`evals/vault-seeds/github-cli-powered.yaml`. It is a scenario pool, not a fixed
+balanced dataset. As model capability moves, scenarios can be demoted from hard
+to medium or medium to easy, so the pool is expected to have more easy scenarios
+than medium scenarios and fewer hard scenarios than medium scenarios. Powered
+runs should draw a deterministic random sample from that pool and record the
+seed rather than assuming every authored scenario belongs in the headline
+measurement. Those candidate scenarios are not independent statistical units:
+many intentionally cluster around the same source memory or source pull
+request. Do not publish it as the powered benchmark result until candidates
+have been validated for prompt bounds, no-op baseline failure, verifier
+stability, runtime, and cost.
 
 The primary powered comparison is `lore-full-loop` vs. `no-memory`, because it
 measures Lore's end-to-end formation/retrieval/use loop. `seeded-lore` is an
@@ -224,10 +226,27 @@ node dist/cli.js eval run --runner task \
   --out evals/results/longitudinal-github-cli-pilot.json
 ```
 
+For a powered pool run, select a reproducible sample by difficulty bucket. The
+runner hashes the seed and scenario IDs, fails fast if a bucket is undersized,
+shuffles the selected scenarios into a deterministic cross-bucket run order so
+partial artifacts are not front-loaded with easy cases, and records the
+selected scenario IDs in the artifact:
+
+```bash
+node dist/cli.js eval run --runner task \
+  evals/task-suites/longitudinal-github-cli-powered-candidates.yaml \
+  --sample easy=25,medium=15,hard=10 \
+  --sample-seed 2026-05-27-nightly \
+  --parallel 16 \
+  --cost-kill-switch-usd 1500 \
+  --out evals/results/longitudinal-github-cli-powered-sample.json
+```
+
 The run writes Codex JSONL transcript sidecars next to the artifact, in
-`evals/results/longitudinal-github-cli-pilot-transcripts/`. Use those sidecars
-to inspect prompts, event streams, tool activity, and per-turn usage evidence
-without bloating the main JSON artifact.
+a directory derived from the output filename, such as
+`evals/results/longitudinal-github-cli-powered-sample-transcripts/`. Use those
+sidecars to inspect prompts, event streams, tool activity, and per-turn usage
+evidence without bloating the main JSON artifact.
 
 The GitHub CLI longitudinal suites set `costKillSwitchUsd: 1500`. This is an
 overnight guard between condition runs: once observed priced cost reaches the

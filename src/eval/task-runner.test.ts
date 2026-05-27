@@ -71,9 +71,9 @@ describe("task-runner", () => {
     expect(loaded.suite.scenarios).toHaveLength(75)
     expect(loaded.suite.scenarios.every((scenario) => scenario.seededContext)).toBe(true)
     expect(countByDifficulty(loaded.suite.scenarios)).toEqual({
-      easy: 25,
-      medium: 25,
-      hard: 25,
+      easy: 38,
+      medium: 22,
+      hard: 15,
     })
 
     const corpus = await loadSeedCorpus("evals/vault-seeds/github-cli-powered.yaml")
@@ -864,13 +864,14 @@ tasks:
     await expect(
       runTaskEvalSuite(suitePath, {
         difficulty: "hard",
+        sample: { seed: "sample", counts: { hard: 1 } },
         scenarioIds: ["one-task"],
         parallelism: 2,
         adapters: new Map<string, AgentAdapter>([
           ["codex", mockAdapter("codex", async () => successResult())],
         ]),
       })
-    ).rejects.toThrow("--difficulty, --scenario-id, and --parallel")
+    ).rejects.toThrow("--difficulty, --sample, --scenario-id, and --parallel")
   })
 
   it("runs longitudinal suites across no-memory and lore-full-loop conditions", async () => {
@@ -1553,6 +1554,165 @@ scenarios:
     expect(artifact.results.map((result) => result.scenarioId)).toEqual(["hard-one"])
     expect(artifact.results[0]?.difficulty).toBe("hard")
     expect(artifact.summary.tasks).toBe(1)
+  })
+
+  it("samples longitudinal suites deterministically by difficulty", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-sampled
+conditions:
+  - no-memory
+scenarios:
+  - id: easy-one
+    difficulty: easy
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect easy-one.
+    phaseB:
+      prompt: Finish easy-one.
+    verifiers:
+      - type: file-exists
+        path: easy-one.txt
+  - id: easy-two
+    difficulty: easy
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect easy-two.
+    phaseB:
+      prompt: Finish easy-two.
+    verifiers:
+      - type: file-exists
+        path: easy-two.txt
+  - id: easy-three
+    difficulty: easy
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect easy-three.
+    phaseB:
+      prompt: Finish easy-three.
+    verifiers:
+      - type: file-exists
+        path: easy-three.txt
+  - id: hard-one
+    difficulty: hard
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect hard-one.
+    phaseB:
+      prompt: Finish hard-one.
+    verifiers:
+      - type: file-exists
+        path: hard-one.txt
+  - id: hard-two
+    difficulty: hard
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect hard-two.
+    phaseB:
+      prompt: Finish hard-two.
+    verifiers:
+      - type: file-exists
+        path: hard-two.txt
+`,
+    })
+
+    const scenarioIds = ["easy-one", "easy-two", "easy-three", "hard-one", "hard-two"]
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      const id = scenarioIds.find((candidate) => prompt.includes(candidate))
+      if (id) await writeFile(join(workspace, `${id}.txt`), "done\n", "utf-8")
+      return successResult()
+    })
+    const run = async () =>
+      runTaskEvalSuite(suitePath, {
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+        sample: {
+          seed: "seed-one",
+          counts: { easy: 2, hard: 1 },
+        },
+      })
+
+    const first = await run()
+    const second = await run()
+    if (!isLongitudinalTaskArtifact(first.artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    if (!isLongitudinalTaskArtifact(second.artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+
+    const selected = first.artifact.runner.sample?.selectedScenarioIds ?? []
+    expect(first.artifact.runner.sample).toMatchObject({
+      seed: "seed-one",
+      requested: { easy: 2, hard: 1 },
+    })
+    expect(selected).toEqual(["easy-one", "hard-one", "easy-two"])
+    expect(second.artifact.runner.sample?.selectedScenarioIds).toEqual(selected)
+    expect(first.artifact.results.map((result) => result.scenarioId)).toEqual(selected)
+    expect(first.artifact.summary.tasks).toBe(3)
+
+    const differentSeed = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      sample: {
+        seed: "seed-two",
+        counts: { easy: 2, hard: 1 },
+      },
+    })
+    if (!isLongitudinalTaskArtifact(differentSeed.artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(differentSeed.artifact.runner.sample?.selectedScenarioIds).toEqual([
+      "hard-two",
+      "easy-two",
+      "easy-three",
+    ])
+  })
+
+  it("rejects invalid programmatic longitudinal sample counts", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-invalid-sample
+conditions:
+  - no-memory
+scenarios:
+  - id: hard-one
+    difficulty: hard
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect hard-one.
+    phaseB:
+      prompt: Finish hard-one.
+    verifiers:
+      - type: file-exists
+        path: hard-one.txt
+`,
+    })
+
+    await expect(
+      runTaskEvalSuite(suitePath, {
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([
+          ["codex", mockAdapter("codex", async () => successResult())],
+        ]),
+        sample: {
+          seed: "seed-one",
+          counts: { hard: 0 },
+        },
+      })
+    ).rejects.toThrow("positive safe integer")
   })
 
   it("rejects injected adapters for parallel longitudinal child-process runs", async () => {

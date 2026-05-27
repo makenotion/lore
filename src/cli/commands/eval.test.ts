@@ -82,6 +82,33 @@ describe("parseEvalRunCliOptions", () => {
     }
   })
 
+  it("parses deterministic longitudinal sample flags", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      sample: "easy=2,medium=1,hard=1",
+      sampleSeed: "nightly-2026-05-27",
+      parallel: "4",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.sample).toEqual({
+        seed: "nightly-2026-05-27",
+        counts: { easy: 2, medium: 1, hard: 1 },
+      })
+      expect(result.value.parallelism).toBe(4)
+    }
+  })
+
+  it("rejects ambiguous longitudinal sample filters", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      sample: "hard=1",
+      difficulty: "hard",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("--sample")
+  })
+
   it("rejects invalid longitudinal difficulty values", () => {
     const result = parseEvalRunCliOptions({
       runner: "task",

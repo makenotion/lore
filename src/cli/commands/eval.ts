@@ -19,6 +19,7 @@ import {
   type AnyTaskEvalArtifact,
   type LongitudinalTaskArtifact,
   type LongitudinalTaskCondition,
+  type LongitudinalScenarioSampleRequest,
   type LongitudinalScenarioDifficulty,
   type TaskEvalProgressEvent,
 } from "../../eval/task-runner.js"
@@ -49,6 +50,7 @@ export interface EvalRunCliOptions {
   projectName?: string
   costKillSwitchUsd?: number
   difficulty?: LongitudinalScenarioDifficulty
+  sample?: LongitudinalScenarioSampleRequest
   scenarioIds?: string[]
   parallelism?: number
   /**
@@ -71,6 +73,8 @@ export interface EvalRunRawCliOptions {
   project?: string
   costKillSwitchUsd?: string
   difficulty?: string
+  sample?: string
+  sampleSeed?: string
   scenarioId?: string[]
   parallel?: string
   limit?: string
@@ -138,6 +142,18 @@ export function parseEvalRunCliOptions(
   const difficulty = parseOptionalLongitudinalDifficulty(raw.difficulty)
   if (!difficulty.ok) return difficulty
 
+  const sample = parseOptionalLongitudinalSample(raw.sample, raw.sampleSeed)
+  if (!sample.ok) return sample
+  if (
+    sample.value !== undefined &&
+    (difficulty.value !== undefined || (raw.scenarioId?.length ?? 0) > 0)
+  ) {
+    return {
+      ok: false,
+      message: "--sample cannot be combined with --difficulty or --scenario-id.",
+    }
+  }
+
   const parallelism = parseOptionalPositiveInteger("--parallel", raw.parallel)
   if (!parallelism.ok) return parallelism
 
@@ -153,6 +169,7 @@ export function parseEvalRunCliOptions(
       projectName: raw.project,
       costKillSwitchUsd: costKillSwitchUsd.value,
       difficulty: difficulty.value,
+      sample: sample.value,
       scenarioIds: raw.scenarioId,
       parallelism: parallelism.value,
       limit,
@@ -422,6 +439,54 @@ function parseOptionalLongitudinalDifficulty(
   }
 }
 
+function parseOptionalLongitudinalSample(
+  raw: string | undefined,
+  seed: string | undefined
+): CliParseResult<LongitudinalScenarioSampleRequest | undefined> {
+  if (raw === undefined) {
+    if (seed !== undefined) {
+      return { ok: false, message: "--sample-seed requires --sample." }
+    }
+    return { ok: true, value: undefined }
+  }
+  const counts: Partial<Record<LongitudinalScenarioDifficulty, number>> = {}
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim()
+    if (trimmed.length === 0) {
+      return {
+        ok: false,
+        message: `--sample entries must be difficulty=count pairs, got "${raw}"`,
+      }
+    }
+    const [difficulty, count, extra] = trimmed.split("=")
+    if (
+      extra !== undefined ||
+      (difficulty !== "easy" && difficulty !== "medium" && difficulty !== "hard")
+    ) {
+      return {
+        ok: false,
+        message: `--sample entries must use easy, medium, or hard counts; got "${trimmed}"`,
+      }
+    }
+    if (counts[difficulty] !== undefined) {
+      return {
+        ok: false,
+        message: `--sample includes duplicate ${difficulty} count.`,
+      }
+    }
+    const parsed = parsePositiveDecimalInteger(`--sample ${difficulty}`, count ?? "")
+    if (!parsed.ok) return parsed
+    counts[difficulty] = parsed.value
+  }
+  return {
+    ok: true,
+    value: {
+      seed: seed ?? "default",
+      counts,
+    },
+  }
+}
+
 function parseLongitudinalToCondition(
   raw: string | undefined
 ): CliParseResult<Exclude<LongitudinalTaskCondition, "no-memory"> | undefined> {
@@ -535,6 +600,14 @@ evalCommand.addCommand(
       "Task longitudinal runs only: run scenarios tagged easy, medium, or hard"
     )
     .option(
+      "--sample <spec>",
+      "Task longitudinal runs only: deterministic random sample such as easy=25,medium=15,hard=10"
+    )
+    .option(
+      "--sample-seed <seed>",
+      'Task longitudinal runs only: seed for --sample; defaults to "default"'
+    )
+    .option(
       "--scenario-id <id>",
       "Task longitudinal runs only: run a single scenario id; repeat for multiple scenarios",
       collectScenarioId,
@@ -558,6 +631,8 @@ evalCommand.addCommand(
           project?: string
           costKillSwitchUsd?: string
           difficulty?: string
+          sample?: string
+          sampleSeed?: string
           scenarioId?: string[]
           parallel?: string
           limit?: string
@@ -629,11 +704,12 @@ evalCommand.addCommand(
           if (
             (parsed.value.difficulty !== undefined ||
               (parsed.value.scenarioIds?.length ?? 0) > 0 ||
+              parsed.value.sample !== undefined ||
               parsed.value.parallelism !== undefined) &&
             parsed.value.runner !== "task"
           ) {
             console.error(
-              "Eval failed: --difficulty, --scenario-id, and --parallel are only supported with --runner task (or a suite YAML with `runner: task`)."
+              "Eval failed: --difficulty, --sample, --scenario-id, and --parallel are only supported with --runner task (or a suite YAML with `runner: task`)."
             )
             process.exit(1)
             return
@@ -643,6 +719,7 @@ evalCommand.addCommand(
               outPath: parsed.value.outPath,
               costKillSwitchUsd: parsed.value.costKillSwitchUsd,
               difficulty: parsed.value.difficulty,
+              sample: parsed.value.sample,
               scenarioIds: parsed.value.scenarioIds,
               parallelism: parsed.value.parallelism,
               onProgress: parsed.value.json

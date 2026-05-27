@@ -6,14 +6,13 @@ description: |
   Seventy-five PR-derived and generalized GitHub CLI longitudinal scenario
   candidates. These are candidate slots, not independent statistical units:
   many scenarios intentionally cluster around the same source memory or source
-  pull request. This suite deliberately exceeds the current 50-pair planner
-  estimate for a 15pp MDE, 80% power, alpha 0.05 two-sided run so unstable
-  candidates can be culled after smoke validation. It is not yet the published
-  powered benchmark. Each scenario still needs validation for prompt bounds,
-  verifier stability, no-op baseline failure, runtime, and cost before
-  promotion. Scenarios are segmented into 25 easy, 25 medium, and 25 hard
-  triples so ceiling-effect analysis can separate directional lift from
-  genuinely discriminative tasks.
+  pull request. The suite is a calibrated scenario pool, not a fixed balanced
+  dataset: capability-edge demotions intentionally make easy scenarios more
+  common than medium scenarios, and medium scenarios more common than hard
+  scenarios. Powered runs should sample from the pool with a recorded seed
+  rather than assuming every authored scenario belongs in a published benchmark.
+  Each scenario still needs validation for prompt bounds, verifier stability,
+  no-op baseline failure, runtime, and cost before promotion.
 seededCorpus: ../vault-seeds/github-cli-powered.yaml
 costKillSwitchUsd: 1500
 conditions:
@@ -1104,7 +1103,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-topic-cache
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1484,7 +1483,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-no-extension-browser
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1526,7 +1525,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-log-empty-marker
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1606,7 +1605,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-terminal-width-dimension
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1740,7 +1739,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-ci-context-dimension
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1778,7 +1777,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-api-graphql-agent-header
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1854,7 +1853,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-api-rest-agent-header
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1889,7 +1888,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-verify-strict-digest-alg
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1924,7 +1923,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-verify-asset-strict-digest-alg
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1959,7 +1958,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-shared-digest-helper-invalid
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1994,7 +1993,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-attestation-jsonl-stream-reader
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2032,7 +2031,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-attestation-jsonl-empty-line
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2070,7 +2069,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-attestation-jsonl-malformed-context
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2108,7 +2107,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-httpmock-payload
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2144,7 +2143,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-command-stubber
-    difficulty: hard
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2179,7 +2178,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-set-httpmock-payload
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2215,7 +2214,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-gpg-key-list-json
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2253,7 +2252,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-ssh-key-list-json
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2291,7 +2290,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-gitignore-list-json
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2329,7 +2328,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-license-list-json
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2406,7 +2405,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-gpg-key-delete-quiet
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2444,7 +2443,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-ssh-key-delete-quiet
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2482,7 +2481,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-label-delete-quiet
-    difficulty: medium
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace

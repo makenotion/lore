@@ -542,6 +542,7 @@ export interface LongitudinalTaskArtifact {
     kind: "longitudinal"
     parallelism?: number
     difficulty?: LongitudinalScenarioDifficulty
+    sample?: LongitudinalScenarioSampleSelection
   }
   termination: LongitudinalRunTermination | null
   results: LongitudinalTaskResult[]
@@ -561,6 +562,17 @@ export interface LongitudinalTaskArtifact {
 }
 
 export type AnyTaskEvalArtifact = TaskEvalArtifact | LongitudinalTaskArtifact
+
+export interface LongitudinalScenarioSampleRequest {
+  seed: string
+  counts: Partial<Record<LongitudinalScenarioDifficulty, number>>
+}
+
+export interface LongitudinalScenarioSampleSelection {
+  seed: string
+  requested: Partial<Record<LongitudinalScenarioDifficulty, number>>
+  selectedScenarioIds: string[]
+}
 
 export interface LongitudinalLoreFormationResult {
   projectId: string | null
@@ -677,6 +689,10 @@ export interface RunTaskEvalOptions {
    * Longitudinal-only filter for segmented benchmark runs.
    */
   difficulty?: LongitudinalScenarioDifficulty
+  /**
+   * Longitudinal-only deterministic random sample by difficulty bucket.
+   */
+  sample?: LongitudinalScenarioSampleRequest
   /**
    * Longitudinal-only scenario id filter. Used by process workers that
    * execute one scenario triple at a time.

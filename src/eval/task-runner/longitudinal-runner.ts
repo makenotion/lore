@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { spawn, type ChildProcess } from "node:child_process"
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
@@ -38,6 +38,7 @@ import type {
   LongitudinalLoreRun,
   LongitudinalPhaseResult,
   LongitudinalRunTermination,
+  LongitudinalScenarioSampleSelection,
   LongitudinalTaskArtifact,
   LongitudinalTaskCondition,
   LongitudinalTaskEvalSuite,
@@ -52,6 +53,8 @@ import { deriveFailureReason, runVerifier } from "./verifier.js"
 import { prepareWorkspace, rematerializeWorkspace } from "./workspace.js"
 import { resolveTranscriptDir, taskTranscriptPath } from "./transcripts.js"
 
+const LONGITUDINAL_DIFFICULTIES = ["easy", "medium", "hard"] as const
+
 export async function runLongitudinalTaskEvalSuite(
   loaded: { suite: LongitudinalTaskEvalSuite; root: string; path: string },
   options: RunTaskEvalOptions
@@ -60,7 +63,8 @@ export async function runLongitudinalTaskEvalSuite(
   const outPath = resolve(
     options.outPath ?? defaultArtifactPath(loaded.suite.name, startedAt)
   )
-  const scenarios = filterLongitudinalScenarios(loaded.suite, options)
+  const selection = selectLongitudinalScenarios(loaded.suite, options)
+  const scenarios = selection.scenarios
   const parallelism = normalizeLongitudinalParallelism(options.parallelism)
   const scenarioIds = scenarios.map((scenario) => scenario.id)
 
@@ -72,6 +76,7 @@ export async function runLongitudinalTaskEvalSuite(
       outPath,
       scenarios,
       parallelism,
+      sample: selection.sample,
     })
   }
 
@@ -97,6 +102,7 @@ export async function runLongitudinalTaskEvalSuite(
     scenarioIds,
     parallelism,
     difficulty: options.difficulty,
+    sample: selection.sample,
   })
   for (const [scenarioIndex, scenario] of scenarios.entries()) {
     for (const [conditionIndex, condition] of loaded.suite.conditions.entries()) {
@@ -118,6 +124,7 @@ export async function runLongitudinalTaskEvalSuite(
           scenarioIds,
           parallelism,
           difficulty: options.difficulty,
+          sample: selection.sample,
         })
         return { artifact, outPath }
       }
@@ -160,6 +167,7 @@ export async function runLongitudinalTaskEvalSuite(
         scenarioIds,
         parallelism,
         difficulty: options.difficulty,
+        sample: selection.sample,
       })
       options.onProgress?.({
         type: "trial-finish",
@@ -190,6 +198,7 @@ export async function runLongitudinalTaskEvalSuite(
           scenarioIds,
           parallelism,
           difficulty: options.difficulty,
+          sample: selection.sample,
         })
         return { artifact, outPath }
       }
@@ -205,6 +214,7 @@ export async function runLongitudinalTaskEvalSuite(
     scenarioIds,
     parallelism,
     difficulty: options.difficulty,
+    sample: selection.sample,
   })
   return { artifact, outPath }
 }
@@ -216,6 +226,7 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
   outPath: string
   scenarios: LongitudinalTaskScenario[]
   parallelism: number
+  sample: LongitudinalScenarioSampleSelection | undefined
 }): Promise<{ artifact: LongitudinalTaskArtifact; outPath: string }> {
   if (input.options.adapters || input.options.longitudinalLoreAdapter) {
     throw new Error(
@@ -264,6 +275,7 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
         scenarioIds,
         parallelism: input.parallelism,
         difficulty: input.options.difficulty,
+        sample: input.sample,
       })
     )
     writeQueue = write.then(
@@ -397,6 +409,7 @@ async function writeLongitudinalArtifact(input: {
   scenarioIds: string[]
   parallelism: number
   difficulty: RunTaskEvalOptions["difficulty"]
+  sample: LongitudinalScenarioSampleSelection | undefined
 }): Promise<LongitudinalTaskArtifact> {
   const artifact: LongitudinalTaskArtifact = {
     suite: input.suite.name,
@@ -407,6 +420,7 @@ async function writeLongitudinalArtifact(input: {
       kind: "longitudinal",
       parallelism: input.parallelism,
       ...(input.difficulty ? { difficulty: input.difficulty } : {}),
+      ...(input.sample ? { sample: input.sample } : {}),
     },
     termination: input.termination,
     results: input.results,
@@ -424,6 +438,87 @@ async function writeJsonArtifactAtomically(
   const tmpPath = `${outPath}.${process.pid}.${randomUUID()}.tmp`
   await writeFile(tmpPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
   await rename(tmpPath, outPath)
+}
+
+function selectLongitudinalScenarios(
+  suite: LongitudinalTaskEvalSuite,
+  options: RunTaskEvalOptions
+): {
+  scenarios: LongitudinalTaskScenario[]
+  sample: LongitudinalScenarioSampleSelection | undefined
+} {
+  if (!options.sample) {
+    return { scenarios: filterLongitudinalScenarios(suite, options), sample: undefined }
+  }
+  if (options.difficulty || (options.scenarioIds?.length ?? 0) > 0) {
+    throw new Error(
+      "Longitudinal --sample cannot be combined with --difficulty or --scenario-id."
+    )
+  }
+  const selectedByBucket: LongitudinalTaskScenario[] = []
+  for (const difficulty of LONGITUDINAL_DIFFICULTIES) {
+    const requested = normalizeLongitudinalSampleCount(
+      difficulty,
+      options.sample.counts[difficulty]
+    )
+    if (requested === undefined) continue
+    const bucket = suite.scenarios
+      .filter((scenario) => scenario.difficulty === difficulty)
+      .sort((a, b) => {
+        const aKey = longitudinalSampleSortKey(options.sample!.seed, difficulty, a.id)
+        const bKey = longitudinalSampleSortKey(options.sample!.seed, difficulty, b.id)
+        return aKey.localeCompare(bKey) || a.id.localeCompare(b.id)
+      })
+    if (bucket.length < requested) {
+      throw new Error(
+        `Longitudinal sample requested ${requested} ${difficulty} scenario(s), but only ${bucket.length} are available.`
+      )
+    }
+    selectedByBucket.push(...bucket.slice(0, requested))
+  }
+  if (selectedByBucket.length === 0) {
+    throw new Error("Longitudinal sample requested no scenarios.")
+  }
+  const selected = selectedByBucket.sort((a, b) => {
+    const aKey = longitudinalSampleSortKey(options.sample!.seed, "run-order", a.id)
+    const bKey = longitudinalSampleSortKey(options.sample!.seed, "run-order", b.id)
+    return aKey.localeCompare(bKey) || a.id.localeCompare(b.id)
+  })
+  return {
+    scenarios: selected,
+    sample: {
+      seed: options.sample.seed,
+      requested: { ...options.sample.counts },
+      selectedScenarioIds: selected.map((scenario) => scenario.id),
+    },
+  }
+}
+
+function normalizeLongitudinalSampleCount(
+  difficulty: string,
+  value: number | undefined
+): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      `Longitudinal sample count for ${difficulty} must be a positive safe integer.`
+    )
+  }
+  return value
+}
+
+function longitudinalSampleSortKey(
+  seed: string,
+  difficulty: string,
+  scenarioId: string
+): string {
+  return createHash("sha256")
+    .update(seed)
+    .update("\0")
+    .update(difficulty)
+    .update("\0")
+    .update(scenarioId)
+    .digest("hex")
 }
 
 function filterLongitudinalScenarios(

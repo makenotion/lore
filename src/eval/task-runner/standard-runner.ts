@@ -74,11 +74,12 @@ export async function runTaskEvalSuite(
   }
   if (
     options.difficulty !== undefined ||
+    options.sample !== undefined ||
     (options.scenarioIds?.length ?? 0) > 0 ||
     options.parallelism !== undefined
   ) {
     throw new Error(
-      "--difficulty, --scenario-id, and --parallel are only supported for longitudinal task suites."
+      "--difficulty, --sample, --scenario-id, and --parallel are only supported for longitudinal task suites."
     )
   }
 
