@@ -6,7 +6,7 @@ import type {
 import { buildLongitudinalBenchmarkPlan } from "./longitudinal-plan.js"
 
 describe("buildLongitudinalBenchmarkPlan", () => {
-  it("uses seeded-lore by default and estimates paired sample size from harm", () => {
+  it("uses lore-full-loop by default and estimates paired sample size from harm", () => {
     const plan = buildLongitudinalBenchmarkPlan(
       artifact([
         ["one", false, true, false],
@@ -16,27 +16,27 @@ describe("buildLongitudinalBenchmarkPlan", () => {
       ])
     )
 
-    expect(plan.toCondition).toBe("seeded-lore")
+    expect(plan.toCondition).toBe("lore-full-loop")
     expect(plan.pairedOutcomes).toMatchObject({
       pairs: 4,
-      lifted: 1,
-      harmed: 1,
-      bothPassed: 1,
-      bothFailed: 1,
+      lifted: 0,
+      harmed: 0,
+      bothPassed: 2,
+      bothFailed: 2,
       observedLift: 0,
-      observedDiscordance: 0.5,
+      observedDiscordance: 0,
     })
-    expect(plan.assumedHarmRate).toBe(0.25)
+    expect(plan.assumedHarmRate).toBe(0)
     expect(plan.efficiency.pairedDeltas).toMatchObject({
       pairs: 4,
       tokenPairs: 4,
-      meanPrimaryTokenDelta: -200,
-      meanPrimaryTokenDeltaPct: -0.2,
+      meanPrimaryTokenDelta: 200,
+      meanPrimaryTokenDeltaPct: 0.2,
       elapsedPairs: 4,
-      meanElapsedMsDelta: -1000,
-      meanElapsedDeltaPct: -0.1,
+      meanElapsedMsDelta: 1000,
+      meanElapsedDeltaPct: 0.1,
     })
-    expect(plan.estimatedPairsRequired).toBeGreaterThan(100)
+    expect(plan.estimatedPairsRequired).toBeGreaterThan(0)
     expect(plan.conditionRunsRequired).toBe(plan.estimatedPairsRequired * 3)
     expect(plan.budgetUsd).toBe(1000)
     expect(plan.projectedCostUsd).toBeGreaterThan(0)
@@ -74,14 +74,56 @@ describe("buildLongitudinalBenchmarkPlan", () => {
     expect(override.projectedCostUsd).toBe(override.conditionRunsRequired * 2)
   })
 
-  it("falls back to lore-full-loop when seeded-lore did not run", () => {
+  it("falls back to seeded-lore when lore-full-loop did not run", () => {
     const input = artifact([["one", false, false, true]])
-    input.summary.conditions["seeded-lore"].trials = 0
+    input.summary.conditions["lore-full-loop"].trials = 0
+    input.results = input.results.filter(
+      (result) => result.condition !== "lore-full-loop"
+    )
+
+    const plan = buildLongitudinalBenchmarkPlan(input)
+
+    expect(plan.toCondition).toBe("seeded-lore")
+    expect(plan.pairedOutcomes.bothFailed).toBe(1)
+  })
+
+  it("excludes harness-error rows from paired outcomes, efficiency, and cost coverage", () => {
+    const input = artifact([
+      ["one", false, true, true],
+      ["two", false, true, true],
+    ])
+    const harnessRow = input.results.find(
+      (result) => result.scenarioId === "two" && result.condition === "lore-full-loop"
+    )!
+    harnessRow.success = false
+    harnessRow.failureReason = "harness-error"
+    harnessRow.phases = [
+      {
+        ...harnessRow.phases[0]!,
+        success: false,
+        elapsedMs: 0,
+        cost: null,
+        failureReason: "harness-error",
+        failureMessage: "shard exited before writing all conditions",
+      },
+    ]
 
     const plan = buildLongitudinalBenchmarkPlan(input)
 
     expect(plan.toCondition).toBe("lore-full-loop")
-    expect(plan.pairedOutcomes.lifted).toBe(1)
+    expect(plan.pairedOutcomes).toMatchObject({
+      pairs: 1,
+      lifted: 1,
+      missing: 1,
+    })
+    expect(plan.efficiency.conditions["lore-full-loop"].trials).toBe(1)
+    expect(plan.efficiency.pairedDeltas).toMatchObject({
+      pairs: 1,
+      elapsedPairs: 1,
+      meanElapsedMsDelta: 1000,
+    })
+    expect(plan.measuredCostConditionRuns).toBe(5)
+    expect(plan.totalCostConditionRuns).toBe(5)
   })
 })
 

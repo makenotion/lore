@@ -29,7 +29,10 @@ import {
   type AgentRunInput,
   type AgentRunResult,
 } from "./task-runner.js"
-import { assertLongitudinalShardResultsComplete } from "./task-runner/longitudinal-runner.js"
+import {
+  assertLongitudinalShardResultsComplete,
+  completeLongitudinalShardResults,
+} from "./task-runner/longitudinal-runner.js"
 import { loadSeedCorpus } from "./seed-corpus.js"
 
 describe("task-runner", () => {
@@ -93,14 +96,7 @@ describe("task-runner", () => {
         expect(corpusContextIds.has(contextId)).toBe(true)
       const testName = poweredScenarioTestName(scenario.id)
       expect(scenario.phaseB.prompt).toContain(testName)
-      expect(
-        scenario.verifiers.some(
-          (verifier) =>
-            verifier.type === "file-contents-match" &&
-            verifier.path.endsWith("_test.go") &&
-            verifier.pattern === testName
-        )
-      ).toBe(true)
+      expect(verifiersIncludeTestName(scenario.verifiers, testName)).toBe(true)
       for (const packageDir of goPackageDirsForFileVerifiers(scenario.verifiers)) {
         expect(
           scenario.verifiers.some(
@@ -324,6 +320,48 @@ tasks:
       "Forbidden pattern matched"
     )
     expect(artifact.results[0]!.failureReason).toBe("verifiers")
+  })
+
+  it("passes any-file content verifiers when one allowed path matches", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: {
+        "primary.go": "package main\n",
+      },
+      suite: `version: 1
+name: any-file-verifier
+tasks:
+  - id: agent-uses-shared-helper
+    prompt: Add display name handling.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: any-file-contents-match
+        paths:
+          - primary.go
+          - shared/helper.go
+        pattern: DisplayName
+`,
+    })
+
+    const adapter = mockAdapter("codex", async ({ workspace }) => {
+      await mkdir(join(workspace, "shared"), { recursive: true })
+      await writeFile(
+        join(workspace, "shared", "helper.go"),
+        'package shared\n\nfunc DisplayName() string { return "ok" }\n',
+        "utf-8"
+      )
+      return successResult()
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+    })
+
+    expect(artifact.summary.failedTrials).toBe(0)
+    expect(artifact.results[0]!.verifiers[0]!.message).toContain(
+      "Pattern matched in shared/helper.go"
+    )
   })
 
   it("file-unchanged passes when the workspace file matches the fixture", async () => {
@@ -718,6 +756,67 @@ tasks:
 
     expect(artifact.summary.failedTrials).toBe(0)
     expect(artifact.results[0]!.verifiers[0]!.message).toContain("Command passed")
+  })
+
+  it("keeps multi-line command verifier output for adjudication", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "package.json": '{"name": "x"}\n' },
+      suite: `version: 1
+name: command-output-verifier
+tasks:
+  - id: command-output-is-captured
+    prompt: Leave workspace unchanged.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: command
+        command: node
+        args:
+          - -e
+          - "console.error('first line'); console.error('second line'); process.exit(1)"
+`,
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([
+        ["codex", mockAdapter("codex", async () => successResult())],
+      ]),
+    })
+
+    const message = artifact.results[0]!.verifiers[0]!.message
+    expect(artifact.summary.failedTrials).toBe(1)
+    expect(message).toContain("first line")
+    expect(message).toContain("second line")
+  })
+
+  it("runs command verifiers with shared Go cache env", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "package.json": '{"name": "x"}\n' },
+      suite: `version: 1
+name: command-env-verifier
+tasks:
+  - id: command-env-has-go-caches
+    prompt: Leave workspace unchanged.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: command
+        command: node
+        args:
+          - -e
+          - "if (!process.env.GOMODCACHE || !process.env.GOCACHE) process.exit(1)"
+`,
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([
+        ["codex", mockAdapter("codex", async () => successResult())],
+      ]),
+    })
+
+    expect(artifact.summary.failedTrials).toBe(0)
   })
 
   it("rejects the cost kill-switch for non-longitudinal task suites", async () => {
@@ -1515,6 +1614,48 @@ scenarios:
     ).toThrow("missing=seeded-lore,lore-full-loop")
   })
 
+  it("fills missing longitudinal shard condition results with harness-error rows", () => {
+    const results = completeLongitudinalShardResults({
+      scenario: {
+        id: "first",
+        difficulty: "hard",
+        agent: "codex",
+        timeoutMs: 300_000,
+        workspace: {
+          kind: "git",
+          repo: "cli/cli",
+          sha: "9a593ce81b593dee752cc11737d1a3ef768e52b3",
+        },
+        phaseA: { prompt: "Inspect first." },
+        phaseB: { prompt: "Finish first." },
+        expectedContext: {
+          description: "Expected context",
+          keywords: ["context"],
+        },
+        verifiers: [],
+      } as never,
+      results: [
+        {
+          scenarioId: "first",
+          condition: "no-memory",
+        } as never,
+      ],
+      expectedConditions: ["no-memory", "seeded-lore", "lore-full-loop"],
+      harnessErrorMessage: "shard exited before writing all conditions",
+    })
+
+    expect(results.map((result) => result.condition)).toEqual([
+      "no-memory",
+      "seeded-lore",
+      "lore-full-loop",
+    ])
+    expect(results.slice(1).map((result) => result.failureReason)).toEqual([
+      "harness-error",
+      "harness-error",
+    ])
+    expect(results[1]?.phases[0]?.failureMessage).toContain("shard exited")
+  })
+
   it("keeps primary longitudinal agents Lore-tool-free while mining has MCP config", async () => {
     const { suitePath } = await writeTaskSuite({
       workspace: { "status.js": "export function status() { return 'ok' }\n" },
@@ -2198,6 +2339,22 @@ describe("buildCodexChildEnv", () => {
     expect(env["PATH"]).toBe("/usr/bin")
     expect(env["HOME"]).toBe("/tmp/lore-eval-codex-home-test")
     expect(env["CODEX_HOME"]).toBe("/tmp/lore-eval-codex-home-test")
+    expect(env["GOMODCACHE"]).toContain("lore-eval-go-mod-cache")
+    expect(env["GOCACHE"]).toContain("lore-eval-go-build-cache")
+  })
+
+  it("preserves explicit Go cache paths for eval subprocesses", () => {
+    const env = buildCodexChildEnv(
+      {
+        HOME: "/Users/example",
+        GOMODCACHE: "/tmp/custom-mod-cache",
+        GOCACHE: "/tmp/custom-build-cache",
+      },
+      { codexHome: "/tmp/lore-eval-codex-home-test" }
+    )
+
+    expect(env["GOMODCACHE"]).toBe("/tmp/custom-mod-cache")
+    expect(env["GOCACHE"]).toBe("/tmp/custom-build-cache")
   })
 })
 
@@ -2291,18 +2448,20 @@ describe("createIsolatedCodexHome", () => {
 })
 
 function goPackageDirsForFileVerifiers(
-  verifiers: Array<{ type: string; path?: string }>
+  verifiers: Array<{ type: string; path?: string; paths?: string[] }>
 ): string[] {
   const dirs = new Set<string>()
   for (const verifier of verifiers) {
-    if (
-      verifier.type !== "file-contents-match" ||
-      verifier.path === undefined ||
-      !verifier.path.endsWith(".go")
-    ) {
-      continue
+    if (verifier.type === "file-contents-match") {
+      if (verifier.path !== undefined && verifier.path.endsWith(".go")) {
+        dirs.add(posix.dirname(verifier.path))
+      }
     }
-    dirs.add(posix.dirname(verifier.path))
+    if (verifier.type === "any-file-contents-match") {
+      for (const path of verifier.paths ?? []) {
+        if (path.endsWith(".go")) dirs.add(posix.dirname(path))
+      }
+    }
   }
   return [...dirs]
 }
@@ -2337,6 +2496,22 @@ function poweredScenarioTestName(scenarioId: string): string {
     .filter((part) => part !== "gh" && part !== "cli")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join("")}`
+}
+
+function verifiersIncludeTestName(
+  verifiers: Array<{ type: string; path?: string; paths?: string[]; pattern?: string }>,
+  testName: string
+): boolean {
+  return verifiers.some((verifier) => {
+    if (verifier.pattern !== testName) return false
+    if (verifier.type === "file-contents-match") {
+      return verifier.path?.endsWith("_test.go") ?? false
+    }
+    if (verifier.type === "any-file-contents-match") {
+      return verifier.paths?.some((path) => path.endsWith("_test.go")) ?? false
+    }
+    return false
+  })
 }
 
 describe("selectExpectedContextIds", () => {

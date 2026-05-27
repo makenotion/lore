@@ -173,7 +173,9 @@ function summarizeConditionEfficiency(
   artifact: LongitudinalTaskArtifact,
   condition: LongitudinalTaskCondition
 ): LongitudinalConditionEfficiency {
-  const results = artifact.results.filter((result) => result.condition === condition)
+  const results = scoreableResults(artifact).filter(
+    (result) => result.condition === condition
+  )
   const tokenValues = compactNumbers(results.map(primaryTokensForResult))
   const elapsedValues = compactNumbers(results.map(elapsedMsForResult))
   const costValues = compactNumbers(results.map(primaryCostUsdForResult))
@@ -193,7 +195,8 @@ function summarizePairedEfficiencyDeltas(
   artifact: LongitudinalTaskArtifact,
   toCondition: Exclude<LongitudinalTaskCondition, "no-memory">
 ): LongitudinalPairedEfficiencyDeltas {
-  const scenarioIds = new Set(artifact.results.map((result) => result.scenarioId))
+  const results = scoreableResults(artifact)
+  const scenarioIds = new Set(results.map((result) => result.scenarioId))
   const tokenDeltas: number[] = []
   const tokenBase: number[] = []
   const elapsedDeltas: number[] = []
@@ -202,10 +205,10 @@ function summarizePairedEfficiencyDeltas(
   const costBase: number[] = []
   let pairs = 0
   for (const scenarioId of scenarioIds) {
-    const noMemory = artifact.results.find(
+    const noMemory = results.find(
       (result) => result.scenarioId === scenarioId && result.condition === "no-memory"
     )
-    const memory = artifact.results.find(
+    const memory = results.find(
       (result) => result.scenarioId === scenarioId && result.condition === toCondition
     )
     if (!noMemory || !memory) continue
@@ -328,26 +331,29 @@ function percentDelta(delta: number | null, baseline: number | null): number | n
 function defaultMemoryCondition(
   artifact: LongitudinalTaskArtifact
 ): Exclude<LongitudinalTaskCondition, "no-memory"> {
-  const seeded = artifact.summary.conditions["seeded-lore"]
-  if (seeded && seeded.trials > 0) return "seeded-lore"
-  return "lore-full-loop"
+  const results = scoreableResults(artifact)
+  if (results.some((result) => result.condition === "lore-full-loop")) {
+    return "lore-full-loop"
+  }
+  return "seeded-lore"
 }
 
 function countPairedOutcomes(
   artifact: LongitudinalTaskArtifact,
   toCondition: Exclude<LongitudinalTaskCondition, "no-memory">
 ): LongitudinalPairedOutcomes {
-  const scenarioIds = new Set(artifact.results.map((result) => result.scenarioId))
+  const results = scoreableResults(artifact)
+  const scenarioIds = new Set(results.map((result) => result.scenarioId))
   let bothPassed = 0
   let bothFailed = 0
   let lifted = 0
   let harmed = 0
   let missing = 0
   for (const scenarioId of scenarioIds) {
-    const noMemory = artifact.results.find(
+    const noMemory = results.find(
       (result) => result.scenarioId === scenarioId && result.condition === "no-memory"
     )
-    const memory = artifact.results.find(
+    const memory = results.find(
       (result) => result.scenarioId === scenarioId && result.condition === toCondition
     )
     if (!noMemory || !memory) {
@@ -395,9 +401,8 @@ function estimatePairedBinarySampleSize(input: {
 }
 
 function countExecutedConditions(artifact: LongitudinalTaskArtifact): number {
-  return Object.values(artifact.summary.conditions).filter((condition) => {
-    return condition.trials > 0
-  }).length
+  const conditions = new Set(scoreableResults(artifact).map((result) => result.condition))
+  return conditions.size
 }
 
 function summarizePrimaryCostCoverage(artifact: LongitudinalTaskArtifact): {
@@ -407,9 +412,10 @@ function summarizePrimaryCostCoverage(artifact: LongitudinalTaskArtifact): {
   coverage: number
   complete: boolean
 } {
+  const results = scoreableResults(artifact)
   let total = 0
   let measuredConditionRuns = 0
-  for (const result of artifact.results) {
+  for (const result of results) {
     const usd = primaryCostUsdForResult(result)
     if (usd !== null) {
       total += usd
@@ -419,12 +425,16 @@ function summarizePrimaryCostCoverage(artifact: LongitudinalTaskArtifact): {
   return {
     totalUsd: total,
     measuredConditionRuns,
-    totalConditionRuns: artifact.results.length,
-    coverage:
-      artifact.results.length === 0 ? 0 : measuredConditionRuns / artifact.results.length,
-    complete:
-      artifact.results.length > 0 && measuredConditionRuns === artifact.results.length,
+    totalConditionRuns: results.length,
+    coverage: results.length === 0 ? 0 : measuredConditionRuns / results.length,
+    complete: results.length > 0 && measuredConditionRuns === results.length,
   }
+}
+
+function scoreableResults(
+  artifact: LongitudinalTaskArtifact
+): LongitudinalTaskArtifact["results"] {
+  return artifact.results.filter((result) => result.failureReason !== "harness-error")
 }
 
 function assertUnitInterval(label: string, value: number): void {

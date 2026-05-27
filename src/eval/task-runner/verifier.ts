@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFile, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { relative, resolve } from "node:path"
 import { appendCappedChunk, joinCappedCapture, makeCappedCapture } from "./capture.js"
 import type {
@@ -36,6 +37,9 @@ export async function runVerifier(
 ): Promise<VerifierResult> {
   if (verifier.type === "command") {
     return runCommandVerifier(verifier, workspace)
+  }
+  if (verifier.type === "any-file-contents-match") {
+    return runAnyFileContentsVerifier(verifier, workspace)
   }
   const target = resolve(workspace, verifier.path)
   if (!isInsideWorkspace(target, workspace)) {
@@ -116,6 +120,60 @@ export async function runVerifier(
     message: matched
       ? `Forbidden pattern matched in ${verifier.path}`
       : `Forbidden pattern not present in ${verifier.path}`,
+  }
+}
+
+async function runAnyFileContentsVerifier(
+  verifier: Extract<TaskEvalVerifier, { type: "any-file-contents-match" }>,
+  workspace: string
+): Promise<VerifierResult> {
+  const regex = new RegExp(verifier.pattern)
+  const missing: string[] = []
+  for (const path of verifier.paths) {
+    const target = resolve(workspace, path)
+    if (!isInsideWorkspace(target, workspace)) {
+      return {
+        verifier,
+        passed: false,
+        message: `Verifier path "${path}" escapes the workspace`,
+      }
+    }
+    let contents: string
+    try {
+      contents = await readFile(target, "utf-8")
+    } catch {
+      missing.push(path)
+      continue
+    }
+    if (regex.test(contents)) {
+      if (verifier.mode === "forbid") {
+        return {
+          verifier,
+          passed: false,
+          message: `Forbidden pattern matched in ${path}`,
+        }
+      }
+      return {
+        verifier,
+        passed: true,
+        message: `Pattern matched in ${path}`,
+      }
+    }
+  }
+
+  if (verifier.mode === "forbid") {
+    return {
+      verifier,
+      passed: true,
+      message: `Forbidden pattern not present in any of ${verifier.paths.join(", ")}`,
+    }
+  }
+
+  const suffix = missing.length > 0 ? `; missing files: ${missing.join(", ")}` : ""
+  return {
+    verifier,
+    passed: false,
+    message: `Pattern did not match in any of ${verifier.paths.join(", ")}${suffix}`,
   }
 }
 
@@ -218,6 +276,9 @@ function buildVerifierChildEnv(
     if (value !== undefined) out[key] = value
   }
   out["CI"] = parentEnv["CI"] ?? "1"
+  out["GOMODCACHE"] =
+    parentEnv["GOMODCACHE"] ?? resolve(tmpdir(), "lore-eval-go-mod-cache")
+  out["GOCACHE"] = parentEnv["GOCACHE"] ?? resolve(tmpdir(), "lore-eval-go-build-cache")
   return out
 }
 
@@ -226,11 +287,14 @@ function formatCommand(verifier: Extract<TaskEvalVerifier, { type: "command" }>)
 }
 
 function firstCommandOutput(input: { stdout: string; stderr: string }): string {
-  const firstLine = `${input.stderr}\n${input.stdout}`
+  const lines = `${input.stderr}\n${input.stdout}`
     .split("\n")
     .map((line) => line.trim())
-    .find((line) => line.length > 0)
-  return firstLine ? `; ${firstLine}` : ""
+    .filter((line) => line.length > 0)
+    .slice(0, 20)
+  if (lines.length === 0) return ""
+  const excerpt = lines.join("\n").slice(0, 4000)
+  return `; output:\n${excerpt}`
 }
 
 async function hashFile(path: string): Promise<string> {

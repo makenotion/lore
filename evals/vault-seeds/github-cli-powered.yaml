@@ -307,12 +307,27 @@ vault:
         - gh-cli-issue-status-display-names
         - gh-cli-pr-list-display-names
         - gh-cli-issue-list-display-names
-        - gh-cli-pr-checks-display-names
       sourcePullRequests:
         - repo: cli/cli
           number: 12854
           title: "`gh pr view` and `gh issue view`: show friendly display names for all actors"
           url: https://github.com/cli/cli/pull/12854
+    - id: gh-cli/pr-checks-output-names
+      title: PR checks human table names can compose workflow and event context
+      topics: ["commands/pr-issue", "output/json", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        PR checks table output can compose display names from workflow and event
+        context, while JSON export keeps raw check fields.
+      body: |
+        `gh pr checks` has separate human table and JSON export paths. Human
+        table rows may compose a display name from workflow, check name, and
+        event context to make repeated check names easier to distinguish. JSON
+        export should continue to expose the raw check fields so scripts do not
+        see presentation-only strings.
+      scenarios:
+        - gh-cli-pr-checks-display-names
     - id: gh-cli/pr-finder-validation
       title: PR and issue finders should not skip API validation for number-only JSON
       topics: ["commands/pr-issue", "output/json", "tests/commands", "api/http"]

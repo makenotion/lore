@@ -141,6 +141,9 @@ export function buildCodexChildEnv(
   if (options.codexHome !== undefined) {
     out["CODEX_HOME"] = options.codexHome
     out["HOME"] = options.codexHome
+    out["GOMODCACHE"] =
+      parentEnv["GOMODCACHE"] ?? join(tmpdir(), "lore-eval-go-mod-cache")
+    out["GOCACHE"] = parentEnv["GOCACHE"] ?? join(tmpdir(), "lore-eval-go-build-cache")
   }
   return out
 }

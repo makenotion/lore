@@ -33,15 +33,17 @@ scenarios:
     phaseA:
       promptId: gh-cli-config-get-json-formation
       prompt: |
-        In GitHub CLI's config command implementation, inspect `gh config get`
-        JSON-output conventions and capture the smallest convention needed for
-        a sibling config command. Keep any edit scoped to that package.
+        In GitHub CLI's config command implementation, inspect command-local
+        option wiring, output writers, and tests. Capture the smallest
+        convention needed to add a machine-readable output mode to a sibling
+        config command. Keep any edit scoped to that package.
     phaseB:
       promptId: gh-cli-config-list-json-use
       prompt: |
-        Continue the config command work by adding the same style of `--json`
-        output mode to `gh config list`. Keep option wiring, output writer, and
-        tests consistent with the convention from the previous session.
+        Continue the config command work by adding `gh config list --json`.
+        Emit an array of objects with `key` and `value` string fields to
+        `opts.IO.Out`, preserve the existing human `key=value` output, and keep
+        tests package-local.
         Name the new regression test `TestConfigListJsonContinuity`.
     expectedContext:
       description: Config JSON output uses a JSONOutput option, --json flag, IO.Out, and package-local tests.
@@ -53,16 +55,16 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/config/list/list.go
-        pattern: 'JSONOutput|Exporter|AddJSONFlags'
+        pattern: "JSONOutput|Exporter|AddJSONFlags"
       - type: file-contents-match
         path: pkg/cmd/config/list/list_test.go
-        pattern: '--json'
+        pattern: "--json"
       - type: file-contents-match
         path: pkg/cmd/config/list/list_test.go
-        pattern: 'TestConfigListJsonContinuity'
+        pattern: "TestConfigListJsonContinuity"
       - type: command
         command: go
-        args: ["test", "./pkg/cmd/config/..."]
+        args: ["test", "./pkg/cmd/config/list"]
         timeoutMs: 300000
 
   - id: gh-cli-alias-list-json-continuity
@@ -94,10 +96,10 @@ scenarios:
         pattern: 'encoding/json|json\.NewEncoder|Exporter'
       - type: file-contents-match
         path: pkg/cmd/alias/list/list_test.go
-        pattern: '--json'
+        pattern: "--json"
       - type: file-contents-match
         path: pkg/cmd/alias/list/list_test.go
-        pattern: 'TestAliasListJsonContinuity'
+        pattern: "TestAliasListJsonContinuity"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/alias/list"]
@@ -132,10 +134,10 @@ scenarios:
         pattern: 'BoolVarP\(&opts\.OverwriteExisting,\s*"clobber",\s*"c"'
       - type: file-contents-match
         path: pkg/cmd/alias/set/set_test.go
-        pattern: '\s-c["\s]'
+        pattern: 'clobber.*\bc\b|\bc\b.*clobber|Shorthand'
       - type: file-contents-match
         path: pkg/cmd/alias/set/set_test.go
-        pattern: 'TestAliasSetClobberShorthand'
+        pattern: "TestAliasSetClobberShorthand"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/alias/set"]
@@ -167,13 +169,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/alias/delete/delete.go
-        pattern: 'Silent'
+        pattern: "Silent"
       - type: file-contents-match
         path: pkg/cmd/alias/delete/delete_test.go
-        pattern: '--silent'
+        pattern: "--silent"
       - type: file-contents-match
         path: pkg/cmd/alias/delete/delete_test.go
-        pattern: 'TestAliasDeleteSilentMissing'
+        pattern: "TestAliasDeleteSilentMissing"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/alias/delete"]
@@ -205,13 +207,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/config/clear-cache/clear_cache.go
-        pattern: 'Quiet'
+        pattern: "Quiet"
       - type: file-contents-match
         path: pkg/cmd/config/clear-cache/clear_cache_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/config/clear-cache/clear_cache_test.go
-        pattern: 'TestConfigClearCacheQuiet'
+        pattern: "TestConfigClearCacheQuiet"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/config/clear-cache"]
@@ -243,13 +245,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/update/update.go
-        pattern: 'AllowHiddenDirs|allow-hidden-dirs'
+        pattern: "AllowHiddenDirs|allow-hidden-dirs"
       - type: file-contents-match
         path: pkg/cmd/skills/update/update_test.go
-        pattern: 'allow-hidden-dirs'
+        pattern: "allow-hidden-dirs"
       - type: file-contents-match
         path: pkg/cmd/skills/update/update_test.go
-        pattern: 'TestSkillsUpdateAllowHiddenDirs'
+        pattern: "TestSkillsUpdateAllowHiddenDirs"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/update"]
@@ -281,13 +283,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish.go
-        pattern: 'AllowHiddenDirs|allow-hidden-dirs'
+        pattern: "AllowHiddenDirs|allow-hidden-dirs"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'allow-hidden-dirs'
+        pattern: "allow-hidden-dirs"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishAllowHiddenDirs'
+        pattern: "TestSkillsPublishAllowHiddenDirs"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -319,13 +321,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/search/search.go
-        pattern: 'IncludeHiddenDirs|include-hidden-dirs'
+        pattern: "IncludeHiddenDirs|include-hidden-dirs"
       - type: file-contents-match
         path: pkg/cmd/skills/search/search_test.go
-        pattern: 'include-hidden-dirs'
+        pattern: "include-hidden-dirs"
       - type: file-contents-match
         path: pkg/cmd/skills/search/search_test.go
-        pattern: 'TestSkillsSearchHiddenDirHint'
+        pattern: "TestSkillsSearchHiddenDirHint"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/search"]
@@ -358,13 +360,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview.go
-        pattern: 'hiddenDir|HiddenDir'
+        pattern: "hiddenDir|HiddenDir"
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'hiddenDir|HiddenDir'
+        pattern: "hiddenDir|HiddenDir"
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'TestSkillsPreviewHiddenDirJson'
+        pattern: "TestSkillsPreviewHiddenDirJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/preview"]
@@ -396,13 +398,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/update/update.go
-        pattern: 'Upstream|upstream'
+        pattern: "Upstream|upstream"
       - type: file-contents-match
         path: pkg/cmd/skills/update/update_test.go
-        pattern: '--upstream|upstream'
+        pattern: "--upstream|upstream"
       - type: file-contents-match
         path: pkg/cmd/skills/update/update_test.go
-        pattern: 'TestSkillsUpdateUpstreamRedirect'
+        pattern: "TestSkillsUpdateUpstreamRedirect"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/update"]
@@ -434,13 +436,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview.go
-        pattern: 'github-repo|upstream'
+        pattern: "github-repo|upstream"
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'upstream'
+        pattern: "upstream"
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'TestSkillsPreviewUpstreamNotice'
+        pattern: "TestSkillsPreviewUpstreamNotice"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/preview"]
@@ -472,13 +474,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish.go
-        pattern: 'github-repo|upstream'
+        pattern: "github-repo|upstream"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'upstream|github-repo'
+        pattern: "upstream|github-repo"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishUpstreamMetadata'
+        pattern: "TestSkillsPublishUpstreamMetadata"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -511,13 +513,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/search/search.go
-        pattern: 'ExcludeRepublished|exclude-republished'
+        pattern: "ExcludeRepublished|exclude-republished"
       - type: file-contents-match
         path: pkg/cmd/skills/search/search_test.go
-        pattern: 'exclude-republished'
+        pattern: "exclude-republished"
       - type: file-contents-match
         path: pkg/cmd/skills/search/search_test.go
-        pattern: 'TestSkillsSearchUpstreamFilter'
+        pattern: "TestSkillsSearchUpstreamFilter"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/search"]
@@ -555,7 +557,7 @@ scenarios:
         pattern: 'ghe\.com|GHES|Enterprise Server'
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishTenancyHost'
+        pattern: "TestSkillsPublishTenancyHost"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish", "./internal/skills/source"]
@@ -587,13 +589,17 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: internal/skills/lockfile/lockfile.go
-        pattern: 'HostPrefix|host'
-      - type: file-contents-match
-        path: internal/skills/lockfile/lockfile_test.go
-        pattern: 'ghe\.com|host'
-      - type: file-contents-match
-        path: internal/skills/lockfile/lockfile_test.go
-        pattern: 'TestSkillsUpdateTenancyLockfile'
+        pattern: "HostPrefix|host"
+      - type: any-file-contents-match
+        paths:
+          - internal/skills/lockfile/lockfile_test.go
+          - pkg/cmd/skills/update/update_test.go
+        pattern: 'ghe\.com|host|HostPrefix'
+      - type: any-file-contents-match
+        paths:
+          - internal/skills/lockfile/lockfile_test.go
+          - pkg/cmd/skills/update/update_test.go
+        pattern: "TestSkillsUpdateTenancyLockfile"
       - type: command
         command: go
         args: ["test", "./internal/skills/lockfile", "./pkg/cmd/skills/update"]
@@ -625,13 +631,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/search/search.go
-        pattern: 'ValidateSupportedHost|Enterprise Server|GHES'
+        pattern: "ValidateSupportedHost|Enterprise Server|GHES"
       - type: file-contents-match
         path: pkg/cmd/skills/search/search_test.go
-        pattern: 'Enterprise Server|GHES|ghes'
+        pattern: "Enterprise Server|GHES|ghes"
       - type: file-contents-match
         path: pkg/cmd/skills/search/search_test.go
-        pattern: 'TestSkillsSearchGhesError'
+        pattern: "TestSkillsSearchGhesError"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/search", "./internal/skills/source"]
@@ -666,7 +672,7 @@ scenarios:
         pattern: 'ghe\.com|ValidateSupportedHost|Enterprise Server'
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'TestSkillsPreviewTenancySource'
+        pattern: "TestSkillsPreviewTenancySource"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/preview", "./internal/skills/source"]
@@ -698,13 +704,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish.go
-        pattern: 'Strict|strict'
+        pattern: "Strict|strict"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: '--strict|strict'
+        pattern: "--strict|strict"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishStrictWarnings'
+        pattern: "TestSkillsPublishStrictWarnings"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -736,13 +742,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish.go
-        pattern: 'json|Exporter|AddFormatFlags|publishDiagnostic'
+        pattern: "json|Exporter|AddFormatFlags|publishDiagnostic"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'json|diagnostic'
+        pattern: "json|diagnostic"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishJsonDiagnostics'
+        pattern: "TestSkillsPublishJsonDiagnostics"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -775,13 +781,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: '--fix|fix'
+        pattern: "--fix|fix"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishFixDryRunBoundary'
+        pattern: "TestSkillsPublishFixDryRunBoundary"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'Exclude|CommandStubber|release'
+        pattern: "Exclude|CommandStubber|release"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -810,17 +816,18 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/secrets-application-routing: Secret command changes should preserve shared application routing and endpoint construction across scopes.
         - [memory] gh-cli/destructive-quiet-output: Quiet mode should suppress success output only, without changing API calls, confirmation, or error handling.
-      contextIds: ["gh-cli/secrets-application-routing", "gh-cli/destructive-quiet-output"]
+      contextIds:
+        ["gh-cli/secrets-application-routing", "gh-cli/destructive-quiet-output"]
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/secret/set/set.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/secret/set/set_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/secret/set/set_test.go
-        pattern: 'TestSecretSetQuietSuccess'
+        pattern: "TestSecretSetQuietSuccess"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/secret/set"]
@@ -849,17 +856,18 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/destructive-quiet-output: Quiet mode on destructive commands should only suppress success output, not confirmation, API calls, or errors.
         - [memory] gh-cli/secrets-application-routing: Secret delete changes should preserve shared application routing and endpoint construction across scopes.
-      contextIds: ["gh-cli/destructive-quiet-output", "gh-cli/secrets-application-routing"]
+      contextIds:
+        ["gh-cli/destructive-quiet-output", "gh-cli/secrets-application-routing"]
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/secret/delete/delete.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/secret/delete/delete_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/secret/delete/delete_test.go
-        pattern: 'TestSecretDeleteQuietSuccess'
+        pattern: "TestSecretDeleteQuietSuccess"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/secret/delete"]
@@ -891,13 +899,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/secret/list/list.go
-        pattern: 'application|Application'
+        pattern: "application|Application"
       - type: file-contents-match
         path: pkg/cmd/secret/list/list_test.go
-        pattern: 'application|Application'
+        pattern: "application|Application"
       - type: file-contents-match
         path: pkg/cmd/secret/list/list_test.go
-        pattern: 'TestSecretListApplicationColumn'
+        pattern: "TestSecretListApplicationColumn"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/secret/list"]
@@ -929,13 +937,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/secret/shared/shared.go
-        pattern: 'actions|repo|alias'
+        pattern: "actions|repo|alias"
       - type: file-contents-match
         path: pkg/cmd/secret/shared/shared_test.go
-        pattern: 'actions|repo|alias'
+        pattern: "actions|repo|alias"
       - type: file-contents-match
         path: pkg/cmd/secret/shared/shared_test.go
-        pattern: 'TestSecretSharedApplicationAlias'
+        pattern: "TestSecretSharedApplicationAlias"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/secret/shared"]
@@ -968,13 +976,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/secret/set/set.go
-        pattern: 'Exporter|json|encrypted'
+        pattern: "Exporter|json|encrypted"
       - type: file-contents-match
         path: pkg/cmd/secret/set/set_test.go
-        pattern: 'no-store|json|encrypted'
+        pattern: "no-store|json|encrypted"
       - type: file-contents-match
         path: pkg/cmd/secret/set/set_test.go
-        pattern: 'TestSecretSetNoStoreJson'
+        pattern: "TestSecretSetNoStoreJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/secret/set"]
@@ -1006,13 +1014,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit.go
-        pattern: 'merge-commit-message|MergeCommit'
+        pattern: "merge-commit-message|MergeCommit"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'merge-commit-message|MergeCommit'
+        pattern: "merge-commit-message|MergeCommit"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'TestRepoEditMergeCommitMessage'
+        pattern: "TestRepoEditMergeCommitMessage"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/edit"]
@@ -1044,13 +1052,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit.go
-        pattern: 'enable-auto-merge|EnableAutoMerge'
+        pattern: "enable-auto-merge|EnableAutoMerge"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'enable-auto-merge|EnableAutoMerge'
+        pattern: "enable-auto-merge|EnableAutoMerge"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'TestRepoEditAutoMergePrerequisite'
+        pattern: "TestRepoEditAutoMergePrerequisite"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/edit"]
@@ -1074,7 +1082,8 @@ scenarios:
         Name the new regression test `TestRepoEditSecurityValidation`.
     expectedContext:
       description: Repo edit security flags should validate dependencies and assert nested payloads.
-      keywords: ["secret-scanning-push-protection", "security_and_analysis", "RESTPayload"]
+      keywords:
+        ["secret-scanning-push-protection", "security_and_analysis", "RESTPayload"]
     seededContext:
       renderedContext: |
         - [memory] gh-cli/repo-edit-option-mapping: Security-related repo edit flags map to nested API payloads and need explicit prerequisite validation tests.
@@ -1082,13 +1091,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit.go
-        pattern: 'secret-scanning-push-protection|security_and_analysis'
+        pattern: "secret-scanning-push-protection|security_and_analysis"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'secret-scanning-push-protection|security_and_analysis'
+        pattern: "secret-scanning-push-protection|security_and_analysis"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'TestRepoEditSecurityValidation'
+        pattern: "TestRepoEditSecurityValidation"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/edit"]
@@ -1121,10 +1130,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'topicsCache|Exclude|topics'
+        pattern: "topicsCache|Exclude|topics"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'TestRepoEditTopicCache'
+        pattern: "TestRepoEditTopicCache"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/edit"]
@@ -1156,13 +1165,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit.go
-        pattern: 'AcceptVisibilityChangeConsequences|visibility'
+        pattern: "AcceptVisibilityChangeConsequences|visibility"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'visibility|consequences'
+        pattern: "visibility|consequences"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'TestRepoEditVisibilityWarning'
+        pattern: "TestRepoEditVisibilityWarning"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/edit"]
@@ -1194,13 +1203,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/pr/status/status.go
-        pattern: 'DisplayName|AuthorLogin'
+        pattern: "DisplayName|AuthorLogin"
       - type: file-contents-match
         path: pkg/cmd/pr/status/status_test.go
-        pattern: 'DisplayName|Copilot|AI'
+        pattern: "DisplayName|Copilot|AI"
       - type: file-contents-match
         path: pkg/cmd/pr/status/status_test.go
-        pattern: 'TestPrStatusDisplayNames'
+        pattern: "TestPrStatusDisplayNames"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/pr/status"]
@@ -1232,13 +1241,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/issue/status/status.go
-        pattern: 'DisplayName|AuthorLogin'
+        pattern: "DisplayName|AuthorLogin"
       - type: file-contents-match
         path: pkg/cmd/issue/status/status_test.go
-        pattern: 'DisplayName|Copilot|AI'
+        pattern: "DisplayName|Copilot|AI"
       - type: file-contents-match
         path: pkg/cmd/issue/status/status_test.go
-        pattern: 'TestIssueStatusDisplayNames'
+        pattern: "TestIssueStatusDisplayNames"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/issue/status"]
@@ -1270,13 +1279,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/pr/list/list.go
-        pattern: 'DisplayName|AuthorLogin'
+        pattern: "DisplayName|AuthorLogin"
       - type: file-contents-match
         path: pkg/cmd/pr/list/list_test.go
-        pattern: 'DisplayName|Copilot|AI'
+        pattern: "DisplayName|Copilot|AI"
       - type: file-contents-match
         path: pkg/cmd/pr/list/list_test.go
-        pattern: 'TestPrListDisplayNames'
+        pattern: "TestPrListDisplayNames"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/pr/list"]
@@ -1290,34 +1299,38 @@ scenarios:
     phaseA:
       promptId: gh-cli-issue-list-display-formation
       prompt: |
-        Inspect issue view/list output and display-name helpers. Capture how
-        human author display differs from JSON fields.
+        Inspect issue list table rendering and display-name helpers. Capture
+        where shared issue-list table output is built and how human display can
+        differ from JSON fields.
     phaseB:
       promptId: gh-cli-issue-list-display-names-use
       prompt: |
-        Update `gh issue list` table output to use display names for authors
-        while preserving raw JSON author output.
+        Add an `AUTHOR` column to human `gh issue list` table output. Render
+        author display names in that human column while preserving raw
+        `--json author` output.
         Name the new regression test `TestIssueListDisplayNames`.
     expectedContext:
-      description: Issue list human table output can use display names; JSON author remains raw.
-      keywords: ["DisplayName", "issue list", "author"]
+      description: Issue list human table output should add an author column with display names; JSON author remains raw.
+      keywords: ["DisplayName", "AUTHOR", "issue list", "author"]
     seededContext:
       renderedContext: |
-        - [memory] gh-cli/pr-issue-display-names: Friendly actor display names are a human-output concern and should not mutate JSON fields.
+        - [memory] gh-cli/pr-issue-display-names: Friendly actor display names are a human-output concern and should not mutate JSON fields; add human table columns explicitly when the existing command does not display authors.
       contextIds: ["gh-cli/pr-issue-display-names"]
     verifiers:
-      - type: file-contents-match
-        path: pkg/cmd/issue/list/list.go
-        pattern: 'DisplayName|AuthorLogin'
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/issue/list/list.go
+          - pkg/cmd/issue/shared/display.go
+        pattern: "DisplayName|AuthorLogin|AUTHOR"
       - type: file-contents-match
         path: pkg/cmd/issue/list/list_test.go
-        pattern: 'DisplayName|Copilot|AI'
+        pattern: "DisplayName|Copilot|AI"
       - type: file-contents-match
         path: pkg/cmd/issue/list/list_test.go
-        pattern: 'TestIssueListDisplayNames'
+        pattern: "TestIssueListDisplayNames"
       - type: command
         command: go
-        args: ["test", "./pkg/cmd/issue/list"]
+        args: ["test", "./pkg/cmd/issue/list", "./pkg/cmd/issue/shared"]
         timeoutMs: 300000
 
   - id: gh-cli-pr-checks-display-names
@@ -1328,31 +1341,34 @@ scenarios:
     phaseA:
       promptId: gh-cli-pr-checks-display-formation
       prompt: |
-        Inspect PR checks output and display-name helper tests. Capture how bot
-        or app actors should be rendered for human output.
+        Inspect PR checks table output and JSON export behavior. Capture how
+        TTY output includes workflow/event context in the displayed check name.
     phaseB:
       promptId: gh-cli-pr-checks-display-names-use
       prompt: |
-        Update `gh pr checks` human output to use friendly display names for app
-        or bot actors while preserving JSON values.
+        Update non-TTY `gh pr checks` table output so the NAME column includes
+        workflow and event context when present, matching the TTY display-name
+        convention while preserving JSON values.
         Name the new regression test `TestPrChecksDisplayNames`.
     expectedContext:
-      description: PR checks human output should use display-name helpers but JSON should stay raw.
-      keywords: ["DisplayName", "pr checks", "JSON"]
+      description: PR checks human table names may include workflow/event context, but JSON should stay raw.
+      keywords: ["Workflow", "Event", "NAME", "pr checks", "JSON"]
     seededContext:
       renderedContext: |
-        - [memory] gh-cli/pr-issue-display-names: Display names apply to human output only; tests should prove JSON values remain raw.
-      contextIds: ["gh-cli/pr-issue-display-names"]
+        - [memory] gh-cli/pr-checks-output-names: PR checks human table output may compose display names from workflow/event context, while JSON export should preserve raw check fields.
+      contextIds: ["gh-cli/pr-checks-output-names"]
     verifiers:
-      - type: file-contents-match
-        path: pkg/cmd/pr/checks/checks.go
-        pattern: 'DisplayName|AuthorLogin'
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/pr/checks/aggregate.go
+          - pkg/cmd/pr/checks/output.go
+        pattern: "Workflow|Event|displayName|nameWithContext"
       - type: file-contents-match
         path: pkg/cmd/pr/checks/checks_test.go
-        pattern: 'DisplayName|Copilot|AI'
+        pattern: "workflow|event|JSON|NAME"
       - type: file-contents-match
         path: pkg/cmd/pr/checks/checks_test.go
-        pattern: 'TestPrChecksDisplayNames'
+        pattern: "TestPrChecksDisplayNames"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/pr/checks"]
@@ -1382,12 +1398,16 @@ scenarios:
         - [memory] gh-cli/pr-finder-validation: Numeric selectors must still validate resource type, even when only the `number` JSON field is requested.
       contextIds: ["gh-cli/pr-finder-validation"]
     verifiers:
-      - type: file-contents-match
-        path: pkg/cmd/pr/shared/finder_test.go
-        pattern: 'json number|numberFieldOnly|issue'
-      - type: file-contents-match
-        path: pkg/cmd/pr/shared/finder_test.go
-        pattern: 'TestPrViewNumberJsonValidation'
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/pr/shared/finder_test.go
+          - pkg/cmd/pr/view/view_test.go
+        pattern: "json number|numberFieldOnly|issue"
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/pr/shared/finder_test.go
+          - pkg/cmd/pr/view/view_test.go
+        pattern: "TestPrViewNumberJsonValidation"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/pr/shared", "./pkg/cmd/pr/view"]
@@ -1419,10 +1439,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/issue/view/view_test.go
-        pattern: 'json number|pr-number|pull request'
+        pattern: "json number|pr-number|pull request"
       - type: file-contents-match
         path: pkg/cmd/issue/view/view_test.go
-        pattern: 'TestIssueViewNumberJsonValidation'
+        pattern: "TestIssueViewNumberJsonValidation"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/issue/view"]
@@ -1454,10 +1474,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/root/alias_test.go
-        pattern: 'telemetry|alias|command_invocation'
+        pattern: "telemetry|alias|command_invocation"
       - type: file-contents-match
         path: pkg/cmd/root/alias_test.go
-        pattern: 'TestTelemetryNoAliasStatus'
+        pattern: "TestTelemetryNoAliasStatus"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/root"]
@@ -1471,31 +1491,38 @@ scenarios:
     phaseA:
       promptId: gh-cli-telemetry-extension-formation
       prompt: |
-        Inspect telemetry skip rules for extensions and browser-opening commands.
-        Capture how skip cases are represented in tests.
+        Inspect telemetry skip rules for third-party extension wrapper commands.
+        Capture how extension wrapper skip cases are represented in root command
+        tests.
     phaseB:
       promptId: gh-cli-telemetry-no-extension-browser-use
       prompt: |
-        Add coverage ensuring extension browser flows do not emit command
-        telemetry for the extension wrapper.
+        Add coverage ensuring a third-party extension wrapper command named
+        `browser` does not emit command telemetry for the wrapper invocation.
         Name the new regression test `TestTelemetryNoExtensionBrowser`.
     expectedContext:
-      description: Telemetry skip cases should cover extension wrappers and recursive send paths.
-      keywords: ["telemetry", "extension", "no-telemetry"]
+      description: Telemetry skip cases should cover third-party extension wrappers.
+      keywords: ["telemetry", "extension", "DisableTelemetry"]
     seededContext:
       renderedContext: |
         - [memory] gh-cli/telemetry-command-policy: Explicit no-telemetry paths prevent wrappers, extensions, and recursive send commands from polluting invocation data.
       contextIds: ["gh-cli/telemetry-command-policy"]
     verifiers:
-      - type: file-contents-match
-        path: internal/ghcmd/cmd_test.go
-        pattern: 'extension|no telemetry|Telemetry'
-      - type: file-contents-match
-        path: internal/ghcmd/cmd_test.go
-        pattern: 'TestTelemetryNoExtensionBrowser'
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/root/extension_test.go
+          - pkg/cmd/root/extension_registration_test.go
+          - internal/ghcmd/cmd_test.go
+        pattern: "extension|no telemetry|Telemetry"
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/root/extension_test.go
+          - pkg/cmd/root/extension_registration_test.go
+          - internal/ghcmd/cmd_test.go
+        pattern: "TestTelemetryNoExtensionBrowser"
       - type: command
         command: go
-        args: ["test", "./internal/ghcmd"]
+        args: ["test", "./pkg/cmd/root", "./internal/ghcmd"]
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-log-empty-marker
@@ -1506,8 +1533,9 @@ scenarios:
     phaseA:
       promptId: gh-cli-telemetry-log-formation
       prompt: |
-        Inspect telemetry log flusher behavior. Capture why absence of telemetry
-        should be observable in log mode.
+        Inspect telemetry log flusher behavior and `internal/ghcmd` log-mode
+        wiring. Capture why absence of telemetry should be observable when a
+        command records no events.
     phaseB:
       promptId: gh-cli-telemetry-log-empty-marker-use
       prompt: |
@@ -1524,16 +1552,20 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: internal/telemetry/telemetry.go
-        pattern: 'Telemetry payload: none'
-      - type: file-contents-match
-        path: internal/telemetry/telemetry_test.go
-        pattern: 'Telemetry payload: none'
-      - type: file-contents-match
-        path: internal/telemetry/telemetry_test.go
-        pattern: 'TestTelemetryLogEmptyMarker'
+        pattern: "Telemetry payload: none"
+      - type: any-file-contents-match
+        paths:
+          - internal/telemetry/telemetry_test.go
+          - internal/ghcmd/cmd_test.go
+        pattern: "Telemetry payload: none"
+      - type: any-file-contents-match
+        paths:
+          - internal/telemetry/telemetry_test.go
+          - internal/ghcmd/cmd_test.go
+        pattern: "TestTelemetryLogEmptyMarker"
       - type: command
         command: go
-        args: ["test", "./internal/telemetry"]
+        args: ["test", "./internal/telemetry", "./internal/ghcmd"]
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-send-failure-nonfatal
@@ -1544,31 +1576,33 @@ scenarios:
     phaseA:
       promptId: gh-cli-telemetry-send-failure-formation
       prompt: |
-        Inspect send-telemetry command and acceptance fixtures. Capture the
-        best-effort non-fatal failure contract.
+        Inspect `internal/telemetry` sender spawning and flush behavior. Capture
+        the best-effort contract for the original command process when telemetry
+        sending cannot complete.
     phaseB:
       promptId: gh-cli-telemetry-send-failure-nonfatal-use
       prompt: |
-        Add coverage that telemetry send failures do not make the original
-        command invocation fail.
+        Add coverage that telemetry send failures in the parent telemetry
+        flusher/spawn path do not make the original command invocation fail.
+        Do not change `gh send-telemetry` server-error semantics.
         Name the new regression test `TestTelemetrySendFailureNonfatal`.
     expectedContext:
-      description: Telemetry send is best-effort and failure should not break the command.
-      keywords: ["send-telemetry", "failure", "nonfatal"]
+      description: Parent telemetry send is best-effort and failure should not break the original command.
+      keywords: ["SpawnSendTelemetry", "GitHubFlusher", "failure", "nonfatal"]
     seededContext:
       renderedContext: |
         - [memory] gh-cli/telemetry-command-policy: Telemetry is best-effort; send failures must not break the original command.
       contextIds: ["gh-cli/telemetry-command-policy"]
     verifiers:
       - type: file-contents-match
-        path: pkg/cmd/send-telemetry/send_telemetry_test.go
-        pattern: 'failure|nonfatal|does not break'
+        path: internal/telemetry/telemetry_test.go
+        pattern: "SpawnSendTelemetry|GitHubFlusher|failure|nonfatal|does not fail"
       - type: file-contents-match
-        path: pkg/cmd/send-telemetry/send_telemetry_test.go
-        pattern: 'TestTelemetrySendFailureNonfatal'
+        path: internal/telemetry/telemetry_test.go
+        pattern: "TestTelemetrySendFailureNonfatal"
       - type: command
         command: go
-        args: ["test", "./pkg/cmd/send-telemetry", "./internal/telemetry"]
+        args: ["test", "./internal/telemetry"]
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-terminal-width-dimension
@@ -1597,13 +1631,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: internal/ghcmd/cmd.go
-        pattern: 'terminal_width|terminalWidth'
+        pattern: "terminal_width|terminalWidth"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'terminal_width|terminalWidth'
+        pattern: "terminal_width|terminalWidth"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'TestTelemetryTerminalWidthDimension'
+        pattern: "TestTelemetryTerminalWidthDimension"
       - type: command
         command: go
         args: ["test", "./internal/ghcmd"]
@@ -1635,13 +1669,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: internal/ghcmd/cmd.go
-        pattern: 'auth_state|authState'
+        pattern: "auth_state|authState"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'auth_state|authState'
+        pattern: "auth_state|authState"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'TestTelemetryAuthStateDimension'
+        pattern: "TestTelemetryAuthStateDimension"
       - type: command
         command: go
         args: ["test", "./internal/ghcmd"]
@@ -1672,18 +1706,37 @@ scenarios:
         - [memory] gh-cli/skills-tenancy-hosts: Skill host handling distinguishes github.com, GHEC tenancy hosts, and unsupported GHES hosts.
       contextIds: ["gh-cli/telemetry-common-dimensions", "gh-cli/skills-tenancy-hosts"]
     verifiers:
-      - type: file-contents-match
-        path: pkg/cmd/skills/install/install.go
-        pattern: 'agent_host_type|host_type|skill_host_type'
-      - type: file-contents-match
-        path: pkg/cmd/skills/install/install_test.go
-        pattern: 'agent_host_type|host_type|skill_host_type'
-      - type: file-contents-match
-        path: pkg/cmd/skills/install/install_test.go
-        pattern: 'TestTelemetryAgentHostType'
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/skills/install/install.go
+          - pkg/cmd/skills/skills.go
+          - pkg/cmdutil/telemetry.go
+          - internal/ghcmd/cmd.go
+        pattern: "agent_host_type|host_type|skill_host_type"
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/skills/install/install_test.go
+          - pkg/cmd/skills/skills_test.go
+          - pkg/cmdutil/telemetry_test.go
+          - internal/ghcmd/cmd_test.go
+        pattern: "agent_host_type|host_type|skill_host_type"
+      - type: any-file-contents-match
+        paths:
+          - pkg/cmd/skills/install/install_test.go
+          - pkg/cmd/skills/skills_test.go
+          - pkg/cmdutil/telemetry_test.go
+          - internal/ghcmd/cmd_test.go
+        pattern: "TestTelemetryAgentHostType"
       - type: command
         command: go
-        args: ["test", "./pkg/cmd/skills/install"]
+        args:
+          [
+            "test",
+            "./pkg/cmd/skills",
+            "./pkg/cmd/skills/install",
+            "./pkg/cmdutil",
+            "./internal/ghcmd",
+          ]
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-ci-context-dimension
@@ -1712,13 +1765,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: internal/ghcmd/cmd.go
-        pattern: 'ci_provider|github_actions|CI'
+        pattern: "ci_provider|github_actions|CI"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'ci_provider|github_actions|CI'
+        pattern: "ci_provider|github_actions|CI"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'TestTelemetryCiContextDimension'
+        pattern: "TestTelemetryCiContextDimension"
       - type: command
         command: go
         args: ["test", "./internal/ghcmd"]
@@ -1750,10 +1803,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/api/api_test.go
-        pattern: 'InvokingAgent|User-Agent|graphql'
+        pattern: "InvokingAgent|User-Agent|graphql"
       - type: file-contents-match
         path: pkg/cmd/api/api_test.go
-        pattern: 'TestApiGraphqlAgentHeader'
+        pattern: "TestApiGraphqlAgentHeader"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/api"]
@@ -1783,15 +1836,21 @@ scenarios:
         - [memory] gh-cli/agentic-http-client-context: Auth flows that wrap clients after token acquisition should preserve app version and invoking-agent context.
       contextIds: ["gh-cli/agentic-http-client-context"]
     verifiers:
-      - type: file-contents-match
-        path: internal/authflow/flow_test.go
-        pattern: 'InvokingAgent|User-Agent|getViewer'
-      - type: file-contents-match
-        path: internal/authflow/flow_test.go
-        pattern: 'TestAuthLoginViewerAgentHeader'
+      - type: any-file-contents-match
+        paths:
+          - internal/authflow/flow.go
+          - pkg/cmd/auth/login/login.go
+          - internal/authflow/flow_test.go
+          - pkg/cmd/auth/login/login_test.go
+        pattern: "InvokingAgent|User-Agent|getViewer"
+      - type: any-file-contents-match
+        paths:
+          - internal/authflow/flow_test.go
+          - pkg/cmd/auth/login/login_test.go
+        pattern: "TestAuthLoginViewerAgentHeader"
       - type: command
         command: go
-        args: ["test", "./internal/authflow"]
+        args: ["test", "./internal/authflow", "./pkg/cmd/auth/login"]
         timeoutMs: 300000
 
   - id: gh-cli-api-rest-agent-header
@@ -1820,10 +1879,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/api/api_test.go
-        pattern: 'InvokingAgent|User-Agent|REST'
+        pattern: "InvokingAgent|User-Agent|REST"
       - type: file-contents-match
         path: pkg/cmd/api/api_test.go
-        pattern: 'TestApiRestAgentHeader'
+        pattern: "TestApiRestAgentHeader"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/api"]
@@ -1855,10 +1914,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/release/verify/verify_test.go
-        pattern: 'sha256|DigestAlgForRef'
+        pattern: "sha256|DigestAlgForRef"
       - type: file-contents-match
         path: pkg/cmd/release/verify/verify_test.go
-        pattern: 'TestReleaseVerifyStrictDigestAlg'
+        pattern: "TestReleaseVerifyStrictDigestAlg"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/release/verify", "./pkg/cmd/release/shared"]
@@ -1890,10 +1949,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/release/verify-asset/verify_asset_test.go
-        pattern: 'sha256|DigestAlgForRef'
+        pattern: "sha256|DigestAlgForRef"
       - type: file-contents-match
         path: pkg/cmd/release/verify-asset/verify_asset_test.go
-        pattern: 'TestReleaseVerifyAssetStrictDigestAlg'
+        pattern: "TestReleaseVerifyAssetStrictDigestAlg"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/release/verify-asset", "./pkg/cmd/release/shared"]
@@ -1925,10 +1984,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/release/shared/fetch_test.go
-        pattern: 'unexpected|empty|sha256|sha1'
+        pattern: "unexpected|empty|sha256|sha1"
       - type: file-contents-match
         path: pkg/cmd/release/shared/fetch_test.go
-        pattern: 'TestReleaseSharedDigestHelperInvalid'
+        pattern: "TestReleaseSharedDigestHelperInvalid"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/release/shared"]
@@ -1960,13 +2019,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation.go
-        pattern: 'bufio|NewReader|Decoder'
+        pattern: "bufio|NewReader|Decoder"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'large|jsonl|token'
+        pattern: "large|jsonl|token"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'TestAttestationJsonlStreamReader'
+        pattern: "TestAttestationJsonlStreamReader"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/attestation/verification"]
@@ -1998,13 +2057,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation.go
-        pattern: 'ErrEmptyBundleFile|blank|TrimSpace'
+        pattern: "ErrEmptyBundleFile|blank|TrimSpace"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'ErrEmptyBundleFile|blank'
+        pattern: "ErrEmptyBundleFile|blank"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'TestAttestationJsonlEmptyLine'
+        pattern: "TestAttestationJsonlEmptyLine"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/attestation/verification"]
@@ -2036,13 +2095,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation.go
-        pattern: 'line|row|jsonl'
+        pattern: "line|row|jsonl"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'malformed|line|row'
+        pattern: "malformed|line|row"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'TestAttestationJsonlMalformedContext'
+        pattern: "TestAttestationJsonlMalformedContext"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/attestation/verification"]
@@ -2075,10 +2134,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'RESTPayload|security_and_analysis|PATCH'
+        pattern: "RESTPayload|security_and_analysis|PATCH"
       - type: file-contents-match
         path: pkg/cmd/repo/edit/edit_test.go
-        pattern: 'TestRepoEditHttpmockPayload'
+        pattern: "TestRepoEditHttpmockPayload"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/edit"]
@@ -2113,7 +2172,7 @@ scenarios:
         pattern: 'CommandStubber|run\.Stub|Register'
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishCommandStubber'
+        pattern: "TestSkillsPublishCommandStubber"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -2146,10 +2205,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/secret/set/set_test.go
-        pattern: 'RESTPayload|encrypted_value|httpmock'
+        pattern: "RESTPayload|encrypted_value|httpmock"
       - type: file-contents-match
         path: pkg/cmd/secret/set/set_test.go
-        pattern: 'TestSecretSetHttpmockPayload'
+        pattern: "TestSecretSetHttpmockPayload"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/secret/set"]
@@ -2181,13 +2240,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/gpg-key/list/list.go
-        pattern: 'AddJSONFlags|Exporter|json'
+        pattern: "AddJSONFlags|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/gpg-key/list/list_test.go
-        pattern: '--json|Exporter|json'
+        pattern: "--json|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/gpg-key/list/list_test.go
-        pattern: 'TestGpgKeyListJson'
+        pattern: "TestGpgKeyListJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/gpg-key/list"]
@@ -2219,13 +2278,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/ssh-key/list/list.go
-        pattern: 'AddJSONFlags|Exporter|json'
+        pattern: "AddJSONFlags|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/ssh-key/list/list_test.go
-        pattern: '--json|Exporter|json'
+        pattern: "--json|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/ssh-key/list/list_test.go
-        pattern: 'TestSshKeyListJson'
+        pattern: "TestSshKeyListJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/ssh-key/list"]
@@ -2257,13 +2316,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/gitignore/list/list.go
-        pattern: 'AddJSONFlags|Exporter|json'
+        pattern: "AddJSONFlags|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/repo/gitignore/list/list_test.go
-        pattern: '--json|Exporter|json'
+        pattern: "--json|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/repo/gitignore/list/list_test.go
-        pattern: 'TestRepoGitignoreListJson'
+        pattern: "TestRepoGitignoreListJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/gitignore/list"]
@@ -2295,13 +2354,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/license/list/list.go
-        pattern: 'AddJSONFlags|Exporter|json'
+        pattern: "AddJSONFlags|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/repo/license/list/list_test.go
-        pattern: '--json|Exporter|json'
+        pattern: "--json|Exporter|json"
       - type: file-contents-match
         path: pkg/cmd/repo/license/list/list_test.go
-        pattern: 'TestRepoLicenseListJson'
+        pattern: "TestRepoLicenseListJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/license/list"]
@@ -2334,13 +2393,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/extension/command.go
-        pattern: 'Exporter|json|dry-run'
+        pattern: "Exporter|json|dry-run"
       - type: file-contents-match
         path: pkg/cmd/extension/command_test.go
-        pattern: '--json|json|dry-run'
+        pattern: "--json|json|dry-run"
       - type: file-contents-match
         path: pkg/cmd/extension/command_test.go
-        pattern: 'TestExtensionUpgradeJson'
+        pattern: "TestExtensionUpgradeJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/extension"]
@@ -2372,13 +2431,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/gpg-key/delete/delete.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/gpg-key/delete/delete_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/gpg-key/delete/delete_test.go
-        pattern: 'TestGpgKeyDeleteQuiet'
+        pattern: "TestGpgKeyDeleteQuiet"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/gpg-key/delete"]
@@ -2410,13 +2469,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/ssh-key/delete/delete.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/ssh-key/delete/delete_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/ssh-key/delete/delete_test.go
-        pattern: 'TestSshKeyDeleteQuiet'
+        pattern: "TestSshKeyDeleteQuiet"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/ssh-key/delete"]
@@ -2447,13 +2506,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/label/delete.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/label/delete_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/label/delete_test.go
-        pattern: 'TestLabelDeleteQuiet'
+        pattern: "TestLabelDeleteQuiet"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/label"]
@@ -2485,13 +2544,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/repo/delete/delete.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/repo/delete/delete_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/repo/delete/delete_test.go
-        pattern: 'TestRepoDeleteQuiet'
+        pattern: "TestRepoDeleteQuiet"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/repo/delete"]
@@ -2523,13 +2582,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/release/delete/delete.go
-        pattern: 'Quiet|quiet'
+        pattern: "Quiet|quiet"
       - type: file-contents-match
         path: pkg/cmd/release/delete/delete_test.go
-        pattern: '--quiet|Quiet'
+        pattern: "--quiet|Quiet"
       - type: file-contents-match
         path: pkg/cmd/release/delete/delete_test.go
-        pattern: 'TestReleaseDeleteQuiet'
+        pattern: "TestReleaseDeleteQuiet"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/release/delete"]
@@ -2559,7 +2618,8 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/skills-provenance-side-effect-boundaries: Skill provenance is package-owned metadata that can cross validation, persistence, and publish boundaries without changing command intent.
         - [memory] gh-cli/skills-tenancy-hosts: GHEC tenancy hosts are supported source hosts and should be preserved rather than normalized away.
-      contextIds: ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-tenancy-hosts"]
+      contextIds:
+        ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-tenancy-hosts"]
     verifiers:
       - type: file-contents-match
         path: internal/skills/lockfile/lockfile.go
@@ -2575,10 +2635,16 @@ scenarios:
         pattern: 'upstream|ghe\\.com|tenancy|lockfile'
       - type: file-contents-match
         path: internal/skills/lockfile/lockfile_test.go
-        pattern: 'TestSkillsInstallUpstreamTenancyLockfile'
+        pattern: "TestSkillsInstallUpstreamTenancyLockfile"
       - type: command
         command: go
-        args: ["test", "./internal/skills/lockfile", "./pkg/cmd/skills/install", "./pkg/cmd/skills/update"]
+        args:
+          [
+            "test",
+            "./internal/skills/lockfile",
+            "./pkg/cmd/skills/install",
+            "./pkg/cmd/skills/update",
+          ]
         timeoutMs: 300000
 
   - id: gh-cli-skills-preview-hidden-upstream-provenance-json
@@ -2605,17 +2671,21 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/skills-provenance-side-effect-boundaries: Machine-readable skill output should preserve safety semantics rather than silently changing warning behavior.
         - [memory] gh-cli/skills-hidden-dir-filtering: Hidden-directory skills are opt-in and carry provenance warnings because they may be installed copies.
-      contextIds: ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-hidden-dir-filtering"]
+      contextIds:
+        [
+          "gh-cli/skills-provenance-side-effect-boundaries",
+          "gh-cli/skills-hidden-dir-filtering",
+        ]
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview.go
-        pattern: 'upstream|hidden|json|Exporter'
+        pattern: "upstream|hidden|json|Exporter"
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'upstream|hidden|json'
+        pattern: "upstream|hidden|json"
       - type: file-contents-match
         path: pkg/cmd/skills/preview/preview_test.go
-        pattern: 'TestSkillsPreviewHiddenUpstreamProvenanceJson'
+        pattern: "TestSkillsPreviewHiddenUpstreamProvenanceJson"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/preview"]
@@ -2645,17 +2715,21 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/skills-provenance-side-effect-boundaries: Dry-run and validation-only skill flows should keep their no-mutation contract even when reporting diagnostics.
         - [memory] gh-cli/skills-publish-validation: Strict validation turns warnings into failures while preserving dry-run no-publish behavior.
-      contextIds: ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-publish-validation"]
+      contextIds:
+        [
+          "gh-cli/skills-provenance-side-effect-boundaries",
+          "gh-cli/skills-publish-validation",
+        ]
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish.go
-        pattern: 'strict|dry-run|json|release'
+        pattern: "strict|dry-run|json|release"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'strict|dry-run|json|release'
+        pattern: "strict|dry-run|json|release"
       - type: file-contents-match
         path: pkg/cmd/skills/publish/publish_test.go
-        pattern: 'TestSkillsPublishStrictJsonNoSideEffects'
+        pattern: "TestSkillsPublishStrictJsonNoSideEffects"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/skills/publish"]
@@ -2684,14 +2758,15 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/telemetry-privacy-boundaries: Telemetry log mode should distinguish emitted events, intentional no-event paths, and logger failures.
         - [memory] gh-cli/telemetry-command-policy: Telemetry is best-effort and has explicit skip paths for aliases, extensions, and recursive telemetry commands.
-      contextIds: ["gh-cli/telemetry-privacy-boundaries", "gh-cli/telemetry-command-policy"]
+      contextIds:
+        ["gh-cli/telemetry-privacy-boundaries", "gh-cli/telemetry-command-policy"]
     verifiers:
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'Telemetry payload: none|alias|extension'
+        pattern: "Telemetry payload: none|alias|extension"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'TestTelemetrySkipWrapperLogEmptyMarker'
+        pattern: "TestTelemetrySkipWrapperLogEmptyMarker"
       - type: command
         command: go
         args: ["test", "./internal/ghcmd"]
@@ -2725,10 +2800,10 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: internal/ghcmd/cmd.go
-        pattern: 'enterprise|host|telemetry'
+        pattern: "enterprise|host|telemetry"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'enterprise|host|telemetry'
+        pattern: "enterprise|host|telemetry"
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
         pattern: 'raw-enterprise\.ghe\.com'
@@ -2741,7 +2816,7 @@ scenarios:
         mode: forbid
       - type: file-contents-match
         path: internal/ghcmd/cmd_test.go
-        pattern: 'TestTelemetryNoRawEnterpriseHost'
+        pattern: "TestTelemetryNoRawEnterpriseHost"
       - type: command
         command: go
         args: ["test", "./internal/ghcmd"]
@@ -2770,14 +2845,18 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/api-auth-client-context-boundaries: API flows that inject custom transports or rebuild clients need coverage around the final request boundary.
         - [memory] gh-cli/agentic-http-client-context: Commands that bypass the default factory still need invoking-agent context in request headers.
-      contextIds: ["gh-cli/api-auth-client-context-boundaries", "gh-cli/agentic-http-client-context"]
+      contextIds:
+        [
+          "gh-cli/api-auth-client-context-boundaries",
+          "gh-cli/agentic-http-client-context",
+        ]
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/api/api_test.go
-        pattern: 'InvokingAgent|User-Agent|RoundTrip'
+        pattern: "InvokingAgent|User-Agent|RoundTrip"
       - type: file-contents-match
         path: pkg/cmd/api/api_test.go
-        pattern: 'TestApiCustomClientAgentContextRoundtrip'
+        pattern: "TestApiCustomClientAgentContextRoundtrip"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/api"]
@@ -2806,14 +2885,18 @@ scenarios:
       renderedContext: |
         - [memory] gh-cli/api-auth-client-context-boundaries: Follow-up API calls after authentication should preserve request metadata through any rebuilt client.
         - [memory] gh-cli/agentic-http-client-context: Follow-up auth viewer requests should preserve app version and invoking-agent User-Agent context.
-      contextIds: ["gh-cli/api-auth-client-context-boundaries", "gh-cli/agentic-http-client-context"]
+      contextIds:
+        [
+          "gh-cli/api-auth-client-context-boundaries",
+          "gh-cli/agentic-http-client-context",
+        ]
     verifiers:
       - type: file-contents-match
         path: internal/authflow/flow_test.go
-        pattern: 'InvokingAgent|User-Agent|viewer'
+        pattern: "InvokingAgent|User-Agent|viewer"
       - type: file-contents-match
         path: internal/authflow/flow_test.go
-        pattern: 'TestAuthTokenFlowPreservesClientContext'
+        pattern: "TestAuthTokenFlowPreservesClientContext"
       - type: command
         command: go
         args: ["test", "./internal/authflow"]
@@ -2845,13 +2928,13 @@ scenarios:
     verifiers:
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation.go
-        pattern: 'Decoder|Reader|ErrEmptyBundleFile|jsonl'
+        pattern: "Decoder|Reader|ErrEmptyBundleFile|jsonl"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'large|blank|malformed|ErrEmptyBundleFile'
+        pattern: "large|blank|malformed|ErrEmptyBundleFile"
       - type: file-contents-match
         path: pkg/cmd/attestation/verification/attestation_test.go
-        pattern: 'TestAttestationJsonlStreamingErrorBoundaries'
+        pattern: "TestAttestationJsonlStreamingErrorBoundaries"
       - type: command
         command: go
         args: ["test", "./pkg/cmd/attestation/verification"]

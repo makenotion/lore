@@ -46,6 +46,7 @@ import type {
   LongitudinalWakeUpResult,
   RunTaskEvalOptions,
   VerifierResult,
+  WorkspaceMaterialization,
 } from "./schema.js"
 import { deriveFailureReason, runVerifier } from "./verifier.js"
 import { prepareWorkspace, rematerializeWorkspace } from "./workspace.js"
@@ -142,7 +143,13 @@ export async function runLongitudinalTaskEvalSuite(
         transcriptIndex: index,
         transcriptsDir,
         pricingTable,
-      })
+      }).catch((err: unknown) =>
+        harnessErrorResult({
+          scenario,
+          condition,
+          message: `Longitudinal condition runner failed: ${errorMessage(err)}`,
+        })
+      )
       results.push(result)
       await writeLongitudinalArtifact({
         suite: loaded.suite,
@@ -241,7 +248,6 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
   const resultSlots: Array<LongitudinalTaskResult | undefined> = []
   let nextScenarioIndex = 0
   let termination: LongitudinalRunTermination | null = null
-  let fatalError: unknown = null
   let emittedStop = false
   let writeQueue: Promise<unknown> = Promise.resolve()
   const activeShardChildren = new Set<ChildProcess>()
@@ -271,17 +277,11 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
     emittedStop = true
     emitLongitudinalStop(input.options, stop)
   }
-  const failRun = async (err: unknown) => {
-    if (fatalError !== null) return
-    fatalError = err
-    await stopActiveShardChildren(activeShardChildren)
-    await writeCurrentArtifact()
-  }
 
   await writeCurrentArtifact()
 
   const runWorker = async () => {
-    while (termination === null && fatalError === null) {
+    while (termination === null) {
       const scenarioIndex = nextScenarioIndex
       nextScenarioIndex += 1
       if (scenarioIndex >= input.scenarios.length) return
@@ -323,9 +323,14 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
         scenario,
         expectedConditions: input.loaded.suite.conditions,
         activeShardChildren,
-      }).catch(async (err: unknown) => {
-        await failRun(err)
-        throw err
+      }).catch((err: unknown) => {
+        if (!isRecoverableLongitudinalShardError(err)) throw err
+        return completeLongitudinalShardResults({
+          scenario,
+          results: [],
+          expectedConditions: input.loaded.suite.conditions,
+          harnessErrorMessage: `Longitudinal shard runner failed: ${errorMessage(err)}`,
+        })
       })
 
       for (const result of shardResults) {
@@ -532,7 +537,7 @@ async function runLongitudinalScenarioShard(input: {
     ) as LongitudinalTaskArtifact
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    throw new Error(
+    throw new RecoverableLongitudinalShardError(
       `Longitudinal shard ${input.scenario.id} did not produce a readable artifact ` +
         `(exit ${exitCode ?? "signal"}): ${detail}\n${stderr || stdout}`,
       { cause: err }
@@ -551,12 +556,69 @@ async function runLongitudinalScenarioShard(input: {
       `Longitudinal shard ${input.scenario.id} returned result(s) for ${invalid.map((result) => result.scenarioId).join(", ")}.`
     )
   }
-  assertLongitudinalShardResultsComplete({
-    scenarioId: input.scenario.id,
+  return completeLongitudinalShardResults({
+    scenario: input.scenario,
     results: artifact.results,
     expectedConditions: input.expectedConditions,
+    harnessErrorMessage: formatShardHarnessError({
+      scenarioId: input.scenario.id,
+      exitCode,
+      stdout,
+      stderr,
+    }),
   })
-  return artifact.results
+}
+
+class RecoverableLongitudinalShardError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "RecoverableLongitudinalShardError"
+  }
+}
+
+function isRecoverableLongitudinalShardError(
+  err: unknown
+): err is RecoverableLongitudinalShardError {
+  return err instanceof RecoverableLongitudinalShardError
+}
+
+export function completeLongitudinalShardResults(input: {
+  scenario: LongitudinalTaskScenario
+  results: LongitudinalTaskResult[]
+  expectedConditions: readonly LongitudinalTaskCondition[]
+  harnessErrorMessage: string
+}): LongitudinalTaskResult[] {
+  const completeness = longitudinalShardResultCompleteness({
+    scenarioId: input.scenario.id,
+    results: input.results,
+    expectedConditions: input.expectedConditions,
+  })
+  if (
+    completeness.missing.length === 0 &&
+    completeness.duplicate.length === 0 &&
+    completeness.unexpected.length === 0
+  ) {
+    return input.results
+  }
+  if (completeness.duplicate.length > 0 || completeness.unexpected.length > 0) {
+    throw new Error(
+      formatShardCompletenessError(input.scenario.id, {
+        missing: [],
+        duplicate: completeness.duplicate,
+        unexpected: completeness.unexpected,
+      })
+    )
+  }
+  return [
+    ...input.results,
+    ...completeness.missing.map((condition) =>
+      harnessErrorResult({
+        scenario: input.scenario,
+        condition,
+        message: input.harnessErrorMessage,
+      })
+    ),
+  ]
 }
 
 export function assertLongitudinalShardResultsComplete(input: {
@@ -564,6 +626,26 @@ export function assertLongitudinalShardResultsComplete(input: {
   results: LongitudinalTaskResult[]
   expectedConditions: readonly LongitudinalTaskCondition[]
 }): void {
+  const completeness = longitudinalShardResultCompleteness(input)
+  if (
+    completeness.missing.length === 0 &&
+    completeness.duplicate.length === 0 &&
+    completeness.unexpected.length === 0
+  ) {
+    return
+  }
+  throw new Error(formatShardCompletenessError(input.scenarioId, completeness))
+}
+
+function longitudinalShardResultCompleteness(input: {
+  scenarioId: string
+  results: LongitudinalTaskResult[]
+  expectedConditions: readonly LongitudinalTaskCondition[]
+}): {
+  missing: LongitudinalTaskCondition[]
+  duplicate: LongitudinalTaskCondition[]
+  unexpected: string[]
+} {
   const expected = new Set(input.expectedConditions)
   const seen = new Map<LongitudinalTaskCondition, number>()
   const unexpected: string[] = []
@@ -581,18 +663,104 @@ export function assertLongitudinalShardResultsComplete(input: {
   const duplicate = [...seen.entries()]
     .filter(([, count]) => count > 1)
     .map(([condition]) => condition)
-  if (missing.length === 0 && duplicate.length === 0 && unexpected.length === 0) {
-    return
-  }
+  return { missing, duplicate, unexpected }
+}
 
+function formatShardCompletenessError(
+  scenarioId: string,
+  completeness: {
+    missing: LongitudinalTaskCondition[]
+    duplicate: LongitudinalTaskCondition[]
+    unexpected: string[]
+  }
+): string {
   const details = [
-    missing.length > 0 ? `missing=${missing.join(",")}` : null,
-    duplicate.length > 0 ? `duplicate=${duplicate.join(",")}` : null,
-    unexpected.length > 0 ? `unexpected=${unexpected.join(",")}` : null,
+    completeness.missing.length > 0 ? `missing=${completeness.missing.join(",")}` : null,
+    completeness.duplicate.length > 0
+      ? `duplicate=${completeness.duplicate.join(",")}`
+      : null,
+    completeness.unexpected.length > 0
+      ? `unexpected=${completeness.unexpected.join(",")}`
+      : null,
   ].filter((detail): detail is string => detail !== null)
-  throw new Error(
-    `Longitudinal shard ${input.scenarioId} returned incomplete condition results: ${details.join("; ")}.`
+  return `Longitudinal shard ${scenarioId} returned incomplete condition results: ${details.join("; ")}.`
+}
+
+function harnessErrorResult(input: {
+  scenario: LongitudinalTaskScenario
+  condition: LongitudinalTaskCondition
+  message: string
+}): LongitudinalTaskResult {
+  const startedAt = new Date().toISOString()
+  const phase: LongitudinalPhaseResult = {
+    phase: "formation",
+    promptId: promptIdFor(input.scenario, "formation"),
+    workspace: null,
+    startedAt,
+    finishedAt: startedAt,
+    success: false,
+    agentRun: null,
+    verifierResults: [],
+    patchStats: { filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
+    lore: emptyLongitudinalLoreMetrics({
+      hooksEnabled: input.condition === "lore-full-loop",
+      wakeUpEnabled: false,
+    }),
+    cost: null,
+    elapsedMs: 0,
+    failureReason: "harness-error",
+    failureMessage: input.message,
+  }
+  return {
+    taskId: input.scenario.id,
+    scenarioId: input.scenario.id,
+    difficulty: input.scenario.difficulty ?? null,
+    condition: input.condition,
+    memoryCondition: null,
+    agent: input.scenario.agent,
+    workspaceSource: formatWorkspaceSource(input.scenario.workspace),
+    workspaceMaterialization: syntheticWorkspaceMaterialization(input.scenario.workspace),
+    workspace: null,
+    success: false,
+    failureReason: "harness-error",
+    agentRun: null,
+    verifiers: [],
+    phases: [phase],
+    expectedContextDescription: input.scenario.expectedContext.description,
+  }
+}
+
+function syntheticWorkspaceMaterialization(
+  source: LongitudinalTaskScenario["workspace"]
+): WorkspaceMaterialization {
+  if (typeof source === "string") {
+    return { kind: "local", source }
+  }
+  return {
+    kind: "git",
+    repo: source.repo,
+    sha: source.sha,
+    sparseCheckout: source.sparseCheckout ?? [],
+    cachePath: "",
+  }
+}
+
+function formatShardHarnessError(input: {
+  scenarioId: string
+  exitCode: number | null
+  stdout: string
+  stderr: string
+}): string {
+  const detail = firstNonEmptyLine(input.stderr) ?? firstNonEmptyLine(input.stdout)
+  return (
+    `Longitudinal shard ${input.scenarioId} returned an incomplete artifact` +
+    ` (exit ${input.exitCode ?? "signal"})` +
+    (detail ? `: ${detail}` : ".")
   )
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 async function stopActiveShardChildren(children: Set<ChildProcess>): Promise<void> {
@@ -1301,8 +1469,8 @@ function summarizeLongitudinalResults(
     }
   }
   const primaryLift =
-    lifts["seeded-lore"] ??
     lifts["lore-full-loop"] ??
+    lifts["seeded-lore"] ??
     buildLiftSummary(scenarioIds, results, conditions, "lore-full-loop")
   const passedTrials = results.filter((r) => r.success).length
   const passedTasks = countTasksAllPassed(

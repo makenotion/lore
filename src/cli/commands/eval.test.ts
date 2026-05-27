@@ -309,7 +309,7 @@ describe("hasLongitudinalTaskGateFailures", () => {
     ).toBe(true)
   })
 
-  it("uses seeded-lore as the primary gate when it ran", () => {
+  it("uses lore-full-loop as the primary gate when both memory conditions ran", () => {
     expect(
       hasLongitudinalTaskGateFailures(
         longitudinalArtifact({
@@ -320,7 +320,7 @@ describe("hasLongitudinalTaskGateFailures", () => {
           failedTrials: 1,
         })
       )
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it("fails the gate when a longitudinal run was stopped by a kill-switch", () => {
@@ -456,7 +456,7 @@ describe("eval longitudinal plan command", () => {
     )
 
     const output = logSpy.mock.calls.flat().join("\n")
-    expect(output).toContain("Longitudinal plan: no-memory -> seeded-lore")
+    expect(output).toContain("Longitudinal plan: no-memory -> lore-full-loop")
     expect(output).toContain("pilot pairs: 2")
     expect(output).toContain("condition runs")
     expect(output).toContain("efficiency: primary tokens")

@@ -263,10 +263,10 @@ export function hasLongitudinalTaskGateFailures(
   artifact: LongitudinalTaskArtifact
 ): boolean {
   if (artifact.termination) return true
-  const seededLore = artifact.summary.conditions["seeded-lore"]
-  if (seededLore && seededLore.trials > 0) return seededLore.failed > 0
   const fullLoop = artifact.summary.conditions["lore-full-loop"]
   if (fullLoop.trials > 0) return fullLoop.failed > 0
+  const seededLore = artifact.summary.conditions["seeded-lore"]
+  if (seededLore && seededLore.trials > 0) return seededLore.failed > 0
   return artifact.summary.failedTrials > 0
 }
 
@@ -659,10 +659,10 @@ evalCommand.addCommand(
                   ? "failed"
                   : "passed"
                 const headline =
-                  seededLore && seededLore.trials > 0
-                    ? `seeded-lore ${seededLore.passed}/${seededLore.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
-                    : fullLoop.trials > 0
-                      ? `lore-full-loop ${fullLoop.passed}/${fullLoop.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
+                  fullLoop.trials > 0
+                    ? `lore-full-loop ${fullLoop.passed}/${fullLoop.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
+                    : seededLore && seededLore.trials > 0
+                      ? `seeded-lore ${seededLore.passed}/${seededLore.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
                       : `${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
                 console.log(`Longitudinal task eval ${status}: ${headline}.`)
                 if (artifact.termination) {

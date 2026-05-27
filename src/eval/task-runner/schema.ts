@@ -7,6 +7,23 @@ import {
   type TaskEvalMemoryCondition,
 } from "../schema.js"
 
+const regexPatternSchema = z
+  .string()
+  .min(1)
+  // Reject malformed regexes at parse time so the runner never
+  // throws SyntaxError mid-trial. Synthesizing a per-verifier
+  // failure inside `runVerifier` would still leave the rest of
+  // the suite running on the bad pattern; failing fast at parse
+  // time matches every other lore validation discipline.
+  .refine((p) => {
+    try {
+      new RegExp(p)
+      return true
+    } catch {
+      return false
+    }
+  }, "must be a valid JavaScript regex")
+
 const verifierSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -18,22 +35,15 @@ const verifierSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("file-contents-match"),
       path: z.string().min(1),
-      pattern: z
-        .string()
-        .min(1)
-        // Reject malformed regexes at parse time so the runner never
-        // throws SyntaxError mid-trial. Synthesizing a per-verifier
-        // failure inside `runVerifier` would still leave the rest of
-        // the suite running on the bad pattern; failing fast at parse
-        // time matches every other lore validation discipline.
-        .refine((p) => {
-          try {
-            new RegExp(p)
-            return true
-          } catch {
-            return false
-          }
-        }, "must be a valid JavaScript regex"),
+      pattern: regexPatternSchema,
+      mode: z.enum(["match", "forbid"]).default("match"),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("any-file-contents-match"),
+      paths: z.array(z.string().min(1)).min(1),
+      pattern: regexPatternSchema,
       mode: z.enum(["match", "forbid"]).default("match"),
     })
     .strict(),
@@ -381,6 +391,7 @@ export type LongitudinalFailureReason =
   | "formation"
   | "wake-up"
   | "expected-context"
+  | "harness-error"
 
 export interface TaskEvalResult {
   taskId: string

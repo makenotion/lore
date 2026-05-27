@@ -176,16 +176,20 @@ with component-level topics, not as a monorepo.
 
 A larger PR-derived and generalized candidate bank lives at
 `evals/task-suites/longitudinal-github-cli-powered-candidates.yaml`, backed by
-`evals/vault-seeds/github-cli-powered.yaml`. It has 67 candidate scenarios,
-which deliberately exceeds the current 50-pair planning estimate so unstable
-tasks can be culled after smoke validation. Those 67 scenarios are candidate
-slots, not 67 independent statistical units: many intentionally cluster around
-the same source memory or source pull request. Do not publish it as the powered
-benchmark result until candidates have been validated for prompt bounds,
-no-op baseline failure, verifier stability, runtime, and cost.
+`evals/vault-seeds/github-cli-powered.yaml`. It has 75 candidate scenarios
+segmented into 25 easy, 25 medium, and 25 hard slots. The suite deliberately
+exceeds the current 50-pair planning estimate so unstable tasks can be culled
+or repaired after smoke validation while still preserving a balanced 25/25/25
+validated dataset. Those 75 scenarios are candidate slots, not 75 independent
+statistical units: many intentionally cluster around the same source memory or
+source pull request. Do not publish it as the powered benchmark result until
+candidates have been validated for prompt bounds, no-op baseline failure,
+verifier stability, runtime, and cost.
 
-The primary powered comparison is `seeded-lore` vs. `no-memory`; `lore-full-loop`
-is a secondary end-to-end formation/retrieval/use comparison. `lore-full-loop`
+The primary powered comparison is `lore-full-loop` vs. `no-memory`, because it
+measures Lore's end-to-end formation/retrieval/use loop. `seeded-lore` is an
+ablation for separating vault availability from memory formation quality.
+`lore-full-loop`
 scenarios should validate durable cross-session learnings that Lore is designed
 to capture, such as decisions, conventions, gotchas, workarounds, and explicit
 future follow-ups. They should not require generic project facts or Phase B-only
@@ -196,6 +200,16 @@ comparisons, and the culling rules used to promote candidates. Candidate culling
 must be blind to condition deltas: remove tasks only for objective validity
 failures such as no-op pass, verifier ambiguity, prompt out-of-bounds behavior,
 flake rate, runtime, or cost.
+
+Keep raw and adjudicated measurements separate. If a run fails because of
+harness validation, infrastructure, or an over-narrow verifier, preserve the raw
+artifact and classify the row before scoring. A row marked `harness-error` is
+not evidence of real-world agent performance and must be rerun or excluded from
+the headline measurement. If the transcript, diff, verifier output, and command
+results objectively prove that an agent satisfied the intended scenario under a
+repaired verifier, an adjudicated score may be reported without rerunning that
+condition. Final reports should include raw, adjudicated, and exclusion-only
+sensitivity views.
 
 ```bash
 npm run build
