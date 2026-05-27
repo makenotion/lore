@@ -191,17 +191,18 @@ stability, runtime, and cost.
 The primary powered comparison is `lore-full-loop` vs. `no-memory`, because it
 measures Lore's end-to-end formation/retrieval/use loop. `seeded-lore` is an
 ablation for separating vault availability from memory formation quality.
-`lore-full-loop`
-scenarios should validate durable cross-session learnings that Lore is designed
-to capture, such as decisions, conventions, gotchas, workarounds, and explicit
-future follow-ups. They should not require generic project facts or Phase B-only
-feature details to be captured unless Phase A makes that durable follow-up
-explicit. Before a powered run, pre-register the cluster/capping rule for
-repeated source memories and PRs, the multiplicity treatment for secondary
-comparisons, and the culling rules used to promote candidates. Candidate culling
-must be blind to condition deltas: remove tasks only for objective validity
-failures such as no-op pass, verifier ambiguity, prompt out-of-bounds behavior,
-flake rate, runtime, or cost.
+The 2026-05-27 GitHub CLI checkpoint is recorded in
+[`docs/evals-github-cli-powered-20260527.md`](evals-github-cli-powered-20260527.md).
+`lore-full-loop` scenarios should validate durable cross-session learnings that
+Lore is designed to capture, such as decisions, conventions, gotchas,
+workarounds, and explicit future follow-ups. They should not require generic
+project facts or Phase B-only feature details to be captured unless Phase A
+makes that durable follow-up explicit. Before a powered run, pre-register the
+cluster/capping rule for repeated source memories and PRs, the multiplicity
+treatment for secondary comparisons, and the culling rules used to promote
+candidates. Candidate culling must be blind to condition deltas: remove tasks
+only for objective validity failures such as no-op pass, verifier ambiguity,
+prompt out-of-bounds behavior, flake rate, runtime, or cost.
 
 Keep raw and adjudicated measurements separate. If a run fails because of
 harness validation, infrastructure, or an over-narrow verifier, preserve the raw
