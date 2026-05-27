@@ -105,6 +105,7 @@ function artifact(
       return conditionRows.map(([condition, success]) => ({
         taskId: scenarioId,
         scenarioId,
+        difficulty: null,
         condition,
         memoryCondition: null,
         agent: "codex",

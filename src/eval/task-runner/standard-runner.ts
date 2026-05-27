@@ -72,6 +72,15 @@ export async function runTaskEvalSuite(
       "--cost-kill-switch-usd is only supported for longitudinal task suites."
     )
   }
+  if (
+    options.difficulty !== undefined ||
+    (options.scenarioIds?.length ?? 0) > 0 ||
+    options.parallelism !== undefined
+  ) {
+    throw new Error(
+      "--difficulty, --scenario-id, and --parallel are only supported for longitudinal task suites."
+    )
+  }
 
   const adapters = options.adapters ?? defaultAdapters()
   const startedAt = (options.now ?? new Date()).toISOString()

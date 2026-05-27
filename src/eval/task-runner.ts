@@ -21,6 +21,7 @@ export type {
   LongitudinalLoreMetrics,
   LongitudinalLoreRun,
   LongitudinalPhaseResult,
+  LongitudinalScenarioDifficulty,
   LongitudinalTaskArtifact,
   LongitudinalTaskCondition,
   LongitudinalTaskEvalSuite,

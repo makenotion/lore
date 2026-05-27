@@ -362,20 +362,27 @@ Longitudinal suites may set `costKillSwitchUsd` as an overnight-run guard:
 costKillSwitchUsd: 1500
 ```
 
-The runner checks observed priced cost between condition runs. Observed cost
+The serial runner checks observed priced cost between condition runs. Observed cost
 includes primary agent usage recorded on phase rows and, when the live
 longitudinal config root exposes enabled cost tracking, Lore-owned model cost
 from the local cost ledger for the current run window. Because the ledger slice
 is time-window based, use a dedicated eval config root/ledger for overnight
 runs. Once observed cost reaches the threshold, the runner stops launching new
-condition runs, records a `termination` block with the observed total, and
+work, records a `termination` block with the observed total, and
 leaves the JSON artifact containing every completed result. If primary-agent
 usage is missing or the model is unpriced, the guard stops fail-closed with
 `termination.reason: "cost-unknown"`. Artifact checkpoints are written through
-a temp-file rename after every condition run. The guard cannot interrupt a
-currently running model call before that subprocess emits usage, so the final
-observed cost may exceed the threshold by at most the current condition run's
-priced work.
+a temp-file rename after every condition run in serial mode and after every
+scenario shard in parallel mode.
+
+With `--parallel`, the runner launches whole scenario triples in child
+processes so each scenario's Phase A/Phase B and Lore-full-loop context remain
+coherent. The parent checks the cost guard before launching a shard and after a
+shard completes; it does not interrupt a shard before its subprocess emits
+usage. The final observed cost can therefore exceed the threshold by up to the
+priced work of the scenario shards already in flight, bounded by `--parallel`.
+If a shard fails structurally, the parent kills active shard process groups and
+keeps the latest parent and shard artifacts for restart analysis.
 
 Workspaces can be local fixture directories or pinned GitHub repositories. The
 existing string form is unchanged:

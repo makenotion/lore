@@ -3,7 +3,7 @@ id: github-cli-powered
 description: >-
   Source-controlled seed corpus for the GitHub CLI powered-candidate
   longitudinal suite. Memories are PR-derived or generalized from GitHub CLI
-  conventions and rewritten as reusable project knowledge for 67 sibling-task
+  conventions and rewritten as reusable project knowledge for 75 sibling-task
   candidates at the pinned repository SHA.
 repository:
   repo: cli/cli
@@ -533,6 +533,82 @@ vault:
         - gh-cli-label-delete-quiet
         - gh-cli-repo-delete-quiet
         - gh-cli-release-delete-quiet
+    - id: gh-cli/skills-provenance-side-effect-boundaries
+      title: Skill provenance metadata is durable across command boundaries
+      topics: ["commands/skills", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Skill provenance is durable metadata that can cross validation,
+        persistence, and publish boundaries without changing command intent.
+      body: |
+        Skill metadata often crosses command boundaries: validation reads it,
+        lockfile operations persist it, and publishing may report it in
+        diagnostics. Treat provenance fields as data owned by the skill package,
+        not transient display state. Validation-only and dry-run modes should
+        keep their no-mutation contract even when diagnostics are emitted as
+        JSON. Machine-readable output should preserve the same safety semantics
+        as human output rather than silently dropping warnings.
+      scenarios:
+        - gh-cli-skills-install-upstream-tenancy-lockfile
+        - gh-cli-skills-preview-hidden-upstream-provenance-json
+        - gh-cli-skills-publish-strict-json-no-side-effects
+      sourcePullRequests: []
+    - id: gh-cli/telemetry-privacy-boundaries
+      title: Telemetry skip and host dimensions must stay observable without leaking raw values
+      topics: ["telemetry", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Telemetry can categorize context and intentionally skipped wrappers,
+        but log mode should make no-event boundaries inspectable without
+        exposing identifying host values.
+      body: |
+        Telemetry log mode is part of the debugging surface. It should
+        distinguish emitted events, intentional no-event paths, and logger
+        failures so skipped wrappers are not mistaken for broken instrumentation.
+        Host values can identify an enterprise or tenant, so telemetry should
+        prefer coarse categories or redacted dimensions when host context is
+        needed.
+      scenarios:
+        - gh-cli-telemetry-skip-wrapper-log-empty-marker
+        - gh-cli-telemetry-no-raw-enterprise-host
+      sourcePullRequests: []
+    - id: gh-cli/api-auth-client-context-boundaries
+      title: API and auth client wrappers must preserve invoking-agent context
+      topics: ["api/http", "telemetry", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Custom API clients and auth follow-up clients can drop request metadata
+        when transports or clients are rebuilt after options are parsed.
+      body: |
+        Request metadata such as app version, extension identity, and
+        invoking-agent context belongs at the boundary where the request is
+        actually sent. Commands that inject custom transports, rebuild clients,
+        or perform follow-up API calls after authentication should have coverage
+        around the final request rather than only the initial factory-built
+        client.
+      scenarios:
+        - gh-cli-api-custom-client-agent-context-roundtrip
+        - gh-cli-auth-token-flow-preserves-client-context
+      sourcePullRequests: []
+    - id: gh-cli/attestation-jsonl-error-boundaries
+      title: Attestation JSONL streaming should preserve explicit parser errors
+      topics: ["commands/attestation", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Streaming JSONL parsing should keep explicit parser contracts visible
+        when buffering strategy changes.
+      body: |
+        Parser refactors can accidentally trade one boundary for another. For
+        JSONL attestation input, keep regression coverage around representative
+        boundary inputs so user-facing errors remain explicit while
+        implementation details such as scanner buffers or decoders evolve.
+      scenarios:
+        - gh-cli-attestation-jsonl-streaming-error-boundaries
+      sourcePullRequests: []
   decisions:
     - id: gh-cli/decision-single-project-vault
       title: Model GitHub CLI as one Lore project
@@ -559,7 +635,7 @@ vault:
     - id: gh-cli/fact-powered-scenario-target
       subject: github-cli-powered-candidate-suite
       predicate: target_scenarios
-      object: "67"
+      object: "75"
       topics: ["tests/commands"]
       source: gh-cli/decision-powered-candidates-need-validation
     - id: gh-cli/fact-skills-hidden-flag

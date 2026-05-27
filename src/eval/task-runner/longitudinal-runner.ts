@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, rename, rm, writeFile } from "node:fs/promises"
+import { spawn, type ChildProcess } from "node:child_process"
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
+import { setTimeout as delay } from "node:timers/promises"
 import { loadConfig } from "../../config.js"
 import {
   DEFAULT_COST_PRICING_TABLE,
@@ -53,12 +55,27 @@ export async function runLongitudinalTaskEvalSuite(
   loaded: { suite: LongitudinalTaskEvalSuite; root: string; path: string },
   options: RunTaskEvalOptions
 ): Promise<{ artifact: LongitudinalTaskArtifact; outPath: string }> {
-  const adapters = options.adapters ?? defaultAdapters()
   const startedAt = (options.now ?? new Date()).toISOString()
-  const loreAdapter = options.longitudinalLoreAdapter ?? defaultLongitudinalLoreAdapter()
   const outPath = resolve(
     options.outPath ?? defaultArtifactPath(loaded.suite.name, startedAt)
   )
+  const scenarios = filterLongitudinalScenarios(loaded.suite, options)
+  const parallelism = normalizeLongitudinalParallelism(options.parallelism)
+  const scenarioIds = scenarios.map((scenario) => scenario.id)
+
+  if (parallelism > 1) {
+    return runLongitudinalTaskEvalSuiteInChildProcesses({
+      loaded,
+      options,
+      startedAt,
+      outPath,
+      scenarios,
+      parallelism,
+    })
+  }
+
+  const adapters = options.adapters ?? defaultAdapters()
+  const loreAdapter = options.longitudinalLoreAdapter ?? defaultLongitudinalLoreAdapter()
   const transcriptsDir = resolveTranscriptDir(options.transcriptsDir, outPath)
   const pricingTable = await loadLongitudinalAgentPricingTable()
   const costKillSwitch = await resolveLongitudinalCostKillSwitch({
@@ -69,16 +86,19 @@ export async function runLongitudinalTaskEvalSuite(
 
   const results: LongitudinalTaskResult[] = []
   let termination: LongitudinalRunTermination | null = null
-  const totalTrials = loaded.suite.scenarios.length * loaded.suite.conditions.length
+  const totalTrials = scenarios.length * loaded.suite.conditions.length
   await writeLongitudinalArtifact({
     suite: loaded.suite,
     startedAt,
     results,
     outPath,
     termination,
+    scenarioIds,
+    parallelism,
+    difficulty: options.difficulty,
   })
-  for (const scenario of loaded.suite.scenarios) {
-    for (const condition of loaded.suite.conditions) {
+  for (const [scenarioIndex, scenario] of scenarios.entries()) {
+    for (const [conditionIndex, condition] of loaded.suite.conditions.entries()) {
       const beforeLaunchTermination = await maybeStopForCostKillSwitch({
         costKillSwitch,
         results,
@@ -87,28 +107,21 @@ export async function runLongitudinalTaskEvalSuite(
       })
       if (beforeLaunchTermination) {
         termination = beforeLaunchTermination
-        options.onProgress?.({
-          type: "run-stop",
-          runner: "task",
-          reason: termination.reason,
-          limitUsd: termination.limitUsd,
-          observedUsd: termination.observedUsd,
-          primaryAgentUsd: termination.primaryAgentUsd,
-          loreUsd: termination.loreUsd,
-          completedTrials: termination.completedTrials,
-          totalPlannedTrials: termination.totalPlannedTrials,
-        })
+        emitLongitudinalStop(options, termination)
         const artifact = await writeLongitudinalArtifact({
           suite: loaded.suite,
           startedAt,
           results,
           outPath,
           termination,
+          scenarioIds,
+          parallelism,
+          difficulty: options.difficulty,
         })
         return { artifact, outPath }
       }
 
-      const index = results.length + 1
+      const index = scenarioIndex * loaded.suite.conditions.length + conditionIndex + 1
       options.onProgress?.({
         type: "trial-start",
         runner: "task",
@@ -137,6 +150,9 @@ export async function runLongitudinalTaskEvalSuite(
         results,
         outPath,
         termination,
+        scenarioIds,
+        parallelism,
+        difficulty: options.difficulty,
       })
       options.onProgress?.({
         type: "trial-finish",
@@ -157,23 +173,16 @@ export async function runLongitudinalTaskEvalSuite(
       })
       if (afterTrialTermination) {
         termination = afterTrialTermination
-        options.onProgress?.({
-          type: "run-stop",
-          runner: "task",
-          reason: termination.reason,
-          limitUsd: termination.limitUsd,
-          observedUsd: termination.observedUsd,
-          primaryAgentUsd: termination.primaryAgentUsd,
-          loreUsd: termination.loreUsd,
-          completedTrials: termination.completedTrials,
-          totalPlannedTrials: termination.totalPlannedTrials,
-        })
+        emitLongitudinalStop(options, termination)
         const artifact = await writeLongitudinalArtifact({
           suite: loaded.suite,
           startedAt,
           results,
           outPath,
           termination,
+          scenarioIds,
+          parallelism,
+          difficulty: options.difficulty,
         })
         return { artifact, outPath }
       }
@@ -186,8 +195,192 @@ export async function runLongitudinalTaskEvalSuite(
     results,
     outPath,
     termination,
+    scenarioIds,
+    parallelism,
+    difficulty: options.difficulty,
   })
   return { artifact, outPath }
+}
+
+async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
+  loaded: { suite: LongitudinalTaskEvalSuite; root: string; path: string }
+  options: RunTaskEvalOptions
+  startedAt: string
+  outPath: string
+  scenarios: LongitudinalTaskScenario[]
+  parallelism: number
+}): Promise<{ artifact: LongitudinalTaskArtifact; outPath: string }> {
+  if (input.options.adapters || input.options.longitudinalLoreAdapter) {
+    throw new Error(
+      "Longitudinal --parallel uses child processes and does not support injected adapters."
+    )
+  }
+  if (input.options.keepWorkspaces) {
+    throw new Error("Longitudinal --parallel does not support keepWorkspaces.")
+  }
+  if (input.options.transcriptsDir !== undefined) {
+    throw new Error(
+      "Longitudinal --parallel writes per-shard transcript directories and does not support transcriptsDir overrides."
+    )
+  }
+  const cliPath = process.argv[1]
+  if (!cliPath) {
+    throw new Error("Longitudinal --parallel requires a CLI entrypoint path.")
+  }
+
+  const costKillSwitch = await resolveLongitudinalCostKillSwitch({
+    suite: input.loaded.suite,
+    options: input.options,
+    startedAt: input.startedAt,
+  })
+  const scenarioIds = input.scenarios.map((scenario) => scenario.id)
+  const totalTrials = input.scenarios.length * input.loaded.suite.conditions.length
+  const shardDir = `${input.outPath}-shards`
+  await mkdir(shardDir, { recursive: true })
+
+  const resultSlots: Array<LongitudinalTaskResult | undefined> = []
+  let nextScenarioIndex = 0
+  let termination: LongitudinalRunTermination | null = null
+  let fatalError: unknown = null
+  let emittedStop = false
+  let writeQueue: Promise<unknown> = Promise.resolve()
+  const activeShardChildren = new Set<ChildProcess>()
+  const orderedResults = () =>
+    resultSlots.filter((result): result is LongitudinalTaskResult => result !== undefined)
+  const writeCurrentArtifact = async () => {
+    const write = writeQueue.then(() =>
+      writeLongitudinalArtifact({
+        suite: input.loaded.suite,
+        startedAt: input.startedAt,
+        results: orderedResults(),
+        outPath: input.outPath,
+        termination,
+        scenarioIds,
+        parallelism: input.parallelism,
+        difficulty: input.options.difficulty,
+      })
+    )
+    writeQueue = write.then(
+      () => undefined,
+      () => undefined
+    )
+    return write
+  }
+  const emitStopOnce = (stop: LongitudinalRunTermination) => {
+    if (emittedStop) return
+    emittedStop = true
+    emitLongitudinalStop(input.options, stop)
+  }
+  const failRun = async (err: unknown) => {
+    if (fatalError !== null) return
+    fatalError = err
+    await stopActiveShardChildren(activeShardChildren)
+    await writeCurrentArtifact()
+  }
+
+  await writeCurrentArtifact()
+
+  const runWorker = async () => {
+    while (termination === null && fatalError === null) {
+      const scenarioIndex = nextScenarioIndex
+      nextScenarioIndex += 1
+      if (scenarioIndex >= input.scenarios.length) return
+
+      const beforeLaunchTermination = await maybeStopForCostKillSwitch({
+        costKillSwitch,
+        results: orderedResults(),
+        completedTrials: orderedResults().length,
+        totalPlannedTrials: totalTrials,
+      })
+      if (beforeLaunchTermination) {
+        termination = beforeLaunchTermination
+        emitStopOnce(termination)
+        await writeCurrentArtifact()
+        return
+      }
+
+      const scenario = input.scenarios[scenarioIndex]!
+      for (const [conditionIndex, condition] of input.loaded.suite.conditions.entries()) {
+        input.options.onProgress?.({
+          type: "trial-start",
+          runner: "task",
+          taskId: scenario.id,
+          scenarioId: scenario.id,
+          condition,
+          index:
+            scenarioIndex * input.loaded.suite.conditions.length + conditionIndex + 1,
+          total: totalTrials,
+        })
+      }
+
+      const shardResults = await runLongitudinalScenarioShard({
+        suitePath: input.loaded.path,
+        cliPath,
+        shardPath: join(
+          shardDir,
+          `${String(scenarioIndex + 1).padStart(3, "0")}-${scenario.id}.json`
+        ),
+        scenario,
+        expectedConditions: input.loaded.suite.conditions,
+        activeShardChildren,
+      }).catch(async (err: unknown) => {
+        await failRun(err)
+        throw err
+      })
+
+      for (const result of shardResults) {
+        const conditionIndex = input.loaded.suite.conditions.indexOf(result.condition)
+        if (conditionIndex === -1) {
+          throw new Error(
+            `Shard ${scenario.id} returned unsupported condition ${result.condition}.`
+          )
+        }
+        const globalIndex =
+          scenarioIndex * input.loaded.suite.conditions.length + conditionIndex + 1
+        resultSlots[globalIndex - 1] = result
+        input.options.onProgress?.({
+          type: "trial-finish",
+          runner: "task",
+          taskId: scenario.id,
+          scenarioId: scenario.id,
+          condition: result.condition,
+          index: globalIndex,
+          total: totalTrials,
+          success: result.success,
+        })
+      }
+      await writeCurrentArtifact()
+
+      const afterShardTermination = await maybeStopForCostKillSwitch({
+        costKillSwitch,
+        results: orderedResults(),
+        completedTrials: orderedResults().length,
+        totalPlannedTrials: totalTrials,
+      })
+      if (afterShardTermination) {
+        termination = afterShardTermination
+        emitStopOnce(termination)
+        await writeCurrentArtifact()
+        return
+      }
+    }
+  }
+
+  const settled = await Promise.allSettled(
+    Array.from({ length: Math.min(input.parallelism, input.scenarios.length) }, () =>
+      runWorker()
+    )
+  )
+  const rejected = settled.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected"
+  )
+  if (rejected) {
+    await stopActiveShardChildren(activeShardChildren)
+    await writeCurrentArtifact()
+    throw rejected.reason
+  }
+  const artifact = await writeCurrentArtifact()
+  return { artifact, outPath: input.outPath }
 }
 
 async function writeLongitudinalArtifact(input: {
@@ -196,18 +389,23 @@ async function writeLongitudinalArtifact(input: {
   results: LongitudinalTaskResult[]
   outPath: string
   termination: LongitudinalRunTermination | null
+  scenarioIds: string[]
+  parallelism: number
+  difficulty: RunTaskEvalOptions["difficulty"]
 }): Promise<LongitudinalTaskArtifact> {
   const artifact: LongitudinalTaskArtifact = {
     suite: input.suite.name,
     description: input.suite.description,
     startedAt: input.startedAt,
-    runner: { mode: "task", kind: "longitudinal" },
+    runner: {
+      mode: "task",
+      kind: "longitudinal",
+      parallelism: input.parallelism,
+      ...(input.difficulty ? { difficulty: input.difficulty } : {}),
+    },
     termination: input.termination,
     results: input.results,
-    summary: summarizeLongitudinalResults(
-      input.suite.scenarios.map((scenario) => scenario.id),
-      input.results
-    ),
+    summary: summarizeLongitudinalResults(input.scenarioIds, input.results),
   }
   await writeJsonArtifactAtomically(input.outPath, artifact)
   return artifact
@@ -223,6 +421,230 @@ async function writeJsonArtifactAtomically(
   await rename(tmpPath, outPath)
 }
 
+function filterLongitudinalScenarios(
+  suite: LongitudinalTaskEvalSuite,
+  options: RunTaskEvalOptions
+): LongitudinalTaskScenario[] {
+  const scenarioIdFilter =
+    options.scenarioIds && options.scenarioIds.length > 0
+      ? new Set(options.scenarioIds)
+      : null
+  const scenarios = suite.scenarios.filter((scenario) => {
+    if (options.difficulty && scenario.difficulty !== options.difficulty) return false
+    if (scenarioIdFilter && !scenarioIdFilter.has(scenario.id)) return false
+    return true
+  })
+  if (scenarios.length === 0) {
+    const filters = [
+      options.difficulty ? `difficulty=${options.difficulty}` : null,
+      scenarioIdFilter ? `scenarioIds=${[...scenarioIdFilter].join(",")}` : null,
+    ].filter((value): value is string => value !== null)
+    throw new Error(
+      `No longitudinal scenarios matched${filters.length > 0 ? ` (${filters.join("; ")})` : ""}.`
+    )
+  }
+  if (scenarioIdFilter) {
+    const matched = new Set(scenarios.map((scenario) => scenario.id))
+    const missing = [...scenarioIdFilter].filter((id) => !matched.has(id))
+    if (missing.length > 0) {
+      throw new Error(`Unknown longitudinal scenario id(s): ${missing.join(", ")}`)
+    }
+  }
+  return scenarios
+}
+
+function normalizeLongitudinalParallelism(value: number | undefined): number {
+  if (value === undefined) return 1
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error("Longitudinal parallelism must be a positive integer.")
+  }
+  return value
+}
+
+function emitLongitudinalStop(
+  options: RunTaskEvalOptions,
+  termination: LongitudinalRunTermination
+): void {
+  options.onProgress?.({
+    type: "run-stop",
+    runner: "task",
+    reason: termination.reason,
+    limitUsd: termination.limitUsd,
+    observedUsd: termination.observedUsd,
+    primaryAgentUsd: termination.primaryAgentUsd,
+    loreUsd: termination.loreUsd,
+    completedTrials: termination.completedTrials,
+    totalPlannedTrials: termination.totalPlannedTrials,
+  })
+}
+
+async function runLongitudinalScenarioShard(input: {
+  suitePath: string
+  cliPath: string
+  shardPath: string
+  scenario: LongitudinalTaskScenario
+  expectedConditions: readonly LongitudinalTaskCondition[]
+  activeShardChildren: Set<ChildProcess>
+}): Promise<LongitudinalTaskResult[]> {
+  const args = [
+    input.cliPath,
+    "eval",
+    "run",
+    input.suitePath,
+    "--runner",
+    "task",
+    "--scenario-id",
+    input.scenario.id,
+    "--out",
+    input.shardPath,
+  ]
+  const child = spawn(process.execPath, args, {
+    env: {
+      ...process.env,
+      LORE_EVAL_LONGITUDINAL_WORKER: "1",
+      LORE_EVAL_LONGITUDINAL_IGNORE_SUITE_COST_KILL_SWITCH: "1",
+    },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  input.activeShardChildren.add(child)
+  let stdout = ""
+  let stderr = ""
+  child.stdout?.setEncoding("utf-8")
+  child.stdout?.on("data", (chunk: string) => {
+    stdout = capCapturedOutput(stdout + chunk)
+  })
+  child.stderr?.setEncoding("utf-8")
+  child.stderr?.on("data", (chunk: string) => {
+    stderr = capCapturedOutput(stderr + chunk)
+  })
+
+  const exitCode = await new Promise<number | null>((resolveClose, reject) => {
+    child.once("error", reject)
+    child.once("close", (code) => resolveClose(code))
+  }).finally(() => {
+    input.activeShardChildren.delete(child)
+  })
+  let artifact: LongitudinalTaskArtifact
+  try {
+    artifact = JSON.parse(
+      await readFile(input.shardPath, "utf-8")
+    ) as LongitudinalTaskArtifact
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Longitudinal shard ${input.scenario.id} did not produce a readable artifact ` +
+        `(exit ${exitCode ?? "signal"}): ${detail}\n${stderr || stdout}`,
+      { cause: err }
+    )
+  }
+  if (artifact.termination) {
+    throw new Error(
+      `Longitudinal shard ${input.scenario.id} terminated unexpectedly: ${artifact.termination.message}`
+    )
+  }
+  const invalid = artifact.results.filter(
+    (result) => result.scenarioId !== input.scenario.id
+  )
+  if (invalid.length > 0) {
+    throw new Error(
+      `Longitudinal shard ${input.scenario.id} returned result(s) for ${invalid.map((result) => result.scenarioId).join(", ")}.`
+    )
+  }
+  assertLongitudinalShardResultsComplete({
+    scenarioId: input.scenario.id,
+    results: artifact.results,
+    expectedConditions: input.expectedConditions,
+  })
+  return artifact.results
+}
+
+export function assertLongitudinalShardResultsComplete(input: {
+  scenarioId: string
+  results: LongitudinalTaskResult[]
+  expectedConditions: readonly LongitudinalTaskCondition[]
+}): void {
+  const expected = new Set(input.expectedConditions)
+  const seen = new Map<LongitudinalTaskCondition, number>()
+  const unexpected: string[] = []
+  for (const result of input.results) {
+    if (!expected.has(result.condition)) {
+      unexpected.push(result.condition)
+      continue
+    }
+    seen.set(result.condition, (seen.get(result.condition) ?? 0) + 1)
+  }
+
+  const missing = input.expectedConditions.filter(
+    (condition) => (seen.get(condition) ?? 0) === 0
+  )
+  const duplicate = [...seen.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([condition]) => condition)
+  if (missing.length === 0 && duplicate.length === 0 && unexpected.length === 0) {
+    return
+  }
+
+  const details = [
+    missing.length > 0 ? `missing=${missing.join(",")}` : null,
+    duplicate.length > 0 ? `duplicate=${duplicate.join(",")}` : null,
+    unexpected.length > 0 ? `unexpected=${unexpected.join(",")}` : null,
+  ].filter((detail): detail is string => detail !== null)
+  throw new Error(
+    `Longitudinal shard ${input.scenarioId} returned incomplete condition results: ${details.join("; ")}.`
+  )
+}
+
+async function stopActiveShardChildren(children: Set<ChildProcess>): Promise<void> {
+  const active = [...children].filter(isChildRunning)
+  if (active.length === 0) return
+
+  await stopShardChildrenWithSignal(active, "SIGTERM", 5_000)
+  const remaining = active.filter(isChildRunning)
+  if (remaining.length > 0) {
+    await stopShardChildrenWithSignal(remaining, "SIGKILL", 2_000)
+  }
+}
+
+async function stopShardChildrenWithSignal(
+  children: ChildProcess[],
+  signal: NodeJS.Signals,
+  timeoutMs: number
+): Promise<void> {
+  const waits = children.map(waitForChildClose)
+  for (const child of children) {
+    killChildProcessGroup(child, signal)
+  }
+  await Promise.race([Promise.all(waits), delay(timeoutMs)])
+}
+
+function waitForChildClose(child: ChildProcess): Promise<void> {
+  if (!isChildRunning(child)) return Promise.resolve()
+  return new Promise((resolveClose) => child.once("close", () => resolveClose()))
+}
+
+function killChildProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) {
+    child.kill(signal)
+    return
+  }
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    child.kill(signal)
+  }
+}
+
+function isChildRunning(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null
+}
+
+function capCapturedOutput(value: string): string {
+  const max = 16_384
+  if (value.length <= max) return value
+  return value.slice(value.length - max)
+}
+
 interface LongitudinalCostKillSwitch {
   limitUsd: number
   startedAt: Date
@@ -234,7 +656,11 @@ async function resolveLongitudinalCostKillSwitch(input: {
   options: RunTaskEvalOptions
   startedAt: string
 }): Promise<LongitudinalCostKillSwitch | null> {
-  const limitUsd = input.options.costKillSwitchUsd ?? input.suite.costKillSwitchUsd
+  const suiteLimitUsd =
+    process.env["LORE_EVAL_LONGITUDINAL_IGNORE_SUITE_COST_KILL_SWITCH"] === "1"
+      ? undefined
+      : input.suite.costKillSwitchUsd
+  const limitUsd = input.options.costKillSwitchUsd ?? suiteLimitUsd
   if (limitUsd === undefined) return null
 
   return {
@@ -516,6 +942,7 @@ async function runLongitudinalTrial(input: {
     return {
       taskId: input.scenario.id,
       scenarioId: input.scenario.id,
+      difficulty: input.scenario.difficulty ?? null,
       condition: input.condition,
       memoryCondition: null,
       agent: input.scenario.agent,

@@ -67,6 +67,30 @@ describe("parseEvalRunCliOptions", () => {
     if (result.ok) expect(result.value.costKillSwitchUsd).toBe(1500)
   })
 
+  it("parses longitudinal segmentation and parallelism flags", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      difficulty: "hard",
+      scenarioId: ["one", "two"],
+      parallel: "4",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.difficulty).toBe("hard")
+      expect(result.value.scenarioIds).toEqual(["one", "two"])
+      expect(result.value.parallelism).toBe(4)
+    }
+  })
+
+  it("rejects invalid longitudinal difficulty values", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      difficulty: "spicy",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("--difficulty")
+  })
+
   it("rejects a zero cost kill-switch", () => {
     const result = parseEvalRunCliOptions({
       runner: "task",
@@ -659,6 +683,7 @@ function longitudinalPlanResult(
   return {
     taskId: scenarioId,
     scenarioId,
+    difficulty: null,
     condition,
     memoryCondition: null,
     agent: "codex",

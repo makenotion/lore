@@ -19,6 +19,7 @@ import {
   type AnyTaskEvalArtifact,
   type LongitudinalTaskArtifact,
   type LongitudinalTaskCondition,
+  type LongitudinalScenarioDifficulty,
   type TaskEvalProgressEvent,
 } from "../../eval/task-runner.js"
 import { buildLongitudinalBenchmarkPlan } from "../../eval/longitudinal-plan.js"
@@ -47,6 +48,9 @@ export interface EvalRunCliOptions {
   baselinePath?: string
   projectName?: string
   costKillSwitchUsd?: number
+  difficulty?: LongitudinalScenarioDifficulty
+  scenarioIds?: string[]
+  parallelism?: number
   /**
    * Prefix slice for sample runs. Bench-only — rejected on every
    * other runner mode. Refuses to land when `--out` writes under an
@@ -66,6 +70,9 @@ export interface EvalRunRawCliOptions {
   baseline?: string
   project?: string
   costKillSwitchUsd?: string
+  difficulty?: string
+  scenarioId?: string[]
+  parallel?: string
   limit?: string
   json?: boolean
 }
@@ -128,6 +135,12 @@ export function parseEvalRunCliOptions(
     return { ok: false, message: "--cost-kill-switch-usd must be greater than 0." }
   }
 
+  const difficulty = parseOptionalLongitudinalDifficulty(raw.difficulty)
+  if (!difficulty.ok) return difficulty
+
+  const parallelism = parseOptionalPositiveInteger("--parallel", raw.parallel)
+  if (!parallelism.ok) return parallelism
+
   return {
     ok: true,
     value: {
@@ -139,6 +152,9 @@ export function parseEvalRunCliOptions(
       baselinePath: raw.baseline,
       projectName: raw.project,
       costKillSwitchUsd: costKillSwitchUsd.value,
+      difficulty: difficulty.value,
+      scenarioIds: raw.scenarioId,
+      parallelism: parallelism.value,
       limit,
       json: !!raw.json,
     },
@@ -393,6 +409,19 @@ function parseOptionalPositiveInteger(
   return { ok: true, value: parsed.value }
 }
 
+function parseOptionalLongitudinalDifficulty(
+  raw: string | undefined
+): CliParseResult<LongitudinalScenarioDifficulty | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  if (raw === "easy" || raw === "medium" || raw === "hard") {
+    return { ok: true, value: raw }
+  }
+  return {
+    ok: false,
+    message: `--difficulty must be one of: easy, medium, hard; got "${raw}"`,
+  }
+}
+
 function parseLongitudinalToCondition(
   raw: string | undefined
 ): CliParseResult<Exclude<LongitudinalTaskCondition, "no-memory"> | undefined> {
@@ -438,6 +467,10 @@ function formatSignedMs(value: number | null): string {
   if (value === null) return "n/a"
   const rounded = Math.round(value)
   return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString()} ms`
+}
+
+function collectScenarioId(value: string, previous: string[]): string[] {
+  return [...previous, value]
 }
 
 export function formatTaskProgressEvent(event: TaskEvalProgressEvent): string {
@@ -497,6 +530,20 @@ evalCommand.addCommand(
       "--cost-kill-switch-usd <n>",
       "Task longitudinal runs only: stop launching new condition runs once observed priced cost reaches this USD limit"
     )
+    .option(
+      "--difficulty <level>",
+      "Task longitudinal runs only: run scenarios tagged easy, medium, or hard"
+    )
+    .option(
+      "--scenario-id <id>",
+      "Task longitudinal runs only: run a single scenario id; repeat for multiple scenarios",
+      collectScenarioId,
+      []
+    )
+    .option(
+      "--parallel <n>",
+      "Task longitudinal runs only: run scenario triples in up to n child processes; cost guard checks between triples"
+    )
     .option("--json", "Print the full JSON artifact to stdout")
     .action(
       async (
@@ -510,6 +557,9 @@ evalCommand.addCommand(
           baseline?: string
           project?: string
           costKillSwitchUsd?: string
+          difficulty?: string
+          scenarioId?: string[]
+          parallel?: string
           limit?: string
           json?: boolean
         }
@@ -576,10 +626,25 @@ evalCommand.addCommand(
             process.exit(1)
             return
           }
+          if (
+            (parsed.value.difficulty !== undefined ||
+              (parsed.value.scenarioIds?.length ?? 0) > 0 ||
+              parsed.value.parallelism !== undefined) &&
+            parsed.value.runner !== "task"
+          ) {
+            console.error(
+              "Eval failed: --difficulty, --scenario-id, and --parallel are only supported with --runner task (or a suite YAML with `runner: task`)."
+            )
+            process.exit(1)
+            return
+          }
           if (parsed.value.runner === "task") {
             const { artifact, outPath } = await runTaskEvalSuite(suite, {
               outPath: parsed.value.outPath,
               costKillSwitchUsd: parsed.value.costKillSwitchUsd,
+              difficulty: parsed.value.difficulty,
+              scenarioIds: parsed.value.scenarioIds,
+              parallelism: parsed.value.parallelism,
               onProgress: parsed.value.json
                 ? undefined
                 : (event) => console.log(formatTaskProgressEvent(event)),

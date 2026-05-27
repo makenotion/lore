@@ -47,7 +47,7 @@ describe("seed corpus", () => {
     ).toBe(true)
     expect(
       corpus.vault.facts.find((fact) => fact.id === "gh-cli/fact-powered-scenario-target")
-    ).toMatchObject({ object: "67" })
+    ).toMatchObject({ object: "75" })
     for (const memory of corpus.vault.memories) {
       if (memory.provenanceKind === "pr-derived") {
         expect(memory.sourcePullRequests.length).toBeGreaterThan(0)

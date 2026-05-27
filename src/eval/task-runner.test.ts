@@ -29,6 +29,7 @@ import {
   type AgentRunInput,
   type AgentRunResult,
 } from "./task-runner.js"
+import { assertLongitudinalShardResultsComplete } from "./task-runner/longitudinal-runner.js"
 import { loadSeedCorpus } from "./seed-corpus.js"
 
 describe("task-runner", () => {
@@ -64,8 +65,13 @@ describe("task-runner", () => {
       "lore-full-loop",
     ])
     expect(loaded.suite.seededCorpus).toBe("../vault-seeds/github-cli-powered.yaml")
-    expect(loaded.suite.scenarios).toHaveLength(67)
+    expect(loaded.suite.scenarios).toHaveLength(75)
     expect(loaded.suite.scenarios.every((scenario) => scenario.seededContext)).toBe(true)
+    expect(countByDifficulty(loaded.suite.scenarios)).toEqual({
+      easy: 25,
+      medium: 25,
+      hard: 25,
+    })
 
     const corpus = await loadSeedCorpus("evals/vault-seeds/github-cli-powered.yaml")
     const memoryById = new Map(corpus.vault.memories.map((memory) => [memory.id, memory]))
@@ -740,6 +746,34 @@ tasks:
     ).rejects.toThrow("--cost-kill-switch-usd is only supported")
   })
 
+  it("rejects longitudinal filters for non-longitudinal task suites", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "README.md": "fixture\n" },
+      suite: `version: 1
+name: standard-longitudinal-filters
+tasks:
+  - id: one-task
+    prompt: Write a file.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: file-exists
+        path: done.txt
+`,
+    })
+
+    await expect(
+      runTaskEvalSuite(suitePath, {
+        difficulty: "hard",
+        scenarioIds: ["one-task"],
+        parallelism: 2,
+        adapters: new Map<string, AgentAdapter>([
+          ["codex", mockAdapter("codex", async () => successResult())],
+        ]),
+      })
+    ).rejects.toThrow("--difficulty, --scenario-id, and --parallel")
+  })
+
   it("runs longitudinal suites across no-memory and lore-full-loop conditions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "lore-eval-longitudinal-suite-"))
     const suitesDir = join(dir, "task-suites")
@@ -1363,6 +1397,122 @@ scenarios:
       "002-seeded-cache-prefix-seeded-lore-formation.codex.jsonl",
       "002-seeded-cache-prefix-seeded-lore-use.codex.jsonl",
     ])
+  })
+
+  it("filters longitudinal suites by difficulty and scenario id", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-filtered
+conditions:
+  - no-memory
+scenarios:
+  - id: easy-one
+    difficulty: easy
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect easy one.
+    phaseB:
+      prompt: Finish easy one.
+    verifiers:
+      - type: file-exists
+        path: easy-one.txt
+  - id: hard-one
+    difficulty: hard
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect hard one.
+    phaseB:
+      prompt: Finish hard one.
+    verifiers:
+      - type: file-exists
+        path: hard-one.txt
+`,
+    })
+
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      if (prompt.includes("hard one")) {
+        await writeFile(join(workspace, "hard-one.txt"), "done\n", "utf-8")
+      }
+      return successResult()
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      difficulty: "hard",
+      scenarioIds: ["hard-one"],
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(artifact.results.map((result) => result.scenarioId)).toEqual(["hard-one"])
+    expect(artifact.results[0]?.difficulty).toBe("hard")
+    expect(artifact.summary.tasks).toBe(1)
+  })
+
+  it("rejects injected adapters for parallel longitudinal child-process runs", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-parallel-rejects-injected-adapters
+conditions:
+  - no-memory
+scenarios:
+  - id: first
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect first.
+    phaseB:
+      prompt: Finish first.
+    verifiers:
+      - type: file-exists
+        path: first.txt
+  - id: second
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect second.
+    phaseB:
+      prompt: Finish second.
+    verifiers:
+      - type: file-exists
+        path: second.txt
+`,
+    })
+
+    await expect(
+      runTaskEvalSuite(suitePath, {
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([
+          ["codex", mockAdapter("codex", async () => successResult())],
+        ]),
+        parallelism: 2,
+      })
+    ).rejects.toThrow("child processes")
+  })
+
+  it("rejects incomplete longitudinal shard condition results", () => {
+    expect(() =>
+      assertLongitudinalShardResultsComplete({
+        scenarioId: "first",
+        results: [
+          {
+            scenarioId: "first",
+            condition: "no-memory",
+          } as never,
+        ],
+        expectedConditions: ["no-memory", "seeded-lore", "lore-full-loop"],
+      })
+    ).toThrow("missing=seeded-lore,lore-full-loop")
   })
 
   it("keeps primary longitudinal agents Lore-tool-free while mining has MCP config", async () => {
@@ -2169,6 +2319,16 @@ function goTestArgsCoverPackage(args: string[], packageDir: string): boolean {
     if (packageDir === packagePattern) return true
   }
   return false
+}
+
+function countByDifficulty(
+  scenarios: Array<{ difficulty?: "easy" | "medium" | "hard" }>
+): Record<"easy" | "medium" | "hard", number> {
+  return {
+    easy: scenarios.filter((scenario) => scenario.difficulty === "easy").length,
+    medium: scenarios.filter((scenario) => scenario.difficulty === "medium").length,
+    hard: scenarios.filter((scenario) => scenario.difficulty === "hard").length,
+  }
 }
 
 function poweredScenarioTestName(scenarioId: string): string {

@@ -140,6 +140,7 @@ const taskEvalStandardSuiteSchema = z
   })
 
 const longitudinalConditionSchema = z.enum(["no-memory", "seeded-lore", "lore-full-loop"])
+const longitudinalScenarioDifficultySchema = z.enum(["easy", "medium", "hard"])
 
 const longitudinalPhaseSchema = z
   .object({
@@ -179,6 +180,7 @@ const longitudinalTaskScenarioSchema = z
     workspace: workspaceSourceSchema,
     phaseA: longitudinalPhaseSchema,
     phaseB: longitudinalPhaseSchema,
+    difficulty: longitudinalScenarioDifficultySchema.optional(),
     expectedContext: longitudinalExpectedContextSchema,
     seededContext: longitudinalSeededContextSchema.optional(),
     verifiers: z.array(verifierSchema).min(1),
@@ -284,6 +286,9 @@ export type TaskEvalWorkspaceSource = z.infer<typeof workspaceSourceSchema>
 export type TaskEvalTask = z.infer<typeof taskEvalTaskSchema>
 export type TaskEvalStandardSuite = z.infer<typeof taskEvalStandardSuiteSchema>
 export type LongitudinalTaskCondition = z.infer<typeof longitudinalConditionSchema>
+export type LongitudinalScenarioDifficulty = z.infer<
+  typeof longitudinalScenarioDifficultySchema
+>
 export type LongitudinalTaskScenario = z.infer<typeof longitudinalTaskScenarioSchema>
 export type LongitudinalTaskEvalSuite = z.infer<typeof longitudinalTaskEvalSuiteSchema>
 export type TaskEvalSuite = TaskEvalStandardSuite | LongitudinalTaskEvalSuite
@@ -446,6 +451,7 @@ export interface LongitudinalPhaseResult {
 export interface LongitudinalTaskResult {
   taskId: string
   scenarioId: string
+  difficulty: LongitudinalScenarioDifficulty | null
   condition: LongitudinalTaskCondition
   memoryCondition: null
   agent: string
@@ -520,7 +526,12 @@ export interface LongitudinalTaskArtifact {
   suite: string
   description: string
   startedAt: string
-  runner: { mode: "task"; kind: "longitudinal" }
+  runner: {
+    mode: "task"
+    kind: "longitudinal"
+    parallelism?: number
+    difficulty?: LongitudinalScenarioDifficulty
+  }
   termination: LongitudinalRunTermination | null
   results: LongitudinalTaskResult[]
   summary: {
@@ -651,6 +662,20 @@ export interface RunTaskEvalOptions {
    * launching more agent work once the threshold has been reached.
    */
   costKillSwitchUsd?: number
+  /**
+   * Longitudinal-only filter for segmented benchmark runs.
+   */
+  difficulty?: LongitudinalScenarioDifficulty
+  /**
+   * Longitudinal-only scenario id filter. Used by process workers that
+   * execute one scenario triple at a time.
+   */
+  scenarioIds?: string[]
+  /**
+   * Longitudinal-only scenario worker count. Conditions within a scenario
+   * still run sequentially so each scenario remains a coherent triple.
+   */
+  parallelism?: number
   onProgress?: (event: TaskEvalProgressEvent) => void
 }
 export function isLongitudinalTaskEvalSuite(

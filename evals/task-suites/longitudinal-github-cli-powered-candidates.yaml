@@ -3,7 +3,7 @@ runner: task
 longitudinal: true
 name: lore-longitudinal-github-cli-powered-candidates
 description: |
-  Sixty-seven PR-derived and generalized GitHub CLI longitudinal scenario
+  Seventy-five PR-derived and generalized GitHub CLI longitudinal scenario
   candidates. These are candidate slots, not independent statistical units:
   many scenarios intentionally cluster around the same source memory or source
   pull request. This suite deliberately exceeds the current 50-pair planner
@@ -11,7 +11,9 @@ description: |
   candidates can be culled after smoke validation. It is not yet the published
   powered benchmark. Each scenario still needs validation for prompt bounds,
   verifier stability, no-op baseline failure, runtime, and cost before
-  promotion.
+  promotion. Scenarios are segmented into 25 easy, 25 medium, and 25 hard
+  triples so ceiling-effect analysis can separate directional lift from
+  genuinely discriminative tasks.
 seededCorpus: ../vault-seeds/github-cli-powered.yaml
 costKillSwitchUsd: 1500
 conditions:
@@ -21,6 +23,7 @@ conditions:
 
 scenarios:
   - id: gh-cli-config-list-json-continuity
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: &ghCliWorkspace
@@ -63,6 +66,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-alias-list-json-continuity
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -100,6 +104,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-alias-set-clobber-shorthand
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -137,6 +142,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-alias-delete-silent-missing
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -174,6 +180,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-config-clear-cache-quiet
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -211,6 +218,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-update-allow-hidden-dirs
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -248,6 +256,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-allow-hidden-dirs
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -285,6 +294,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-search-hidden-dir-hint
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -322,6 +332,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-preview-hidden-dir-json
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -360,6 +371,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-update-upstream-redirect
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -397,6 +409,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-preview-upstream-notice
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -434,6 +447,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-upstream-metadata
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -471,6 +485,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-search-upstream-filter
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -509,6 +524,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-tenancy-host
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -546,6 +562,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-update-tenancy-lockfile
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -583,6 +600,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-search-ghes-error
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -620,6 +638,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-preview-tenancy-source
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -654,6 +673,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-strict-warnings
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -691,6 +711,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-json-diagnostics
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -728,6 +749,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-fix-dry-run-boundary
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -766,6 +788,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-set-quiet-success
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -804,6 +827,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-delete-quiet-success
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -842,6 +866,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-list-application-column
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -879,6 +904,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-shared-application-alias
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -916,6 +942,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-set-no-store-json
+    difficulty: easy
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -954,6 +981,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-merge-commit-message
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -991,6 +1019,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-auto-merge-prerequisite
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1028,6 +1057,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-security-validation
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1065,6 +1095,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-topic-cache
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1100,6 +1131,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-visibility-warning
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1137,6 +1169,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-pr-status-display-names
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1174,6 +1207,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-issue-status-display-names
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1211,6 +1245,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-pr-list-display-names
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1248,6 +1283,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-issue-list-display-names
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1285,6 +1321,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-pr-checks-display-names
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1322,6 +1359,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-pr-view-number-json-validation
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1356,6 +1394,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-issue-view-number-json-validation
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1390,6 +1429,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-no-alias-status
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1424,6 +1464,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-no-extension-browser
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1458,6 +1499,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-log-empty-marker
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1495,6 +1537,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-send-failure-nonfatal
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1529,6 +1572,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-terminal-width-dimension
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1566,6 +1610,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-auth-state-dimension
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1603,6 +1648,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-agent-host-type
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1641,6 +1687,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-telemetry-ci-context-dimension
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1678,6 +1725,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-api-graphql-agent-header
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1712,6 +1760,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-auth-login-viewer-agent-header
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1746,6 +1795,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-api-rest-agent-header
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1780,6 +1830,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-verify-strict-digest-alg
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1814,6 +1865,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-verify-asset-strict-digest-alg
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1848,6 +1900,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-shared-digest-helper-invalid
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1882,6 +1935,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-attestation-jsonl-stream-reader
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1919,6 +1973,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-attestation-jsonl-empty-line
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1956,6 +2011,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-attestation-jsonl-malformed-context
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -1993,6 +2049,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-edit-httpmock-payload
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2028,6 +2085,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-skills-publish-command-stubber
+    difficulty: hard
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2062,6 +2120,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-secret-set-httpmock-payload
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2097,6 +2156,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-gpg-key-list-json
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2134,6 +2194,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-ssh-key-list-json
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2171,6 +2232,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-gitignore-list-json
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2208,6 +2270,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-license-list-json
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2245,6 +2308,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-extension-upgrade-json
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2283,6 +2347,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-gpg-key-delete-quiet
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2320,6 +2385,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-ssh-key-delete-quiet
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2357,6 +2423,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-label-delete-quiet
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2393,6 +2460,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-repo-delete-quiet
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2430,6 +2498,7 @@ scenarios:
         timeoutMs: 300000
 
   - id: gh-cli-release-delete-quiet
+    difficulty: medium
     agent: codex
     timeoutMs: 1800000
     workspace: *ghCliWorkspace
@@ -2464,4 +2533,326 @@ scenarios:
       - type: command
         command: go
         args: ["test", "./pkg/cmd/release/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-install-upstream-tenancy-lockfile
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-install-upstream-tenancy-lockfile-formation
+      prompt: |
+        Inspect skill install/update provenance and tenancy-host lockfile
+        handling. Capture the durable invariant without assuming one command
+        owns the whole flow.
+    phaseB:
+      promptId: gh-cli-skills-install-upstream-tenancy-lockfile-use
+      prompt: |
+        Fix skill install/update provenance round trips so GHEC tenancy hosts
+        and upstream source metadata survive lockfile rewrites.
+        Name the new regression test `TestSkillsInstallUpstreamTenancyLockfile`.
+    expectedContext:
+      description: Skill provenance lockfiles should preserve tenancy host and upstream source across install/update.
+      keywords: ["lockfile", "upstream", "ghe.com"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-provenance-side-effect-boundaries: Skill provenance is package-owned metadata that can cross validation, persistence, and publish boundaries without changing command intent.
+        - [memory] gh-cli/skills-tenancy-hosts: GHEC tenancy hosts are supported source hosts and should be preserved rather than normalized away.
+      contextIds: ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/skills/lockfile/lockfile.go
+        pattern: 'ghe\\.com|upstream|Source|Host'
+      - type: file-contents-match
+        path: internal/skills/lockfile/lockfile_test.go
+        pattern: 'upstream|ghe\\.com|tenancy'
+      - type: file-contents-match
+        path: pkg/cmd/skills/install/install_test.go
+        pattern: 'upstream|ghe\\.com|tenancy|lockfile'
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update_test.go
+        pattern: 'upstream|ghe\\.com|tenancy|lockfile'
+      - type: file-contents-match
+        path: internal/skills/lockfile/lockfile_test.go
+        pattern: 'TestSkillsInstallUpstreamTenancyLockfile'
+      - type: command
+        command: go
+        args: ["test", "./internal/skills/lockfile", "./pkg/cmd/skills/install", "./pkg/cmd/skills/update"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-preview-hidden-upstream-provenance-json
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-preview-hidden-upstream-provenance-json-formation
+      prompt: |
+        Inspect skill preview's hidden-directory and upstream provenance paths.
+        Capture how provenance warnings and machine-readable output should
+        coexist.
+    phaseB:
+      promptId: gh-cli-skills-preview-hidden-upstream-provenance-json-use
+      prompt: |
+        When previewing a hidden republished skill with JSON output, surface
+        provenance metadata without suppressing the hidden-directory warning.
+        Name the new regression test `TestSkillsPreviewHiddenUpstreamProvenanceJson`.
+    expectedContext:
+      description: Skill preview JSON should expose provenance while preserving hidden-directory warnings.
+      keywords: ["hidden", "upstream", "json"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-provenance-side-effect-boundaries: Machine-readable skill output should preserve safety semantics rather than silently changing warning behavior.
+        - [memory] gh-cli/skills-hidden-dir-filtering: Hidden-directory skills are opt-in and carry provenance warnings because they may be installed copies.
+      contextIds: ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-hidden-dir-filtering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview.go
+        pattern: 'upstream|hidden|json|Exporter'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'upstream|hidden|json'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'TestSkillsPreviewHiddenUpstreamProvenanceJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/preview"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-strict-json-no-side-effects
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-publish-strict-json-no-side-effects-formation
+      prompt: |
+        Inspect skill publish strict validation, JSON diagnostics, and dry-run
+        mutation boundaries. Capture the failure mode that would publish while
+        only validating.
+    phaseB:
+      promptId: gh-cli-skills-publish-strict-json-no-side-effects-use
+      prompt: |
+        Ensure strict JSON dry-run diagnostics fail on warnings without creating
+        releases, tags, or other publish side effects.
+        Name the new regression test `TestSkillsPublishStrictJsonNoSideEffects`.
+    expectedContext:
+      description: Publish strict/json/dry-run validation must fail without mutating remote state.
+      keywords: ["strict", "json", "dry-run", "release"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-provenance-side-effect-boundaries: Dry-run and validation-only skill flows should keep their no-mutation contract even when reporting diagnostics.
+        - [memory] gh-cli/skills-publish-validation: Strict validation turns warnings into failures while preserving dry-run no-publish behavior.
+      contextIds: ["gh-cli/skills-provenance-side-effect-boundaries", "gh-cli/skills-publish-validation"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish.go
+        pattern: 'strict|dry-run|json|release'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'strict|dry-run|json|release'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishStrictJsonNoSideEffects'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-skip-wrapper-log-empty-marker
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-skip-wrapper-log-empty-marker-formation
+      prompt: |
+        Inspect telemetry skip paths and log-mode flushing. Capture why skipped
+        wrapper commands still need observable no-event behavior.
+    phaseB:
+      promptId: gh-cli-telemetry-skip-wrapper-log-empty-marker-use
+      prompt: |
+        In telemetry log mode, make skipped wrapper commands emit the standard
+        no-event marker instead of silently producing no telemetry log.
+        Name the new regression test `TestTelemetrySkipWrapperLogEmptyMarker`.
+    expectedContext:
+      description: Telemetry skips should remain observable in log mode via the empty marker.
+      keywords: ["Telemetry payload: none", "alias", "extension"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-privacy-boundaries: Telemetry log mode should distinguish emitted events, intentional no-event paths, and logger failures.
+        - [memory] gh-cli/telemetry-command-policy: Telemetry is best-effort and has explicit skip paths for aliases, extensions, and recursive telemetry commands.
+      contextIds: ["gh-cli/telemetry-privacy-boundaries", "gh-cli/telemetry-command-policy"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'Telemetry payload: none|alias|extension'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'TestTelemetrySkipWrapperLogEmptyMarker'
+      - type: command
+        command: go
+        args: ["test", "./internal/ghcmd"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-no-raw-enterprise-host
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-no-raw-enterprise-host-formation
+      prompt: |
+        Inspect telemetry dimensions that classify host state. Capture the
+        privacy boundary for enterprise and tenancy hostnames.
+    phaseB:
+      promptId: gh-cli-telemetry-no-raw-enterprise-host-use
+      prompt: |
+        Add coverage and guardrails so telemetry categorizes enterprise host
+        type without recording the raw hostname.
+        Use `raw-enterprise.ghe.com` as the sentinel raw hostname.
+        Name the new regression test `TestTelemetryNoRawEnterpriseHost`.
+    expectedContext:
+      description: Telemetry may categorize host type but must not record raw enterprise hostnames.
+      keywords: ["enterprise", "host", "telemetry"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-privacy-boundaries: Host values can identify an enterprise or tenant, so telemetry should prefer categories or redaction when host context is needed.
+        - [memory] gh-cli/skills-tenancy-hosts: GHEC tenancy hosts differ from GHES and should be classified rather than flattened to github.com.
+      contextIds: ["gh-cli/telemetry-privacy-boundaries", "gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/ghcmd/cmd.go
+        pattern: 'enterprise|host|telemetry'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'enterprise|host|telemetry'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'raw-enterprise\.ghe\.com'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'NotContains\([^\n]*raw-enterprise\.ghe\.com|!strings\.Contains\([^\n]*raw-enterprise\.ghe\.com'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd.go
+        pattern: 'raw-enterprise\.ghe\.com'
+        mode: forbid
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'TestTelemetryNoRawEnterpriseHost'
+      - type: command
+        command: go
+        args: ["test", "./internal/ghcmd"]
+        timeoutMs: 300000
+
+  - id: gh-cli-api-custom-client-agent-context-roundtrip
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-api-custom-client-agent-context-roundtrip-formation
+      prompt: |
+        Inspect custom HTTP client paths in `gh api`. Capture how agent context
+        can be dropped when clients are wrapped or replaced.
+    phaseB:
+      promptId: gh-cli-api-custom-client-agent-context-roundtrip-use
+      prompt: |
+        Add a regression that custom `gh api` clients preserve invoking-agent
+        context through request construction and transport wrapping.
+        Name the new regression test `TestApiCustomClientAgentContextRoundtrip`.
+    expectedContext:
+      description: Custom API clients should preserve invoking-agent User-Agent context through transport wrapping.
+      keywords: ["InvokingAgent", "User-Agent", "RoundTrip"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/api-auth-client-context-boundaries: API flows that inject custom transports or rebuild clients need coverage around the final request boundary.
+        - [memory] gh-cli/agentic-http-client-context: Commands that bypass the default factory still need invoking-agent context in request headers.
+      contextIds: ["gh-cli/api-auth-client-context-boundaries", "gh-cli/agentic-http-client-context"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/api/api_test.go
+        pattern: 'InvokingAgent|User-Agent|RoundTrip'
+      - type: file-contents-match
+        path: pkg/cmd/api/api_test.go
+        pattern: 'TestApiCustomClientAgentContextRoundtrip'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/api"]
+        timeoutMs: 300000
+
+  - id: gh-cli-auth-token-flow-preserves-client-context
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-auth-token-flow-preserves-client-context-formation
+      prompt: |
+        Inspect auth token flow client replacement and viewer lookups. Capture
+        where request context can be lost after authentication succeeds.
+    phaseB:
+      promptId: gh-cli-auth-token-flow-preserves-client-context-use
+      prompt: |
+        Add a regression that the auth token flow preserves invoking-agent
+        client context when it performs the follow-up viewer request.
+        Name the new regression test `TestAuthTokenFlowPreservesClientContext`.
+    expectedContext:
+      description: Auth token flow viewer requests should preserve invoking-agent User-Agent context.
+      keywords: ["InvokingAgent", "viewer", "User-Agent"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/api-auth-client-context-boundaries: Follow-up API calls after authentication should preserve request metadata through any rebuilt client.
+        - [memory] gh-cli/agentic-http-client-context: Follow-up auth viewer requests should preserve app version and invoking-agent User-Agent context.
+      contextIds: ["gh-cli/api-auth-client-context-boundaries", "gh-cli/agentic-http-client-context"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/authflow/flow_test.go
+        pattern: 'InvokingAgent|User-Agent|viewer'
+      - type: file-contents-match
+        path: internal/authflow/flow_test.go
+        pattern: 'TestAuthTokenFlowPreservesClientContext'
+      - type: command
+        command: go
+        args: ["test", "./internal/authflow"]
+        timeoutMs: 300000
+
+  - id: gh-cli-attestation-jsonl-streaming-error-boundaries
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-attestation-jsonl-streaming-error-boundaries-formation
+      prompt: |
+        Inspect attestation JSONL streaming, empty-file, and malformed-row
+        behavior together. Capture the parser boundary as a single contract.
+    phaseB:
+      promptId: gh-cli-attestation-jsonl-streaming-error-boundaries-use
+      prompt: |
+        Refactor JSONL attestation loading so large rows, blank lines, empty
+        bundles, and malformed rows share one streaming error boundary.
+        Name the new regression test `TestAttestationJsonlStreamingErrorBoundaries`.
+    expectedContext:
+      description: Attestation JSONL streaming should handle large, blank, empty, and malformed cases with explicit errors.
+      keywords: ["jsonl", "ErrEmptyBundleFile", "malformed", "large"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/attestation-jsonl-error-boundaries: JSONL parser refactors should keep boundary-case errors explicit as buffering details evolve.
+      contextIds: ["gh-cli/attestation-jsonl-error-boundaries"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation.go
+        pattern: 'Decoder|Reader|ErrEmptyBundleFile|jsonl'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'large|blank|malformed|ErrEmptyBundleFile'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'TestAttestationJsonlStreamingErrorBoundaries'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/attestation/verification"]
         timeoutMs: 300000
