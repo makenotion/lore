@@ -605,15 +605,6 @@ async function runLongitudinalFormationPhase(input: {
         failureReason = "formation"
         failureMessage = formatMiningFailure(formed.mining)
       }
-      if (
-        input.scenario.expectedContext.keywords.length > 0 &&
-        formed.expectedContextIds.length === 0 &&
-        failureReason === null
-      ) {
-        failureReason = "expected-context"
-        failureMessage =
-          "Formation did not create context matching the scenario's expected keywords."
-      }
     } catch (err) {
       if (failureReason === null) {
         failureReason =
@@ -702,10 +693,6 @@ async function runLongitudinalUsePhase(input: {
     )
   }
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
-  const expectedSurfaced =
-    input.condition === "no-memory" ||
-    input.expectedContextIds.length === 0 ||
-    input.expectedContextIds.some((id) => input.wakeUp.surfacedContextIds.includes(id))
   const agentSucceeded = agentRun.exitCode === 0 && !agentRun.timedOut
   const verifierSucceeded = verifierResults.every((r) => r.passed)
   let failureReason: LongitudinalFailureReason | null = null
@@ -719,10 +706,6 @@ async function runLongitudinalUsePhase(input: {
       .filter((r) => !r.passed)
       .map((r) => r.message)
       .join("; ")
-  } else if (!expectedSurfaced) {
-    failureReason = "expected-context"
-    failureMessage =
-      "Wake-up did not surface any expected context id created during formation."
   }
 
   return {

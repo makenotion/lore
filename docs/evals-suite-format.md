@@ -330,10 +330,10 @@ Design `lore-full-loop` Phase A prompts around durable learnings that Lore is
 expected to preserve: decisions, conventions, gotchas, failed attempts,
 workarounds, and explicit follow-up cues. Do not make `expectedContext.keywords`
 depend on arbitrary source-code facts or Phase B-only feature details unless
-Phase A explicitly asks the agent to capture that forward-looking detail. A
-formation failure in this gate means the scenario did not produce retrievable
-future-useful context; it is usually a scenario-design signal, not a Phase B
-agent coding failure.
+Phase A explicitly asks the agent to capture that forward-looking detail.
+Expected-context matching is diagnostic: the artifact records which expected
+context ids were created and surfaced, but missing expected context does not
+fail the trial by itself. Use the Phase B verifiers for performance judgments.
 
 Suites can point at a source-controlled seed corpus:
 

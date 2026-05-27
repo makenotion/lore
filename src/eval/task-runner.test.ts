@@ -911,6 +911,125 @@ scenarios:
     expect(fullLoop?.phases[1]?.patchStats.filesChanged).toBe(1)
   })
 
+  it("treats expected context misses as diagnostic for full-loop performance", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export function status() { return 'ok' }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-expected-context-diagnostics
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: formation-keyword-miss
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the status helper and remember anything useful.
+    phaseB:
+      prompt: Add completeStatus using whatever prior context is available.
+    expectedContext:
+      description: Status completion should be remembered.
+      keywords: ["completeStatus"]
+    verifiers:
+      - type: file-contents-match
+        path: status.js
+        pattern: 'export\\s+function\\s+completeStatus'
+  - id: wakeup-surface-miss
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the status helper and capture the completion convention.
+    phaseB:
+      prompt: Add readyStatus using whatever prior context is available.
+    expectedContext:
+      description: Status readiness should be remembered.
+      keywords: ["readyStatus"]
+    verifiers:
+      - type: file-contents-match
+        path: status.js
+        pattern: 'export\\s+function\\s+readyStatus'
+`,
+    })
+
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      if (prompt.includes("completeStatus")) {
+        await writeFile(
+          join(workspace, "status.js"),
+          "export function status() { return 'ok' }\n" +
+            "export function completeStatus() { return 'done' }\n",
+          "utf-8"
+        )
+      }
+      if (prompt.includes("readyStatus")) {
+        await writeFile(
+          join(workspace, "status.js"),
+          "export function status() { return 'ok' }\n" +
+            "export function readyStatus() { return 'ready' }\n",
+          "utf-8"
+        )
+      }
+      return successResult()
+    })
+
+    const loreAdapter: LongitudinalLoreAdapter = {
+      async createRun({ scenario }) {
+        return {
+          projectId: "project-1",
+          projectName: `Eval Sandbox/${scenario.id}`,
+          async formContext() {
+            return {
+              projectId: "project-1",
+              projectName: `Eval Sandbox/${scenario.id}`,
+              mining: null,
+              memoriesCreated: 1,
+              factsCreated: 0,
+              decisionsCreated: 0,
+              tasksCreated: 0,
+              createdContextIds: ["ctx-status"],
+              expectedContextIds:
+                scenario.id === "formation-keyword-miss" ? [] : ["ctx-status"],
+            }
+          },
+          async loadContext() {
+            return {
+              renderedContext: "",
+              surfacedContextIds: [],
+              harmfulContextIds: [],
+              failureMessage: null,
+            }
+          },
+          async cleanup() {},
+        }
+      },
+    }
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      longitudinalLoreAdapter: loreAdapter,
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(artifact.summary.conditions["lore-full-loop"]).toMatchObject({
+      trials: 2,
+      passed: 2,
+      failed: 0,
+    })
+    expect(artifact.results.map((result) => result.failureReason)).toEqual([null, null])
+    const formationMiss = artifact.results.find(
+      (result) => result.scenarioId === "formation-keyword-miss"
+    )
+    const wakeupMiss = artifact.results.find(
+      (result) => result.scenarioId === "wakeup-surface-miss"
+    )
+    expect(formationMiss?.phases[0]?.lore.expectedContextIds).toEqual([])
+    expect(wakeupMiss?.phases[0]?.lore.expectedContextIds).toEqual(["ctx-status"])
+    expect(wakeupMiss?.phases[1]?.lore.surfacedContextIds).toEqual([])
+  })
+
   it("stops longitudinal suites on the cost kill-switch and preserves partial results", async () => {
     const { suitePath } = await writeTaskSuite({
       workspace: { "README.md": "fixture\n" },
