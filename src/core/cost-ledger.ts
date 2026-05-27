@@ -31,6 +31,7 @@ export type CostEventType =
   | "hook.wakeup_context"
   | "autosave.background_model"
   | "digest.background_model"
+  | "eval.mining.background_model"
 
 export type CostEventSource = "host_agent" | "background_agent" | "hook" | "cli"
 export type CostEventStatus = "success" | "error" | "skipped"
@@ -131,7 +132,10 @@ export interface WakeupContextCostEvent extends CostLedgerEventBase {
 }
 
 export interface BackgroundModelCostEvent extends CostLedgerEventBase {
-  eventType: "autosave.background_model" | "digest.background_model"
+  eventType:
+    | "autosave.background_model"
+    | "digest.background_model"
+    | "eval.mining.background_model"
   source: "hook" | "cli"
   payload: CostPayloadSummary
   modelUsage: CostModelUsage
@@ -622,6 +626,7 @@ const COST_EVENT_TYPES = [
   "hook.wakeup_context",
   "autosave.background_model",
   "digest.background_model",
+  "eval.mining.background_model",
 ] as const satisfies readonly CostEventType[]
 
 const COST_EVENT_SOURCES = [
@@ -1155,7 +1160,8 @@ export function summarizeCostEvents(
   for (const event of events) {
     if (
       event.eventType === "autosave.background_model" ||
-      event.eventType === "digest.background_model"
+      event.eventType === "digest.background_model" ||
+      event.eventType === "eval.mining.background_model"
     ) {
       if (event.status !== "success") {
         continue
@@ -1261,14 +1267,16 @@ export function eventsToCsv(events: readonly CostLedgerEvent[]): string {
     const mcp = event.eventType === "mcp.invocation" ? event : undefined
     const background =
       event.eventType === "autosave.background_model" ||
-      event.eventType === "digest.background_model"
+      event.eventType === "digest.background_model" ||
+      event.eventType === "eval.mining.background_model"
         ? event
         : undefined
     const payload =
       event.eventType === "mcp.invocation" ||
       event.eventType === "hook.wakeup_context" ||
       event.eventType === "autosave.background_model" ||
-      event.eventType === "digest.background_model"
+      event.eventType === "digest.background_model" ||
+      event.eventType === "eval.mining.background_model"
         ? event.payload
         : undefined
     const values: Record<

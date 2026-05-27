@@ -60,6 +60,33 @@ const verifierSchema = z.discriminatedUnion("type", [
 
 const memoryConditionSchema = z.enum(TASK_EVAL_MEMORY_CONDITIONS)
 
+const gitWorkspaceSourceSchema = z
+  .object({
+    kind: z.literal("git"),
+    repo: z
+      .string()
+      .min(1)
+      .regex(
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+        "must be an owner/repo GitHub repository"
+      ),
+    sha: z.string().regex(/^[a-f0-9]{40}$/i, "must be a full 40-character commit SHA"),
+    sparseCheckout: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .refine((pattern) => isSafeSparsePattern(pattern), {
+            message: "must be a relative sparse-checkout pattern",
+          })
+      )
+      .min(1)
+      .optional(),
+  })
+  .strict()
+
+const workspaceSourceSchema = z.union([z.string().min(1), gitWorkspaceSourceSchema])
+
 const taskEvalTaskSchema = z
   .object({
     id: z
@@ -68,7 +95,7 @@ const taskEvalTaskSchema = z
       .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
     prompt: z.string().min(1),
     agent: z.enum(TASK_EVAL_AGENTS).default("codex"),
-    workspace: z.string().min(1),
+    workspace: workspaceSourceSchema,
     /**
      * Map from memory condition (`no-lore`, `helpful`, `noisy`,
      * `stale`) to a fixture path. Each condition listed here runs
@@ -112,7 +139,7 @@ const taskEvalStandardSuiteSchema = z
     }
   })
 
-const longitudinalConditionSchema = z.enum(["no-memory", "lore-full-loop"])
+const longitudinalConditionSchema = z.enum(["no-memory", "seeded-lore", "lore-full-loop"])
 
 const longitudinalPhaseSchema = z
   .object({
@@ -134,6 +161,14 @@ const longitudinalExpectedContextSchema = z
   .strict()
   .default({})
 
+const longitudinalSeededContextSchema = z
+  .object({
+    renderedContext: z.string().min(1),
+    contextIds: z.array(z.string().min(1)).default([]),
+    harmfulContextIds: z.array(z.string().min(1)).default([]),
+  })
+  .strict()
+
 const longitudinalTaskScenarioSchema = z
   .object({
     id: z
@@ -141,10 +176,11 @@ const longitudinalTaskScenarioSchema = z
       .min(1)
       .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
     agent: z.enum(TASK_EVAL_AGENTS).default("codex"),
-    workspace: z.string().min(1),
+    workspace: workspaceSourceSchema,
     phaseA: longitudinalPhaseSchema,
     phaseB: longitudinalPhaseSchema,
     expectedContext: longitudinalExpectedContextSchema,
+    seededContext: longitudinalSeededContextSchema.optional(),
     verifiers: z.array(verifierSchema).min(1),
     timeoutMs: z.number().int().positive().default(300_000),
   })
@@ -160,6 +196,8 @@ export const longitudinalTaskEvalSuiteSchema = z
       .min(1)
       .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
     description: z.string().default(""),
+    seededCorpus: z.string().min(1).optional(),
+    costKillSwitchUsd: z.number().finite().positive().optional(),
     conditions: z
       .array(longitudinalConditionSchema)
       .min(1)
@@ -193,6 +231,46 @@ export const longitudinalTaskEvalSuiteSchema = z
       }
       seenConditions.add(condition)
     }
+
+    if (suite.conditions.includes("seeded-lore")) {
+      for (let i = 0; i < suite.scenarios.length; i++) {
+        if (!suite.scenarios[i]!.seededContext) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["scenarios", i, "seededContext"],
+            message: "seededContext is required when conditions include seeded-lore",
+          })
+        }
+      }
+    }
+
+    for (let i = 0; i < suite.scenarios.length; i++) {
+      const seededContext = suite.scenarios[i]!.seededContext
+      if (!seededContext) continue
+      for (const [idIndex, contextId] of seededContext.contextIds.entries()) {
+        if (!seededContext.renderedContext.includes(contextId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["scenarios", i, "seededContext", "contextIds", idIndex],
+            message:
+              "seededContext.contextIds entries must appear in renderedContext before they can be counted as surfaced",
+          })
+        }
+      }
+      for (const [
+        idIndex,
+        harmfulContextId,
+      ] of seededContext.harmfulContextIds.entries()) {
+        if (!seededContext.renderedContext.includes(harmfulContextId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["scenarios", i, "seededContext", "harmfulContextIds", idIndex],
+            message:
+              "seededContext.harmfulContextIds entries must appear in renderedContext before they can be counted as surfaced",
+          })
+        }
+      }
+    }
   })
 
 export const taskEvalSuiteSchema = z.union([
@@ -201,6 +279,8 @@ export const taskEvalSuiteSchema = z.union([
 ])
 
 export type TaskEvalVerifier = z.infer<typeof verifierSchema>
+export type GitWorkspaceSource = z.infer<typeof gitWorkspaceSourceSchema>
+export type TaskEvalWorkspaceSource = z.infer<typeof workspaceSourceSchema>
 export type TaskEvalTask = z.infer<typeof taskEvalTaskSchema>
 export type TaskEvalStandardSuite = z.infer<typeof taskEvalStandardSuiteSchema>
 export type LongitudinalTaskCondition = z.infer<typeof longitudinalConditionSchema>
@@ -213,6 +293,27 @@ export interface AgentRunInput {
   workspace: string
   timeoutMs: number
   extraEnv?: Record<string, string>
+  /**
+   * Optional sidecar path for the adapter's full transcript/event stream.
+   * The JSON artifact keeps stdout/stderr capped; this path preserves the
+   * richer evidence needed for eval review without bloating every result row.
+   */
+  transcriptPath?: string
+}
+
+export interface AgentRunTranscript {
+  path: string
+  format: "codex-jsonl"
+  bytes: number
+}
+
+export interface AgentRunUsage {
+  provider?: "openai" | "anthropic" | "unknown"
+  model?: string
+  promptTokens: number
+  cachedPromptTokens: number
+  outputTokens: number
+  reasoningOutputTokens: number
 }
 
 export interface AgentRunResult {
@@ -230,6 +331,8 @@ export interface AgentRunResult {
    * Default false on all paths that actually invoked the agent.
    */
   refused?: boolean
+  transcript?: AgentRunTranscript | null
+  usage?: AgentRunUsage | null
 }
 
 /**
@@ -280,6 +383,7 @@ export interface TaskEvalResult {
   /** Memory condition this trial was run under, or null when the task has no matrix. */
   memoryCondition: TaskEvalMemoryCondition | null
   workspaceSource: string
+  workspaceMaterialization: WorkspaceMaterialization
   /** Tmp workspace path during the run; null after cleanup. */
   workspace: string | null
   success: boolean
@@ -311,9 +415,15 @@ export interface LongitudinalLoreMetrics {
 }
 
 export interface LongitudinalCostMetrics {
+  provider: AgentRunUsage["provider"] | null
+  model: string | null
   promptTokens: number | null
+  cachedPromptTokens: number | null
   completionTokens: number | null
+  reasoningOutputTokens: number | null
   totalUsd: number | null
+  pricingSource: string | null
+  costUnknownReason: string | null
 }
 
 export interface LongitudinalPhaseResult {
@@ -340,6 +450,7 @@ export interface LongitudinalTaskResult {
   memoryCondition: null
   agent: string
   workspaceSource: string
+  workspaceMaterialization: WorkspaceMaterialization
   workspace: string | null
   success: boolean
   failureReason: LongitudinalFailureReason | null
@@ -347,6 +458,17 @@ export interface LongitudinalTaskResult {
   verifiers: VerifierResult[]
   phases: LongitudinalPhaseResult[]
   expectedContextDescription: string
+}
+
+export interface LongitudinalRunTermination {
+  reason: "cost-kill-switch" | "cost-unknown"
+  message: string
+  limitUsd: number
+  observedUsd: number
+  primaryAgentUsd: number
+  loreUsd: number | null
+  completedTrials: number
+  totalPlannedTrials: number
 }
 
 export interface LongitudinalConditionSummary {
@@ -358,11 +480,24 @@ export interface LongitudinalConditionSummary {
 
 export interface LongitudinalLiftSummary {
   fromCondition: "no-memory"
-  toCondition: "lore-full-loop"
+  toCondition: Exclude<LongitudinalTaskCondition, "no-memory">
   successRateDelta: number | null
   liftedScenarioIds: string[]
   harmedScenarioIds: string[]
 }
+
+export type WorkspaceMaterialization =
+  | {
+      kind: "local"
+      source: string
+    }
+  | {
+      kind: "git"
+      repo: string
+      sha: string
+      sparseCheckout: string[]
+      cachePath: string
+    }
 
 export interface TaskEvalArtifact {
   suite: string
@@ -386,6 +521,7 @@ export interface LongitudinalTaskArtifact {
   description: string
   startedAt: string
   runner: { mode: "task"; kind: "longitudinal" }
+  termination: LongitudinalRunTermination | null
   results: LongitudinalTaskResult[]
   summary: {
     tasks: number
@@ -396,6 +532,9 @@ export interface LongitudinalTaskArtifact {
     failedTrials: number
     conditions: Record<LongitudinalTaskCondition, LongitudinalConditionSummary>
     lift: LongitudinalLiftSummary
+    lifts: Partial<
+      Record<Exclude<LongitudinalTaskCondition, "no-memory">, LongitudinalLiftSummary>
+    >
   }
 }
 
@@ -446,8 +585,46 @@ export interface LongitudinalLoreAdapter {
   }): Promise<LongitudinalLoreRun>
 }
 
+export type TaskEvalProgressEvent =
+  | {
+      type: "trial-start"
+      runner: "task"
+      taskId: string
+      scenarioId: string | null
+      condition: string | null
+      index: number
+      total: number
+    }
+  | {
+      type: "trial-finish"
+      runner: "task"
+      taskId: string
+      scenarioId: string | null
+      condition: string | null
+      index: number
+      total: number
+      success: boolean
+    }
+  | {
+      type: "run-stop"
+      runner: "task"
+      reason: "cost-kill-switch" | "cost-unknown"
+      limitUsd: number
+      observedUsd: number
+      primaryAgentUsd: number
+      loreUsd: number | null
+      completedTrials: number
+      totalPlannedTrials: number
+    }
+
 export interface RunTaskEvalOptions {
   outPath?: string
+  /**
+   * Directory for full agent transcript sidecars. Defaults to a sibling
+   * directory derived from the artifact path. Set to false for callers that
+   * need the historical JSON-only output shape.
+   */
+  transcriptsDir?: string | false
   now?: Date
   /**
    * Map of agent id → adapter. The runner looks up `task.agent` in this
@@ -468,6 +645,13 @@ export interface RunTaskEvalOptions {
    * the longitudinal real-run env gate is enabled.
    */
   longitudinalLoreAdapter?: LongitudinalLoreAdapter
+  /**
+   * Overrides a longitudinal suite's `costKillSwitchUsd`. The runner
+   * checks observed priced cost between condition runs and stops before
+   * launching more agent work once the threshold has been reached.
+   */
+  costKillSwitchUsd?: number
+  onProgress?: (event: TaskEvalProgressEvent) => void
 }
 export function isLongitudinalTaskEvalSuite(
   suite: TaskEvalSuite
@@ -479,4 +663,11 @@ export function isLongitudinalTaskArtifact(
   artifact: AnyTaskEvalArtifact
 ): artifact is LongitudinalTaskArtifact {
   return artifact.runner.mode === "task" && "kind" in artifact.runner
+}
+
+function isSafeSparsePattern(pattern: string): boolean {
+  if (pattern.includes("\0") || pattern.startsWith("/") || pattern.startsWith("~")) {
+    return false
+  }
+  return !pattern.split(/[\\/]/u).includes("..")
 }

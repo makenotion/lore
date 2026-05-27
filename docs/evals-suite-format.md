@@ -268,8 +268,10 @@ Three verifier types ship today:
 
 Run with `lore eval run --runner task evals/task-suites/starter.yaml`. The
 runner copies the workspace, optionally seeds the memory-condition fixture,
-shells out to `codex exec --cd <workspace> --sandbox workspace-write
---skip-git-repo-check <prompt>`, then runs the verifiers against the result.
+shells out to `codex exec --json --output-last-message <sidecar> --cd
+<workspace> --sandbox workspace-write --skip-git-repo-check <prompt>`, writes
+the JSONL event stream to a transcript sidecar, then runs the verifiers against
+the result.
 
 ### Longitudinal Task Suites
 
@@ -308,20 +310,130 @@ Each scenario runs Phase A and Phase B in the same copied workspace, but each
 phase is a fresh agent process. Under `no-memory`, the runner does not write
 `.lore.yaml`, does not seed memory, does not run hook formation, and injects no
 wake-up context. Under `lore-full-loop`, the runner mines the Phase A
-conversation through `runConversationMining`, then calls `loadWakeUpData({
-projectId, userQuery: phaseBPrompt, includeMemoryContent: true })` before Phase
-B and injects the rendered wake-up bundle into the Phase B prompt.
+conversation through `runConversationMining` using the evaluated agent's
+background CLI shape (Codex scenarios mine with `codex exec`, not `claude -p`),
+then calls `loadWakeUpData({ projectId, userQuery: phaseBPrompt,
+includeMemoryContent: true })` before Phase B and injects the rendered wake-up
+bundle into the Phase B prompt.
+
+Longitudinal suites may also include `seeded-lore`. This condition runs Phase A
+without hook mining, then injects the scenario's source-controlled
+`seededContext` before Phase B. It is a pilot seam for known-corpus evals: it
+measures whether the agent can use known memory when it is available, while
+`lore-full-loop` measures the full formation + retrieval + use path. When a
+suite includes `seeded-lore`, every scenario must declare `seededContext` with
+rendered context and stable context ids. Every listed `contextIds` or
+`harmfulContextIds` entry must appear in `renderedContext`; otherwise the suite
+would report context as surfaced even though the agent never saw it.
+
+Design `lore-full-loop` Phase A prompts around durable learnings that Lore is
+expected to preserve: decisions, conventions, gotchas, failed attempts,
+workarounds, and explicit follow-up cues. Do not make `expectedContext.keywords`
+depend on arbitrary source-code facts or Phase B-only feature details unless
+Phase A explicitly asks the agent to capture that forward-looking detail. A
+formation failure in this gate means the scenario did not produce retrievable
+future-useful context; it is usually a scenario-design signal, not a Phase B
+agent coding failure.
+
+Suites can point at a source-controlled seed corpus:
+
+```yaml
+seededCorpus: ../vault-seeds/github-cli-pilot.yaml
+```
+
+Seed corpora model the realistic vault that should eventually be imported for
+the non-control condition. For the GitHub CLI pilot, that means one `GitHub CLI`
+project with component-level topics (`commands/config`, `commands/alias`,
+`output/json`, `flags/cobra`, `tests/commands`) plus memories, decisions, and
+facts. Do not invent monorepo subprojects for repositories that are not
+monorepos.
+
+Seed memories and decisions may include provenance metadata. Use
+`provenanceKind: pr-derived` only when the entry cites one or more
+`sourcePullRequests`; use `generalized` for project conventions that are not
+directly derived from a specific PR, and `synthetic` only for intentionally
+invented fixture data. When `seededCorpus` is set, suite loading validates that
+the corpus file parses and that every seeded context id is present in the
+corpus.
+
+Longitudinal suites may set `costKillSwitchUsd` as an overnight-run guard:
+
+```yaml
+costKillSwitchUsd: 1500
+```
+
+The runner checks observed priced cost between condition runs. Observed cost
+includes primary agent usage recorded on phase rows and, when the live
+longitudinal config root exposes enabled cost tracking, Lore-owned model cost
+from the local cost ledger for the current run window. Because the ledger slice
+is time-window based, use a dedicated eval config root/ledger for overnight
+runs. Once observed cost reaches the threshold, the runner stops launching new
+condition runs, records a `termination` block with the observed total, and
+leaves the JSON artifact containing every completed result. If primary-agent
+usage is missing or the model is unpriced, the guard stops fail-closed with
+`termination.reason: "cost-unknown"`. Artifact checkpoints are written through
+a temp-file rename after every condition run. The guard cannot interrupt a
+currently running model call before that subprocess emits usage, so the final
+observed cost may exceed the threshold by at most the current condition run's
+priced work.
+
+Workspaces can be local fixture directories or pinned GitHub repositories. The
+existing string form is unchanged:
+
+```yaml
+workspace: ../longitudinal/workspaces/result-boundary
+```
+
+Pinned git workspaces use this shape:
+
+```yaml
+workspace:
+  kind: git
+  repo: cli/cli
+  sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+  sparseCheckout:
+    - pkg/cmd/config/**
+    - go.mod
+    - go.sum
+```
+
+The runner fetches the full commit SHA before invoking the agent, caches the
+checkout outside the repo under `$LORE_EVAL_WORKSPACE_CACHE_DIR` or
+`$XDG_CACHE_HOME/lore/eval-workspaces`, then copies that cache into each
+trial's temporary workspace. The agent never clones from its prompt, and
+existing local fixture path guards still apply to string workspaces. `repo` is
+restricted to GitHub `owner/repo` form for v1. Tests may override the remote
+base with `LORE_EVAL_GIT_REMOTE_BASE_URL`.
 
 The JSON artifact records each condition run with `phases[]`, prompt ids,
 workspace source, verifier results, patch stats, elapsed time, Lore counts,
 expected context ids, surfaced context ids, harmful context ids, and cost fields
-when the adapter reports them. The summary reports pass rate per condition and a
-`lore-full-loop - no-memory` success-rate delta, plus the scenario ids where
-Lore lifted or harmed the outcome. Positive lift is useful evidence, but it is
-not a validity gate: a no-lift or harmful result means the harness found outcome
-data to inspect, not that the harness failed. The CLI exits non-zero when
-`lore-full-loop` has failing trials; `no-memory` baseline failures alone remain
-lift data.
+when the adapter reports them. Phase-level `cost` is primary-agent spend from
+the evaluated Codex process only: it includes provider, model, prompt tokens,
+cached prompt tokens, output tokens, reasoning output tokens, and `totalUsd`
+when the model is known to the local pricing table. Lore-owned background work
+is intentionally separate and belongs in the opt-in cost ledger. The summary
+reports pass rate per condition and a
+primary memory-enabled success-rate delta against `no-memory` (`seeded-lore`
+when present, otherwise `lore-full-loop`), plus per-condition lift summaries and
+the scenario ids where Lore lifted or harmed the outcome. Positive lift is
+useful evidence, but it is not a validity gate: a no-lift or harmful result
+means the harness found outcome data to inspect, not that the harness failed.
+The CLI exits non-zero when the primary memory-enabled condition has failing
+trials; `no-memory` baseline failures alone remain lift data.
+
+`timeoutMs` on a longitudinal scenario is a per-agent-phase timeout, not a
+whole-scenario timeout. The runner applies it separately to Phase A and Phase B.
+Command verifiers have their own `timeoutMs`. For example, the GitHub CLI suites
+use a 30-minute agent timeout per phase and 5-minute Go-test verifier timeouts,
+so one condition trial can reasonably take about 60 minutes plus verifier and
+Lore overhead.
+
+Timeouts are wall-clock timers in the runner process. Laptop sleep can therefore
+produce artificial timeouts: timers do not make progress while the machine is
+asleep, but can fire immediately on wake if the deadline passed. Use an
+always-on runner or a sleep inhibitor such as `caffeinate` on macOS for any
+runtime or cost measurement intended to be compared across conditions.
 
 Run the dry path with mock adapters in unit tests:
 
@@ -375,6 +487,16 @@ names must contain a word-bounded `sandbox`, `eval`, `test`, `scratch`,
   would need a `taskkill /T` reimplementation.
 - **Capture cap.** stdout / stderr each cap at 1 MiB; truncation is marked in
   the captured text so the operator knows.
+- **Transcript sidecars.** Task-mode runs write full Codex JSONL event streams
+  under a sibling `<artifact-stem>-transcripts/` directory by default. The
+  result row stores the sidecar path, while `agentRun.stdout` remains the final
+  assistant message from `--output-last-message`.
+- **Cost split.** Longitudinal task-mode artifacts count primary Phase A/Phase B
+  Codex calls as agent cost. `lore-full-loop` post-session mining uses the
+  evaluated agent's background CLI shape and, when cost tracking is enabled in
+  the sandbox config root, writes `eval.mining.background_model` rows to the
+  Lore cost ledger. MCP tools and Notion operations from the mining child write
+  `mcp.invocation` rows to the same ledger.
 - **Workspace cleanup.** Tmp workspaces are removed via `try/finally` after each
   trial. Pass `keepWorkspaces: true` programmatically (or `--keep-workspaces`
   once exposed on the CLI) for debugging.

@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
 import { parse as parseYaml } from "yaml"
 import type { TaskEvalMemoryCondition } from "../schema.js"
+import { loadSeedCorpus } from "../seed-corpus.js"
 import { defaultAdapters } from "./codex-adapter.js"
 import { runLongitudinalTaskEvalSuite } from "./longitudinal-runner.js"
 import { countTasksAllPassed, defaultArtifactPath } from "./shared.js"
@@ -21,6 +22,7 @@ import {
 import { deriveFailureReason, runVerifier } from "./verifier.js"
 import { prepareWorkspace, seedMemoryCondition } from "./workspace.js"
 import { roundMs } from "./patch-stats.js"
+import { resolveTranscriptDir, taskTranscriptPath } from "./transcripts.js"
 
 export async function loadTaskEvalSuite(path: string): Promise<{
   suite: TaskEvalSuite
@@ -31,6 +33,26 @@ export async function loadTaskEvalSuite(path: string): Promise<{
   const raw = await readFile(absolute, "utf-8")
   const parsed = parseYaml(raw) as unknown
   const suite = taskEvalSuiteSchema.parse(parsed)
+  if (isLongitudinalTaskEvalSuite(suite) && suite.seededCorpus) {
+    const corpus = await loadSeedCorpus(resolve(dirname(absolute), suite.seededCorpus))
+    const corpusContextIds = new Set([
+      ...corpus.vault.memories.map((memory) => memory.id),
+      ...corpus.vault.decisions.map((decision) => decision.id),
+      ...corpus.vault.facts.map((fact) => fact.id),
+    ])
+    for (const scenario of suite.scenarios) {
+      const ids = [
+        ...(scenario.seededContext?.contextIds ?? []),
+        ...(scenario.seededContext?.harmfulContextIds ?? []),
+      ]
+      const unknownIds = ids.filter((id) => !corpusContextIds.has(id))
+      if (unknownIds.length > 0) {
+        throw new Error(
+          `Seeded corpus ${suite.seededCorpus} does not define context id(s) for scenario ${scenario.id}: ${unknownIds.join(", ")}`
+        )
+      }
+    }
+  }
   return { suite, root: dirname(absolute), path: absolute }
 }
 
@@ -45,9 +67,22 @@ export async function runTaskEvalSuite(
       options
     )
   }
+  if (options.costKillSwitchUsd !== undefined) {
+    throw new Error(
+      "--cost-kill-switch-usd is only supported for longitudinal task suites."
+    )
+  }
 
   const adapters = options.adapters ?? defaultAdapters()
   const startedAt = (options.now ?? new Date()).toISOString()
+  const outPath = resolve(
+    options.outPath ?? defaultArtifactPath(loaded.suite.name, startedAt)
+  )
+  const transcriptsDir = resolveTranscriptDir(options.transcriptsDir, outPath)
+  const totalTrials = loaded.suite.tasks.reduce(
+    (total, task) => total + Math.max(1, Object.keys(task.memoryConditions).length),
+    0
+  )
 
   const results: TaskEvalResult[] = []
   for (const task of loaded.suite.tasks) {
@@ -55,29 +90,79 @@ export async function runTaskEvalSuite(
       [TaskEvalMemoryCondition, string]
     >
     if (conditions.length === 0) {
-      results.push(
-        await runTaskEvalTrial({
-          task,
+      const index = results.length + 1
+      options.onProgress?.({
+        type: "trial-start",
+        runner: "task",
+        taskId: task.id,
+        scenarioId: null,
+        condition: null,
+        index,
+        total: totalTrials,
+      })
+      const result = await runTaskEvalTrial({
+        task,
+        condition: null,
+        conditionFixture: null,
+        suiteRoot: loaded.root,
+        adapters,
+        keepWorkspaces: options.keepWorkspaces ?? false,
+        transcriptPath: taskTranscriptPath({
+          transcriptsDir,
+          index,
+          taskId: task.id,
           condition: null,
-          conditionFixture: null,
-          suiteRoot: loaded.root,
-          adapters,
-          keepWorkspaces: options.keepWorkspaces ?? false,
-        })
-      )
+        }),
+      })
+      results.push(result)
+      options.onProgress?.({
+        type: "trial-finish",
+        runner: "task",
+        taskId: task.id,
+        scenarioId: null,
+        condition: null,
+        index,
+        total: totalTrials,
+        success: result.success,
+      })
       continue
     }
     for (const [condition, fixturePath] of conditions) {
-      results.push(
-        await runTaskEvalTrial({
-          task,
+      const index = results.length + 1
+      options.onProgress?.({
+        type: "trial-start",
+        runner: "task",
+        taskId: task.id,
+        scenarioId: null,
+        condition,
+        index,
+        total: totalTrials,
+      })
+      const result = await runTaskEvalTrial({
+        task,
+        condition,
+        conditionFixture: fixturePath,
+        suiteRoot: loaded.root,
+        adapters,
+        keepWorkspaces: options.keepWorkspaces ?? false,
+        transcriptPath: taskTranscriptPath({
+          transcriptsDir,
+          index,
+          taskId: task.id,
           condition,
-          conditionFixture: fixturePath,
-          suiteRoot: loaded.root,
-          adapters,
-          keepWorkspaces: options.keepWorkspaces ?? false,
-        })
-      )
+        }),
+      })
+      results.push(result)
+      options.onProgress?.({
+        type: "trial-finish",
+        runner: "task",
+        taskId: task.id,
+        scenarioId: null,
+        condition,
+        index,
+        total: totalTrials,
+        success: result.success,
+      })
     }
   }
 
@@ -100,9 +185,6 @@ export async function runTaskEvalSuite(
     },
   }
 
-  const outPath = resolve(
-    options.outPath ?? defaultArtifactPath(loaded.suite.name, startedAt)
-  )
   await mkdir(dirname(outPath), { recursive: true })
   await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
   return { artifact, outPath }
@@ -114,6 +196,7 @@ async function runTaskEvalTrial(input: {
   suiteRoot: string
   adapters: Map<string, AgentAdapter>
   keepWorkspaces: boolean
+  transcriptPath?: string
 }): Promise<TaskEvalResult> {
   const adapter = input.adapters.get(input.task.agent)
   if (!adapter) {
@@ -122,12 +205,12 @@ async function runTaskEvalTrial(input: {
     )
   }
   const before = performance.now()
-  const workspaceSource = resolve(input.suiteRoot, input.task.workspace)
-  const workspace = await prepareWorkspace({
-    source: workspaceSource,
+  const prepared = await prepareWorkspace({
+    source: input.task.workspace,
     suiteRoot: input.suiteRoot,
-    declaredPath: input.task.workspace,
+    declaredPath: formatWorkspaceSource(input.task.workspace),
   })
+  const workspace = prepared.workspace
   try {
     if (input.conditionFixture) {
       await seedMemoryCondition({
@@ -140,10 +223,11 @@ async function runTaskEvalTrial(input: {
       prompt: input.task.prompt,
       workspace,
       timeoutMs: input.task.timeoutMs,
+      transcriptPath: input.transcriptPath,
     })
     const verifierResults: VerifierResult[] = []
     for (const verifier of input.task.verifiers) {
-      verifierResults.push(await runVerifier(verifier, workspace, workspaceSource))
+      verifierResults.push(await runVerifier(verifier, workspace, prepared.sourceRoot))
     }
     const success =
       agentRun.exitCode === 0 &&
@@ -153,7 +237,8 @@ async function runTaskEvalTrial(input: {
       taskId: input.task.id,
       agent: input.task.agent,
       memoryCondition: input.condition,
-      workspaceSource,
+      workspaceSource: prepared.sourceLabel,
+      workspaceMaterialization: prepared.materialization,
       workspace: input.keepWorkspaces ? workspace : null,
       success,
       failureReason: deriveFailureReason(success, agentRun, verifierResults),
@@ -166,4 +251,10 @@ async function runTaskEvalTrial(input: {
       await rm(workspace, { recursive: true, force: true })
     }
   }
+}
+
+function formatWorkspaceSource(source: TaskEvalTask["workspace"]): string {
+  return typeof source === "string"
+    ? source
+    : `${source.kind}:${source.repo}@${source.sha}`
 }

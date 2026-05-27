@@ -6,11 +6,13 @@ import {
   estimateModelCost,
   loadPricingTable,
   payloadSummary,
+  type CostPayloadSummary,
   type CostEventStatus,
   type ResolvedCostTracking,
 } from "../core/cost-ledger.js"
 import type { BackgroundAgentConfig } from "./config.js"
 import type { SpawnResult } from "./background.js"
+import type { MiningResult } from "./conversation-mining.js"
 
 export async function recordBackgroundModelCostEvent(opts: {
   costTracking: ResolvedCostTracking | undefined
@@ -73,6 +75,45 @@ export async function recordWakeupContextCostEvent(opts: {
       unknownReason: "not_applicable",
     },
   })
+}
+
+export async function recordEvalMiningModelCostEvent(opts: {
+  costTracking: ResolvedCostTracking | undefined
+  payload: CostPayloadSummary
+  result: MiningResult
+  projectName?: string
+  agentName?: string
+  sessionId?: string
+  agent?: BackgroundAgentConfig
+}): Promise<void> {
+  if (!opts.costTracking?.enabled) return
+  const model = inferModel(opts.agent)
+  const modelUsage = {
+    provider: inferProvider(opts.agent?.command),
+    ...(model ? { model } : {}),
+    inputTokens: opts.payload.estimatedInputTokens,
+    estimated: true,
+    source: "prompt_estimate" as const,
+  }
+  const pricing = await loadPricingTable(opts.costTracking)
+  await appendCostEvent(opts.costTracking, {
+    schemaVersion: COST_LEDGER_SCHEMA_VERSION,
+    timestamp: new Date().toISOString(),
+    eventType: "eval.mining.background_model",
+    source: "cli",
+    status: miningStatus(opts.result),
+    ...(opts.projectName ? { projectName: opts.projectName } : {}),
+    ...(opts.agentName ? { agentName: opts.agentName } : {}),
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+    durationMs: opts.result.elapsedMs,
+    payload: opts.payload,
+    modelUsage,
+    estimatedCost: estimateModelCost(modelUsage, pricing),
+  })
+}
+
+function miningStatus(result: MiningResult): "success" | "error" {
+  return result.exitCode === 0 && result.exitSignal === null ? "success" : "error"
 }
 
 function inferModel(agent: BackgroundAgentConfig | undefined): string | undefined {

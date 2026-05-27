@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -6,6 +6,7 @@ import {
   assertSandboxProjectName,
   collectEvalThresholdFailures,
   evalCommand,
+  formatTaskProgressEvent,
   hasLongitudinalTaskGateFailures,
   parseEvalRunCliOptions,
   validateBaselineRunnerSupport,
@@ -55,6 +56,24 @@ describe("parseEvalRunCliOptions", () => {
       expect(result.value.minLift).toBe(0.5)
       expect(result.value.maxHarm).toBe(0)
     }
+  })
+
+  it("parses the task cost kill-switch", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      costKillSwitchUsd: "1500",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.costKillSwitchUsd).toBe(1500)
+  })
+
+  it("rejects a zero cost kill-switch", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      costKillSwitchUsd: "0",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("greater than 0")
   })
 
   it("rejects thresholds outside the unit interval", () => {
@@ -266,6 +285,41 @@ describe("hasLongitudinalTaskGateFailures", () => {
     ).toBe(true)
   })
 
+  it("uses seeded-lore as the primary gate when it ran", () => {
+    expect(
+      hasLongitudinalTaskGateFailures(
+        longitudinalArtifact({
+          noMemory: { trials: 1, passed: 1, failed: 0 },
+          seededLore: { trials: 1, passed: 0, failed: 1 },
+          fullLoop: { trials: 1, passed: 1, failed: 0 },
+          passedTrials: 2,
+          failedTrials: 1,
+        })
+      )
+    ).toBe(true)
+  })
+
+  it("fails the gate when a longitudinal run was stopped by a kill-switch", () => {
+    const artifact = longitudinalArtifact({
+      noMemory: { trials: 1, passed: 1, failed: 0 },
+      fullLoop: { trials: 0, passed: 0, failed: 0 },
+      passedTrials: 1,
+      failedTrials: 0,
+    })
+    artifact.termination = {
+      reason: "cost-kill-switch",
+      message: "Cost kill-switch reached.",
+      limitUsd: 1500,
+      observedUsd: 1501,
+      primaryAgentUsd: 1501,
+      loreUsd: null,
+      completedTrials: 1,
+      totalPlannedTrials: 2,
+    }
+
+    expect(hasLongitudinalTaskGateFailures(artifact)).toBe(true)
+  })
+
   it("falls back to total failed trials when no full-loop condition ran", () => {
     expect(
       hasLongitudinalTaskGateFailures(
@@ -277,6 +331,54 @@ describe("hasLongitudinalTaskGateFailures", () => {
         })
       )
     ).toBe(true)
+  })
+})
+
+describe("formatTaskProgressEvent", () => {
+  it("renders task runner progress lines", () => {
+    expect(
+      formatTaskProgressEvent({
+        type: "trial-start",
+        runner: "task",
+        taskId: "fix-import",
+        scenarioId: null,
+        condition: "helpful",
+        index: 2,
+        total: 4,
+      })
+    ).toBe("  running 2/4: fix-import [helpful]")
+  })
+
+  it("renders cost kill-switch progress lines", () => {
+    expect(
+      formatTaskProgressEvent({
+        type: "run-stop",
+        runner: "task",
+        reason: "cost-kill-switch",
+        limitUsd: 1500,
+        observedUsd: 1501.25,
+        primaryAgentUsd: 1500,
+        loreUsd: 1.25,
+        completedTrials: 49,
+        totalPlannedTrials: 201,
+      })
+    ).toContain("cost kill-switch observed $1501.25 / $1500.00")
+  })
+
+  it("renders cost unknown progress lines", () => {
+    expect(
+      formatTaskProgressEvent({
+        type: "run-stop",
+        runner: "task",
+        reason: "cost-unknown",
+        limitUsd: 1500,
+        observedUsd: 0,
+        primaryAgentUsd: 0,
+        loreUsd: null,
+        completedTrials: 1,
+        totalPlannedTrials: 201,
+      })
+    ).toContain("cost unknown")
   })
 })
 
@@ -298,6 +400,43 @@ describe("eval vaults command", () => {
     const output = logSpy.mock.calls.flat().join("\n")
     expect(output).toContain("Eval vaults (evals/vaults.yaml):")
     expect(output).toContain("lore-dev-sandbox")
+  })
+})
+
+describe("eval longitudinal plan command", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("prints a powered benchmark estimate from a longitudinal artifact", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lore-eval-longitudinal-plan-"))
+    const artifactPath = join(dir, "artifact.json")
+    await writeFile(
+      artifactPath,
+      JSON.stringify(longitudinalPlanArtifact(), null, 2),
+      "utf-8"
+    )
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined)
+
+    await evalCommand.parseAsync(
+      [
+        "longitudinal",
+        "plan",
+        artifactPath,
+        "--cost-per-condition-run-usd",
+        "2",
+        "--conditions-per-scenario",
+        "2",
+      ],
+      { from: "user" }
+    )
+
+    const output = logSpy.mock.calls.flat().join("\n")
+    expect(output).toContain("Longitudinal plan: no-memory -> seeded-lore")
+    expect(output).toContain("pilot pairs: 2")
+    expect(output).toContain("condition runs")
+    expect(output).toContain("efficiency: primary tokens")
+    expect(output).toContain("$")
   })
 })
 
@@ -438,6 +577,7 @@ function evalArtifact(input: {
 
 function longitudinalArtifact(input: {
   noMemory: { trials: number; passed: number; failed: number }
+  seededLore?: { trials: number; passed: number; failed: number }
   fullLoop: { trials: number; passed: number; failed: number }
   passedTrials: number
   failedTrials: number
@@ -447,6 +587,7 @@ function longitudinalArtifact(input: {
     description: "",
     startedAt: "2026-05-03T12:00:00.000Z",
     runner: { mode: "task", kind: "longitudinal" },
+    termination: null,
     results: [],
     summary: {
       tasks: 1,
@@ -463,6 +604,13 @@ function longitudinalArtifact(input: {
               ? 0
               : input.noMemory.passed / input.noMemory.trials,
         },
+        "seeded-lore": {
+          ...(input.seededLore ?? { trials: 0, passed: 0, failed: 0 }),
+          successRate:
+            input.seededLore === undefined || input.seededLore.trials === 0
+              ? 0
+              : input.seededLore.passed / input.seededLore.trials,
+        },
         "lore-full-loop": {
           ...input.fullLoop,
           successRate:
@@ -478,6 +626,50 @@ function longitudinalArtifact(input: {
         liftedScenarioIds: [],
         harmedScenarioIds: [],
       },
+      lifts: {},
     },
+  }
+}
+
+function longitudinalPlanArtifact(): LongitudinalTaskArtifact {
+  return {
+    ...longitudinalArtifact({
+      noMemory: { trials: 2, passed: 1, failed: 1 },
+      seededLore: { trials: 2, passed: 2, failed: 0 },
+      fullLoop: { trials: 2, passed: 1, failed: 1 },
+      passedTrials: 4,
+      failedTrials: 2,
+    }),
+    results: [
+      longitudinalPlanResult("one", "no-memory", false),
+      longitudinalPlanResult("one", "seeded-lore", true),
+      longitudinalPlanResult("one", "lore-full-loop", false),
+      longitudinalPlanResult("two", "no-memory", true),
+      longitudinalPlanResult("two", "seeded-lore", true),
+      longitudinalPlanResult("two", "lore-full-loop", true),
+    ],
+  }
+}
+
+function longitudinalPlanResult(
+  scenarioId: string,
+  condition: LongitudinalTaskArtifact["results"][number]["condition"],
+  success: boolean
+): LongitudinalTaskArtifact["results"][number] {
+  return {
+    taskId: scenarioId,
+    scenarioId,
+    condition,
+    memoryCondition: null,
+    agent: "codex",
+    workspaceSource: "fixture",
+    workspaceMaterialization: { kind: "local", source: "fixture" },
+    workspace: null,
+    success,
+    failureReason: success ? null : "verifiers",
+    agentRun: null,
+    verifiers: [],
+    phases: [],
+    expectedContextDescription: "",
   }
 }

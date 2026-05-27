@@ -1,0 +1,2467 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-powered-candidates
+description: |
+  Sixty-seven PR-derived and generalized GitHub CLI longitudinal scenario
+  candidates. These are candidate slots, not independent statistical units:
+  many scenarios intentionally cluster around the same source memory or source
+  pull request. This suite deliberately exceeds the current 50-pair planner
+  estimate for a 15pp MDE, 80% power, alpha 0.05 two-sided run so unstable
+  candidates can be culled after smoke validation. It is not yet the published
+  powered benchmark. Each scenario still needs validation for prompt bounds,
+  verifier stability, no-op baseline failure, runtime, and cost before
+  promotion.
+seededCorpus: ../vault-seeds/github-cli-powered.yaml
+costKillSwitchUsd: 1500
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+
+scenarios:
+  - id: gh-cli-config-list-json-continuity
+    agent: codex
+    timeoutMs: 1800000
+    workspace: &ghCliWorkspace
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-config-get-json-formation
+      prompt: |
+        In GitHub CLI's config command implementation, inspect `gh config get`
+        JSON-output conventions and capture the smallest convention needed for
+        a sibling config command. Keep any edit scoped to that package.
+    phaseB:
+      promptId: gh-cli-config-list-json-use
+      prompt: |
+        Continue the config command work by adding the same style of `--json`
+        output mode to `gh config list`. Keep option wiring, output writer, and
+        tests consistent with the convention from the previous session.
+        Name the new regression test `TestConfigListJsonContinuity`.
+    expectedContext:
+      description: Config JSON output uses a JSONOutput option, --json flag, IO.Out, and package-local tests.
+      keywords: ["JSONOutput", "--json", "IO.Out", "config"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/config-json: Config command JSON output uses a `JSONOutput bool` option, a `--json` flag, JSON written to `opts.IO.Out`, and package-local flag/run tests.
+      contextIds: ["gh-cli/config-json"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/config/list/list.go
+        pattern: 'JSONOutput|Exporter|AddJSONFlags'
+      - type: file-contents-match
+        path: pkg/cmd/config/list/list_test.go
+        pattern: '--json'
+      - type: file-contents-match
+        path: pkg/cmd/config/list/list_test.go
+        pattern: 'TestConfigListJsonContinuity'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/config/..."]
+        timeoutMs: 300000
+
+  - id: gh-cli-alias-list-json-continuity
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-alias-list-json-formation
+      prompt: |
+        Inspect `gh alias list` output behavior and capture how a machine-
+        readable mode should fit without replacing the existing human default.
+    phaseB:
+      promptId: gh-cli-alias-list-json-use
+      prompt: |
+        Finish `gh alias list --json` using the convention from the previous
+        session. Preserve the existing default output and no-alias behavior.
+        Name the new regression test `TestAliasListJsonContinuity`.
+    expectedContext:
+      description: Alias list JSON output keeps existing default output and uses encoding/json only behind --json.
+      keywords: ["alias list", "--json", "encoding/json"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/alias-list-json: For `gh alias list`, keep existing default output and add JSON only behind `--json`, with tests for both modes.
+      contextIds: ["gh-cli/alias-list-json"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/alias/list/list.go
+        pattern: 'encoding/json|json\.NewEncoder|Exporter'
+      - type: file-contents-match
+        path: pkg/cmd/alias/list/list_test.go
+        pattern: '--json'
+      - type: file-contents-match
+        path: pkg/cmd/alias/list/list_test.go
+        pattern: 'TestAliasListJsonContinuity'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/alias/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-alias-set-clobber-shorthand
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-alias-set-flag-formation
+      prompt: |
+        Inspect `gh alias set` flag wiring and tests. Capture how this package
+        represents boolean flag shorthands.
+    phaseB:
+      promptId: gh-cli-alias-set-clobber-use
+      prompt: |
+        Add `-c` as the short alias for `gh alias set --clobber`, preserving
+        `--shell/-s` and covering shorthand parsing in tests.
+        Name the new regression test `TestAliasSetClobberShorthand`.
+    expectedContext:
+      description: Alias set boolean short flags are wired with BoolVarP and existing shorthands are tested in command construction tests.
+      keywords: ["BoolVarP", "shorthand", "-s"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/alias-set-flags: Boolean shorthands in `gh alias set` use Cobra `BoolVarP`; add `--clobber/-c` without changing `--shell/-s`.
+      contextIds: ["gh-cli/alias-set-flags"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/alias/set/set.go
+        pattern: 'BoolVarP\(&opts\.OverwriteExisting,\s*"clobber",\s*"c"'
+      - type: file-contents-match
+        path: pkg/cmd/alias/set/set_test.go
+        pattern: '\s-c["\s]'
+      - type: file-contents-match
+        path: pkg/cmd/alias/set/set_test.go
+        pattern: 'TestAliasSetClobberShorthand'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/alias/set"]
+        timeoutMs: 300000
+
+  - id: gh-cli-alias-delete-silent-missing
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-alias-delete-error-formation
+      prompt: |
+        Inspect `gh alias delete` error handling and tests. Capture how a flag
+        should make one missing-alias branch non-fatal without changing others.
+    phaseB:
+      promptId: gh-cli-alias-delete-silent-use
+      prompt: |
+        Add `--silent` to `gh alias delete` so deleting a missing alias exits
+        successfully without changing default error behavior.
+        Name the new regression test `TestAliasDeleteSilentMissing`.
+    expectedContext:
+      description: Alias delete silent mode is an options bool parsed by NewCmdDelete and only changes missing-alias handling.
+      keywords: ["Silent", "--silent", "missing alias"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/alias-delete-silent: `gh alias delete --silent` should add a `Silent bool` option and only make the missing-alias branch non-fatal.
+      contextIds: ["gh-cli/alias-delete-silent"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/alias/delete/delete.go
+        pattern: 'Silent'
+      - type: file-contents-match
+        path: pkg/cmd/alias/delete/delete_test.go
+        pattern: '--silent'
+      - type: file-contents-match
+        path: pkg/cmd/alias/delete/delete_test.go
+        pattern: 'TestAliasDeleteSilentMissing'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/alias/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-config-clear-cache-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-config-clear-cache-output-formation
+      prompt: |
+        Inspect `gh config clear-cache` output behavior and tests. Capture how
+        to suppress success output without changing cache removal.
+    phaseB:
+      promptId: gh-cli-config-clear-cache-quiet-use
+      prompt: |
+        Add `--quiet` to `gh config clear-cache` so automation can suppress the
+        success message while preserving default output.
+        Name the new regression test `TestConfigClearCacheQuiet`.
+    expectedContext:
+      description: Config clear-cache quiet mode is a Quiet option that suppresses only the success message.
+      keywords: ["Quiet", "--quiet", "clear-cache"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/config-clear-cache-quiet: `gh config clear-cache --quiet` should add a `Quiet bool` option and suppress only the success message.
+      contextIds: ["gh-cli/config-clear-cache-quiet"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/config/clear-cache/clear_cache.go
+        pattern: 'Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/config/clear-cache/clear_cache_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/config/clear-cache/clear_cache_test.go
+        pattern: 'TestConfigClearCacheQuiet'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/config/clear-cache"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-update-allow-hidden-dirs
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-install-hidden-dir-formation
+      prompt: |
+        Inspect `gh skill install` and `gh skill preview` hidden-directory
+        filtering. Capture the command-level filtering convention.
+    phaseB:
+      promptId: gh-cli-skills-update-allow-hidden-dirs-use
+      prompt: |
+        Add `--allow-hidden-dirs` to `gh skill update` for custom directory
+        scans. Use shared discovery filtering semantics and cover flag parsing.
+        Name the new regression test `TestSkillsUpdateAllowHiddenDirs`.
+    expectedContext:
+      description: Skill hidden-dir filtering is applied by commands after discovery returns all skills.
+      keywords: ["allow-hidden-dirs", "PartitionHiddenDirSkills", "UpdateOptions"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-hidden-dir-filtering: Discovery returns standard and hidden-dir skills; commands apply `--allow-hidden-dirs` filtering with warnings, hints, and tests.
+      contextIds: ["gh-cli/skills-hidden-dir-filtering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update.go
+        pattern: 'AllowHiddenDirs|allow-hidden-dirs'
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update_test.go
+        pattern: 'allow-hidden-dirs'
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update_test.go
+        pattern: 'TestSkillsUpdateAllowHiddenDirs'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/update"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-allow-hidden-dirs
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-hidden-dir-publish-formation
+      prompt: |
+        Inspect hidden-dir skill discovery in install and preview. Capture how
+        commands expose opt-in hidden-dir behavior.
+    phaseB:
+      promptId: gh-cli-skills-publish-allow-hidden-dirs-use
+      prompt: |
+        Add `--allow-hidden-dirs` to `gh skill publish` validation so publishers
+        can intentionally validate hidden-dir skills with a warning.
+        Name the new regression test `TestSkillsPublishAllowHiddenDirs`.
+    expectedContext:
+      description: Skill publish should opt into hidden-dir validation explicitly and test warning behavior.
+      keywords: ["allow-hidden-dirs", "PublishOptions", "hidden"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-hidden-dir-filtering: Hidden-dir skills require explicit command opt-in, warning text, and tests for hidden-only and mixed trees.
+      contextIds: ["gh-cli/skills-hidden-dir-filtering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish.go
+        pattern: 'AllowHiddenDirs|allow-hidden-dirs'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'allow-hidden-dirs'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishAllowHiddenDirs'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-search-hidden-dir-hint
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-hidden-dir-search-formation
+      prompt: |
+        Inspect skill search output and install/preview hidden-dir behavior.
+        Capture how hidden-dir warnings are phrased for user-facing commands.
+    phaseB:
+      promptId: gh-cli-skills-search-hidden-dir-hint-use
+      prompt: |
+        Add an `--include-hidden-dirs` search option that includes hidden-dir
+        skill paths in search results and emits a provenance warning.
+        Name the new regression test `TestSkillsSearchHiddenDirHint`.
+    expectedContext:
+      description: Skill search hidden-dir inclusion should be explicit and warn about origin.
+      keywords: ["include-hidden-dirs", "hidden", "SearchOptions"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-hidden-dir-filtering: Hidden-dir results should be explicit opt-in and warn that hidden skills may be installed copies from another publisher.
+      contextIds: ["gh-cli/skills-hidden-dir-filtering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search.go
+        pattern: 'IncludeHiddenDirs|include-hidden-dirs'
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search_test.go
+        pattern: 'include-hidden-dirs'
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search_test.go
+        pattern: 'TestSkillsSearchHiddenDirHint'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/search"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-preview-hidden-dir-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-preview-hidden-json-formation
+      prompt: |
+        Inspect `gh skill preview --allow-hidden-dirs` tests and JSON exporter
+        patterns in nearby commands. Capture how preview should report hidden
+        provenance in machine-readable output.
+    phaseB:
+      promptId: gh-cli-skills-preview-hidden-json-use
+      prompt: |
+        Add a JSON field to `gh skill preview` output indicating whether the
+        selected skill came from a hidden directory.
+        Name the new regression test `TestSkillsPreviewHiddenDirJson`.
+    expectedContext:
+      description: Preview JSON should expose hidden-dir provenance without changing human defaults.
+      keywords: ["hiddenDir", "allow-hidden-dirs", "Exporter"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-hidden-dir-filtering: Hidden-dir provenance should be explicit; JSON additions should preserve the human preview default.
+      contextIds: ["gh-cli/skills-hidden-dir-filtering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview.go
+        pattern: 'hiddenDir|HiddenDir'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'hiddenDir|HiddenDir'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'TestSkillsPreviewHiddenDirJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/preview"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-update-upstream-redirect
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-install-upstream-formation
+      prompt: |
+        Inspect `gh skill install` upstream provenance detection. Capture the
+        non-interactive, interactive, and mutual-exclusion behavior.
+    phaseB:
+      promptId: gh-cli-skills-update-upstream-redirect-use
+      prompt: |
+        Add an `--upstream` option to `gh skill update` so re-published installed
+        skills can be updated from their upstream source without prompting.
+        Name the new regression test `TestSkillsUpdateUpstreamRedirect`.
+    expectedContext:
+      description: Upstream provenance uses github-repo metadata, --upstream, notices, and mutual exclusion with local-only paths.
+      keywords: ["upstream", "github-repo", "UpdateOptions"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-upstream-provenance: Re-published skills use `github-repo` metadata; `--upstream` redirects non-interactively and local-only modes must remain mutually exclusive.
+      contextIds: ["gh-cli/skills-upstream-provenance"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update.go
+        pattern: 'Upstream|upstream'
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update_test.go
+        pattern: '--upstream|upstream'
+      - type: file-contents-match
+        path: pkg/cmd/skills/update/update_test.go
+        pattern: 'TestSkillsUpdateUpstreamRedirect'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/update"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-preview-upstream-notice
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-preview-upstream-formation
+      prompt: |
+        Inspect install's upstream provenance flow and preview's selected-skill
+        loading path. Capture how to warn without changing default behavior.
+    phaseB:
+      promptId: gh-cli-skills-preview-upstream-notice-use
+      prompt: |
+        Teach `gh skill preview` to print a non-fatal notice when previewing a
+        re-published skill whose frontmatter points at an upstream repo.
+        Name the new regression test `TestSkillsPreviewUpstreamNotice`.
+    expectedContext:
+      description: Preview upstream notices should be non-fatal and reuse github-repo metadata parsing.
+      keywords: ["github-repo", "upstream", "preview"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-upstream-provenance: Re-published skill detection reads `github-repo` frontmatter and warns before continuing unless a redirect flag is explicit.
+      contextIds: ["gh-cli/skills-upstream-provenance"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview.go
+        pattern: 'github-repo|upstream'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'upstream'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'TestSkillsPreviewUpstreamNotice'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/preview"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-upstream-metadata
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-publish-upstream-formation
+      prompt: |
+        Inspect install upstream metadata and publish validation. Capture how
+        install metadata is detected and stripped during publication checks.
+    phaseB:
+      promptId: gh-cli-skills-publish-upstream-metadata-use
+      prompt: |
+        Add a publish validation warning for SKILL.md files whose `github-repo`
+        metadata points to a different upstream repository.
+        Name the new regression test `TestSkillsPublishUpstreamMetadata`.
+    expectedContext:
+      description: Publish should detect upstream metadata as validation diagnostics without publishing.
+      keywords: ["github-repo", "upstream", "publishDiagnostic"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-upstream-provenance: `github-repo` metadata can indicate a re-published skill; publish validation should surface that explicitly.
+      contextIds: ["gh-cli/skills-upstream-provenance"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish.go
+        pattern: 'github-repo|upstream'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'upstream|github-repo'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishUpstreamMetadata'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-search-upstream-filter
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-search-upstream-formation
+      prompt: |
+        Inspect skill search ranking and install upstream provenance. Capture how
+        metadata-derived provenance should affect search output without changing
+        install behavior.
+    phaseB:
+      promptId: gh-cli-skills-search-upstream-filter-use
+      prompt: |
+        Add `--exclude-republished` to `gh skill search` so search can hide
+        results whose frontmatter points to a different `github-repo`.
+        Name the new regression test `TestSkillsSearchUpstreamFilter`.
+    expectedContext:
+      description: Skill search provenance filtering uses github-repo metadata and leaves install redirect behavior unchanged.
+      keywords: ["exclude-republished", "github-repo", "SearchOptions"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-upstream-provenance: Re-published skill metadata lives in `github-repo`; filtering should be explicit and tested separately from install redirects.
+      contextIds: ["gh-cli/skills-upstream-provenance"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search.go
+        pattern: 'ExcludeRepublished|exclude-republished'
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search_test.go
+        pattern: 'exclude-republished'
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search_test.go
+        pattern: 'TestSkillsSearchUpstreamFilter'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/search"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-tenancy-host
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-tenancy-formation
+      prompt: |
+        Inspect skill source host validation and publish host resolution.
+        Capture how GHEC tenancy hosts differ from unsupported GHES hosts.
+    phaseB:
+      promptId: gh-cli-skills-publish-tenancy-host-use
+      prompt: |
+        Make `gh skill publish` validation preserve GHEC tenancy hosts in source
+        URLs while still rejecting GHES with the shared unsupported-host error.
+        Name the new regression test `TestSkillsPublishTenancyHost`.
+    expectedContext:
+      description: Skill commands accept github.com and *.ghe.com tenancy hosts, reject GHES, and avoid hard-coded github.com URLs.
+      keywords: ["ghe.com", "ValidateSupportedHost", "publish"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-tenancy-hosts: Skill host validation accepts `github.com` and `*.ghe.com`, rejects GHES, and threads host into persisted source URLs.
+      contextIds: ["gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish.go
+        pattern: 'ghe\.com|ValidateSupportedHost|host'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'ghe\.com|GHES|Enterprise Server'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishTenancyHost'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish", "./internal/skills/source"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-update-tenancy-lockfile
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-lockfile-host-formation
+      prompt: |
+        Inspect skill lockfile host handling and installer update paths. Capture
+        where resolved host values must be preserved.
+    phaseB:
+      promptId: gh-cli-skills-update-tenancy-lockfile-use
+      prompt: |
+        Ensure `gh skill update` preserves the installed skill host when it
+        rewrites lockfile/source metadata for GHEC tenancy hosts.
+        Name the new regression test `TestSkillsUpdateTenancyLockfile`.
+    expectedContext:
+      description: Skill lockfile writes must use the resolved host instead of hard-coded github.com.
+      keywords: ["HostPrefix", "RecordInstall", "ghe.com"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-tenancy-hosts: Lockfile/source URL writes must use the resolved host with `ghinstance.HostPrefix`, not hard-code `github.com`.
+      contextIds: ["gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/skills/lockfile/lockfile.go
+        pattern: 'HostPrefix|host'
+      - type: file-contents-match
+        path: internal/skills/lockfile/lockfile_test.go
+        pattern: 'ghe\.com|host'
+      - type: file-contents-match
+        path: internal/skills/lockfile/lockfile_test.go
+        pattern: 'TestSkillsUpdateTenancyLockfile'
+      - type: command
+        command: go
+        args: ["test", "./internal/skills/lockfile", "./pkg/cmd/skills/update"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-search-ghes-error
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-search-ghes-formation
+      prompt: |
+        Inspect skill source validation and search command host setup. Capture
+        the supported-host boundary and error wording.
+    phaseB:
+      promptId: gh-cli-skills-search-ghes-error-use
+      prompt: |
+        Route `gh skill search` host validation through the shared skill source
+        validator so GHES returns the standard unsupported-host error.
+        Name the new regression test `TestSkillsSearchGhesError`.
+    expectedContext:
+      description: GHES remains unsupported for skills and should use a clear shared error.
+      keywords: ["ValidateSupportedHost", "Enterprise Server", "search"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-tenancy-hosts: Skill commands use shared host validation; GHES is unsupported and should return the standard error message.
+      contextIds: ["gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search.go
+        pattern: 'ValidateSupportedHost|Enterprise Server|GHES'
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search_test.go
+        pattern: 'Enterprise Server|GHES|ghes'
+      - type: file-contents-match
+        path: pkg/cmd/skills/search/search_test.go
+        pattern: 'TestSkillsSearchGhesError'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/search", "./internal/skills/source"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-preview-tenancy-source
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-preview-tenancy-formation
+      prompt: |
+        Inspect `gh skill preview` source host validation and GHEC tenancy tests
+        in skill internals. Capture how preview should preserve source host.
+    phaseB:
+      promptId: gh-cli-skills-preview-tenancy-source-use
+      prompt: |
+        Add preview coverage ensuring `*.ghe.com` source hosts are accepted and
+        rendered without rewriting them to `github.com`.
+        Name the new regression test `TestSkillsPreviewTenancySource`.
+    expectedContext:
+      description: Preview should preserve tenancy host source URLs and reject GHES through shared validation.
+      keywords: ["ghe.com", "preview", "ValidateSupportedHost"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-tenancy-hosts: Preview should use shared host validation and preserve GHEC tenancy source hosts in rendered source information.
+      contextIds: ["gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'ghe\.com|ValidateSupportedHost|Enterprise Server'
+      - type: file-contents-match
+        path: pkg/cmd/skills/preview/preview_test.go
+        pattern: 'TestSkillsPreviewTenancySource'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/preview", "./internal/skills/source"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-strict-warnings
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-publish-validation-formation
+      prompt: |
+        Inspect `gh skill publish` validation diagnostics and the `--fix` /
+        `--dry-run` boundary. Capture how validation-only modes avoid publishing.
+    phaseB:
+      promptId: gh-cli-skills-publish-strict-warnings-use
+      prompt: |
+        Add `--strict` to `gh skill publish` so validation warnings fail the
+        command in CI without publishing.
+        Name the new regression test `TestSkillsPublishStrictWarnings`.
+    expectedContext:
+      description: Publish strict mode should turn warnings into failures and stay validation-only.
+      keywords: ["Strict", "--strict", "publishDiagnostic"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-publish-validation: Publish validation flags belong in `PublishOptions`; strict warning behavior must not publish and must be tested with diagnostics.
+      contextIds: ["gh-cli/skills-publish-validation"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish.go
+        pattern: 'Strict|strict'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: '--strict|strict'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishStrictWarnings'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-json-diagnostics
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-publish-json-formation
+      prompt: |
+        Inspect publish diagnostics and nearby JSON exporter patterns. Capture
+        how machine-readable diagnostics should preserve human output.
+    phaseB:
+      promptId: gh-cli-skills-publish-json-diagnostics-use
+      prompt: |
+        Add `--format json` support to `gh skill publish --dry-run` that emits
+        validation diagnostics without changing normal human output.
+        Name the new regression test `TestSkillsPublishJsonDiagnostics`.
+    expectedContext:
+      description: Publish JSON diagnostics should be dry-run oriented and use explicit diagnostic fields.
+      keywords: ["json", "publishDiagnostic", "dry-run"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-publish-validation: Publish diagnostics are structured; machine-readable dry-run output must not trigger publish behavior.
+      contextIds: ["gh-cli/skills-publish-validation"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish.go
+        pattern: 'json|Exporter|AddFormatFlags|publishDiagnostic'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'json|diagnostic'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishJsonDiagnostics'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-fix-dry-run-boundary
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-skills-publish-boundary-formation
+      prompt: |
+        Inspect publish tests around `--fix` and `--dry-run`. Capture the
+        boundary that prevents validation-only modes from publishing.
+    phaseB:
+      promptId: gh-cli-skills-publish-fix-dry-run-boundary-use
+      prompt: |
+        Add a regression test and guard proving `--fix` never creates a release
+        or pushes a tag, even when fixable diagnostics are present.
+        Name the new regression test `TestSkillsPublishFixDryRunBoundary`.
+    expectedContext:
+      description: Publish fix mode is validation/fix-only and must not publish.
+      keywords: ["--fix", "dry-run", "CommandStubber"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/skills-publish-validation: `--fix` and `--dry-run` are validation-only modes; tests should prove no release/tag publish path runs.
+        - [memory] gh-cli/httpmock-and-stub-tests: Tests that guard publishing side effects should use payload assertions or command stubs instead of real external effects.
+      contextIds: ["gh-cli/skills-publish-validation", "gh-cli/httpmock-and-stub-tests"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: '--fix|fix'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishFixDryRunBoundary'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'Exclude|CommandStubber|release'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-secret-set-quiet-success
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-secret-output-formation
+      prompt: |
+        Inspect secret command output and shared application routing. Capture how
+        to add an automation-friendly output flag without changing API calls.
+    phaseB:
+      promptId: gh-cli-secret-set-quiet-success-use
+      prompt: |
+        Add `--quiet` to `gh secret set` so success output is suppressed while
+        encryption and endpoint behavior are unchanged.
+        Name the new regression test `TestSecretSetQuietSuccess`.
+    expectedContext:
+      description: Secret quiet mode suppresses success output only and keeps app routing unchanged.
+      keywords: ["Quiet", "--quiet", "setRun"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/secrets-application-routing: Secret command changes should preserve shared application routing and endpoint construction across scopes.
+        - [memory] gh-cli/destructive-quiet-output: Quiet mode should suppress success output only, without changing API calls, confirmation, or error handling.
+      contextIds: ["gh-cli/secrets-application-routing", "gh-cli/destructive-quiet-output"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set_test.go
+        pattern: 'TestSecretSetQuietSuccess'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/secret/set"]
+        timeoutMs: 300000
+
+  - id: gh-cli-secret-delete-quiet-success
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-secret-delete-output-formation
+      prompt: |
+        Inspect `gh secret delete` success output, confirmation, and app
+        endpoint routing. Capture which behavior quiet mode must not change.
+    phaseB:
+      promptId: gh-cli-secret-delete-quiet-success-use
+      prompt: |
+        Add `--quiet` to `gh secret delete` so successful deletion prints no
+        success message while confirmation and errors remain unchanged.
+        Name the new regression test `TestSecretDeleteQuietSuccess`.
+    expectedContext:
+      description: Secret delete quiet mode suppresses success output only.
+      keywords: ["Quiet", "--quiet", "removeRun"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/destructive-quiet-output: Quiet mode on destructive commands should only suppress success output, not confirmation, API calls, or errors.
+        - [memory] gh-cli/secrets-application-routing: Secret delete changes should preserve shared application routing and endpoint construction across scopes.
+      contextIds: ["gh-cli/destructive-quiet-output", "gh-cli/secrets-application-routing"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/secret/delete/delete.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/secret/delete/delete_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/secret/delete/delete_test.go
+        pattern: 'TestSecretDeleteQuietSuccess'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/secret/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-secret-list-application-column
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-secret-list-app-formation
+      prompt: |
+        Inspect `gh secret list` app routing and JSON field handling. Capture how
+        selected expensive fields are gated by exporter fields.
+    phaseB:
+      promptId: gh-cli-secret-list-application-column-use
+      prompt: |
+        Add an `application` JSON field and optional human column to `gh secret
+        list` when listing across applications.
+        Name the new regression test `TestSecretListApplicationColumn`.
+    expectedContext:
+      description: Secret list JSON fields should preserve app routing and gate extra fetches by exporter fields.
+      keywords: ["application", "Exporter", "secretFields"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/secrets-application-routing: Secret list app support must flow through shared application constants and JSON/exporter tests.
+      contextIds: ["gh-cli/secrets-application-routing"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/secret/list/list.go
+        pattern: 'application|Application'
+      - type: file-contents-match
+        path: pkg/cmd/secret/list/list_test.go
+        pattern: 'application|Application'
+      - type: file-contents-match
+        path: pkg/cmd/secret/list/list_test.go
+        pattern: 'TestSecretListApplicationColumn'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/secret/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-secret-shared-application-alias
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-secret-shared-app-formation
+      prompt: |
+        Inspect `pkg/cmd/secret/shared` application constants and tests. Capture
+        how app names and aliases are centralized.
+    phaseB:
+      promptId: gh-cli-secret-shared-application-alias-use
+      prompt: |
+        Add `actions` / `repo` alias normalization for the default secret
+        application in shared secret app parsing, with tests.
+        Name the new regression test `TestSecretSharedApplicationAlias`.
+    expectedContext:
+      description: Secret app aliases belong in shared constants and parsing tests.
+      keywords: ["Application", "actions", "alias"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/secrets-application-routing: Secret app additions and aliases should be centralized in shared constants/conversion helpers and tested there.
+      contextIds: ["gh-cli/secrets-application-routing"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/secret/shared/shared.go
+        pattern: 'actions|repo|alias'
+      - type: file-contents-match
+        path: pkg/cmd/secret/shared/shared_test.go
+        pattern: 'actions|repo|alias'
+      - type: file-contents-match
+        path: pkg/cmd/secret/shared/shared_test.go
+        pattern: 'TestSecretSharedApplicationAlias'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/secret/shared"]
+        timeoutMs: 300000
+
+  - id: gh-cli-secret-set-no-store-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-secret-set-json-formation
+      prompt: |
+        Inspect `gh secret set --no-store` output and JSON exporter conventions.
+        Capture how encrypted output should remain machine-readable.
+    phaseB:
+      promptId: gh-cli-secret-set-no-store-json-use
+      prompt: |
+        Add JSON output support for `gh secret set --no-store` that emits the
+        encrypted value in a stable field without changing default output.
+        Name the new regression test `TestSecretSetNoStoreJson`.
+    expectedContext:
+      description: Secret set no-store JSON should preserve default encrypted output and use exporter tests.
+      keywords: ["no-store", "json", "encrypted"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/list-json-exporter: Machine-readable command output should use explicit fields, exporter writes, and tests without changing human defaults.
+        - [memory] gh-cli/secrets-application-routing: Secret set changes should keep application endpoint routing centralized in shared helpers.
+      contextIds: ["gh-cli/list-json-exporter", "gh-cli/secrets-application-routing"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set.go
+        pattern: 'Exporter|json|encrypted'
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set_test.go
+        pattern: 'no-store|json|encrypted'
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set_test.go
+        pattern: 'TestSecretSetNoStoreJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/secret/set"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-edit-merge-commit-message
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-repo-edit-squash-message-formation
+      prompt: |
+        Inspect `gh repo edit --squash-merge-commit-message`. Capture the enum
+        mapping, prerequisite validation, and PATCH payload test pattern.
+    phaseB:
+      promptId: gh-cli-repo-edit-merge-commit-message-use
+      prompt: |
+        Add `--merge-commit-message` to `gh repo edit` with friendly values that
+        map to merge commit title/message API fields.
+        Name the new regression test `TestRepoEditMergeCommitMessage`.
+    expectedContext:
+      description: Repo edit message flags validate prerequisites and assert exact PATCH payload mappings.
+      keywords: ["merge-commit-message", "RESTPayload", "EditRepositoryInput"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/repo-edit-option-mapping: Repo edit flags parse friendly values, validate dependent flags, transform to API payload fields, and assert exact PATCH payloads.
+      contextIds: ["gh-cli/repo-edit-option-mapping"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit.go
+        pattern: 'merge-commit-message|MergeCommit'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'merge-commit-message|MergeCommit'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'TestRepoEditMergeCommitMessage'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/edit"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-edit-auto-merge-prerequisite
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-repo-edit-prereq-formation
+      prompt: |
+        Inspect repo edit validation for flags that require enabling a merge
+        strategy. Capture how dependency errors are expressed and tested.
+    phaseB:
+      promptId: gh-cli-repo-edit-auto-merge-prerequisite-use
+      prompt: |
+        Add validation that auto-merge related options require
+        `--enable-auto-merge`, with command parsing tests.
+        Name the new regression test `TestRepoEditAutoMergePrerequisite`.
+    expectedContext:
+      description: Dependent repo edit flags should fail early with clear validation.
+      keywords: ["enable-auto-merge", "FlagErrorf", "validation"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/repo-edit-option-mapping: Repo edit dependent flags should validate prerequisites before execution and test invalid combinations.
+      contextIds: ["gh-cli/repo-edit-option-mapping"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit.go
+        pattern: 'enable-auto-merge|EnableAutoMerge'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'enable-auto-merge|EnableAutoMerge'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'TestRepoEditAutoMergePrerequisite'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/edit"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-edit-security-validation
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-repo-edit-security-formation
+      prompt: |
+        Inspect repo edit security-and-analysis payload mapping. Capture how
+        dependent security features are validated.
+    phaseB:
+      promptId: gh-cli-repo-edit-security-validation-use
+      prompt: |
+        Add validation that secret scanning push protection cannot be enabled
+        unless secret scanning is also enabled in the same edit.
+        Name the new regression test `TestRepoEditSecurityValidation`.
+    expectedContext:
+      description: Repo edit security flags should validate dependencies and assert nested payloads.
+      keywords: ["secret-scanning-push-protection", "security_and_analysis", "RESTPayload"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/repo-edit-option-mapping: Security-related repo edit flags map to nested API payloads and need explicit prerequisite validation tests.
+      contextIds: ["gh-cli/repo-edit-option-mapping"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit.go
+        pattern: 'secret-scanning-push-protection|security_and_analysis'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'secret-scanning-push-protection|security_and_analysis'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'TestRepoEditSecurityValidation'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/edit"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-edit-topic-cache
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-repo-edit-topic-cache-formation
+      prompt: |
+        Inspect repo edit topic add/remove behavior. Capture why current topics
+        are cached across interactive and non-interactive flows.
+    phaseB:
+      promptId: gh-cli-repo-edit-topic-cache-use
+      prompt: |
+        Add a regression test proving repo edit fetches current topics only once
+        when adding and removing topics in the same invocation.
+        Name the new regression test `TestRepoEditTopicCache`.
+    expectedContext:
+      description: Repo edit topic operations share a topics cache and should assert API call count.
+      keywords: ["topicsCache", "topics", "Exclude"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/repo-edit-option-mapping: Repo edit tests should assert exact API calls and preserve shared topic-cache behavior.
+        - [memory] gh-cli/httpmock-and-stub-tests: API-facing command tests should use `httpmock` payload and path assertions for outgoing requests.
+      contextIds: ["gh-cli/repo-edit-option-mapping", "gh-cli/httpmock-and-stub-tests"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'topicsCache|Exclude|topics'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'TestRepoEditTopicCache'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/edit"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-edit-visibility-warning
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-repo-edit-visibility-formation
+      prompt: |
+        Inspect repo edit visibility confirmation and non-interactive behavior.
+        Capture how dangerous changes are guarded.
+    phaseB:
+      promptId: gh-cli-repo-edit-visibility-warning-use
+      prompt: |
+        Add a test and guard that changing repository visibility non-
+        interactively requires accepting visibility consequences explicitly.
+        Name the new regression test `TestRepoEditVisibilityWarning`.
+    expectedContext:
+      description: Dangerous repo edit changes require explicit non-interactive acknowledgement.
+      keywords: ["AcceptVisibilityChangeConsequences", "visibility", "FlagErrorf"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/repo-edit-option-mapping: Repo edit dangerous changes need explicit validation and tests for non-interactive behavior.
+      contextIds: ["gh-cli/repo-edit-option-mapping"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit.go
+        pattern: 'AcceptVisibilityChangeConsequences|visibility'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'visibility|consequences'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'TestRepoEditVisibilityWarning'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/edit"]
+        timeoutMs: 300000
+
+  - id: gh-cli-pr-status-display-names
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-pr-view-display-formation
+      prompt: |
+        Inspect PR/issue display-name helpers and PR status output. Capture
+        which paths should change human output without touching JSON fields.
+    phaseB:
+      promptId: gh-cli-pr-status-display-names-use
+      prompt: |
+        Update `gh pr status` human output to use actor display names for
+        assignees/reviewers while preserving JSON raw login behavior.
+        Name the new regression test `TestPrStatusDisplayNames`.
+    expectedContext:
+      description: PR/issue human output uses DisplayName helpers; JSON remains raw.
+      keywords: ["DisplayName", "pr status", "JSON"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-issue-display-names: Human PR/issue output should use shared display-name helpers; JSON fields preserve raw API logins.
+      contextIds: ["gh-cli/pr-issue-display-names"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/pr/status/status.go
+        pattern: 'DisplayName|AuthorLogin'
+      - type: file-contents-match
+        path: pkg/cmd/pr/status/status_test.go
+        pattern: 'DisplayName|Copilot|AI'
+      - type: file-contents-match
+        path: pkg/cmd/pr/status/status_test.go
+        pattern: 'TestPrStatusDisplayNames'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/pr/status"]
+        timeoutMs: 300000
+
+  - id: gh-cli-issue-status-display-names
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-issue-view-display-formation
+      prompt: |
+        Inspect issue view display-name usage and issue status output. Capture
+        the human-output-only rule.
+    phaseB:
+      promptId: gh-cli-issue-status-display-names-use
+      prompt: |
+        Update `gh issue status` human output to use actor display names for
+        authors/assignees without changing JSON output.
+        Name the new regression test `TestIssueStatusDisplayNames`.
+    expectedContext:
+      description: Issue status human output should use display names while JSON keeps raw values.
+      keywords: ["DisplayName", "issue status", "JSON"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-issue-display-names: Display-name helpers are for human output only; JSON output keeps raw API values.
+      contextIds: ["gh-cli/pr-issue-display-names"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/issue/status/status.go
+        pattern: 'DisplayName|AuthorLogin'
+      - type: file-contents-match
+        path: pkg/cmd/issue/status/status_test.go
+        pattern: 'DisplayName|Copilot|AI'
+      - type: file-contents-match
+        path: pkg/cmd/issue/status/status_test.go
+        pattern: 'TestIssueStatusDisplayNames'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/issue/status"]
+        timeoutMs: 300000
+
+  - id: gh-cli-pr-list-display-names
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-pr-list-display-formation
+      prompt: |
+        Inspect PR view/list human output and display-name helpers. Capture where
+        table output should use friendly names.
+    phaseB:
+      promptId: gh-cli-pr-list-display-names-use
+      prompt: |
+        Update `gh pr list` table output to use display names for authors while
+        leaving `--json author` unchanged.
+        Name the new regression test `TestPrListDisplayNames`.
+    expectedContext:
+      description: PR list human table output can use DisplayName; JSON author remains raw.
+      keywords: ["DisplayName", "pr list", "author"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-issue-display-names: Use display names for human output only; never rewrite JSON author fields.
+      contextIds: ["gh-cli/pr-issue-display-names"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/pr/list/list.go
+        pattern: 'DisplayName|AuthorLogin'
+      - type: file-contents-match
+        path: pkg/cmd/pr/list/list_test.go
+        pattern: 'DisplayName|Copilot|AI'
+      - type: file-contents-match
+        path: pkg/cmd/pr/list/list_test.go
+        pattern: 'TestPrListDisplayNames'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/pr/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-issue-list-display-names
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-issue-list-display-formation
+      prompt: |
+        Inspect issue view/list output and display-name helpers. Capture how
+        human author display differs from JSON fields.
+    phaseB:
+      promptId: gh-cli-issue-list-display-names-use
+      prompt: |
+        Update `gh issue list` table output to use display names for authors
+        while preserving raw JSON author output.
+        Name the new regression test `TestIssueListDisplayNames`.
+    expectedContext:
+      description: Issue list human table output can use display names; JSON author remains raw.
+      keywords: ["DisplayName", "issue list", "author"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-issue-display-names: Friendly actor display names are a human-output concern and should not mutate JSON fields.
+      contextIds: ["gh-cli/pr-issue-display-names"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/issue/list/list.go
+        pattern: 'DisplayName|AuthorLogin'
+      - type: file-contents-match
+        path: pkg/cmd/issue/list/list_test.go
+        pattern: 'DisplayName|Copilot|AI'
+      - type: file-contents-match
+        path: pkg/cmd/issue/list/list_test.go
+        pattern: 'TestIssueListDisplayNames'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/issue/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-pr-checks-display-names
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-pr-checks-display-formation
+      prompt: |
+        Inspect PR checks output and display-name helper tests. Capture how bot
+        or app actors should be rendered for human output.
+    phaseB:
+      promptId: gh-cli-pr-checks-display-names-use
+      prompt: |
+        Update `gh pr checks` human output to use friendly display names for app
+        or bot actors while preserving JSON values.
+        Name the new regression test `TestPrChecksDisplayNames`.
+    expectedContext:
+      description: PR checks human output should use display-name helpers but JSON should stay raw.
+      keywords: ["DisplayName", "pr checks", "JSON"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-issue-display-names: Display names apply to human output only; tests should prove JSON values remain raw.
+      contextIds: ["gh-cli/pr-issue-display-names"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/pr/checks/checks.go
+        pattern: 'DisplayName|AuthorLogin'
+      - type: file-contents-match
+        path: pkg/cmd/pr/checks/checks_test.go
+        pattern: 'DisplayName|Copilot|AI'
+      - type: file-contents-match
+        path: pkg/cmd/pr/checks/checks_test.go
+        pattern: 'TestPrChecksDisplayNames'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/pr/checks"]
+        timeoutMs: 300000
+
+  - id: gh-cli-pr-view-number-json-validation
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-pr-finder-validation-formation
+      prompt: |
+        Inspect PR finder behavior for numeric selectors and JSON fields.
+        Capture why number-only output must still validate resource type.
+    phaseB:
+      promptId: gh-cli-pr-view-number-json-validation-use
+      prompt: |
+        Add a regression test proving `gh pr view <issue-number> --json number`
+        does not succeed by synthesizing a PR result.
+        Name the new regression test `TestPrViewNumberJsonValidation`.
+    expectedContext:
+      description: PR finder should not short-circuit number-only JSON before validating selector type.
+      keywords: ["number", "json", "FindOptions"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-finder-validation: Numeric selectors must still validate resource type, even when only the `number` JSON field is requested.
+      contextIds: ["gh-cli/pr-finder-validation"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/pr/shared/finder_test.go
+        pattern: 'json number|numberFieldOnly|issue'
+      - type: file-contents-match
+        path: pkg/cmd/pr/shared/finder_test.go
+        pattern: 'TestPrViewNumberJsonValidation'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/pr/shared", "./pkg/cmd/pr/view"]
+        timeoutMs: 300000
+
+  - id: gh-cli-issue-view-number-json-validation
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-issue-finder-validation-formation
+      prompt: |
+        Inspect issue and PR finder behavior for numeric selectors. Capture how
+        number-only JSON optimizations can skip validation incorrectly.
+    phaseB:
+      promptId: gh-cli-issue-view-number-json-validation-use
+      prompt: |
+        Add a mirrored regression test ensuring `gh issue view <pr-number>
+        --json number` validates the selector is an issue.
+        Name the new regression test `TestIssueViewNumberJsonValidation`.
+    expectedContext:
+      description: Issue finder should mirror PR finder validation for number-only JSON.
+      keywords: ["number", "json", "issue"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-finder-validation: Finder optimizations must not synthesize success before proving the selector matches the requested resource type.
+      contextIds: ["gh-cli/pr-finder-validation"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/issue/view/view_test.go
+        pattern: 'json number|pr-number|pull request'
+      - type: file-contents-match
+        path: pkg/cmd/issue/view/view_test.go
+        pattern: 'TestIssueViewNumberJsonValidation'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/issue/view"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-no-alias-status
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-alias-formation
+      prompt: |
+        Inspect telemetry alias handling. Capture why outer aliases should not
+        record telemetry while inner resolved commands still can.
+    phaseB:
+      promptId: gh-cli-telemetry-no-alias-status-use
+      prompt: |
+        Add acceptance or unit coverage proving aliases that resolve to `gh pr
+        status` do not record the outer alias as the command name.
+        Name the new regression test `TestTelemetryNoAliasStatus`.
+    expectedContext:
+      description: Telemetry should skip outer aliases and record resolved inner commands only.
+      keywords: ["telemetry", "alias", "command_invocation"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-command-policy: Telemetry is best-effort and should not record misleading outer aliases; inner resolved commands may still be recorded.
+      contextIds: ["gh-cli/telemetry-command-policy"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/root/alias_test.go
+        pattern: 'telemetry|alias|command_invocation'
+      - type: file-contents-match
+        path: pkg/cmd/root/alias_test.go
+        pattern: 'TestTelemetryNoAliasStatus'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/root"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-no-extension-browser
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-extension-formation
+      prompt: |
+        Inspect telemetry skip rules for extensions and browser-opening commands.
+        Capture how skip cases are represented in tests.
+    phaseB:
+      promptId: gh-cli-telemetry-no-extension-browser-use
+      prompt: |
+        Add coverage ensuring extension browser flows do not emit command
+        telemetry for the extension wrapper.
+        Name the new regression test `TestTelemetryNoExtensionBrowser`.
+    expectedContext:
+      description: Telemetry skip cases should cover extension wrappers and recursive send paths.
+      keywords: ["telemetry", "extension", "no-telemetry"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-command-policy: Explicit no-telemetry paths prevent wrappers, extensions, and recursive send commands from polluting invocation data.
+      contextIds: ["gh-cli/telemetry-command-policy"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'extension|no telemetry|Telemetry'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'TestTelemetryNoExtensionBrowser'
+      - type: command
+        command: go
+        args: ["test", "./internal/ghcmd"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-log-empty-marker
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-log-formation
+      prompt: |
+        Inspect telemetry log flusher behavior. Capture why absence of telemetry
+        should be observable in log mode.
+    phaseB:
+      promptId: gh-cli-telemetry-log-empty-marker-use
+      prompt: |
+        Add or harden a test proving `GH_TELEMETRY=log` writes a
+        `Telemetry payload: none` marker when no events are recorded.
+        Name the new regression test `TestTelemetryLogEmptyMarker`.
+    expectedContext:
+      description: Telemetry log mode should make no-event cases observable.
+      keywords: ["Telemetry payload: none", "LogFlusher", "GH_TELEMETRY"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-command-policy: Log mode should make both telemetry events and no-event cases observable without sending data.
+      contextIds: ["gh-cli/telemetry-command-policy"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/telemetry/telemetry.go
+        pattern: 'Telemetry payload: none'
+      - type: file-contents-match
+        path: internal/telemetry/telemetry_test.go
+        pattern: 'Telemetry payload: none'
+      - type: file-contents-match
+        path: internal/telemetry/telemetry_test.go
+        pattern: 'TestTelemetryLogEmptyMarker'
+      - type: command
+        command: go
+        args: ["test", "./internal/telemetry"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-send-failure-nonfatal
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-send-failure-formation
+      prompt: |
+        Inspect send-telemetry command and acceptance fixtures. Capture the
+        best-effort non-fatal failure contract.
+    phaseB:
+      promptId: gh-cli-telemetry-send-failure-nonfatal-use
+      prompt: |
+        Add coverage that telemetry send failures do not make the original
+        command invocation fail.
+        Name the new regression test `TestTelemetrySendFailureNonfatal`.
+    expectedContext:
+      description: Telemetry send is best-effort and failure should not break the command.
+      keywords: ["send-telemetry", "failure", "nonfatal"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-command-policy: Telemetry is best-effort; send failures must not break the original command.
+      contextIds: ["gh-cli/telemetry-command-policy"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/send-telemetry/send_telemetry_test.go
+        pattern: 'failure|nonfatal|does not break'
+      - type: file-contents-match
+        path: pkg/cmd/send-telemetry/send_telemetry_test.go
+        pattern: 'TestTelemetrySendFailureNonfatal'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/send-telemetry", "./internal/telemetry"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-terminal-width-dimension
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-dimensions-formation
+      prompt: |
+        Inspect common telemetry dimensions in `internal/ghcmd`. Capture the
+        string-value convention for booleans and categorized values.
+    phaseB:
+      promptId: gh-cli-telemetry-terminal-width-dimension-use
+      prompt: |
+        Add a categorized `terminal_width` common telemetry dimension without
+        recording exact potentially identifying widths.
+        Name the new regression test `TestTelemetryTerminalWidthDimension`.
+    expectedContext:
+      description: Telemetry dimensions should be stable strings and avoid raw sensitive values.
+      keywords: ["terminal_width", "Dimensions", "string"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-common-dimensions: Common dimensions use stable string values and should categorize rather than record raw sensitive values.
+      contextIds: ["gh-cli/telemetry-common-dimensions"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/ghcmd/cmd.go
+        pattern: 'terminal_width|terminalWidth'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'terminal_width|terminalWidth'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'TestTelemetryTerminalWidthDimension'
+      - type: command
+        command: go
+        args: ["test", "./internal/ghcmd"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-auth-state-dimension
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-auth-dimension-formation
+      prompt: |
+        Inspect common telemetry dimension construction and config access.
+        Capture how to add non-sensitive state dimensions.
+    phaseB:
+      promptId: gh-cli-telemetry-auth-state-dimension-use
+      prompt: |
+        Add a non-sensitive `auth_state` common telemetry dimension that
+        categorizes whether an auth token is configured without recording hosts.
+        Name the new regression test `TestTelemetryAuthStateDimension`.
+    expectedContext:
+      description: Telemetry auth dimensions should be categorized and avoid raw host/user values.
+      keywords: ["auth_state", "Dimensions", "NoOp"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-common-dimensions: New telemetry dimensions should be string-valued and avoid raw sensitive host or user identifiers.
+      contextIds: ["gh-cli/telemetry-common-dimensions"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/ghcmd/cmd.go
+        pattern: 'auth_state|authState'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'auth_state|authState'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'TestTelemetryAuthStateDimension'
+      - type: command
+        command: go
+        args: ["test", "./internal/ghcmd"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-agent-host-type
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-agent-host-formation
+      prompt: |
+        Inspect skill command telemetry host categorization. Capture how command
+        telemetry avoids raw enterprise hostnames.
+    phaseB:
+      promptId: gh-cli-telemetry-agent-host-type-use
+      prompt: |
+        Add an `agent_host_type` telemetry dimension for skill commands that
+        categorizes github.com, GHEC tenancy, and GHES without raw hostnames.
+        Name the new regression test `TestTelemetryAgentHostType`.
+    expectedContext:
+      description: Host telemetry should categorize host type rather than raw hostnames.
+      keywords: ["agent_host_type", "ghe", "telemetry"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-common-dimensions: Avoid raw hostnames in telemetry; categorize enterprise/tenancy host type.
+        - [memory] gh-cli/skills-tenancy-hosts: Skill host handling distinguishes github.com, GHEC tenancy hosts, and unsupported GHES hosts.
+      contextIds: ["gh-cli/telemetry-common-dimensions", "gh-cli/skills-tenancy-hosts"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/install/install.go
+        pattern: 'agent_host_type|host_type|skill_host_type'
+      - type: file-contents-match
+        path: pkg/cmd/skills/install/install_test.go
+        pattern: 'agent_host_type|host_type|skill_host_type'
+      - type: file-contents-match
+        path: pkg/cmd/skills/install/install_test.go
+        pattern: 'TestTelemetryAgentHostType'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/install"]
+        timeoutMs: 300000
+
+  - id: gh-cli-telemetry-ci-context-dimension
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-telemetry-ci-formation
+      prompt: |
+        Inspect common telemetry dimensions for CI and GitHub Actions context.
+        Capture the boolean-string convention.
+    phaseB:
+      promptId: gh-cli-telemetry-ci-context-dimension-use
+      prompt: |
+        Add a `ci_provider` categorized common telemetry dimension using known
+        CI environment variables without recording raw branch or repo data.
+        Name the new regression test `TestTelemetryCiContextDimension`.
+    expectedContext:
+      description: CI telemetry dimensions should be categorized strings and avoid raw repo data.
+      keywords: ["ci_provider", "github_actions", "Dimensions"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/telemetry-common-dimensions: Common dimensions use string booleans/categorized values and should avoid raw sensitive identifiers.
+      contextIds: ["gh-cli/telemetry-common-dimensions"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/ghcmd/cmd.go
+        pattern: 'ci_provider|github_actions|CI'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'ci_provider|github_actions|CI'
+      - type: file-contents-match
+        path: internal/ghcmd/cmd_test.go
+        pattern: 'TestTelemetryCiContextDimension'
+      - type: command
+        command: go
+        args: ["test", "./internal/ghcmd"]
+        timeoutMs: 300000
+
+  - id: gh-cli-api-graphql-agent-header
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-api-agent-header-formation
+      prompt: |
+        Inspect `gh api` and factory HTTP client construction. Capture where
+        app version and invoking-agent context must be threaded.
+    phaseB:
+      promptId: gh-cli-api-graphql-agent-header-use
+      prompt: |
+        Add coverage proving GraphQL requests made through `gh api graphql`
+        include the invoking-agent User-Agent context.
+        Name the new regression test `TestApiGraphqlAgentHeader`.
+    expectedContext:
+      description: gh api custom clients must preserve app version and invoking-agent User-Agent context.
+      keywords: ["InvokingAgent", "User-Agent", "graphql"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/agentic-http-client-context: Commands that construct HTTP clients outside the default path must still thread app version and invoking-agent context into requests.
+      contextIds: ["gh-cli/agentic-http-client-context"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/api/api_test.go
+        pattern: 'InvokingAgent|User-Agent|graphql'
+      - type: file-contents-match
+        path: pkg/cmd/api/api_test.go
+        pattern: 'TestApiGraphqlAgentHeader'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/api"]
+        timeoutMs: 300000
+
+  - id: gh-cli-auth-login-viewer-agent-header
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-auth-agent-header-formation
+      prompt: |
+        Inspect auth login's token flow and HTTP client wrapping. Capture why
+        follow-up viewer requests must copy existing client configuration.
+    phaseB:
+      promptId: gh-cli-auth-login-viewer-agent-header-use
+      prompt: |
+        Add a regression test proving auth login's post-token viewer request
+        preserves invoking-agent User-Agent context.
+        Name the new regression test `TestAuthLoginViewerAgentHeader`.
+    expectedContext:
+      description: Auth follow-up clients should copy existing client configuration and preserve invoking-agent headers.
+      keywords: ["InvokingAgent", "getViewer", "User-Agent"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/agentic-http-client-context: Auth flows that wrap clients after token acquisition should preserve app version and invoking-agent context.
+      contextIds: ["gh-cli/agentic-http-client-context"]
+    verifiers:
+      - type: file-contents-match
+        path: internal/authflow/flow_test.go
+        pattern: 'InvokingAgent|User-Agent|getViewer'
+      - type: file-contents-match
+        path: internal/authflow/flow_test.go
+        pattern: 'TestAuthLoginViewerAgentHeader'
+      - type: command
+        command: go
+        args: ["test", "./internal/authflow"]
+        timeoutMs: 300000
+
+  - id: gh-cli-api-rest-agent-header
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-api-rest-agent-formation
+      prompt: |
+        Inspect REST path construction in `gh api`. Capture how custom clients
+        should preserve invoking-agent metadata.
+    phaseB:
+      promptId: gh-cli-api-rest-agent-header-use
+      prompt: |
+        Add coverage proving REST requests made through `gh api` include
+        invoking-agent User-Agent context.
+        Name the new regression test `TestApiRestAgentHeader`.
+    expectedContext:
+      description: gh api REST requests must preserve invoking-agent User-Agent context.
+      keywords: ["InvokingAgent", "User-Agent", "REST"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/agentic-http-client-context: `gh api` constructs clients inline, so app version and invoking-agent context must be explicitly threaded.
+      contextIds: ["gh-cli/agentic-http-client-context"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/api/api_test.go
+        pattern: 'InvokingAgent|User-Agent|REST'
+      - type: file-contents-match
+        path: pkg/cmd/api/api_test.go
+        pattern: 'TestApiRestAgentHeader'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/api"]
+        timeoutMs: 300000
+
+  - id: gh-cli-release-verify-strict-digest-alg
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-release-digest-formation
+      prompt: |
+        Inspect release verify digest algorithm helper usage. Capture how SHA-1
+        and SHA-256 refs should be labeled in attestation lookup errors.
+    phaseB:
+      promptId: gh-cli-release-verify-strict-digest-alg-use
+      prompt: |
+        Add a strict test ensuring `gh release verify` reports `sha256:` for
+        64-character release refs and does not hard-code `sha1:`.
+        Name the new regression test `TestReleaseVerifyStrictDigestAlg`.
+    expectedContext:
+      description: Release verify derives digest algorithm from ref length.
+      keywords: ["DigestAlgForRef", "sha256", "verify"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/release-digest-algorithm: Release verification should use a shared helper that returns `sha256` for 64-character refs and `sha1` otherwise.
+      contextIds: ["gh-cli/release-digest-algorithm"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/release/verify/verify_test.go
+        pattern: 'sha256|DigestAlgForRef'
+      - type: file-contents-match
+        path: pkg/cmd/release/verify/verify_test.go
+        pattern: 'TestReleaseVerifyStrictDigestAlg'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/release/verify", "./pkg/cmd/release/shared"]
+        timeoutMs: 300000
+
+  - id: gh-cli-release-verify-asset-strict-digest-alg
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-release-asset-digest-formation
+      prompt: |
+        Inspect release verify-asset digest helper usage. Capture how asset
+        verification mirrors release verification.
+    phaseB:
+      promptId: gh-cli-release-verify-asset-strict-digest-alg-use
+      prompt: |
+        Add a strict test ensuring `gh release verify-asset` reports `sha256:`
+        for 64-character release refs.
+        Name the new regression test `TestReleaseVerifyAssetStrictDigestAlg`.
+    expectedContext:
+      description: Release verify-asset derives digest algorithm from ref length like release verify.
+      keywords: ["DigestAlgForRef", "sha256", "verify-asset"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/release-digest-algorithm: Verify and verify-asset should share digest algorithm derivation and cover SHA-256 cases.
+      contextIds: ["gh-cli/release-digest-algorithm"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/release/verify-asset/verify_asset_test.go
+        pattern: 'sha256|DigestAlgForRef'
+      - type: file-contents-match
+        path: pkg/cmd/release/verify-asset/verify_asset_test.go
+        pattern: 'TestReleaseVerifyAssetStrictDigestAlg'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/release/verify-asset", "./pkg/cmd/release/shared"]
+        timeoutMs: 300000
+
+  - id: gh-cli-release-shared-digest-helper-invalid
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-release-helper-invalid-formation
+      prompt: |
+        Inspect `DigestAlgForRef` tests. Capture how unexpected ref lengths are
+        handled without breaking existing SHA-1 behavior.
+    phaseB:
+      promptId: gh-cli-release-shared-digest-helper-invalid-use
+      prompt: |
+        Harden `DigestAlgForRef` tests for empty and unexpected-length refs,
+        documenting why they preserve the default SHA-1 behavior.
+        Name the new regression test `TestReleaseSharedDigestHelperInvalid`.
+    expectedContext:
+      description: Digest helper tests cover SHA-1, SHA-256, empty, and unexpected lengths.
+      keywords: ["DigestAlgForRef", "unexpected", "sha1"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/release-digest-algorithm: Digest helper tests should cover SHA-1, SHA-256, empty, and unexpected lengths while preserving existing fallback behavior.
+      contextIds: ["gh-cli/release-digest-algorithm"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/release/shared/fetch_test.go
+        pattern: 'unexpected|empty|sha256|sha1'
+      - type: file-contents-match
+        path: pkg/cmd/release/shared/fetch_test.go
+        pattern: 'TestReleaseSharedDigestHelperInvalid'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/release/shared"]
+        timeoutMs: 300000
+
+  - id: gh-cli-attestation-jsonl-stream-reader
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-attestation-jsonl-formation
+      prompt: |
+        Inspect attestation JSONL loading and tests. Capture why large
+        attestation rows should not be constrained by scanner token limits.
+    phaseB:
+      promptId: gh-cli-attestation-jsonl-stream-reader-use
+      prompt: |
+        Update JSONL attestation loading to stream/decode large rows without
+        reading the whole file into memory, and add a large-row test.
+        Name the new regression test `TestAttestationJsonlStreamReader`.
+    expectedContext:
+      description: Attestation JSONL loading should stream large rows and preserve explicit errors.
+      keywords: ["bufio", "jsonl", "large"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/attestation-jsonl-buffering: JSONL bundle loading should avoid scanner token limits and include large-row, empty-file, and malformed-row tests.
+      contextIds: ["gh-cli/attestation-jsonl-buffering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation.go
+        pattern: 'bufio|NewReader|Decoder'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'large|jsonl|token'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'TestAttestationJsonlStreamReader'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/attestation/verification"]
+        timeoutMs: 300000
+
+  - id: gh-cli-attestation-jsonl-empty-line
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-attestation-empty-line-formation
+      prompt: |
+        Inspect attestation JSONL parser behavior for empty files and malformed
+        rows. Capture the explicit error contracts.
+    phaseB:
+      promptId: gh-cli-attestation-jsonl-empty-line-use
+      prompt: |
+        Make JSONL attestation loading skip blank lines but still return
+        `ErrEmptyBundleFile` when no attestations are present.
+        Name the new regression test `TestAttestationJsonlEmptyLine`.
+    expectedContext:
+      description: JSONL parsing can skip blank lines while preserving empty-file errors.
+      keywords: ["ErrEmptyBundleFile", "blank", "jsonl"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/attestation-jsonl-buffering: JSONL parsing should keep empty-file errors explicit while handling realistic blank-line input.
+      contextIds: ["gh-cli/attestation-jsonl-buffering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation.go
+        pattern: 'ErrEmptyBundleFile|blank|TrimSpace'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'ErrEmptyBundleFile|blank'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'TestAttestationJsonlEmptyLine'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/attestation/verification"]
+        timeoutMs: 300000
+
+  - id: gh-cli-attestation-jsonl-malformed-context
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-attestation-malformed-formation
+      prompt: |
+        Inspect attestation parser error wrapping. Capture how malformed bundle
+        errors should retain row context for users.
+    phaseB:
+      promptId: gh-cli-attestation-jsonl-malformed-context-use
+      prompt: |
+        Add row-number context to malformed JSONL attestation errors without
+        changing valid JSONL behavior.
+        Name the new regression test `TestAttestationJsonlMalformedContext`.
+    expectedContext:
+      description: Malformed JSONL attestation errors should preserve context and valid behavior.
+      keywords: ["line", "jsonl", "malformed"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/attestation-jsonl-buffering: Malformed JSONL tests should preserve explicit parser errors and add useful row context.
+      contextIds: ["gh-cli/attestation-jsonl-buffering"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation.go
+        pattern: 'line|row|jsonl'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'malformed|line|row'
+      - type: file-contents-match
+        path: pkg/cmd/attestation/verification/attestation_test.go
+        pattern: 'TestAttestationJsonlMalformedContext'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/attestation/verification"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-edit-httpmock-payload
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-httpmock-payload-formation
+      prompt: |
+        Inspect repo edit tests that use `httpmock.RESTPayload`. Capture how
+        command tests assert exact outgoing API payloads.
+    phaseB:
+      promptId: gh-cli-repo-edit-httpmock-payload-use
+      prompt: |
+        Add a repo edit regression test using `httpmock.RESTPayload` to assert
+        the PATCH body for a combined security-and-topics edit.
+        Name the new regression test `TestRepoEditHttpmockPayload`.
+    expectedContext:
+      description: API-facing command tests should use httpmock payload assertions.
+      keywords: ["RESTPayload", "PATCH", "repo edit"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/httpmock-and-stub-tests: API command behavior should use `httpmock` payload/path assertions rather than only checking nil errors.
+        - [memory] gh-cli/repo-edit-option-mapping: Repo edit flags should map CLI values to exact API payload fields and validate prerequisites.
+      contextIds: ["gh-cli/httpmock-and-stub-tests", "gh-cli/repo-edit-option-mapping"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'RESTPayload|security_and_analysis|PATCH'
+      - type: file-contents-match
+        path: pkg/cmd/repo/edit/edit_test.go
+        pattern: 'TestRepoEditHttpmockPayload'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/edit"]
+        timeoutMs: 300000
+
+  - id: gh-cli-skills-publish-command-stubber
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-command-stubber-formation
+      prompt: |
+        Inspect skill publish tests that shell out to git. Capture when to use
+        `internal/run.CommandStubber` instead of real git.
+    phaseB:
+      promptId: gh-cli-skills-publish-command-stubber-use
+      prompt: |
+        Replace one remaining real-git dependent publish test path with
+        `internal/run.CommandStubber`.
+        Name the new regression test `TestSkillsPublishCommandStubber`.
+    expectedContext:
+      description: External command behavior in tests should use CommandStubber.
+      keywords: ["CommandStubber", "git", "publish"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/httpmock-and-stub-tests: When command code shells out to git, tests should use `internal/run.CommandStubber`.
+      contextIds: ["gh-cli/httpmock-and-stub-tests"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'CommandStubber|run\.Stub|Register'
+      - type: file-contents-match
+        path: pkg/cmd/skills/publish/publish_test.go
+        pattern: 'TestSkillsPublishCommandStubber'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/skills/publish"]
+        timeoutMs: 300000
+
+  - id: gh-cli-secret-set-httpmock-payload
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-secret-httpmock-formation
+      prompt: |
+        Inspect secret set tests and shared app routing. Capture how endpoint
+        paths and payloads are asserted with httpmock.
+    phaseB:
+      promptId: gh-cli-secret-set-httpmock-payload-use
+      prompt: |
+        Add a secret set regression test using `httpmock.RESTPayload` to assert
+        application-specific endpoint and encrypted payload fields.
+        Name the new regression test `TestSecretSetHttpmockPayload`.
+    expectedContext:
+      description: Secret command API tests should assert endpoint path and payload.
+      keywords: ["RESTPayload", "encrypted_value", "secret"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/httpmock-and-stub-tests: API command tests should assert outgoing paths and payloads with `httpmock`; secret app routing must stay centralized.
+        - [memory] gh-cli/secrets-application-routing: Secret application routing should flow through shared app constants and endpoint helpers.
+      contextIds: ["gh-cli/httpmock-and-stub-tests", "gh-cli/secrets-application-routing"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set_test.go
+        pattern: 'RESTPayload|encrypted_value|httpmock'
+      - type: file-contents-match
+        path: pkg/cmd/secret/set/set_test.go
+        pattern: 'TestSecretSetHttpmockPayload'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/secret/set"]
+        timeoutMs: 300000
+
+  - id: gh-cli-gpg-key-list-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-list-json-gpg-formation
+      prompt: |
+        Inspect list commands with JSON exporter support and `gh gpg-key list`.
+        Capture the `AddJSONFlags` and `Exporter.Write` pattern.
+    phaseB:
+      promptId: gh-cli-gpg-key-list-json-use
+      prompt: |
+        Add `--json` output to `gh gpg-key list` with stable key fields and
+        tests preserving human output.
+        Name the new regression test `TestGpgKeyListJson`.
+    expectedContext:
+      description: List command JSON output uses AddJSONFlags and Exporter.Write.
+      keywords: ["AddJSONFlags", "Exporter", "gpg-key"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/list-json-exporter: List commands add machine-readable output via `cmdutil.AddJSONFlags`, explicit fields, and `opts.Exporter.Write`.
+      contextIds: ["gh-cli/list-json-exporter"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/gpg-key/list/list.go
+        pattern: 'AddJSONFlags|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/gpg-key/list/list_test.go
+        pattern: '--json|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/gpg-key/list/list_test.go
+        pattern: 'TestGpgKeyListJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/gpg-key/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-ssh-key-list-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-list-json-ssh-formation
+      prompt: |
+        Inspect list commands with JSON exporter support and `gh ssh-key list`.
+        Capture the field-list and exporter-write convention.
+    phaseB:
+      promptId: gh-cli-ssh-key-list-json-use
+      prompt: |
+        Add `--json` output to `gh ssh-key list` with stable key fields and
+        tests preserving human output.
+        Name the new regression test `TestSshKeyListJson`.
+    expectedContext:
+      description: SSH key list JSON output should follow list exporter conventions.
+      keywords: ["AddJSONFlags", "Exporter", "ssh-key"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/list-json-exporter: List command JSON support uses explicit fields, `AddJSONFlags`, and `Exporter.Write` while preserving human table output.
+      contextIds: ["gh-cli/list-json-exporter"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/ssh-key/list/list.go
+        pattern: 'AddJSONFlags|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/ssh-key/list/list_test.go
+        pattern: '--json|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/ssh-key/list/list_test.go
+        pattern: 'TestSshKeyListJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/ssh-key/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-gitignore-list-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-list-json-gitignore-formation
+      prompt: |
+        Inspect repo gitignore list output and list command JSON exporter
+        examples. Capture how a simple string list should be exported.
+    phaseB:
+      promptId: gh-cli-repo-gitignore-list-json-use
+      prompt: |
+        Add `--json` output to `gh repo gitignore list`, returning template
+        names in a stable field.
+        Name the new regression test `TestRepoGitignoreListJson`.
+    expectedContext:
+      description: Simple list JSON output should still use explicit fields and exporter tests.
+      keywords: ["AddJSONFlags", "Exporter", "gitignore"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/list-json-exporter: Even simple list commands should use explicit JSON fields and exporter tests instead of ad hoc encoding.
+      contextIds: ["gh-cli/list-json-exporter"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/gitignore/list/list.go
+        pattern: 'AddJSONFlags|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/repo/gitignore/list/list_test.go
+        pattern: '--json|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/repo/gitignore/list/list_test.go
+        pattern: 'TestRepoGitignoreListJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/gitignore/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-license-list-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-list-json-license-formation
+      prompt: |
+        Inspect repo license list output and list command JSON exporter examples.
+        Capture how to preserve human output while adding JSON.
+    phaseB:
+      promptId: gh-cli-repo-license-list-json-use
+      prompt: |
+        Add `--json` output to `gh repo license list`, returning license keys
+        and names with tests.
+        Name the new regression test `TestRepoLicenseListJson`.
+    expectedContext:
+      description: License list JSON output should use AddJSONFlags and exporter writes.
+      keywords: ["AddJSONFlags", "Exporter", "license"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/list-json-exporter: List-style JSON support uses `AddJSONFlags`, an explicit field list, and tests for JSON plus human output.
+      contextIds: ["gh-cli/list-json-exporter"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/license/list/list.go
+        pattern: 'AddJSONFlags|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/repo/license/list/list_test.go
+        pattern: '--json|Exporter|json'
+      - type: file-contents-match
+        path: pkg/cmd/repo/license/list/list_test.go
+        pattern: 'TestRepoLicenseListJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/license/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-extension-upgrade-json
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-extension-upgrade-json-formation
+      prompt: |
+        Inspect extension upgrade dry-run output and list command JSON exporter
+        conventions. Capture how to expose dry-run results without installing.
+    phaseB:
+      promptId: gh-cli-extension-upgrade-json-use
+      prompt: |
+        Add JSON output to `gh extension upgrade --dry-run`, returning extension
+        names and available versions without performing upgrades.
+        Name the new regression test `TestExtensionUpgradeJson`.
+    expectedContext:
+      description: Dry-run JSON output should preserve no-mutation behavior and use exporter conventions.
+      keywords: ["dry-run", "json", "extension"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/list-json-exporter: Machine-readable output for dry-run/list flows should use explicit fields and preserve no-mutation behavior.
+        - [memory] gh-cli/skills-publish-validation: Validation-only modes such as dry-run should not perform publishing or mutation side effects.
+      contextIds: ["gh-cli/list-json-exporter", "gh-cli/skills-publish-validation"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/extension/command.go
+        pattern: 'Exporter|json|dry-run'
+      - type: file-contents-match
+        path: pkg/cmd/extension/command_test.go
+        pattern: '--json|json|dry-run'
+      - type: file-contents-match
+        path: pkg/cmd/extension/command_test.go
+        pattern: 'TestExtensionUpgradeJson'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/extension"]
+        timeoutMs: 300000
+
+  - id: gh-cli-gpg-key-delete-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-delete-quiet-gpg-formation
+      prompt: |
+        Inspect destructive delete commands and quiet-output conventions. Capture
+        how quiet mode should not alter confirmation or API calls.
+    phaseB:
+      promptId: gh-cli-gpg-key-delete-quiet-use
+      prompt: |
+        Add `--quiet` to `gh gpg-key delete` to suppress only the success
+        message after deletion.
+        Name the new regression test `TestGpgKeyDeleteQuiet`.
+    expectedContext:
+      description: Quiet destructive commands suppress success output only.
+      keywords: ["Quiet", "--quiet", "GPG"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/destructive-quiet-output: Quiet mode on destructive commands should only suppress success output, never confirmation, API calls, or errors.
+      contextIds: ["gh-cli/destructive-quiet-output"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/gpg-key/delete/delete.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/gpg-key/delete/delete_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/gpg-key/delete/delete_test.go
+        pattern: 'TestGpgKeyDeleteQuiet'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/gpg-key/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-ssh-key-delete-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-delete-quiet-ssh-formation
+      prompt: |
+        Inspect SSH key delete success output and confirmation handling. Capture
+        how quiet mode should be tested.
+    phaseB:
+      promptId: gh-cli-ssh-key-delete-quiet-use
+      prompt: |
+        Add `--quiet` to `gh ssh-key delete` to suppress only the success
+        message after deletion.
+        Name the new regression test `TestSshKeyDeleteQuiet`.
+    expectedContext:
+      description: SSH key delete quiet mode suppresses success output only.
+      keywords: ["Quiet", "--quiet", "SSH"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/destructive-quiet-output: Destructive quiet flags are options bools that guard success messages only and preserve confirmation/errors.
+      contextIds: ["gh-cli/destructive-quiet-output"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/ssh-key/delete/delete.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/ssh-key/delete/delete_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/ssh-key/delete/delete_test.go
+        pattern: 'TestSshKeyDeleteQuiet'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/ssh-key/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-label-delete-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-delete-quiet-label-formation
+      prompt: |
+        Inspect label delete output and confirmation behavior. Capture how quiet
+        mode should preserve default errors and prompts.
+    phaseB:
+      promptId: gh-cli-label-delete-quiet-use
+      prompt: |
+        Add `--quiet` to `gh label delete` to suppress only the success message.
+        Name the new regression test `TestLabelDeleteQuiet`.
+    expectedContext:
+      description: Label delete quiet mode suppresses success output only.
+      keywords: ["Quiet", "--quiet", "label"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/destructive-quiet-output: Quiet mode should not skip confirmation or alter deletion; it only suppresses the success message.
+      contextIds: ["gh-cli/destructive-quiet-output"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/label/delete.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/label/delete_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/label/delete_test.go
+        pattern: 'TestLabelDeleteQuiet'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/label"]
+        timeoutMs: 300000
+
+  - id: gh-cli-repo-delete-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-delete-quiet-repo-formation
+      prompt: |
+        Inspect repo delete confirmation and success output. Capture the special
+        safety rule for `--yes` with no repository argument.
+    phaseB:
+      promptId: gh-cli-repo-delete-quiet-use
+      prompt: |
+        Add `--quiet` to `gh repo delete` to suppress only successful deletion
+        output while preserving confirmation safeguards.
+        Name the new regression test `TestRepoDeleteQuiet`.
+    expectedContext:
+      description: Repo delete quiet mode must not affect confirmation safeguards.
+      keywords: ["Quiet", "--quiet", "--yes"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/destructive-quiet-output: Quiet mode on destructive commands must not change confirmation safeguards or API calls.
+      contextIds: ["gh-cli/destructive-quiet-output"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/repo/delete/delete.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/repo/delete/delete_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/repo/delete/delete_test.go
+        pattern: 'TestRepoDeleteQuiet'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/repo/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-release-delete-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *ghCliWorkspace
+    phaseA:
+      promptId: gh-cli-delete-quiet-release-formation
+      prompt: |
+        Inspect release delete output, cleanup-tag behavior, and confirmation.
+        Capture how quiet mode should avoid changing the operation.
+    phaseB:
+      promptId: gh-cli-release-delete-quiet-use
+      prompt: |
+        Add `--quiet` to `gh release delete` so successful deletion and optional
+        tag cleanup print no success message.
+        Name the new regression test `TestReleaseDeleteQuiet`.
+    expectedContext:
+      description: Release delete quiet mode suppresses success output only and preserves cleanup-tag behavior.
+      keywords: ["Quiet", "--quiet", "cleanup-tag"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/destructive-quiet-output: Quiet mode should suppress success output only; cleanup and error behavior should remain unchanged.
+      contextIds: ["gh-cli/destructive-quiet-output"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/release/delete/delete.go
+        pattern: 'Quiet|quiet'
+      - type: file-contents-match
+        path: pkg/cmd/release/delete/delete_test.go
+        pattern: '--quiet|Quiet'
+      - type: file-contents-match
+        path: pkg/cmd/release/delete/delete_test.go
+        pattern: 'TestReleaseDeleteQuiet'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/release/delete"]
+        timeoutMs: 300000

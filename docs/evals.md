@@ -133,6 +133,15 @@ node dist/cli.js eval vaults show lore-dev-sandbox --config \
 node dist/cli.js eval vaults show lore-dev-sandbox --env
 ```
 
+Live evals that are measuring cost should opt into Lore's local cost ledger in
+that sandbox config root before running:
+
+```yaml
+costTracking:
+  enabled: true
+  ledgerPath: /tmp/lore-eval-vaults/lore-dev-sandbox/eval-costs.jsonl
+```
+
 Run the live longitudinal suite against that vault by pointing
 `LORE_EVAL_LONGITUDINAL_CONFIG_ROOT` at the generated config root, exporting the
 vault selector env, and opting into the live task runner:
@@ -152,6 +161,102 @@ not a statistically powered benchmark: it ran all 4 scenarios in the committed
 longitudinal suite across both conditions (8 condition runs total). On
 2026-05-14, `no-memory` passed 3/4 scenarios, `lore-full-loop` passed 4/4
 scenarios, and the observed success-rate lift was +25 percentage points.
+
+An OSS direction-setting pilot lives at
+`evals/task-suites/longitudinal-github-cli-pilot.yaml`. It materializes GitHub
+CLI (`cli/cli`) at pinned commit
+`9a593ce81b593dee752cc11737d1a3ef768e52b3` and runs five scenarios across
+`no-memory`, `seeded-lore`, and `lore-full-loop`. Treat this suite as pilot
+instrumentation only: it is meant to estimate verifier stability, paired
+discordance, token cost, and runtime before choosing the powered sample size for
+the 15 percentage point MDE benchmark. It is not a statistically powered result.
+Its source-controlled seed corpus lives at
+`evals/vault-seeds/github-cli-pilot.yaml`; it models GitHub CLI as one project
+with component-level topics, not as a monorepo.
+
+A larger PR-derived and generalized candidate bank lives at
+`evals/task-suites/longitudinal-github-cli-powered-candidates.yaml`, backed by
+`evals/vault-seeds/github-cli-powered.yaml`. It has 67 candidate scenarios,
+which deliberately exceeds the current 50-pair planning estimate so unstable
+tasks can be culled after smoke validation. Those 67 scenarios are candidate
+slots, not 67 independent statistical units: many intentionally cluster around
+the same source memory or source pull request. Do not publish it as the powered
+benchmark result until candidates have been validated for prompt bounds,
+no-op baseline failure, verifier stability, runtime, and cost.
+
+The primary powered comparison is `seeded-lore` vs. `no-memory`; `lore-full-loop`
+is a secondary end-to-end formation/retrieval/use comparison. `lore-full-loop`
+scenarios should validate durable cross-session learnings that Lore is designed
+to capture, such as decisions, conventions, gotchas, workarounds, and explicit
+future follow-ups. They should not require generic project facts or Phase B-only
+feature details to be captured unless Phase A makes that durable follow-up
+explicit. Before a powered run, pre-register the cluster/capping rule for
+repeated source memories and PRs, the multiplicity treatment for secondary
+comparisons, and the culling rules used to promote candidates. Candidate culling
+must be blind to condition deltas: remove tasks only for objective validity
+failures such as no-op pass, verifier ambiguity, prompt out-of-bounds behavior,
+flake rate, runtime, or cost.
+
+```bash
+npm run build
+NOTION_ENV=dev \
+NOTION_WORKSPACE_ID=415fc269-e68f-4da0-b3e3-b1273b741a7f \
+LORE_EVAL_LONGITUDINAL_CONFIG_ROOT=/tmp/lore-eval-vaults/lore-dev-sandbox \
+LORE_EVAL_TASK_REAL=1 \
+LORE_EVAL_LONGITUDINAL_REAL=1 \
+LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT="Eval Sandbox" \
+node dist/cli.js eval run --runner task \
+  evals/task-suites/longitudinal-github-cli-pilot.yaml \
+  --out evals/results/longitudinal-github-cli-pilot.json
+```
+
+The run writes Codex JSONL transcript sidecars next to the artifact, in
+`evals/results/longitudinal-github-cli-pilot-transcripts/`. Use those sidecars
+to inspect prompts, event streams, tool activity, and per-turn usage evidence
+without bloating the main JSON artifact.
+
+The GitHub CLI longitudinal suites set `costKillSwitchUsd: 1500`. This is an
+overnight guard between condition runs: once observed priced cost reaches the
+limit, the runner stops before launching another agent subprocess and persists
+a partial artifact with a `termination` block. If agent usage is unavailable or
+unpriced, the guard stops fail-closed instead of treating that work as free.
+Operators can override the suite value for a run with
+`--cost-kill-switch-usd <n>`.
+
+Cost is split across two surfaces. Primary Phase A/Phase B agent spend is
+recorded in the eval artifact under each phase's `cost` object using Codex
+`turn.completed` usage when available. Lore-owned spend is recorded in the
+local cost ledger: post-session mining rows use
+`eval.mining.background_model`, and MCP/Notion activity appears as
+`mcp.invocation` rows. Inspect the Lore-owned side from the sandbox config root:
+
+```bash
+LORE_REPO=$PWD
+cd /tmp/lore-eval-vaults/lore-dev-sandbox
+node "$LORE_REPO/dist/cli.js" costs summary --since 24h
+node "$LORE_REPO/dist/cli.js" costs export --since 24h --format csv \
+  > /tmp/lore-eval-vaults/lore-dev-sandbox/eval-costs.csv
+```
+
+After a pilot artifact exists, estimate the powered run size, budget fit,
+paired primary-agent token deltas, and paired runner phase elapsed deltas:
+
+```bash
+node dist/cli.js eval longitudinal plan \
+  evals/results/longitudinal-github-cli-pilot.json \
+  --mde 0.15 \
+  --power 0.8 \
+  --alpha 0.05 \
+  --budget-usd 1000
+```
+
+The planner only projects cost from measured artifacts when every condition run
+has complete primary-agent cost coverage. If any agent phase lacks priced usage,
+the cost projection is reported as unavailable unless the operator supplies
+`--cost-per-condition-run-usd`. The elapsed deltas are runner phase elapsed
+time, not pure model latency: Phase A elapsed includes formation work, Phase B
+elapsed includes verifier execution, and wake-up retrieval is outside the Phase
+B timer.
 
 Because the live sandbox vault state is not committed, runners against it are
 not deterministic the way fixture runs are; treat notion-mode CI as a coarser

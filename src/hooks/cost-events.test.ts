@@ -3,20 +3,23 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  payloadSummary,
   readLedgerEvents,
   resolveCostTracking,
+  type BackgroundModelCostEvent,
   type CostLedgerEvent,
 } from "../core/cost-ledger.js"
 import {
   recordBackgroundModelCostEvent,
+  recordEvalMiningModelCostEvent,
   recordWakeupContextCostEvent,
 } from "./cost-events.js"
 
-type BackgroundModelEvent = Extract<
-  CostLedgerEvent,
-  { eventType: "autosave.background_model" | "digest.background_model" }
->
+type BackgroundModelEvent = BackgroundModelCostEvent
 type WakeupContextEvent = Extract<CostLedgerEvent, { eventType: "hook.wakeup_context" }>
+type EvalMiningModelEvent = BackgroundModelCostEvent & {
+  eventType: "eval.mining.background_model"
+}
 
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\x00-\x1F\x7F-\x9F\u2028\u2029]/
@@ -158,5 +161,61 @@ describe("hook cost events", () => {
     expect(wakeupEvent).toBeDefined()
     expect(wakeupEvent).not.toHaveProperty("agentName")
     expect(wakeupEvent).not.toHaveProperty("sessionId")
+  })
+
+  it("records longitudinal eval mining as Lore-owned CLI model cost", async () => {
+    const root = tempDir()
+    const costTracking = resolveCostTracking(
+      {
+        costTracking: {
+          enabled: true,
+          ledgerPath: "state/costs.jsonl",
+        },
+      },
+      root
+    )
+    if (!costTracking.enabled) throw new Error("expected cost tracking to be enabled")
+
+    const payload = payloadSummary("eval mining prompt")
+    await recordEvalMiningModelCostEvent({
+      costTracking,
+      payload,
+      result: {
+        elapsedMs: 123,
+        writeBudgetExceeded: false,
+        exitCode: 0,
+        exitSignal: null,
+        promptPayload: payload,
+      },
+      projectName: "Eval Sandbox/run-1",
+      agentName: "Codex",
+      sessionId: "session-1",
+      agent: { command: "codex", args: ["exec", "-m", "gpt-5.5"] },
+    })
+
+    const events = (await readLedgerEvents(costTracking)).map((row) => row.event)
+    const event = events.find(
+      (row): row is EvalMiningModelEvent =>
+        row.eventType === "eval.mining.background_model"
+    )
+
+    expect(event).toBeDefined()
+    expect(event).toMatchObject({
+      eventType: "eval.mining.background_model",
+      source: "cli",
+      status: "success",
+      durationMs: 123,
+      projectName: "Eval Sandbox/run-1",
+      agentName: "Codex",
+      sessionId: "session-1",
+      modelUsage: {
+        provider: "openai",
+        model: "gpt-5.5",
+        source: "prompt_estimate",
+        estimated: true,
+      },
+    })
+    expect(event!.estimatedCost.estimated).toBe(true)
+    expect(event!.estimatedCost.usd).toBeGreaterThan(0)
   })
 })

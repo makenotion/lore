@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { mkdtemp, mkdir, writeFile, readFile, stat, rm, readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { delimiter, join } from "node:path"
+import { delimiter, join, posix } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
   BENCH_CHILD_CLEARED_ENV_KEYS,
@@ -9,14 +10,18 @@ import {
   BENCH_TOOL_SHIM_DIR,
   buildBenchCodexChildEnv,
   buildBenchSpawnArgs,
+  buildTaskSpawnArgs,
   buildCodexChildEnv,
   CODEX_FORWARDED_ENV_KEYS,
   createIsolatedCodexHome,
   isLongitudinalTaskArtifact,
   LongitudinalAdapterRefusedError,
+  longitudinalMiningAgentForScenario,
+  parseCodexConfigModel,
   selectExpectedContextIds,
   type LongitudinalAgentConfigServices,
   type LongitudinalLoreAdapter,
+  loadTaskEvalSuite,
   runTaskEvalSuite,
   taskEvalSuiteSchema,
   withTemporaryLongitudinalAgentConfig,
@@ -24,8 +29,91 @@ import {
   type AgentRunInput,
   type AgentRunResult,
 } from "./task-runner.js"
+import { loadSeedCorpus } from "./seed-corpus.js"
 
 describe("task-runner", () => {
+  it("loads the committed GitHub CLI longitudinal pilot suite", async () => {
+    const loaded = await loadTaskEvalSuite(
+      "evals/task-suites/longitudinal-github-cli-pilot.yaml"
+    )
+
+    if (!("longitudinal" in loaded.suite) || loaded.suite.longitudinal !== true) {
+      throw new Error("expected longitudinal suite")
+    }
+    expect(loaded.suite.conditions).toEqual([
+      "no-memory",
+      "seeded-lore",
+      "lore-full-loop",
+    ])
+    expect(loaded.suite.seededCorpus).toBe("../vault-seeds/github-cli-pilot.yaml")
+    expect(loaded.suite.scenarios).toHaveLength(5)
+    expect(loaded.suite.scenarios.every((scenario) => scenario.seededContext)).toBe(true)
+  })
+
+  it("loads the GitHub CLI powered candidate suite", async () => {
+    const loaded = await loadTaskEvalSuite(
+      "evals/task-suites/longitudinal-github-cli-powered-candidates.yaml"
+    )
+
+    if (!("longitudinal" in loaded.suite) || loaded.suite.longitudinal !== true) {
+      throw new Error("expected longitudinal suite")
+    }
+    expect(loaded.suite.conditions).toEqual([
+      "no-memory",
+      "seeded-lore",
+      "lore-full-loop",
+    ])
+    expect(loaded.suite.seededCorpus).toBe("../vault-seeds/github-cli-powered.yaml")
+    expect(loaded.suite.scenarios).toHaveLength(67)
+    expect(loaded.suite.scenarios.every((scenario) => scenario.seededContext)).toBe(true)
+
+    const corpus = await loadSeedCorpus("evals/vault-seeds/github-cli-powered.yaml")
+    const memoryById = new Map(corpus.vault.memories.map((memory) => [memory.id, memory]))
+    const corpusContextIds = new Set([
+      ...corpus.vault.memories.map((memory) => memory.id),
+      ...corpus.vault.decisions.map((decision) => decision.id),
+      ...corpus.vault.facts.map((fact) => fact.id),
+    ])
+    const scenarioIds = new Set(loaded.suite.scenarios.map((scenario) => scenario.id))
+    for (const memory of corpus.vault.memories) {
+      for (const scenarioId of memory.scenarios) {
+        expect(scenarioIds.has(scenarioId)).toBe(true)
+      }
+    }
+    for (const scenario of loaded.suite.scenarios) {
+      const contextIds = scenario.seededContext?.contextIds ?? []
+      expect(contextIds.length).toBeGreaterThan(0)
+      for (const contextId of contextIds)
+        expect(corpusContextIds.has(contextId)).toBe(true)
+      const testName = poweredScenarioTestName(scenario.id)
+      expect(scenario.phaseB.prompt).toContain(testName)
+      expect(
+        scenario.verifiers.some(
+          (verifier) =>
+            verifier.type === "file-contents-match" &&
+            verifier.path.endsWith("_test.go") &&
+            verifier.pattern === testName
+        )
+      ).toBe(true)
+      for (const packageDir of goPackageDirsForFileVerifiers(scenario.verifiers)) {
+        expect(
+          scenario.verifiers.some(
+            (verifier) =>
+              verifier.type === "command" &&
+              verifier.command === "go" &&
+              goTestArgsCoverPackage(verifier.args, packageDir)
+          )
+        ).toBe(true)
+      }
+      expect(
+        contextIds.some((contextId) => {
+          const memory = memoryById.get(contextId)
+          return memory?.scenarios.includes(scenario.id) ?? false
+        })
+      ).toBe(true)
+    }
+  })
+
   it("copies the workspace, runs the agent, and reports verifier success", async () => {
     const { suitePath } = await writeTaskSuite({
       workspace: { "package.json": '{"name": "x"}\n' },
@@ -45,7 +133,9 @@ tasks:
 `,
     })
 
-    const adapter = mockAdapter("codex", async ({ workspace }) => {
+    let observedTranscriptPath: string | undefined
+    const adapter = mockAdapter("codex", async ({ workspace, transcriptPath }) => {
+      observedTranscriptPath = transcriptPath
       await writeFile(
         join(workspace, "README.md"),
         "This package's purpose is documented here. The package name is x.\n",
@@ -72,10 +162,100 @@ tasks:
     expect(result.success).toBe(true)
     expect(result.failureReason).toBeNull()
     expect(result.verifiers.every((v) => v.passed)).toBe(true)
+    expect(observedTranscriptPath).toMatch(
+      /result-transcripts[/\\]001-agent-creates-readme\.codex\.jsonl$/
+    )
     expect(JSON.parse(await readFile(outPath, "utf-8"))).toMatchObject({
       runner: { mode: "task" },
       summary: { passedTasks: 1 },
     })
+  })
+
+  it("materializes git workspaces from a pinned SHA and records metadata", async () => {
+    const remoteBase = await mkdtemp(join(tmpdir(), "lore-eval-git-remotes-"))
+    const cacheDir = await mkdtemp(join(tmpdir(), "lore-eval-git-cache-"))
+    const sourceRepo = await mkdtemp(join(tmpdir(), "lore-eval-git-source-"))
+    await writeFile(join(sourceRepo, "README.md"), "# Fixture repo\n", "utf-8")
+    git(sourceRepo, ["init", "--quiet"])
+    git(sourceRepo, ["add", "README.md"])
+    git(sourceRepo, [
+      "-c",
+      "user.name=Lore Eval",
+      "-c",
+      "user.email=lore-eval@example.com",
+      "commit",
+      "--quiet",
+      "-m",
+      "init",
+    ])
+    const sha = git(sourceRepo, ["rev-parse", "HEAD"])
+    await mkdir(join(remoteBase, "cli"), { recursive: true })
+    git(remoteBase, [
+      "clone",
+      "--quiet",
+      "--bare",
+      sourceRepo,
+      join(remoteBase, "cli", "cli.git"),
+    ])
+
+    const suiteDir = await mkdtemp(join(tmpdir(), "lore-eval-git-suite-"))
+    const suitesDir = join(suiteDir, "task-suites")
+    await mkdir(suitesDir, { recursive: true })
+    const suitePath = join(suitesDir, "suite.yaml")
+    await writeFile(
+      suitePath,
+      `version: 1
+name: git-workspace
+tasks:
+  - id: git-workspace
+    prompt: Touch the git workspace.
+    agent: codex
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: ${sha}
+      sparseCheckout:
+        - README.md
+    verifiers:
+      - type: file-exists
+        path: DONE.md
+`,
+      "utf-8"
+    )
+
+    const priorRemoteBase = process.env["LORE_EVAL_GIT_REMOTE_BASE_URL"]
+    const priorCacheDir = process.env["LORE_EVAL_WORKSPACE_CACHE_DIR"]
+    process.env["LORE_EVAL_GIT_REMOTE_BASE_URL"] = remoteBase
+    process.env["LORE_EVAL_WORKSPACE_CACHE_DIR"] = cacheDir
+    try {
+      const adapter = mockAdapter("codex", async ({ workspace }) => {
+        expect(await readFile(join(workspace, "README.md"), "utf-8")).toContain(
+          "Fixture repo"
+        )
+        await writeFile(join(workspace, "DONE.md"), "done\n", "utf-8")
+        return successResult()
+      })
+
+      const { artifact } = await runTaskEvalSuite(suitePath, {
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      })
+
+      const result = artifact.results[0]!
+      expect(result.workspaceSource).toBe(`git:cli/cli@${sha}`)
+      expect(result.workspaceMaterialization).toMatchObject({
+        kind: "git",
+        repo: "cli/cli",
+        sha,
+        sparseCheckout: ["README.md"],
+      })
+    } finally {
+      if (priorRemoteBase === undefined)
+        delete process.env["LORE_EVAL_GIT_REMOTE_BASE_URL"]
+      else process.env["LORE_EVAL_GIT_REMOTE_BASE_URL"] = priorRemoteBase
+      if (priorCacheDir === undefined) delete process.env["LORE_EVAL_WORKSPACE_CACHE_DIR"]
+      else process.env["LORE_EVAL_WORKSPACE_CACHE_DIR"] = priorCacheDir
+    }
   })
 
   it("fails when verifiers don't pass after the agent run", async () => {
@@ -534,6 +714,32 @@ tasks:
     expect(artifact.results[0]!.verifiers[0]!.message).toContain("Command passed")
   })
 
+  it("rejects the cost kill-switch for non-longitudinal task suites", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "README.md": "fixture\n" },
+      suite: `version: 1
+name: standard-cost-kill
+tasks:
+  - id: one-task
+    prompt: Write a file.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: file-exists
+        path: done.txt
+`,
+    })
+
+    await expect(
+      runTaskEvalSuite(suitePath, {
+        costKillSwitchUsd: 1,
+        adapters: new Map<string, AgentAdapter>([
+          ["codex", mockAdapter("codex", async () => successResult())],
+        ]),
+      })
+    ).rejects.toThrow("--cost-kill-switch-usd is only supported")
+  })
+
   it("runs longitudinal suites across no-memory and lore-full-loop conditions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "lore-eval-longitudinal-suite-"))
     const suitesDir = join(dir, "task-suites")
@@ -608,6 +814,7 @@ scenarios:
     })
 
     let cleanupCalls = 0
+    const progressEvents: string[] = []
     const loreAdapter: LongitudinalLoreAdapter = {
       async createRun({ workspace }) {
         await mkdir(join(workspace, ".codex"), { recursive: true })
@@ -658,9 +865,22 @@ scenarios:
       outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
       adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
       longitudinalLoreAdapter: loreAdapter,
+      onProgress(event) {
+        if (event.type !== "run-stop") {
+          progressEvents.push(
+            `${event.type}:${event.index}/${event.total}:${event.condition}`
+          )
+        }
+      },
     })
 
     expect(cleanupCalls).toBe(1)
+    expect(progressEvents).toEqual([
+      "trial-start:1/2:no-memory",
+      "trial-finish:1/2:no-memory",
+      "trial-start:2/2:lore-full-loop",
+      "trial-finish:2/2:lore-full-loop",
+    ])
     expect(phaseWorkspaces[0]?.workspace).not.toBe(phaseWorkspaces[1]?.workspace)
     expect(phaseWorkspaces[2]?.workspace).not.toBe(phaseWorkspaces[3]?.workspace)
     expect(artifact.runner).toMatchObject({ mode: "task", kind: "longitudinal" })
@@ -689,6 +909,341 @@ scenarios:
     expect(fullLoop?.phases[0]?.lore.decisionsCreated).toBe(1)
     expect(fullLoop?.phases[1]?.lore.surfacedContextIds).toEqual(["ctx-result"])
     expect(fullLoop?.phases[1]?.patchStats.filesChanged).toBe(1)
+  })
+
+  it("stops longitudinal suites on the cost kill-switch and preserves partial results", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "README.md": "fixture\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-cost-kill
+costKillSwitchUsd: 0.002
+conditions:
+  - no-memory
+scenarios:
+  - id: first-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the first task.
+    phaseB:
+      prompt: Finish the first task.
+    verifiers:
+      - type: file-exists
+        path: first.txt
+  - id: second-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the second task.
+    phaseB:
+      prompt: Finish the second task.
+    verifiers:
+      - type: file-exists
+        path: second.txt
+`,
+    })
+
+    const prompts: string[] = []
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      prompts.push(prompt)
+      if (prompt.includes("Finish the first task")) {
+        await writeFile(join(workspace, "first.txt"), "done\n", "utf-8")
+      }
+      if (prompt.includes("Finish the second task")) {
+        await writeFile(join(workspace, "second.txt"), "done\n", "utf-8")
+      }
+      return successResultWithUsage({
+        promptTokens: 1000,
+        cachedPromptTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+      })
+    })
+
+    const progressEvents: string[] = []
+    const outPath = join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json")
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath,
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      onProgress(event) {
+        progressEvents.push(event.type)
+      },
+    })
+
+    expect(prompts).toHaveLength(2)
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(artifact.results).toHaveLength(1)
+    expect(artifact.results[0]?.scenarioId).toBe("first-task")
+    expect(artifact.termination).toMatchObject({
+      reason: "cost-kill-switch",
+      limitUsd: 0.002,
+      completedTrials: 1,
+      totalPlannedTrials: 2,
+    })
+    expect(artifact.termination?.observedUsd).toBeGreaterThanOrEqual(0.002)
+    expect(progressEvents).toEqual(["trial-start", "trial-finish", "run-stop"])
+
+    const persisted = JSON.parse(await readFile(outPath, "utf-8")) as typeof artifact
+    expect(persisted.results).toHaveLength(1)
+    expect(persisted.termination?.reason).toBe("cost-kill-switch")
+  })
+
+  it("stops longitudinal suites when cost is unknown under a kill-switch", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "README.md": "fixture\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-cost-unknown
+costKillSwitchUsd: 10
+conditions:
+  - no-memory
+scenarios:
+  - id: first-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the first task.
+    phaseB:
+      prompt: Finish the first task.
+    verifiers:
+      - type: file-exists
+        path: first.txt
+  - id: second-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the second task.
+    phaseB:
+      prompt: Finish the second task.
+    verifiers:
+      - type: file-exists
+        path: second.txt
+`,
+    })
+
+    const prompts: string[] = []
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      prompts.push(prompt)
+      if (prompt.includes("Finish the first task")) {
+        await writeFile(join(workspace, "first.txt"), "done\n", "utf-8")
+      }
+      return successResult()
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+    })
+
+    expect(prompts).toHaveLength(2)
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(artifact.results).toHaveLength(1)
+    expect(artifact.termination).toMatchObject({
+      reason: "cost-unknown",
+      completedTrials: 1,
+      totalPlannedTrials: 2,
+    })
+  })
+
+  it("counts failed Lore mining model rows toward the cost kill-switch", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "lore-eval-cost-root-"))
+    const ledgerPath = join(configRoot, "eval-costs.jsonl")
+    await writeFile(
+      join(configRoot, ".lore.yaml"),
+      `vault:
+  pageId: abc123
+costTracking:
+  enabled: true
+  ledgerPath: ${JSON.stringify(ledgerPath)}
+`,
+      "utf-8"
+    )
+    const failedMiningCostRow = `${JSON.stringify({
+      schemaVersion: 1,
+      timestamp: "2026-05-27T00:00:01.000Z",
+      eventType: "eval.mining.background_model",
+      source: "cli",
+      status: "error",
+      payload: {
+        redacted: true,
+        tokenEstimator: "chars_per_token_4",
+        inputBytes: 4,
+        estimatedInputTokens: 1,
+      },
+      modelUsage: {
+        provider: "openai",
+        model: "gpt-5.5",
+        inputTokens: 1,
+        estimated: true,
+        source: "prompt_estimate",
+      },
+      estimatedCost: {
+        usd: 1,
+        pricingSource: "test",
+        estimated: true,
+      },
+    })}\n`
+    const previousConfigRoot = process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+    process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = configRoot
+    try {
+      const { suitePath } = await writeTaskSuite({
+        workspace: { "README.md": "fixture\n" },
+        suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-lore-cost-error
+costKillSwitchUsd: 0.5
+conditions:
+  - no-memory
+scenarios:
+  - id: first-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the first task.
+    phaseB:
+      prompt: Finish the first task.
+    verifiers:
+      - type: file-exists
+        path: first.txt
+  - id: second-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the second task.
+    phaseB:
+      prompt: Finish the second task.
+    verifiers:
+      - type: file-exists
+        path: second.txt
+`,
+      })
+
+      const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+        if (prompt.includes("Finish the first task")) {
+          await writeFile(join(workspace, "first.txt"), "done\n", "utf-8")
+          await writeFile(ledgerPath, failedMiningCostRow, "utf-8")
+        }
+        return successResultWithUsage({
+          promptTokens: 0,
+          cachedPromptTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        })
+      })
+
+      const { artifact } = await runTaskEvalSuite(suitePath, {
+        now: new Date("2026-05-27T00:00:00.000Z"),
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      })
+
+      if (!isLongitudinalTaskArtifact(artifact)) {
+        throw new Error("expected longitudinal artifact")
+      }
+      expect(artifact.results).toHaveLength(1)
+      expect(artifact.termination).toMatchObject({
+        reason: "cost-kill-switch",
+        observedUsd: 1,
+        loreUsd: 1,
+        completedTrials: 1,
+        totalPlannedTrials: 2,
+      })
+    } finally {
+      if (previousConfigRoot === undefined) {
+        delete process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+      } else {
+        process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = previousConfigRoot
+      }
+    }
+  })
+
+  it("injects seeded context for seeded-lore longitudinal runs", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "cache.js": "export function cacheKey(name) { return name }\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-seeded
+conditions:
+  - no-memory
+  - seeded-lore
+scenarios:
+  - id: seeded-cache-prefix
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Decide the cache prefix and preserve it for later.
+    phaseB:
+      prompt: Implement cacheKey using the remembered prefix.
+    expectedContext:
+      description: Cache keys use the gh-cli-pilot prefix.
+      keywords: ["gh-cli-pilot:"]
+    seededContext:
+      renderedContext: "- [memory] ctx-cache: Cache keys use the exact prefix gh-cli-pilot:."
+      contextIds: ["ctx-cache"]
+    verifiers:
+      - type: file-contents-match
+        path: cache.js
+        pattern: 'gh-cli-pilot:'
+`,
+    })
+
+    const transcriptPaths: Array<string | undefined> = []
+    const adapter = mockAdapter(
+      "codex",
+      async ({ prompt, workspace, transcriptPath }) => {
+        transcriptPaths.push(transcriptPath)
+        if (prompt.includes("Retrieved Lore context")) {
+          await writeFile(
+            join(workspace, "cache.js"),
+            "export function cacheKey(name) { return `gh-cli-pilot:${name}` }\n",
+            "utf-8"
+          )
+        }
+        return successResult()
+      }
+    )
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(artifact.summary.conditions["no-memory"]).toMatchObject({
+      trials: 1,
+      passed: 0,
+      failed: 1,
+    })
+    expect(artifact.summary.conditions["seeded-lore"]).toMatchObject({
+      trials: 1,
+      passed: 1,
+      failed: 0,
+    })
+    expect(artifact.summary.lift).toMatchObject({
+      toCondition: "seeded-lore",
+      successRateDelta: 1,
+      liftedScenarioIds: ["seeded-cache-prefix"],
+    })
+    const seeded = artifact.results.find((r) => r.condition === "seeded-lore")
+    expect(seeded?.phases[1]?.lore.wakeUpEnabled).toBe(true)
+    expect(seeded?.phases[1]?.lore.surfacedContextIds).toEqual(["ctx-cache"])
+    expect(transcriptPaths.map((p) => p?.split(/[\\/]/u).pop())).toEqual([
+      "001-seeded-cache-prefix-no-memory-formation.codex.jsonl",
+      "001-seeded-cache-prefix-no-memory-use.codex.jsonl",
+      "002-seeded-cache-prefix-seeded-lore-formation.codex.jsonl",
+      "002-seeded-cache-prefix-seeded-lore-use.codex.jsonl",
+    ])
   })
 
   it("keeps primary longitudinal agents Lore-tool-free while mining has MCP config", async () => {
@@ -1378,6 +1933,20 @@ describe("buildCodexChildEnv", () => {
 })
 
 describe("createIsolatedCodexHome", () => {
+  it("reads only the top-level Codex model setting", () => {
+    expect(
+      parseCodexConfigModel(
+        [
+          "# comment",
+          'model = "gpt-5.5"',
+          "",
+          "[profiles.other]",
+          'model = "gpt-4o"',
+        ].join("\n")
+      )
+    ).toBe("gpt-5.5")
+  })
+
   it("copies auth and top-level model settings without global MCP or memories", async () => {
     const sourceHome = await mkdtemp(join(tmpdir(), "lore-codex-source-home-"))
     const isolatedHomes: string[] = []
@@ -1452,7 +2021,65 @@ describe("createIsolatedCodexHome", () => {
   })
 })
 
+function goPackageDirsForFileVerifiers(
+  verifiers: Array<{ type: string; path?: string }>
+): string[] {
+  const dirs = new Set<string>()
+  for (const verifier of verifiers) {
+    if (
+      verifier.type !== "file-contents-match" ||
+      verifier.path === undefined ||
+      !verifier.path.endsWith(".go")
+    ) {
+      continue
+    }
+    dirs.add(posix.dirname(verifier.path))
+  }
+  return [...dirs]
+}
+
+function goTestArgsCoverPackage(args: string[], packageDir: string): boolean {
+  for (const arg of args.slice(1)) {
+    if (!arg.startsWith("./")) continue
+    const packagePattern = arg.slice(2)
+    if (packagePattern.endsWith("/...")) {
+      const base = packagePattern.slice(0, -4)
+      if (packageDir === base || packageDir.startsWith(`${base}/`)) return true
+      continue
+    }
+    if (packageDir === packagePattern) return true
+  }
+  return false
+}
+
+function poweredScenarioTestName(scenarioId: string): string {
+  return `Test${scenarioId
+    .split("-")
+    .filter((part) => part !== "gh" && part !== "cli")
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join("")}`
+}
+
 describe("selectExpectedContextIds", () => {
+  it("uses Codex for longitudinal mining when the evaluated scenario agent is Codex", async () => {
+    const agent = await longitudinalMiningAgentForScenario(
+      {
+        id: "mining-agent",
+        agent: "codex",
+        workspace: "../w/x",
+        phaseA: { prompt: "learn" },
+        phaseB: { prompt: "use" },
+        expectedContext: { description: "", keywords: [], harmfulKeywords: [] },
+        verifiers: [{ type: "file-exists", path: "x" }],
+        timeoutMs: 300_000,
+      },
+      { model: "gpt-5.5" }
+    )
+
+    expect(agent.command).toBe("codex")
+    expect(agent.args).toContain("gpt-5.5")
+  })
+
   it("accepts expected keywords distributed across one formation's rows", () => {
     const ids = selectExpectedContextIds(
       ["Result", "ok", "err"],
@@ -1522,7 +2149,38 @@ function successResult(): AgentRunResult {
   return { exitCode: 0, stdout: "", stderr: "", timedOut: false }
 }
 
+function successResultWithUsage(
+  usage: NonNullable<AgentRunResult["usage"]>
+): AgentRunResult {
+  return { ...successResult(), usage: { provider: "openai", model: "gpt-5", ...usage } }
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim()
+}
+
 describe("bench spawn argv carries NO secrets", () => {
+  it("buildTaskSpawnArgs enables JSONL transcripts without writing the final message into the workspace", () => {
+    const args = buildTaskSpawnArgs({
+      workspace: "/tmp/workspace",
+      prompt: "Do the task",
+      lastMessagePath: "/tmp/codex-home/last-message.txt",
+    })
+
+    expect(args).toEqual([
+      "exec",
+      "--json",
+      "--output-last-message",
+      "/tmp/codex-home/last-message.txt",
+      "--cd",
+      "/tmp/workspace",
+      "--sandbox",
+      "workspace-write",
+      "--skip-git-repo-check",
+      "Do the task",
+    ])
+  })
+
   it("buildBenchSpawnArgs does not contain bearer-shaped substrings", () => {
     // Invariant: bench Notion auth is routed outside argv. The spawn
     // argv carries ZERO bearer-shaped values or `-c mcp_servers.lore.*`

@@ -16,8 +16,12 @@ import {
 import {
   isLongitudinalTaskArtifact,
   runTaskEvalSuite,
+  type AnyTaskEvalArtifact,
   type LongitudinalTaskArtifact,
+  type LongitudinalTaskCondition,
+  type TaskEvalProgressEvent,
 } from "../../eval/task-runner.js"
+import { buildLongitudinalBenchmarkPlan } from "../../eval/longitudinal-plan.js"
 import { resolveProjectByName } from "../../core/project-scope.js"
 import { EVAL_RUNNERS, peekSuiteRunner, type EvalRunner } from "../../eval/schema.js"
 import {
@@ -42,6 +46,7 @@ export interface EvalRunCliOptions {
   maxHarm?: number
   baselinePath?: string
   projectName?: string
+  costKillSwitchUsd?: number
   /**
    * Prefix slice for sample runs. Bench-only — rejected on every
    * other runner mode. Refuses to land when `--out` writes under an
@@ -60,6 +65,7 @@ export interface EvalRunRawCliOptions {
   maxHarm?: string
   baseline?: string
   project?: string
+  costKillSwitchUsd?: string
   limit?: string
   json?: boolean
 }
@@ -113,6 +119,15 @@ export function parseEvalRunCliOptions(
     limit = parsedLimit.value
   }
 
+  const costKillSwitchUsd = parseOptionalPositiveNumber(
+    "--cost-kill-switch-usd",
+    raw.costKillSwitchUsd
+  )
+  if (!costKillSwitchUsd.ok) return costKillSwitchUsd
+  if (costKillSwitchUsd.value !== undefined && costKillSwitchUsd.value <= 0) {
+    return { ok: false, message: "--cost-kill-switch-usd must be greater than 0." }
+  }
+
   return {
     ok: true,
     value: {
@@ -123,6 +138,7 @@ export function parseEvalRunCliOptions(
       maxHarm: maxHarm.value,
       baselinePath: raw.baseline,
       projectName: raw.project,
+      costKillSwitchUsd: costKillSwitchUsd.value,
       limit,
       json: !!raw.json,
     },
@@ -230,6 +246,9 @@ export function collectEvalThresholdFailures(
 export function hasLongitudinalTaskGateFailures(
   artifact: LongitudinalTaskArtifact
 ): boolean {
+  if (artifact.termination) return true
+  const seededLore = artifact.summary.conditions["seeded-lore"]
+  if (seededLore && seededLore.trials > 0) return seededLore.failed > 0
   const fullLoop = artifact.summary.conditions["lore-full-loop"]
   if (fullLoop.trials > 0) return fullLoop.failed > 0
   return artifact.summary.failedTrials > 0
@@ -349,6 +368,105 @@ export function buildNotionServicesFactory(
   }
 }
 
+function parseOptionalPositiveNumber(
+  flag: string,
+  raw: string | undefined
+): CliParseResult<number | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u.test(raw)) {
+    return { ok: false, message: `${flag} must be a non-negative decimal, got "${raw}"` }
+  }
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) {
+    return { ok: false, message: `${flag} must be a non-negative decimal, got "${raw}"` }
+  }
+  return { ok: true, value: n }
+}
+
+function parseOptionalPositiveInteger(
+  flag: string,
+  raw: string | undefined
+): CliParseResult<number | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  const parsed = parsePositiveDecimalInteger(flag, raw)
+  if (!parsed.ok) return parsed
+  return { ok: true, value: parsed.value }
+}
+
+function parseLongitudinalToCondition(
+  raw: string | undefined
+): CliParseResult<Exclude<LongitudinalTaskCondition, "no-memory"> | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined }
+  if (raw === "seeded-lore" || raw === "lore-full-loop") {
+    return { ok: true, value: raw }
+  }
+  return {
+    ok: false,
+    message:
+      '--to-condition must be one of: seeded-lore, lore-full-loop; got "' + raw + '"',
+  }
+}
+
+function formatPercentagePoints(value: number | null): string {
+  if (value === null) return "n/a"
+  return `${(value * 100).toFixed(1)} pp`
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null) return "n/a"
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function formatUsd(value: number | null): string {
+  if (value === null) return "n/a"
+  return `$${value.toFixed(2)}`
+}
+
+function formatSignedNumber(value: number | null): string {
+  if (value === null) return "n/a"
+  const rounded = Math.round(value)
+  return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString()}`
+}
+
+function formatSignedPercent(value: number | null): string {
+  if (value === null) return "n/a"
+  const percent = value * 100
+  return `${percent >= 0 ? "+" : ""}${percent.toFixed(1)}%`
+}
+
+function formatSignedMs(value: number | null): string {
+  if (value === null) return "n/a"
+  const rounded = Math.round(value)
+  return `${rounded >= 0 ? "+" : ""}${rounded.toLocaleString()} ms`
+}
+
+export function formatTaskProgressEvent(event: TaskEvalProgressEvent): string {
+  if (event.type === "run-stop") {
+    const loreCost =
+      event.loreUsd === null
+        ? "lore cost unavailable"
+        : `lore ${formatUsd(event.loreUsd)}`
+    if (event.reason === "cost-unknown") {
+      return (
+        `  stopped after ${event.completedTrials}/${event.totalPlannedTrials}: ` +
+        `cost unknown (${formatUsd(event.primaryAgentUsd)} known agent, ${loreCost})`
+      )
+    }
+    return (
+      `  stopped after ${event.completedTrials}/${event.totalPlannedTrials}: ` +
+      `cost kill-switch observed ${formatUsd(event.observedUsd)} / ` +
+      `${formatUsd(event.limitUsd)} (${formatUsd(event.primaryAgentUsd)} agent, ${loreCost})`
+    )
+  }
+  const condition = event.condition ? ` [${event.condition}]` : ""
+  const target = event.scenarioId ?? event.taskId
+  if (event.type === "trial-start") {
+    return `  running ${event.index}/${event.total}: ${target}${condition}`
+  }
+  const status = event.success ? "passed" : "failed"
+  return `  finished ${event.index}/${event.total}: ${target}${condition} ${status}`
+}
+
 export const evalCommand = new Command("eval").description("Run Lore evaluation suites")
 
 evalCommand.addCommand(
@@ -375,6 +493,10 @@ evalCommand.addCommand(
       "--limit <n>",
       "Bench-only: run a prefix slice of the corpus (smoke / sample runs). Rejected when --out writes into evals/baselines/."
     )
+    .option(
+      "--cost-kill-switch-usd <n>",
+      "Task longitudinal runs only: stop launching new condition runs once observed priced cost reaches this USD limit"
+    )
     .option("--json", "Print the full JSON artifact to stdout")
     .action(
       async (
@@ -387,6 +509,7 @@ evalCommand.addCommand(
           maxHarm?: string
           baseline?: string
           project?: string
+          costKillSwitchUsd?: string
           limit?: string
           json?: boolean
         }
@@ -443,23 +566,43 @@ evalCommand.addCommand(
             process.exit(1)
             return
           }
+          if (
+            parsed.value.costKillSwitchUsd !== undefined &&
+            parsed.value.runner !== "task"
+          ) {
+            console.error(
+              "Eval failed: --cost-kill-switch-usd is only supported with --runner task (or a suite YAML with `runner: task`)."
+            )
+            process.exit(1)
+            return
+          }
           if (parsed.value.runner === "task") {
             const { artifact, outPath } = await runTaskEvalSuite(suite, {
               outPath: parsed.value.outPath,
+              costKillSwitchUsd: parsed.value.costKillSwitchUsd,
+              onProgress: parsed.value.json
+                ? undefined
+                : (event) => console.log(formatTaskProgressEvent(event)),
             })
             if (parsed.value.json) {
               console.log(JSON.stringify(artifact, null, 2))
             } else {
               if (isLongitudinalTaskArtifact(artifact)) {
+                const seededLore = artifact.summary.conditions["seeded-lore"]
                 const fullLoop = artifact.summary.conditions["lore-full-loop"]
                 const status = hasLongitudinalTaskGateFailures(artifact)
                   ? "failed"
                   : "passed"
                 const headline =
-                  fullLoop.trials > 0
-                    ? `lore-full-loop ${fullLoop.passed}/${fullLoop.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
-                    : `${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
+                  seededLore && seededLore.trials > 0
+                    ? `seeded-lore ${seededLore.passed}/${seededLore.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
+                    : fullLoop.trials > 0
+                      ? `lore-full-loop ${fullLoop.passed}/${fullLoop.trials} passed; overall ${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
+                      : `${artifact.summary.passedTrials}/${artifact.summary.totalTrials} condition runs passed`
                 console.log(`Longitudinal task eval ${status}: ${headline}.`)
+                if (artifact.termination) {
+                  console.log(`  stopped: ${artifact.termination.message}`)
+                }
                 for (const [condition, summary] of Object.entries(
                   artifact.summary.conditions
                 )) {
@@ -469,7 +612,7 @@ evalCommand.addCommand(
                 }
                 const delta = artifact.summary.lift.successRateDelta
                 console.log(
-                  `  lift delta: ${delta === null ? "n/a" : `${(delta * 100).toFixed(1)} pp`}; ` +
+                  `  ${artifact.summary.lift.toCondition} lift delta: ${delta === null ? "n/a" : `${(delta * 100).toFixed(1)} pp`}; ` +
                     `lifted=${artifact.summary.lift.liftedScenarioIds.length}, ` +
                     `harmed=${artifact.summary.lift.harmedScenarioIds.length}`
                 )
@@ -831,6 +974,177 @@ evalCommand.addCommand(
       }
     )
 )
+
+const longitudinalCommand = new Command("longitudinal").description(
+  "Longitudinal task eval planning helpers"
+)
+
+longitudinalCommand.addCommand(
+  new Command("plan")
+    .description("Estimate powered benchmark size and cost from a pilot artifact")
+    .argument("<artifact>", "Path to a longitudinal task artifact JSON file")
+    .option(
+      "--to-condition <condition>",
+      "Memory condition to compare against no-memory (seeded-lore|lore-full-loop)"
+    )
+    .option("--mde <n>", "Minimum detectable effect as a 0..1 lift", "0.15")
+    .option("--power <n>", "Target statistical power as a 0..1 probability", "0.8")
+    .option("--alpha <n>", "Type-I error rate as a 0..1 probability", "0.05")
+    .option("--one-sided", "Use a one-sided alpha split instead of two-sided")
+    .option("--budget-usd <n>", "Full benchmark API budget in USD", "1000")
+    .option(
+      "--cost-per-condition-run-usd <n>",
+      "Override measured per-condition-run API cost in USD"
+    )
+    .option(
+      "--conditions-per-scenario <n>",
+      "Override condition runs per scenario; defaults to conditions present in the artifact"
+    )
+    .option("--json", "Print the plan as JSON")
+    .action(
+      async (
+        artifactPath: string,
+        opts: {
+          toCondition?: string
+          mde?: string
+          power?: string
+          alpha?: string
+          oneSided?: boolean
+          budgetUsd?: string
+          costPerConditionRunUsd?: string
+          conditionsPerScenario?: string
+          json?: boolean
+        }
+      ) => {
+        const toCondition = parseLongitudinalToCondition(opts.toCondition)
+        if (!toCondition.ok) {
+          console.error(`Longitudinal plan failed: ${toCondition.message}`)
+          process.exit(1)
+          return
+        }
+        const mde = parseOptionalUnitInterval("--mde", opts.mde)
+        if (!mde.ok) {
+          console.error(`Longitudinal plan failed: ${mde.message}`)
+          process.exit(1)
+          return
+        }
+        const power = parseOptionalUnitInterval("--power", opts.power)
+        if (!power.ok) {
+          console.error(`Longitudinal plan failed: ${power.message}`)
+          process.exit(1)
+          return
+        }
+        const alpha = parseOptionalUnitInterval("--alpha", opts.alpha)
+        if (!alpha.ok) {
+          console.error(`Longitudinal plan failed: ${alpha.message}`)
+          process.exit(1)
+          return
+        }
+        const budgetUsd = parseOptionalPositiveNumber("--budget-usd", opts.budgetUsd)
+        if (!budgetUsd.ok) {
+          console.error(`Longitudinal plan failed: ${budgetUsd.message}`)
+          process.exit(1)
+          return
+        }
+        const costPerConditionRunUsd = parseOptionalPositiveNumber(
+          "--cost-per-condition-run-usd",
+          opts.costPerConditionRunUsd
+        )
+        if (!costPerConditionRunUsd.ok) {
+          console.error(`Longitudinal plan failed: ${costPerConditionRunUsd.message}`)
+          process.exit(1)
+          return
+        }
+        const conditionsPerScenario = parseOptionalPositiveInteger(
+          "--conditions-per-scenario",
+          opts.conditionsPerScenario
+        )
+        if (!conditionsPerScenario.ok) {
+          console.error(`Longitudinal plan failed: ${conditionsPerScenario.message}`)
+          process.exit(1)
+          return
+        }
+
+        try {
+          const raw = await readFile(artifactPath, "utf-8")
+          const artifact = JSON.parse(raw) as unknown
+          const candidate = artifact as AnyTaskEvalArtifact
+          if (!isLongitudinalTaskArtifact(candidate)) {
+            throw new Error("artifact is not a longitudinal task artifact")
+          }
+          const plan = buildLongitudinalBenchmarkPlan(candidate, {
+            toCondition: toCondition.value,
+            mde: mde.value,
+            power: power.value,
+            alpha: alpha.value,
+            twoSided: opts.oneSided === true ? false : true,
+            budgetUsd: budgetUsd.value,
+            costPerConditionRunUsd: costPerConditionRunUsd.value,
+            conditionsPerScenario: conditionsPerScenario.value,
+          })
+          if (opts.json) {
+            console.log(JSON.stringify(plan, null, 2))
+            return
+          }
+          console.log(`Longitudinal plan: ${plan.fromCondition} -> ${plan.toCondition}`)
+          console.log(
+            `  pilot pairs: ${plan.pairedOutcomes.pairs}; ` +
+              `observed lift ${formatPercentagePoints(plan.pairedOutcomes.observedLift)}; ` +
+              `discordance ${formatPercent(plan.pairedOutcomes.observedDiscordance)} ` +
+              `(lifted=${plan.pairedOutcomes.lifted}, harmed=${plan.pairedOutcomes.harmed})`
+          )
+          console.log(
+            `  target: ${formatPercentagePoints(plan.mde)} MDE, ` +
+              `${formatPercent(plan.power)} power, alpha ${plan.alpha} ` +
+              `${plan.twoSided ? "two-sided" : "one-sided"}`
+          )
+          console.log(
+            `  estimate: ${plan.estimatedPairsRequired} paired scenarios, ` +
+              `${plan.conditionRunsRequired} condition runs ` +
+              `(${plan.conditionsPerScenario} conditions/scenario)`
+          )
+          console.log(
+            `  efficiency: primary tokens ${formatSignedNumber(
+              plan.efficiency.pairedDeltas.meanPrimaryTokenDelta
+            )} ` +
+              `(${formatSignedPercent(
+                plan.efficiency.pairedDeltas.meanPrimaryTokenDeltaPct
+              )}); ` +
+              `runner phase elapsed ${formatSignedMs(
+                plan.efficiency.pairedDeltas.meanElapsedMsDelta
+              )} ` +
+              `(${formatSignedPercent(plan.efficiency.pairedDeltas.meanElapsedDeltaPct)})`
+          )
+          if (plan.projectedCostUsd === null) {
+            console.log(
+              `  cost: n/a; measured cost coverage ${plan.measuredCostConditionRuns}/${plan.totalCostConditionRuns} condition runs; ` +
+                "pass --cost-per-condition-run-usd after complete pilot cost is known"
+            )
+          } else {
+            const covered = plan.budgetCoversPlan ? "covers" : "does not cover"
+            console.log(
+              `  cost: ${formatUsd(plan.projectedCostUsd)} projected; ` +
+                `${formatUsd(plan.budgetUsd)} budget ${covered} this plan`
+            )
+            if (plan.measuredCostCoverage < 1) {
+              console.log(
+                `  measured cost coverage: ${plan.measuredCostConditionRuns}/${plan.totalCostConditionRuns} condition runs; projection uses override`
+              )
+            }
+            console.log(`  budget capacity: ${plan.maxPairsAtBudget} paired scenarios`)
+          }
+        } catch (err) {
+          console.error(
+            "Longitudinal plan failed:",
+            err instanceof Error ? err.message : err
+          )
+          process.exit(1)
+        }
+      }
+    )
+)
+
+evalCommand.addCommand(longitudinalCommand)
 
 const vaultsCommand = new Command("vaults").description(
   "List committed evaluation vaults and render local run config"

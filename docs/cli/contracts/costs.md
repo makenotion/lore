@@ -41,15 +41,17 @@ response payloads.
   warning that reports only the skipped-line count. Export warnings go to stderr
   so stdout stays parseable as JSONL or CSV.
 - Summary output distinguishes exact agent model usage, background prompt
-  estimates, and unknown-cost background model events. Autosave and digest
-  background model rows must keep `modelUsage.source: "prompt_estimate"`;
-  those rows estimate prompt-side input only and may exclude completion tokens,
-  cached-input billing, and provider-side rounding.
+  estimates, and unknown-cost background model events. Autosave, digest, and
+  longitudinal eval mining background model rows must keep
+  `modelUsage.source: "prompt_estimate"`; those rows estimate prompt-side input
+  only and may exclude completion tokens, cached-input billing, and
+  provider-side rounding.
 - JSONL and CSV export schema compatibility is stable. Export consumers should
-  treat `autosave.background_model` and `digest.background_model` rows with
-  `modelUsage.source: "prompt_estimate"` as prompt-side estimates; CSV keeps the
-  existing `modelUsageEstimated` / `estimatedUsd` columns instead of adding a
-  source column.
+  treat `autosave.background_model`, `digest.background_model`, and
+  `eval.mining.background_model` rows with
+  `modelUsage.source: "prompt_estimate"` as prompt-side estimates; CSV keeps
+  the existing `modelUsageEstimated` / `estimatedUsd` columns instead of adding
+  a source column.
 - JSONL/CSV payload fields are compatibility-stable: `inputBytes`,
   `outputBytes`, `estimatedInputTokens`, and `estimatedOutputTokens` must not be
   renamed in this schema version.

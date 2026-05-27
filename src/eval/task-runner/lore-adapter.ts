@@ -10,10 +10,19 @@ import {
   runConversationMining,
   type MiningResult,
 } from "../../hooks/conversation-mining.js"
-import { mergeHookDefaults } from "../../hooks/config.js"
+import { recordEvalMiningModelCostEvent } from "../../hooks/cost-events.js"
+import {
+  CODEX_BACKGROUND_ARGS,
+  mergeHookDefaults,
+  type BackgroundAgentConfig,
+} from "../../hooks/config.js"
 import { initServices, type LoreServices } from "../../services.js"
 import type { Fact, Memory, Project } from "../../types.js"
-import { createIsolatedCodexHome, removeIsolatedCodexHome } from "./codex-adapter.js"
+import {
+  createIsolatedCodexHome,
+  readConfiguredCodexModel,
+  removeIsolatedCodexHome,
+} from "./codex-adapter.js"
 import type {
   LongitudinalLoreAdapter,
   LongitudinalLoreFormationResult,
@@ -157,13 +166,11 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
     workspace: string
     sessionId: string
   }): Promise<LongitudinalLoreFormationResult> {
-    const before = await snapshotProjectContext(this.input.services, this.projectId)
-    const hooks = mergeHookDefaults(
-      this.input.services.config.hooks,
-      this.projectName,
-      []
-    )
     const codexHome = await createIsolatedCodexHome()
+    const before = await snapshotProjectContext(this.input.services, this.projectId)
+    const backgroundAgent = await longitudinalMiningAgentForScenario(input.scenario, {
+      codexHome,
+    })
     let mining: MiningResult
     try {
       mining = await withTemporaryLongitudinalAgentConfig(
@@ -187,10 +194,19 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
                 sessionId: input.sessionId,
                 agentName: "Codex",
                 authSource: this.input.services.authSource,
-                agent: hooks.backgroundAgent,
+                agent: backgroundAgent,
               })
           )
       )
+      await recordEvalMiningModelCostEvent({
+        costTracking: this.input.services.costTracking,
+        payload: mining.promptPayload,
+        result: mining,
+        projectName: this.projectName,
+        agentName: "Codex",
+        sessionId: input.sessionId,
+        agent: backgroundAgent,
+      })
     } finally {
       await removeIsolatedCodexHome(codexHome)
     }
@@ -235,6 +251,26 @@ class LiveLongitudinalLoreRun implements LongitudinalLoreRun {
   }
 }
 
+export async function longitudinalMiningAgentForScenario(
+  scenario: LongitudinalTaskScenario,
+  options: { codexHome?: string; model?: string } = {}
+): Promise<BackgroundAgentConfig> {
+  if (scenario.agent === "codex") {
+    const model =
+      options.model ??
+      (options.codexHome
+        ? await readConfiguredCodexModel({ CODEX_HOME: options.codexHome })
+        : await readConfiguredCodexModel())
+    return {
+      command: "codex",
+      args: model
+        ? ["exec", "-m", model, ...CODEX_BACKGROUND_ARGS.slice(1)]
+        : [...CODEX_BACKGROUND_ARGS],
+    }
+  }
+  return mergeHookDefaults(undefined, null, []).backgroundAgent
+}
+
 const LONGITUDINAL_SANDBOX_NAME_MARKERS =
   /\b(?:sandbox|eval|test|scratch|staging|dev|playground)\b/i
 
@@ -263,9 +299,24 @@ async function writeLongitudinalConfigRoot(input: {
           baseUrl: input.services.config.auth.baseUrl,
         }
       : undefined
+  const costTracking = input.services.costTracking.enabled
+    ? {
+        ...(input.services.config.costTracking ?? {}),
+        enabled: true,
+        ledgerPath: input.services.costTracking.ledgerPath,
+        pricing: {
+          ...(input.services.config.costTracking?.pricing ?? {}),
+          builtinTable: input.services.costTracking.pricing.builtinTable,
+          ...(input.services.costTracking.pricing.overridesPath
+            ? { overridesPath: input.services.costTracking.pricing.overridesPath }
+            : {}),
+        },
+      }
+    : undefined
   const config = {
     vault: { pageId: input.services.config.vault.pageId },
     ...(auth ? { auth } : {}),
+    ...(costTracking ? { costTracking } : {}),
     projects: [{ name: input.projectName, path: "." }],
     hooks: input.services.config.hooks ?? {},
   }

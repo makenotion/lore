@@ -1,0 +1,163 @@
+version: 1
+id: github-cli-pilot
+description: >-
+  Source-controlled seed corpus for the GitHub CLI longitudinal pilot. This is
+  synthetic eval content shaped like a production Lore vault: one project for
+  the repository, component-level topics, durable memories, decisions, and
+  facts. It must not copy private production vault content.
+repository:
+  repo: cli/cli
+  sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+vault:
+  project:
+    name: GitHub CLI
+    path: .
+    tags: ["go", "cli", "cobra"]
+  topics:
+    - id: commands/config
+      name: Config commands
+      description: Conventions for `gh config` command packages and tests.
+    - id: commands/alias
+      name: Alias commands
+      description: Conventions for `gh alias` command packages and tests.
+    - id: output/json
+      name: Machine-readable output
+      description: Patterns for JSON output modes and IO stream usage.
+    - id: flags/cobra
+      name: Cobra flag wiring
+      description: How command options expose long and shorthand flags.
+    - id: tests/commands
+      name: Command package tests
+      description: Package-local command construction and run behavior tests.
+  memories:
+    - id: gh-cli/config-json
+      title: Config command JSON output convention
+      topics: ["commands/config", "output/json", "tests/commands"]
+      confidence: high
+      synopsis: >-
+        Config command JSON output uses an options bool, a `--json` flag, IO.Out,
+        and package-local tests.
+      body: |
+        Config command JSON output should follow the command package's existing
+        options style: add a `JSONOutput bool` option, wire a `--json` flag in
+        the command constructor, and write encoded JSON to `opts.IO.Out`.
+        Tests should cover both flag parsing and the run output in the package
+        that owns the command.
+      scenarios: ["gh-cli-config-list-json-continuity"]
+    - id: gh-cli/alias-list-json
+      title: Alias list keeps YAML default when adding JSON
+      topics: ["commands/alias", "output/json", "tests/commands"]
+      confidence: high
+      synopsis: >-
+        `gh alias list --json` should add JSON only behind the flag and preserve
+        existing YAML default behavior.
+      body: |
+        `gh alias list` already has a YAML output path. Keep YAML as the default
+        output and add a `--json` flag that switches only the flagged path to
+        `encoding/json` / `json.NewEncoder(opts.IO.Out)`. Tests should prove
+        default YAML output still works and JSON output is available when the
+        flag is present.
+      scenarios: ["gh-cli-alias-list-json-continuity"]
+    - id: gh-cli/alias-set-flags
+      title: Alias set boolean shorthands use BoolVarP
+      topics: ["commands/alias", "flags/cobra", "tests/commands"]
+      confidence: high
+      synopsis: >-
+        Boolean flags with shorthand on `gh alias set` are wired with Cobra
+        `BoolVarP` and parsed in `TestNewCmdSet`.
+      body: |
+        `gh alias set` uses Cobra flag helpers on the command's flag set. When a
+        boolean flag needs shorthand, use `BoolVarP` with the options field,
+        long flag name, one-letter shorthand, and help text. Preserve the
+        existing `--shell/-s` behavior when adding `--clobber/-c`, and extend
+        command construction tests to parse the shorthand.
+      scenarios: ["gh-cli-alias-set-clobber-shorthand"]
+    - id: gh-cli/alias-delete-silent
+      title: Alias delete silent mode only changes missing-alias handling
+      topics: ["commands/alias", "flags/cobra", "tests/commands"]
+      confidence: high
+      synopsis: >-
+        `gh alias delete --silent` should make missing aliases non-fatal without
+        changing normal deletes, `--all`, or validation.
+      body: |
+        `gh alias delete` should represent automation-friendly missing-alias
+        behavior as a `Silent bool` option wired to a `--silent` flag in
+        `NewCmdDelete`. The flag should only make the missing-alias branch exit
+        successfully. Normal deletes, `--all`, and argument validation should
+        keep their current behavior. Cover parsing and `deleteRun` behavior.
+      scenarios: ["gh-cli-alias-delete-silent-missing"]
+    - id: gh-cli/config-clear-cache-quiet
+      title: Config clear-cache quiet mode suppresses only success output
+      topics: ["commands/config", "flags/cobra", "tests/commands"]
+      confidence: high
+      synopsis: >-
+        `gh config clear-cache --quiet` should remove the cache normally and
+        suppress only the success message.
+      body: |
+        `gh config clear-cache --quiet` should add a `Quiet bool` option and a
+        `--quiet` flag. The command should still remove the cache directory; the
+        flag only suppresses the success message written to `opts.IO.Out`.
+        Preserve the default-output test and add a quiet-output test.
+      scenarios: ["gh-cli-config-clear-cache-quiet"]
+    - id: gh-cli/noisy-global-json-fields
+      title: Global JSON field selection does not apply to these command slices
+      topics: ["output/json"]
+      status: active
+      confidence: medium
+      synopsis: >-
+        Some GitHub CLI commands use field-selecting JSON helpers, but the pilot
+        command slices intentionally use simpler package-local JSON output.
+      body: |
+        Several GitHub CLI commands expose JSON with field selectors. Do not
+        assume that every new JSON flag in this pilot needs a field list. The
+        config and alias slices here are package-local output modes with narrow
+        structs or maps and tests that assert the emitted shape directly.
+    - id: gh-cli/stale-alias-json-yaml-replacement
+      title: "Stale alias-list note: replace YAML with JSON"
+      topics: ["commands/alias", "output/json"]
+      status: stale
+      confidence: low
+      synopsis: >-
+        Old note suggesting alias list should replace YAML with JSON. This is
+        stale; YAML remains the default.
+      body: |
+        Earlier exploration suggested replacing `gh alias list` YAML output with
+        JSON output. That guidance is stale for this pilot. Keep YAML as the
+        default and add JSON only behind `--json`.
+  decisions:
+    - id: gh-cli/decision-single-project-vault
+      title: Model GitHub CLI as one Lore project
+      topics: ["commands/config", "commands/alias"]
+      status: accepted
+      body: |
+        The GitHub CLI repository is treated as one project in the seed corpus.
+        Component knowledge belongs in topics such as config commands, alias
+        commands, output formatting, and Cobra flags rather than fake monorepo
+        subprojects.
+    - id: gh-cli/decision-seeded-context-source
+      title: Keep seeded context source-controlled for reproducibility
+      topics: ["output/json", "tests/commands"]
+      status: accepted
+      body: |
+        Pilot seeded context is source-controlled so the known corpus is
+        reproducible. A live seeded vault should be imported from this corpus
+        rather than hand-edited in Notion.
+  facts:
+    - id: gh-cli/fact-config-json-io-out
+      subject: gh config JSON output
+      predicate: writes_to
+      object: opts.IO.Out
+      topics: ["commands/config", "output/json"]
+      source: gh-cli/config-json
+    - id: gh-cli/fact-alias-set-clobber-short
+      subject: gh alias set --clobber
+      predicate: shorthand
+      object: -c
+      topics: ["commands/alias", "flags/cobra"]
+      source: gh-cli/alias-set-flags
+    - id: gh-cli/fact-alias-list-default
+      subject: gh alias list
+      predicate: default_output
+      object: YAML
+      topics: ["commands/alias", "output/json"]
+      source: gh-cli/alias-list-json

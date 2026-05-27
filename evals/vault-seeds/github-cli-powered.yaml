@@ -1,0 +1,588 @@
+version: 1
+id: github-cli-powered
+description: >-
+  Source-controlled seed corpus for the GitHub CLI powered-candidate
+  longitudinal suite. Memories are PR-derived or generalized from GitHub CLI
+  conventions and rewritten as reusable project knowledge for 67 sibling-task
+  candidates at the pinned repository SHA.
+repository:
+  repo: cli/cli
+  sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+vault:
+  project:
+    name: GitHub CLI
+    path: .
+    tags: ["go", "cli", "cobra"]
+  topics:
+    - id: commands/config
+      name: Config commands
+      description: Conventions for `gh config` command packages and tests.
+    - id: commands/alias
+      name: Alias commands
+      description: Conventions for `gh alias` command packages and tests.
+    - id: commands/skills
+      name: Skill commands
+      description: Conventions for `gh skill` command packages, discovery, and install flows.
+    - id: commands/secret
+      name: Secret commands
+      description: Conventions for `gh secret` routing across applications and scopes.
+    - id: commands/repo
+      name: Repository commands
+      description: Conventions for `gh repo` command flags, payload mapping, and tests.
+    - id: commands/pr-issue
+      name: Pull request and issue commands
+      description: Conventions shared by `gh pr` and `gh issue` commands.
+    - id: commands/release
+      name: Release commands
+      description: Release verification, asset verification, and release metadata behavior.
+    - id: commands/attestation
+      name: Attestation commands
+      description: Attestation bundle loading, verification, and large-file handling.
+    - id: output/json
+      name: Machine-readable output
+      description: Patterns for JSON output modes and IO stream usage.
+    - id: flags/cobra
+      name: Cobra flag wiring
+      description: How command options expose long and shorthand flags.
+    - id: tests/commands
+      name: Command package tests
+      description: Package-local command construction, run behavior, httpmock, and command-stubber tests.
+    - id: enterprise-hosts
+      name: Enterprise host handling
+      description: GitHub.com, GHEC tenancy, and GHES host support boundaries.
+    - id: telemetry
+      name: Telemetry
+      description: Command invocation telemetry, dimensions, opt-outs, and background send behavior.
+    - id: api/http
+      name: API and HTTP clients
+      description: HTTP client construction, User-Agent context, and request validation.
+    - id: cli/ux
+      name: CLI user experience
+      description: Human output, prompts, warnings, and non-interactive behavior.
+  memories:
+    - id: gh-cli/config-json
+      title: Config command JSON output convention
+      topics: ["commands/config", "output/json", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Config command JSON output uses an options bool, a `--json` flag, IO.Out,
+        and package-local tests.
+      body: |
+        Config command JSON output should follow the command package's existing
+        options style: add a `JSONOutput bool` option, wire a `--json` flag in
+        the command constructor, and write encoded JSON to `opts.IO.Out`.
+        Tests should cover both flag parsing and the run output in the package
+        that owns the command.
+      scenarios: ["gh-cli-config-list-json-continuity"]
+    - id: gh-cli/alias-list-json
+      title: Alias list keeps YAML default when adding JSON
+      topics: ["commands/alias", "output/json", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh alias list --json` should add JSON only behind the flag and preserve
+        existing YAML default behavior.
+      body: |
+        `gh alias list` already has a YAML output path. Keep YAML as the default
+        output and add a `--json` flag that switches only the flagged path to
+        `encoding/json` / `json.NewEncoder(opts.IO.Out)`. Tests should prove
+        default YAML output still works and JSON output is available when the
+        flag is present.
+      scenarios: ["gh-cli-alias-list-json-continuity"]
+    - id: gh-cli/alias-set-flags
+      title: Alias set boolean shorthands use BoolVarP
+      topics: ["commands/alias", "flags/cobra", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Boolean flags with shorthand on `gh alias set` are wired with Cobra
+        `BoolVarP` and parsed in `TestNewCmdSet`.
+      body: |
+        `gh alias set` uses Cobra flag helpers on the command's flag set. When a
+        boolean flag needs shorthand, use `BoolVarP` with the options field,
+        long flag name, one-letter shorthand, and help text. Preserve existing
+        shorthand behavior and extend command construction tests to parse the
+        shorthand.
+      scenarios: ["gh-cli-alias-set-clobber-shorthand"]
+    - id: gh-cli/alias-delete-silent
+      title: Alias delete silent mode only changes missing-alias handling
+      topics: ["commands/alias", "flags/cobra", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh alias delete --silent` should make missing aliases non-fatal without
+        changing normal deletes, `--all`, or validation.
+      body: |
+        `gh alias delete` should represent automation-friendly missing-alias
+        behavior as a `Silent bool` option wired to a `--silent` flag in
+        `NewCmdDelete`. The flag should only make the missing-alias branch exit
+        successfully. Normal deletes, `--all`, and argument validation should
+        keep their current behavior. Cover parsing and delete behavior.
+      scenarios: ["gh-cli-alias-delete-silent-missing"]
+    - id: gh-cli/config-clear-cache-quiet
+      title: Config clear-cache quiet mode suppresses only success output
+      topics: ["commands/config", "flags/cobra", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh config clear-cache --quiet` should remove the cache normally and
+        suppress only the success message.
+      body: |
+        `gh config clear-cache --quiet` should add a `Quiet bool` option and a
+        `--quiet` flag. The command should still remove the cache directory; the
+        flag only suppresses the success message written to `opts.IO.Out`.
+        Preserve the default-output test and add a quiet-output test.
+      scenarios: ["gh-cli-config-clear-cache-quiet"]
+    - id: gh-cli/skills-hidden-dir-filtering
+      title: Skill hidden-directory discovery is caller-filtered
+      topics: ["commands/skills", "flags/cobra", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Hidden-dir skill discovery returns all skills from the discovery layer;
+        commands decide whether `--allow-hidden-dirs` includes or filters them.
+      body: |
+        Hidden directories are supported by letting discovery return standard
+        and hidden-dir skills, then applying command-level filtering. A command
+        that exposes `--allow-hidden-dirs` should include all skills when the
+        flag is set, warn users to verify hidden-dir origins, return standard
+        skills plus a hint for mixed trees when unset, and error with guidance
+        when only hidden-dir skills exist. Tests should cover flag parsing,
+        mixed results, hidden-only results, and the warning/error text.
+      scenarios:
+        - gh-cli-skills-update-allow-hidden-dirs
+        - gh-cli-skills-publish-allow-hidden-dirs
+        - gh-cli-skills-search-hidden-dir-hint
+        - gh-cli-skills-preview-hidden-dir-json
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13213
+          title: Add --allow-hidden-dirs flag to gh skill install
+          url: https://github.com/cli/cli/pull/13213
+        - repo: cli/cli
+          number: 13265
+          title: "feat(skills): add --allow-hidden-dirs flag to preview command"
+          url: https://github.com/cli/cli/pull/13265
+    - id: gh-cli/skills-upstream-provenance
+      title: Re-published skills can redirect to upstream provenance
+      topics: ["commands/skills", "flags/cobra", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Re-published skill handling checks `github-repo` metadata, warns or
+        prompts, and supports a non-interactive `--upstream` path.
+      body: |
+        When SKILL.md frontmatter says a selected skill originally came from a
+        different `github-repo`, command behavior should be explicit: interactive
+        mode offers re-publisher or upstream, non-interactive mode prints a
+        notice and continues with the re-publisher, and `--upstream` redirects
+        without prompting. Local-only modes should be mutually exclusive with
+        upstream redirects. Tests should cover parsing, mutual exclusion,
+        interactive choice, non-interactive notice, and redirect telemetry.
+      scenarios:
+        - gh-cli-skills-update-upstream-redirect
+        - gh-cli-skills-preview-upstream-notice
+        - gh-cli-skills-publish-upstream-metadata
+        - gh-cli-skills-search-upstream-filter
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13236
+          title: "feat(skills): detect re-published skills and offer upstream install"
+          url: https://github.com/cli/cli/pull/13236
+    - id: gh-cli/skills-tenancy-hosts
+      title: Skill commands support GHEC tenancy hosts but reject GHES
+      topics: ["commands/skills", "enterprise-hosts", "tests/commands"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Skill host validation accepts `github.com` and `*.ghe.com` tenancy hosts,
+        but GitHub Enterprise Server remains unsupported with a clear error.
+      body: |
+        Skill command host support should go through the shared source
+        validation layer. Accept `github.com` and GHEC data-residency tenancy
+        hosts, reject GHES hosts with a specific unsupported message, and avoid
+        hard-coding `github.com` into persisted source URLs. Lockfile and
+        installer code should thread the resolved host through URL construction.
+      scenarios:
+        - gh-cli-skills-publish-tenancy-host
+        - gh-cli-skills-update-tenancy-lockfile
+        - gh-cli-skills-search-ghes-error
+        - gh-cli-skills-preview-tenancy-source
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13264
+          title: "feat(skills): support GHEC with data residency hosts"
+          url: https://github.com/cli/cli/pull/13264
+    - id: gh-cli/skills-publish-validation
+      title: Skill publish validation keeps fix, dry-run, and strict modes separate
+      topics: ["commands/skills", "flags/cobra", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Skill publish validation should keep auto-fix, dry-run, and strict
+        warning/error behavior explicit and testable.
+      body: |
+        `gh skill publish` is validation-heavy and should not publish when the
+        operator selected a validation-only mode. New validation flags should be
+        represented in `PublishOptions`, parsed in `NewCmdPublish`, covered in
+        command construction tests, and asserted in run tests so `--fix`,
+        `--dry-run`, and stricter warning handling cannot accidentally publish.
+      scenarios:
+        - gh-cli-skills-publish-strict-warnings
+        - gh-cli-skills-publish-json-diagnostics
+        - gh-cli-skills-publish-fix-dry-run-boundary
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13237
+          title: "Fix `skills publish --fix` to not publish"
+          url: https://github.com/cli/cli/pull/13237
+    - id: gh-cli/secrets-application-routing
+      title: Secret commands route application-specific endpoints through shared app constants
+      topics: ["commands/secret", "flags/cobra", "tests/commands", "api/http"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Secret application names belong in shared constants and must flow through
+        set, list, delete, path construction, and tests.
+      body: |
+        `gh secret` commands support multiple secret applications. Application
+        additions should be centralized in shared constants and conversion
+        helpers, then exercised consistently in `set`, `list`, and `delete`
+        tests. Endpoint construction should replace only the application segment
+        (`actions`, `dependabot`, `codespaces`, `agents`, etc.) and should cover
+        repository, organization, environment, and user scopes where applicable.
+      scenarios:
+        - gh-cli-secret-set-quiet-success
+        - gh-cli-secret-delete-quiet-success
+        - gh-cli-secret-list-application-column
+        - gh-cli-secret-shared-application-alias
+        - gh-cli-secret-set-no-store-json
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13421
+          title: Allow agents as application for secrets
+          url: https://github.com/cli/cli/pull/13421
+    - id: gh-cli/repo-edit-option-mapping
+      title: Repo edit flags validate dependencies and map to explicit API payload fields
+      topics: ["commands/repo", "flags/cobra", "tests/commands", "api/http"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Repository edit options should parse friendly CLI values, validate
+        dependent flags, and assert the exact PATCH payload.
+      body: |
+        `gh repo edit` flags that map to API enums should be represented as
+        options fields, validate prerequisites before execution, and transform
+        friendly CLI values to exact API fields. Tests should cover valid flag
+        parsing, invalid values, missing prerequisite flags, interactive prompt
+        behavior, and `httpmock.RESTPayload` assertions against the PATCH body.
+      scenarios:
+        - gh-cli-repo-edit-merge-commit-message
+        - gh-cli-repo-edit-auto-merge-prerequisite
+        - gh-cli-repo-edit-security-validation
+        - gh-cli-repo-edit-topic-cache
+        - gh-cli-repo-edit-visibility-warning
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 12846
+          title: "feat(repo): add --squash-merge-commit-message flag to gh repo edit"
+          url: https://github.com/cli/cli/pull/12846
+    - id: gh-cli/pr-issue-display-names
+      title: Human PR and issue output uses display names while JSON preserves raw API values
+      topics: ["commands/pr-issue", "output/json", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Friendly actor display names belong in human output only; JSON fields
+        should keep raw API logins.
+      body: |
+        Actor display-name helpers should be shared across PR and issue human
+        output paths. Known Copilot actors can be rendered as friendly names,
+        users with display names can show `login (Name)`, and bot/team fallbacks
+        should remain stable. JSON output should not be rewritten. Tests should
+        cover helper mappings and the human-output call sites.
+      scenarios:
+        - gh-cli-pr-status-display-names
+        - gh-cli-issue-status-display-names
+        - gh-cli-pr-list-display-names
+        - gh-cli-issue-list-display-names
+        - gh-cli-pr-checks-display-names
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 12854
+          title: "`gh pr view` and `gh issue view`: show friendly display names for all actors"
+          url: https://github.com/cli/cli/pull/12854
+    - id: gh-cli/pr-finder-validation
+      title: PR and issue finders should not skip API validation for number-only JSON
+      topics: ["commands/pr-issue", "output/json", "tests/commands", "api/http"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Finder optimizations must not synthesize success before validating that
+        a selector actually resolves to the requested resource type.
+      body: |
+        Numeric selectors still need resource-type validation, even when the
+        caller requested only the `number` JSON field. Avoid short-circuiting a
+        synthetic result unless the code has already proved the selector is a PR
+        or issue. Tests should include an issue-number-as-PR or PR-number-as-issue
+        case that would incorrectly pass without the API lookup.
+      scenarios:
+        - gh-cli-pr-view-number-json-validation
+        - gh-cli-issue-view-number-json-validation
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13327
+          title: "fix(pr): remove numberFieldOnly optimization that skips API validation"
+          url: https://github.com/cli/cli/pull/13327
+    - id: gh-cli/telemetry-command-policy
+      title: Command telemetry is best-effort and has explicit opt-out command paths
+      topics: ["telemetry", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Telemetry should be best-effort, loggable, disableable, and skipped for
+        commands where recording would be misleading or recursive.
+      body: |
+        Command telemetry is sampled and best-effort. It can be logged with
+        `GH_TELEMETRY=log` and disabled by config or environment. Alias wrappers,
+        completion, extensions, GHES users, and the telemetry sender itself need
+        explicit no-telemetry paths so outer wrappers and recursive sends do not
+        pollute command-invocation data. Acceptance fixtures should assert both
+        positive and skipped telemetry cases.
+      scenarios:
+        - gh-cli-telemetry-no-alias-status
+        - gh-cli-telemetry-no-extension-browser
+        - gh-cli-telemetry-log-empty-marker
+        - gh-cli-telemetry-send-failure-nonfatal
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13191
+          title: Add sampled command telemetry
+          url: https://github.com/cli/cli/pull/13191
+        - repo: cli/cli
+          number: 13192
+          title: Do not send telemetry for aliases
+          url: https://github.com/cli/cli/pull/13192
+    - id: gh-cli/telemetry-common-dimensions
+      title: Telemetry common dimensions use string booleans and avoid raw sensitive values
+      topics: ["telemetry", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Common telemetry dimensions should be stable string values and avoid raw
+        sensitive host or user identifiers.
+      body: |
+        New common dimensions belong near the command construction path and
+        should use string values, including `"true"`/`"false"` for booleans.
+        Avoid raw sensitive hostnames or user-provided strings; categorize when
+        needed. Unit tests should assert dimension presence and exact string
+        values in the command telemetry recorder.
+      scenarios:
+        - gh-cli-telemetry-terminal-width-dimension
+        - gh-cli-telemetry-auth-state-dimension
+        - gh-cli-telemetry-agent-host-type
+        - gh-cli-telemetry-ci-context-dimension
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13363
+          title: Record accessibility feature state in telemetry
+          url: https://github.com/cli/cli/pull/13363
+        - repo: cli/cli
+          number: 13210
+          title: Record CI context in telemetry
+          url: https://github.com/cli/cli/pull/13210
+    - id: gh-cli/agentic-http-client-context
+      title: Agent identity must be preserved through API and auth HTTP clients
+      topics: ["api/http", "telemetry", "tests/commands"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        API clients that bypass the default factory still need app version and
+        invoking-agent context in request headers.
+      body: |
+        Commands that construct HTTP clients outside the usual path should still
+        thread app version and invoking-agent context into the transport. Auth
+        flows that replace or wrap clients after token acquisition should copy
+        the existing client configuration instead of dropping telemetry and
+        User-Agent context. Tests should assert the headers on custom command
+        clients and auth follow-up requests.
+      scenarios:
+        - gh-cli-api-graphql-agent-header
+        - gh-cli-auth-login-viewer-agent-header
+        - gh-cli-api-rest-agent-header
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13046
+          title: Ensure `api` and `auth` commands record agentic invocations
+          url: https://github.com/cli/cli/pull/13046
+        - repo: cli/cli
+          number: 13023
+          title: Record agentic invocations in User-Agent header
+          url: https://github.com/cli/cli/pull/13023
+    - id: gh-cli/release-digest-algorithm
+      title: Release verification derives digest algorithm from ref length
+      topics: ["commands/release", "commands/attestation", "tests/commands"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Release verification should label 64-character refs as SHA-256 and keep
+        SHA-1 behavior for shorter release refs.
+      body: |
+        `gh release verify` and `gh release verify-asset` should avoid hard-coded
+        `sha1:` prefixes when constructing attestation subject identifiers.
+        Use a shared helper that returns `sha256` for 64-character refs and
+        `sha1` otherwise. Tests should cover helper behavior and command error
+        messages for SHA-1 and SHA-256 cases.
+      scenarios:
+        - gh-cli-release-verify-strict-digest-alg
+        - gh-cli-release-verify-asset-strict-digest-alg
+        - gh-cli-release-shared-digest-helper-invalid
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13430
+          title: Derive digest algorithm from ref length in release verify commands
+          url: https://github.com/cli/cli/pull/13430
+    - id: gh-cli/attestation-jsonl-buffering
+      title: Attestation JSONL loading should stream large lines and preserve empty-file errors
+      topics: ["commands/attestation", "tests/commands"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Attestation verification should avoid scanner token limits and keep
+        empty or malformed bundle errors explicit.
+      body: |
+        JSONL bundle loading can encounter very large attestations. Use an
+        approach that does not impose `bufio.Scanner` token limits, and avoid
+        reading behavior that hides empty-file or malformed-bundle errors. Tests
+        should include a large JSONL bundle row, an empty file, and a malformed
+        row so error handling remains intentional.
+      scenarios:
+        - gh-cli-attestation-jsonl-stream-reader
+        - gh-cli-attestation-jsonl-empty-line
+        - gh-cli-attestation-jsonl-malformed-context
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 9198
+          title: Attestation Verification - Buffer Fix
+          url: https://github.com/cli/cli/pull/9198
+    - id: gh-cli/httpmock-and-stub-tests
+      title: Command tests use httpmock for API payloads and CommandStubber for external commands
+      topics: ["tests/commands", "api/http"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        API-facing command behavior should use httpmock payload assertions, and
+        external process behavior should use `internal/run.CommandStubber`.
+      body: |
+        GitHub CLI command tests prefer package-local run tests with `httpmock`
+        for REST/GraphQL behavior. When code shells out to git or another
+        process, use `internal/run.CommandStubber` instead of relying on a real
+        executable. The verifier should assert outgoing paths or payloads rather
+        than only checking that a command returned nil.
+      scenarios:
+        - gh-cli-repo-edit-httpmock-payload
+        - gh-cli-skills-publish-command-stubber
+        - gh-cli-secret-set-httpmock-payload
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13252
+          title: "test(discussion): add httpmock unit tests for DiscussionClient"
+          url: https://github.com/cli/cli/pull/13252
+        - repo: cli/cli
+          number: 13188
+          title: "Skills: replace real git in publish tests with CommandStubber"
+          url: https://github.com/cli/cli/pull/13188
+    - id: gh-cli/list-json-exporter
+      title: List-style commands use AddJSONFlags with exporter writes
+      topics: ["output/json", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        List commands that add machine-readable output should wire
+        `cmdutil.AddJSONFlags`, set exporter fields, and write via the exporter.
+      body: |
+        List-style commands should use `cmdutil.AddJSONFlags` with an explicit
+        field list. During run, set any expensive fetch flags based on exporter
+        fields, preserve empty-result human output behavior, and call
+        `opts.Exporter.Write(opts.IO, data)` for JSON. Tests should cover flag
+        parsing and JSON output without breaking TTY table output.
+      scenarios:
+        - gh-cli-gpg-key-list-json
+        - gh-cli-ssh-key-list-json
+        - gh-cli-repo-gitignore-list-json
+        - gh-cli-repo-license-list-json
+        - gh-cli-extension-upgrade-json
+    - id: gh-cli/destructive-quiet-output
+      title: Destructive commands can support quiet output without changing the operation
+      topics: ["flags/cobra", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Quiet mode should suppress success output only, leaving confirmation,
+        deletion, and errors unchanged.
+      body: |
+        For destructive commands, a quiet flag should be represented as a bool on
+        options, parsed by Cobra, and used only around the success message. It
+        must not skip confirmation checks, alter API calls, or swallow errors.
+        Tests should cover flag parsing, default success output, quiet success
+        output, and the unchanged error/confirmation path.
+      scenarios:
+        - gh-cli-gpg-key-delete-quiet
+        - gh-cli-ssh-key-delete-quiet
+        - gh-cli-label-delete-quiet
+        - gh-cli-repo-delete-quiet
+        - gh-cli-release-delete-quiet
+  decisions:
+    - id: gh-cli/decision-single-project-vault
+      title: Model GitHub CLI as one Lore project
+      topics: ["commands/config", "commands/alias", "commands/skills"]
+      status: accepted
+      provenanceKind: generalized
+      body: |
+        The GitHub CLI repository is treated as one project in the seed corpus.
+        Component knowledge belongs in topics such as config commands, alias
+        commands, skill commands, output formatting, telemetry, and tests rather
+        than fake monorepo subprojects.
+    - id: gh-cli/decision-powered-candidates-need-validation
+      title: Treat powered scenarios as candidates until smoke-validated
+      topics: ["tests/commands"]
+      status: accepted
+      provenanceKind: generalized
+      body: |
+        The powered candidate suite provides enough scenario slots for the
+        current sample-size estimate, but each scenario still needs smoke
+        validation before it can be included in a published powered benchmark.
+        Real PR provenance makes the tasks realistic; verifier stability still
+        has to be proven empirically.
+  facts:
+    - id: gh-cli/fact-powered-scenario-target
+      subject: github-cli-powered-candidate-suite
+      predicate: target_scenarios
+      object: "67"
+      topics: ["tests/commands"]
+      source: gh-cli/decision-powered-candidates-need-validation
+    - id: gh-cli/fact-skills-hidden-flag
+      subject: gh skill hidden directories
+      predicate: opt_in_flag
+      object: --allow-hidden-dirs
+      topics: ["commands/skills", "flags/cobra"]
+      source: gh-cli/skills-hidden-dir-filtering
+    - id: gh-cli/fact-skills-upstream-flag
+      subject: gh skill republished provenance
+      predicate: noninteractive_redirect_flag
+      object: --upstream
+      topics: ["commands/skills", "flags/cobra"]
+      source: gh-cli/skills-upstream-provenance
+    - id: gh-cli/fact-secret-app-agents
+      subject: gh secret application routing
+      predicate: includes_application
+      object: agents
+      topics: ["commands/secret", "api/http"]
+      source: gh-cli/secrets-application-routing
+    - id: gh-cli/fact-release-digest-sha256
+      subject: release verify digest algorithm
+      predicate: sha256_when_length
+      object: "64"
+      topics: ["commands/release", "commands/attestation"]
+      source: gh-cli/release-digest-algorithm

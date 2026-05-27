@@ -50,6 +50,7 @@ import { openHookStateFileSync } from "./marker-key.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
 import type { ResolvedPromptRegistry } from "../profile/index.js"
 import type { MemoryCaptureMode } from "../memory-capture-mode.js"
+import { payloadSummary, type CostPayloadSummary } from "../core/cost-ledger.js"
 
 /**
  * Default wall-clock cap for one mining child. Per-session mining of
@@ -97,6 +98,7 @@ export interface MiningResult {
   writeBudgetExceeded: boolean
   exitCode: number | null
   exitSignal: NodeJS.Signals | null
+  promptPayload: CostPayloadSummary
 }
 
 export interface RunConversationMiningOptions {
@@ -312,6 +314,7 @@ export function runConversationMining(
       memoryCaptureMode: options.memoryCaptureMode,
     }
   )
+  const promptPayload = payloadSummary(prompt)
 
   const args = renderAgentArgs(agentConfig.args, allowedTools)
   const env = buildSafeEnv(options.authSource)
@@ -386,7 +389,13 @@ export function runConversationMining(
       const writeBudgetExceeded = options.budgetStateFile
         ? readBudgetState(options.budgetStateFile)
         : false
-      settle({ elapsedMs, writeBudgetExceeded, exitCode, exitSignal })
+      settle({
+        elapsedMs,
+        writeBudgetExceeded,
+        exitCode,
+        exitSignal,
+        promptPayload,
+      })
     })
 
     // Internal stderr drain when no caller-supplied sink was opened.
@@ -426,6 +435,7 @@ export function runConversationMining(
           writeBudgetExceeded,
           exitCode: null,
           exitSignal: TIMEOUT_KILLED_SIGNAL,
+          promptPayload,
         })
       }, TIMEOUT_KILL_GRACE_MS)
       killGraceTimer.unref()

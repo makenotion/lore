@@ -1,11 +1,19 @@
 import { spawn } from "node:child_process"
-import { existsSync } from "node:fs"
-import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { once } from "node:events"
+import { createWriteStream, existsSync, type WriteStream } from "node:fs"
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, delimiter, join, resolve } from "node:path"
+import { basename, delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { parseCodexUsage } from "../bench-cost.js"
 import { appendCappedChunk, joinCappedCapture, makeCappedCapture } from "./capture.js"
-import type { AgentAdapter, AgentRunInput, AgentRunResult } from "./schema.js"
+import type {
+  AgentAdapter,
+  AgentRunInput,
+  AgentRunResult,
+  AgentRunTranscript,
+  AgentRunUsage,
+} from "./schema.js"
 
 /**
  * Allowlist of env vars forwarded to the Codex child. Anything not
@@ -85,6 +93,29 @@ function renderIsolatedCodexConfig(source: string): string {
   return lines.length > 0 ? `${lines.join("\n")}\n` : ""
 }
 
+export async function readConfiguredCodexModel(
+  parentEnv: NodeJS.ProcessEnv = process.env
+): Promise<string | undefined> {
+  const sourceHome = resolveSourceCodexHome(parentEnv)
+  if (sourceHome === null) return undefined
+  try {
+    return parseCodexConfigModel(await readFile(join(sourceHome, "config.toml"), "utf-8"))
+  } catch {
+    return undefined
+  }
+}
+
+export function parseCodexConfigModel(source: string): string | undefined {
+  for (const line of source.split(/\r?\n/u)) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue
+    if (trimmed.startsWith("[")) break
+    const match = /^model\s*=\s*"([^"]+)"/u.exec(trimmed)
+    if (match?.[1]?.trim()) return match[1].trim()
+  }
+  return undefined
+}
+
 export async function removeIsolatedCodexHome(codexHome: string): Promise<void> {
   await rm(codexHome, { recursive: true, force: true })
 }
@@ -153,6 +184,7 @@ export function buildCodexChildEnv(
  * blending with task fixtures.
  */
 export const BENCH_MODE_SENTINEL = ".lore-bench-mode"
+const TASK_TIMEOUT_KILL_GRACE_MS = 5_000
 
 /**
  * Detect whether a workspace was prepared for bench-mode. The bench
@@ -299,6 +331,146 @@ export function buildBenchSpawnArgs(workspace: string, prompt: string): string[]
     "--skip-git-repo-check",
     prompt,
   ]
+}
+
+/**
+ * Task-mode argv keeps Codex's rich JSONL event stream on stdout and writes the
+ * final assistant message to an out-of-workspace file. The runner stores the
+ * JSONL stream as a sidecar transcript, while `AgentRunResult.stdout` remains
+ * the final answer text expected by existing artifact consumers.
+ */
+export function buildTaskSpawnArgs(input: {
+  workspace: string
+  prompt: string
+  lastMessagePath: string
+}): string[] {
+  return [
+    "exec",
+    "--json",
+    "--output-last-message",
+    input.lastMessagePath,
+    "--cd",
+    input.workspace,
+    "--sandbox",
+    "workspace-write",
+    "--skip-git-repo-check",
+    input.prompt,
+  ]
+}
+
+interface TranscriptWriter {
+  path: string
+  bytes: number
+  writeChunk(chunk: Buffer): void
+  finish(event: Record<string, unknown>): Promise<AgentRunTranscript>
+}
+
+async function openTranscriptWriter(input: {
+  path: string | undefined
+  args: string[]
+  prompt: string
+  workspace: string
+}): Promise<TranscriptWriter | null> {
+  if (!input.path) return null
+  await mkdir(dirname(input.path), { recursive: true })
+  const stream = createWriteStream(input.path, { flags: "w", mode: 0o600 })
+  let bytes = 0
+  let lastByteWasNewline = true
+  const writeString = (text: string): void => {
+    bytes += Buffer.byteLength(text)
+    if (text.length > 0) lastByteWasNewline = text.endsWith("\n")
+    stream.write(text)
+  }
+  writeString(
+    `${JSON.stringify({
+      type: "lore.eval.agent_run.started",
+      timestamp: new Date().toISOString(),
+      agent: "codex",
+      argv: ["codex", ...redactPromptArg(input.args)],
+      workspace: input.workspace,
+      prompt: input.prompt,
+    })}\n`
+  )
+  return {
+    path: input.path,
+    get bytes() {
+      return bytes
+    },
+    writeChunk(chunk: Buffer): void {
+      bytes += chunk.length
+      if (chunk.length > 0) lastByteWasNewline = chunk[chunk.length - 1] === 10
+      stream.write(chunk)
+    },
+    async finish(event: Record<string, unknown>): Promise<AgentRunTranscript> {
+      if (!lastByteWasNewline) writeString("\n")
+      writeString(
+        `${JSON.stringify({
+          type: "lore.eval.agent_run.finished",
+          timestamp: new Date().toISOString(),
+          ...event,
+        })}\n`
+      )
+      stream.end()
+      await waitForStreamFinish(stream)
+      return { path: input.path!, format: "codex-jsonl", bytes }
+    },
+  }
+}
+
+function redactPromptArg(args: string[]): string[] {
+  if (args.length === 0) return args
+  return [...args.slice(0, -1), "<prompt>"]
+}
+
+async function waitForStreamFinish(stream: WriteStream): Promise<void> {
+  if (stream.closed || stream.destroyed) return
+  await once(stream, "finish")
+}
+
+function parseCodexJsonlUsage(
+  stdout: string,
+  fallbackModel: string | undefined
+): AgentRunUsage | null {
+  let lastUsage: AgentRunUsage | null = null
+  for (const line of stdout.split("\n")) {
+    const usage = parseCodexJsonlUsageLine(line, fallbackModel)
+    if (usage) lastUsage = usage
+  }
+  return lastUsage
+}
+
+function parseCodexJsonlUsageLine(
+  line: string,
+  fallbackModel: string | undefined
+): AgentRunUsage | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith("{")) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object") return null
+  const event = parsed as { type?: unknown; usage?: unknown; model?: unknown }
+  if (event.type !== "turn.completed") return null
+  const usage = parseCodexUsage(event.usage)
+  if (!usage) return null
+  const model = eventModel(event) ?? fallbackModel
+  return {
+    provider: "openai",
+    ...(model ? { model } : {}),
+    promptTokens: usage.input_tokens,
+    cachedPromptTokens: usage.cached_input_tokens,
+    outputTokens: usage.output_tokens,
+    reasoningOutputTokens: usage.reasoning_output_tokens,
+  }
+}
+
+function eventModel(event: { model?: unknown }): string | undefined {
+  return typeof event.model === "string" && event.model.trim()
+    ? event.model.trim()
+    : undefined
 }
 
 export class CodexAgentAdapter implements AgentAdapter {
@@ -449,69 +621,164 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
     }
     const codexHome = await createIsolatedCodexHome()
+    const configuredModel = await readConfiguredCodexModel({ CODEX_HOME: codexHome })
+    const lastMessagePath = join(codexHome, "last-message.txt")
     return new Promise<AgentRunResult>((resolveRun) => {
-      const args = [
-        "exec",
-        "--cd",
-        input.workspace,
-        "--sandbox",
-        "workspace-write",
-        "--skip-git-repo-check",
-        input.prompt,
-      ]
-      const env = buildCodexChildEnv(process.env, { codexHome })
-      const child = spawn("codex", args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        env,
-        // Detached so we can kill the entire process group on timeout
-        // (codex may have spawned subprocesses inside `workspace-write`
-        // — test watchers, package installs — that we need to clean up).
-        detached: true,
+      const args = buildTaskSpawnArgs({
+        workspace: input.workspace,
+        prompt: input.prompt,
+        lastMessagePath,
       })
+      const env = buildCodexChildEnv(process.env, { codexHome })
       const stdoutCapture = makeCappedCapture()
       const stderrCapture = makeCappedCapture()
       let timedOut = false
       let settled = false
+      let transcriptWriter: TranscriptWriter | null = null
+      let childStarted = false
+      let child: ReturnType<typeof spawn> | null = null
+      let killGraceTimer: NodeJS.Timeout | null = null
+      let observedUsage: AgentRunUsage | null = null
+      let pendingStdoutLine = ""
+      const start = async (): Promise<void> => {
+        transcriptWriter = await openTranscriptWriter({
+          path: input.transcriptPath,
+          args,
+          prompt: input.prompt,
+          workspace: input.workspace,
+        })
+        const spawned = spawn("codex", args, {
+          stdio: ["ignore", "pipe", "pipe"],
+          env,
+          // Detached so we can kill the entire process group on timeout
+          // (codex may have spawned subprocesses inside `workspace-write`
+          // — test watchers, package installs — that we need to clean up).
+          detached: true,
+        })
+        child = spawned
+        childStarted = true
+        wireChild(spawned)
+      }
       const timer = setTimeout(() => {
         timedOut = true
         try {
-          if (child.pid !== undefined) {
+          if (child && child.pid !== undefined) {
             // Negative pid kills the process group on POSIX. We hold
             // detached=true so the group is `child.pid`'s own.
             process.kill(-child.pid, "SIGKILL")
-          } else {
+          } else if (child) {
             child.kill("SIGKILL")
           }
         } catch {
           // Process already gone; nothing to do.
         }
+        killGraceTimer = setTimeout(() => {
+          void finish({
+            exitCode: -1,
+            stdout: joinCappedCapture(stdoutCapture),
+            stderr:
+              joinCappedCapture(stderrCapture) +
+              "\n[timeout] Codex task invocation exceeded its timeout.",
+            timedOut: true,
+          })
+        }, taskTimeoutKillGraceMs())
+        killGraceTimer.unref()
       }, input.timeoutMs)
-      const finish = (result: AgentRunResult): void => {
+      const finish = async (result: AgentRunResult): Promise<void> => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        void removeIsolatedCodexHome(codexHome).finally(() => resolveRun(result))
+        if (killGraceTimer !== null) clearTimeout(killGraceTimer)
+        const jsonlStdout = joinCappedCapture(stdoutCapture)
+        let stderr = result.stderr
+        let stdout = result.stdout
+        try {
+          const lastMessage = await readFile(lastMessagePath, "utf-8")
+          stdout = lastMessage
+        } catch {
+          stdout = stdout.length > 0 ? stdout : jsonlStdout
+        }
+        let transcript: AgentRunTranscript | null = null
+        if (transcriptWriter) {
+          try {
+            transcript = await transcriptWriter.finish({
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
+              stderr,
+              lastMessage: stdout,
+            })
+          } catch (err) {
+            stderr += `\n[transcript-error] ${err instanceof Error ? err.message : String(err)}`
+          } finally {
+            transcriptWriter = null
+          }
+        }
+        const trailingUsage = parseCodexJsonlUsageLine(pendingStdoutLine, configuredModel)
+        const usage =
+          trailingUsage ??
+          observedUsage ??
+          parseCodexJsonlUsage(jsonlStdout, configuredModel)
+        void removeIsolatedCodexHome(codexHome).finally(() =>
+          resolveRun({
+            ...result,
+            stdout,
+            stderr,
+            transcript,
+            usage,
+          })
+        )
       }
-      child.stdout?.on("data", (c: Buffer) => appendCappedChunk(stdoutCapture, c))
-      child.stderr?.on("data", (c: Buffer) => appendCappedChunk(stderrCapture, c))
-      child.on("error", (err) => {
-        finish({
-          exitCode: -1,
-          stdout: joinCappedCapture(stdoutCapture),
-          stderr: joinCappedCapture(stderrCapture) + `\n[spawn-error] ${err}`,
-          timedOut,
+      const wireChild = (child: ReturnType<typeof spawn>): void => {
+        child.stdout?.on("data", (c: Buffer) => {
+          appendCappedChunk(stdoutCapture, c)
+          const text = c.toString("utf-8")
+          const lines = `${pendingStdoutLine}${text}`.split("\n")
+          pendingStdoutLine = lines.pop() ?? ""
+          for (const line of lines) {
+            const usage = parseCodexJsonlUsageLine(line, configuredModel)
+            if (usage) observedUsage = usage
+          }
+          transcriptWriter?.writeChunk(c)
         })
-      })
-      child.on("close", (code) => {
-        finish({
-          exitCode: code ?? -1,
-          stdout: joinCappedCapture(stdoutCapture),
-          stderr: joinCappedCapture(stderrCapture),
-          timedOut,
+        child.stderr?.on("data", (c: Buffer) => appendCappedChunk(stderrCapture, c))
+        child.on("error", (err) => {
+          void finish({
+            exitCode: -1,
+            stdout: joinCappedCapture(stdoutCapture),
+            stderr: joinCappedCapture(stderrCapture) + `\n[spawn-error] ${err}`,
+            timedOut,
+          })
         })
+        child.on("close", (code) => {
+          void finish({
+            exitCode: code ?? -1,
+            stdout: joinCappedCapture(stdoutCapture),
+            stderr: joinCappedCapture(stderrCapture),
+            timedOut,
+          })
+        })
+      }
+      void start().catch((err) => {
+        if (!childStarted) {
+          void finish({
+            exitCode: -1,
+            stdout: joinCappedCapture(stdoutCapture),
+            stderr: joinCappedCapture(stderrCapture) + `\n[spawn-error] ${err}`,
+            timedOut,
+          })
+        }
       })
     })
   }
+}
+
+function taskTimeoutKillGraceMs(): number {
+  const raw = process.env["LORE_EVAL_TASK_TIMEOUT_KILL_GRACE_MS"]
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return TASK_TIMEOUT_KILL_GRACE_MS
 }
 
 export function defaultAdapters(): Map<string, AgentAdapter> {

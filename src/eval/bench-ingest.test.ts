@@ -28,6 +28,22 @@ function buildExample(
   }
 }
 
+function miningResult(overrides: Partial<MiningResult> = {}): MiningResult {
+  return {
+    elapsedMs: 100,
+    writeBudgetExceeded: false,
+    exitCode: 0,
+    exitSignal: null,
+    promptPayload: {
+      inputBytes: 4,
+      estimatedInputTokens: 1,
+      redacted: true,
+      tokenEstimator: "chars_per_token_4",
+    },
+    ...overrides,
+  }
+}
+
 describe("readBudgetCount", () => {
   let dir: string
   beforeEach(() => {
@@ -74,12 +90,7 @@ describe("runBenchIngest", () => {
       projectId: "project-1",
       runMining: async (transcript): Promise<MiningResult> => {
         calls.push(transcript)
-        return {
-          elapsedMs: 100,
-          writeBudgetExceeded: false,
-          exitCode: 0,
-          exitSignal: null,
-        }
+        return miningResult()
       },
       readBudgetCount: () => 12,
       countMemoriesForProject: async () => 4,
@@ -103,12 +114,7 @@ describe("runBenchIngest", () => {
       projectId: "project-1",
       runMining: async (): Promise<MiningResult> => {
         callCount += 1
-        return {
-          elapsedMs: 100,
-          writeBudgetExceeded: callCount === 2,
-          exitCode: 0,
-          exitSignal: null,
-        }
+        return miningResult({ writeBudgetExceeded: callCount === 2 })
       },
       readBudgetCount: () => 501,
       countMemoriesForProject: async () => 50,
@@ -128,12 +134,12 @@ describe("runBenchIngest", () => {
       catchAllName: null,
       budgetStateFile: "/tmp/state.json",
       projectId: "project-1",
-      runMining: async (): Promise<MiningResult> => ({
-        elapsedMs: 500_000,
-        writeBudgetExceeded: false,
-        exitCode: null,
-        exitSignal: "SIGKILL",
-      }),
+      runMining: async (): Promise<MiningResult> =>
+        miningResult({
+          elapsedMs: 500_000,
+          exitCode: null,
+          exitSignal: "SIGKILL",
+        }),
       readBudgetCount: () => null,
       countMemoriesForProject: async () => 0,
       countFactsForProject: async () => 0,
@@ -149,12 +155,7 @@ describe("runBenchIngest", () => {
       catchAllName: null,
       budgetStateFile: "/tmp/state.json",
       projectId: "project-1",
-      runMining: async (): Promise<MiningResult> => ({
-        elapsedMs: 100,
-        writeBudgetExceeded: false,
-        exitCode: 0,
-        exitSignal: null,
-      }),
+      runMining: async (): Promise<MiningResult> => miningResult(),
       readBudgetCount: () => null,
       countMemoriesForProject: async () => 5,
       countFactsForProject: async () => 3,
@@ -181,12 +182,7 @@ describe("runBenchIngest", () => {
           memoryCaptureMode: options.memoryCaptureMode,
           proposeLearnings: options.proposeLearnings,
         })
-        return {
-          elapsedMs: 100,
-          writeBudgetExceeded: false,
-          exitCode: 0,
-          exitSignal: null,
-        }
+        return miningResult()
       },
       readBudgetCount: () => 1,
       countMemoriesForProject: async () => 1,
@@ -437,12 +433,7 @@ describe("runBenchIngest notionWrites fallback", () => {
       catchAllName: null,
       budgetStateFile: "/tmp/state.json",
       projectId: "project-1",
-      runMining: async (): Promise<MiningResult> => ({
-        elapsedMs: 100,
-        writeBudgetExceeded: false,
-        exitCode: 0,
-        exitSignal: null,
-      }),
+      runMining: async (): Promise<MiningResult> => miningResult(),
       readBudgetCount: () => 0,
       countMemoriesForProject: async () => 5,
       countFactsForProject: async () => 3,

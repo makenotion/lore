@@ -40,15 +40,13 @@ import {
   resetCostLedgerWarningForTests,
   summarizeCostEvents,
   validatePricingTable,
+  type BackgroundModelCostEvent,
   type CostLedgerEvent,
   type PricingTable,
   type ResolvedCostTracking,
 } from "./cost-ledger.js"
 
-type BackgroundModelEvent = Extract<
-  CostLedgerEvent,
-  { eventType: "autosave.background_model" | "digest.background_model" }
->
+type BackgroundModelEvent = BackgroundModelCostEvent
 
 describe("cost ledger", () => {
   const dirs: string[] = []

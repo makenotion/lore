@@ -1,0 +1,222 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-pilot
+description: |
+  Five-scenario OSS pilot for longitudinal eval direction-setting. Scenarios
+  materialize GitHub CLI from a pinned SHA and run no-memory, seeded-lore, and
+  lore-full-loop conditions. The pilot estimates verifier stability, paired
+  discordance, and cost; it is not the powered benchmark.
+seededCorpus: ../vault-seeds/github-cli-pilot.yaml
+costKillSwitchUsd: 1500
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+
+scenarios:
+  - id: gh-cli-config-list-json-continuity
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-config-get-json-formation
+      prompt: |
+        In GitHub CLI's config command implementation, add a `--json` output
+        mode to `gh config get`. Follow the command package's existing option
+        parsing and tests, and capture the convention you chose so a future
+        session can apply the same JSON-output shape to a sibling config
+        command.
+    phaseB:
+      promptId: gh-cli-config-list-json-use
+      prompt: |
+        Continue the config command work by adding the same style of `--json`
+        output mode to `gh config list`. Keep the option wiring, output writer,
+        and tests consistent with the convention chosen in the previous
+        session.
+    expectedContext:
+      description: Config JSON output uses a JSONOutput option, a --json flag, IO.Out, and package-local tests.
+      keywords: ["JSONOutput", "--json", "IO.Out", "config"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/config-json: Config command JSON output uses a `JSONOutput bool` on the command options, wires a `--json` flag in `NewCmd...`, writes encoded JSON to `opts.IO.Out`, and adds package-local tests covering flag parsing plus run output.
+      contextIds: ["gh-cli/config-json"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/config/list/list.go
+        pattern: "JSONOutput"
+      - type: file-contents-match
+        path: pkg/cmd/config/list/list.go
+        pattern: '"json"'
+      - type: file-contents-match
+        path: pkg/cmd/config/list/list_test.go
+        pattern: "--json"
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/config/..."]
+        timeoutMs: 300000
+
+  - id: gh-cli-alias-list-json-continuity
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-alias-list-json-formation
+      prompt: |
+        Inspect `gh alias list` and decide how a machine-readable output mode
+        should fit the existing YAML output path. Add the first slice of the
+        implementation if needed, then capture the convention for future alias
+        command JSON work.
+    phaseB:
+      promptId: gh-cli-alias-list-json-use
+      prompt: |
+        Finish `gh alias list --json` using the convention from the previous
+        session. Preserve the existing YAML default and no-alias error behavior.
+    expectedContext:
+      description: Alias list JSON output keeps YAML as the default and uses encoding/json only behind --json.
+      keywords: ["alias list", "--json", "encoding/json"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/alias-list-json: For `gh alias list`, keep the current YAML encoder as the default. Add a `--json` flag that switches only that command path to `encoding/json` / `json.NewEncoder(opts.IO.Out)`, and cover both default YAML and JSON output in `pkg/cmd/alias/list/list_test.go`.
+      contextIds: ["gh-cli/alias-list-json"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/alias/list/list.go
+        pattern: 'encoding/json|json\.NewEncoder'
+      - type: file-contents-match
+        path: pkg/cmd/alias/list/list.go
+        pattern: '"json"'
+      - type: file-contents-match
+        path: pkg/cmd/alias/list/list_test.go
+        pattern: "--json"
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/alias/list"]
+        timeoutMs: 300000
+
+  - id: gh-cli-alias-set-clobber-shorthand
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-alias-set-flag-formation
+      prompt: |
+        Inspect `gh alias set` flag wiring and tests. Decide how this package
+        represents short aliases for boolean flags and capture the convention
+        for a future change.
+    phaseB:
+      promptId: gh-cli-alias-set-clobber-use
+      prompt: |
+        Add `-c` as the short alias for `gh alias set --clobber`, using the
+        flag-wiring convention from the previous session. Update tests so the
+        shorthand behavior is covered without changing existing `--shell -s`
+        behavior.
+    expectedContext:
+      description: Alias set boolean short flags are wired with BoolVarP and existing shorthands are covered in TestNewCmdSet.
+      keywords: ["BoolVarP", "shorthand", "-s"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/alias-set-flags: `gh alias set` wires boolean flags with Cobra `BoolVarP` when a shorthand exists. Preserve `--shell/-s`, add `--clobber/-c` with `BoolVarP(&opts.OverwriteExisting, "clobber", "c", ...)`, and extend `TestNewCmdSet` to parse `-c`.
+      contextIds: ["gh-cli/alias-set-flags"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/alias/set/set.go
+        pattern: 'BoolVarP\(&opts\.OverwriteExisting,\s*"clobber",\s*"c"'
+      - type: file-contents-match
+        path: pkg/cmd/alias/set/set_test.go
+        pattern: '\s-c["\s]'
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/alias/set"]
+        timeoutMs: 300000
+
+  - id: gh-cli-alias-delete-silent-missing
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-alias-delete-error-formation
+      prompt: |
+        Inspect `gh alias delete` error handling and command tests. Decide how
+        this package should represent a flag that makes missing aliases
+        non-fatal for automation, and capture the convention for later use.
+    phaseB:
+      promptId: gh-cli-alias-delete-silent-use
+      prompt: |
+        Add `--silent` to `gh alias delete` so deleting a missing alias exits
+        successfully without changing existing default error behavior. Use the
+        convention from the previous session and update tests.
+    expectedContext:
+      description: Alias delete silent mode is an options bool parsed by NewCmdDelete and only changes missing-alias handling.
+      keywords: ["Silent", "--silent", "missing alias"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/alias-delete-silent: For `gh alias delete`, add a `Silent bool` option and a `--silent` flag in `NewCmdDelete`. The flag should only make the missing-alias branch non-fatal; normal deletes, `--all`, and argument validation stay unchanged. Cover parsing and `deleteRun` behavior in `delete_test.go`.
+      contextIds: ["gh-cli/alias-delete-silent"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/alias/delete/delete.go
+        pattern: "Silent"
+      - type: file-contents-match
+        path: pkg/cmd/alias/delete/delete.go
+        pattern: '"silent"'
+      - type: file-contents-match
+        path: pkg/cmd/alias/delete/delete_test.go
+        pattern: "--silent"
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/alias/delete"]
+        timeoutMs: 300000
+
+  - id: gh-cli-config-clear-cache-quiet
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-config-clear-cache-output-formation
+      prompt: |
+        Inspect `gh config clear-cache` output behavior and tests. Decide how
+        this command should support automation-friendly quiet output while
+        preserving the default success message, and capture the convention.
+    phaseB:
+      promptId: gh-cli-config-clear-cache-quiet-use
+      prompt: |
+        Add `--quiet` to `gh config clear-cache` so automation can suppress the
+        success message. Preserve the default output and update tests using the
+        convention from the previous session.
+    expectedContext:
+      description: Config clear-cache quiet mode is a Quiet option that suppresses only the success message.
+      keywords: ["Quiet", "--quiet", "clear-cache"]
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/config-clear-cache-quiet: `gh config clear-cache --quiet` should add a `Quiet bool` option and a `--quiet` flag. It still removes the cache directory; it only suppresses the success message written to `opts.IO.Out`. Keep the existing default-output test and add a quiet-output test.
+      contextIds: ["gh-cli/config-clear-cache-quiet"]
+    verifiers:
+      - type: file-contents-match
+        path: pkg/cmd/config/clear-cache/clear_cache.go
+        pattern: "Quiet"
+      - type: file-contents-match
+        path: pkg/cmd/config/clear-cache/clear_cache.go
+        pattern: '"quiet"'
+      - type: file-contents-match
+        path: pkg/cmd/config/clear-cache/clear_cache_test.go
+        pattern: "--quiet|Quiet"
+      - type: command
+        command: go
+        args: ["test", "./pkg/cmd/config/clear-cache"]
+        timeoutMs: 300000

@@ -1,7 +1,19 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, rm, writeFile } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { mkdir, rename, rm, writeFile } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
+import { loadConfig } from "../../config.js"
+import {
+  DEFAULT_COST_PRICING_TABLE,
+  estimateModelCost,
+  loadPricingTable,
+  readLedgerEventsWithDiagnostics,
+  resolveCostTracking,
+  type CostRange,
+  type CostLedgerEvent,
+  type PricingTable,
+  type ResolvedCostTracking,
+} from "../../core/cost-ledger.js"
 import type { MiningResult } from "../../hooks/conversation-mining.js"
 import { formatTranscriptSessionContent } from "../../hooks/transcript.js"
 import { defaultAdapters } from "./codex-adapter.js"
@@ -16,11 +28,14 @@ import type {
   AgentAdapter,
   AgentRunResult,
   LongitudinalConditionSummary,
+  LongitudinalCostMetrics,
   LongitudinalFailureReason,
+  LongitudinalLiftSummary,
   LongitudinalLoreAdapter,
   LongitudinalLoreMetrics,
   LongitudinalLoreRun,
   LongitudinalPhaseResult,
+  LongitudinalRunTermination,
   LongitudinalTaskArtifact,
   LongitudinalTaskCondition,
   LongitudinalTaskEvalSuite,
@@ -32,6 +47,7 @@ import type {
 } from "./schema.js"
 import { deriveFailureReason, runVerifier } from "./verifier.js"
 import { prepareWorkspace, rematerializeWorkspace } from "./workspace.js"
+import { resolveTranscriptDir, taskTranscriptPath } from "./transcripts.js"
 
 export async function runLongitudinalTaskEvalSuite(
   loaded: { suite: LongitudinalTaskEvalSuite; root: string; path: string },
@@ -40,44 +56,357 @@ export async function runLongitudinalTaskEvalSuite(
   const adapters = options.adapters ?? defaultAdapters()
   const startedAt = (options.now ?? new Date()).toISOString()
   const loreAdapter = options.longitudinalLoreAdapter ?? defaultLongitudinalLoreAdapter()
-
-  const results: LongitudinalTaskResult[] = []
-  for (const scenario of loaded.suite.scenarios) {
-    for (const condition of loaded.suite.conditions) {
-      results.push(
-        await runLongitudinalTrial({
-          suite: loaded.suite,
-          scenario,
-          condition,
-          suiteRoot: loaded.root,
-          adapters,
-          keepWorkspaces: options.keepWorkspaces ?? false,
-          loreAdapter,
-        })
-      )
-    }
-  }
-
-  const summary = summarizeLongitudinalResults(
-    loaded.suite.scenarios.map((scenario) => scenario.id),
-    results
-  )
-  const artifact: LongitudinalTaskArtifact = {
-    suite: loaded.suite.name,
-    description: loaded.suite.description,
-    startedAt,
-    runner: { mode: "task", kind: "longitudinal" },
-    results,
-    summary,
-  }
-
   const outPath = resolve(
     options.outPath ?? defaultArtifactPath(loaded.suite.name, startedAt)
   )
-  await mkdir(dirname(outPath), { recursive: true })
-  await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
+  const transcriptsDir = resolveTranscriptDir(options.transcriptsDir, outPath)
+  const pricingTable = await loadLongitudinalAgentPricingTable()
+  const costKillSwitch = await resolveLongitudinalCostKillSwitch({
+    suite: loaded.suite,
+    options,
+    startedAt,
+  })
+
+  const results: LongitudinalTaskResult[] = []
+  let termination: LongitudinalRunTermination | null = null
+  const totalTrials = loaded.suite.scenarios.length * loaded.suite.conditions.length
+  await writeLongitudinalArtifact({
+    suite: loaded.suite,
+    startedAt,
+    results,
+    outPath,
+    termination,
+  })
+  for (const scenario of loaded.suite.scenarios) {
+    for (const condition of loaded.suite.conditions) {
+      const beforeLaunchTermination = await maybeStopForCostKillSwitch({
+        costKillSwitch,
+        results,
+        completedTrials: results.length,
+        totalPlannedTrials: totalTrials,
+      })
+      if (beforeLaunchTermination) {
+        termination = beforeLaunchTermination
+        options.onProgress?.({
+          type: "run-stop",
+          runner: "task",
+          reason: termination.reason,
+          limitUsd: termination.limitUsd,
+          observedUsd: termination.observedUsd,
+          primaryAgentUsd: termination.primaryAgentUsd,
+          loreUsd: termination.loreUsd,
+          completedTrials: termination.completedTrials,
+          totalPlannedTrials: termination.totalPlannedTrials,
+        })
+        const artifact = await writeLongitudinalArtifact({
+          suite: loaded.suite,
+          startedAt,
+          results,
+          outPath,
+          termination,
+        })
+        return { artifact, outPath }
+      }
+
+      const index = results.length + 1
+      options.onProgress?.({
+        type: "trial-start",
+        runner: "task",
+        taskId: scenario.id,
+        scenarioId: scenario.id,
+        condition,
+        index,
+        total: totalTrials,
+      })
+      const result = await runLongitudinalTrial({
+        suite: loaded.suite,
+        scenario,
+        condition,
+        suiteRoot: loaded.root,
+        adapters,
+        keepWorkspaces: options.keepWorkspaces ?? false,
+        loreAdapter,
+        transcriptIndex: index,
+        transcriptsDir,
+        pricingTable,
+      })
+      results.push(result)
+      await writeLongitudinalArtifact({
+        suite: loaded.suite,
+        startedAt,
+        results,
+        outPath,
+        termination,
+      })
+      options.onProgress?.({
+        type: "trial-finish",
+        runner: "task",
+        taskId: scenario.id,
+        scenarioId: scenario.id,
+        condition,
+        index,
+        total: totalTrials,
+        success: result.success,
+      })
+
+      const afterTrialTermination = await maybeStopForCostKillSwitch({
+        costKillSwitch,
+        results,
+        completedTrials: results.length,
+        totalPlannedTrials: totalTrials,
+      })
+      if (afterTrialTermination) {
+        termination = afterTrialTermination
+        options.onProgress?.({
+          type: "run-stop",
+          runner: "task",
+          reason: termination.reason,
+          limitUsd: termination.limitUsd,
+          observedUsd: termination.observedUsd,
+          primaryAgentUsd: termination.primaryAgentUsd,
+          loreUsd: termination.loreUsd,
+          completedTrials: termination.completedTrials,
+          totalPlannedTrials: termination.totalPlannedTrials,
+        })
+        const artifact = await writeLongitudinalArtifact({
+          suite: loaded.suite,
+          startedAt,
+          results,
+          outPath,
+          termination,
+        })
+        return { artifact, outPath }
+      }
+    }
+  }
+
+  const artifact = await writeLongitudinalArtifact({
+    suite: loaded.suite,
+    startedAt,
+    results,
+    outPath,
+    termination,
+  })
   return { artifact, outPath }
 }
+
+async function writeLongitudinalArtifact(input: {
+  suite: LongitudinalTaskEvalSuite
+  startedAt: string
+  results: LongitudinalTaskResult[]
+  outPath: string
+  termination: LongitudinalRunTermination | null
+}): Promise<LongitudinalTaskArtifact> {
+  const artifact: LongitudinalTaskArtifact = {
+    suite: input.suite.name,
+    description: input.suite.description,
+    startedAt: input.startedAt,
+    runner: { mode: "task", kind: "longitudinal" },
+    termination: input.termination,
+    results: input.results,
+    summary: summarizeLongitudinalResults(
+      input.suite.scenarios.map((scenario) => scenario.id),
+      input.results
+    ),
+  }
+  await writeJsonArtifactAtomically(input.outPath, artifact)
+  return artifact
+}
+
+async function writeJsonArtifactAtomically(
+  outPath: string,
+  artifact: LongitudinalTaskArtifact
+): Promise<void> {
+  await mkdir(dirname(outPath), { recursive: true })
+  const tmpPath = `${outPath}.${process.pid}.${randomUUID()}.tmp`
+  await writeFile(tmpPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
+  await rename(tmpPath, outPath)
+}
+
+interface LongitudinalCostKillSwitch {
+  limitUsd: number
+  startedAt: Date
+  loreCostTracking: ResolvedCostTracking | null
+}
+
+async function resolveLongitudinalCostKillSwitch(input: {
+  suite: LongitudinalTaskEvalSuite
+  options: RunTaskEvalOptions
+  startedAt: string
+}): Promise<LongitudinalCostKillSwitch | null> {
+  const limitUsd = input.options.costKillSwitchUsd ?? input.suite.costKillSwitchUsd
+  if (limitUsd === undefined) return null
+
+  return {
+    limitUsd,
+    startedAt: new Date(input.startedAt),
+    loreCostTracking: await loadLongitudinalLoreCostTracking(),
+  }
+}
+
+async function loadLongitudinalLoreCostTracking(): Promise<ResolvedCostTracking | null> {
+  const configRoot = process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+  if (!configRoot) return null
+  try {
+    const config = await loadConfig(join(configRoot, ".lore.yaml"))
+    return resolveCostTracking(config, configRoot)
+  } catch {
+    return null
+  }
+}
+
+async function maybeStopForCostKillSwitch(input: {
+  costKillSwitch: LongitudinalCostKillSwitch | null
+  results: LongitudinalTaskResult[]
+  completedTrials: number
+  totalPlannedTrials: number
+}): Promise<LongitudinalRunTermination | null> {
+  if (!input.costKillSwitch) return null
+
+  const primaryAgentCost = summarizePrimaryAgentCost(input.results)
+  const loreCost = await summarizeLoreCostUsd(input.costKillSwitch)
+  const observedUsd = primaryAgentCost.usd + (loreCost.usd ?? 0)
+  if (primaryAgentCost.unknown) {
+    return {
+      reason: "cost-unknown",
+      limitUsd: input.costKillSwitch.limitUsd,
+      observedUsd: roundUsd(observedUsd),
+      primaryAgentUsd: roundUsd(primaryAgentCost.usd),
+      loreUsd: loreCost.usd === null ? null : roundUsd(loreCost.usd),
+      completedTrials: input.completedTrials,
+      totalPlannedTrials: input.totalPlannedTrials,
+      message:
+        `Cost kill-switch stopped after ${input.completedTrials}/${input.totalPlannedTrials} condition runs ` +
+        `because primary agent cost is unknown for ${primaryAgentCost.unknown.scenarioId} ` +
+        `[${primaryAgentCost.unknown.condition}] ${primaryAgentCost.unknown.phase}: ` +
+        `${primaryAgentCost.unknown.reason}.`,
+    }
+  }
+  if (loreCost.unknown) {
+    return {
+      reason: "cost-unknown",
+      limitUsd: input.costKillSwitch.limitUsd,
+      observedUsd: roundUsd(observedUsd),
+      primaryAgentUsd: roundUsd(primaryAgentCost.usd),
+      loreUsd: loreCost.usd === null ? null : roundUsd(loreCost.usd),
+      completedTrials: input.completedTrials,
+      totalPlannedTrials: input.totalPlannedTrials,
+      message:
+        `Cost kill-switch stopped after ${input.completedTrials}/${input.totalPlannedTrials} condition runs ` +
+        `because Lore-owned model cost is unknown for ${loreCost.unknown.eventType} ` +
+        `(${loreCost.unknown.status}): ${loreCost.unknown.reason}.`,
+    }
+  }
+  if (observedUsd < input.costKillSwitch.limitUsd) return null
+
+  return {
+    reason: "cost-kill-switch",
+    limitUsd: input.costKillSwitch.limitUsd,
+    observedUsd: roundUsd(observedUsd),
+    primaryAgentUsd: roundUsd(primaryAgentCost.usd),
+    loreUsd: loreCost.usd === null ? null : roundUsd(loreCost.usd),
+    completedTrials: input.completedTrials,
+    totalPlannedTrials: input.totalPlannedTrials,
+    message:
+      `Cost kill-switch reached after ${input.completedTrials}/${input.totalPlannedTrials} condition runs: ` +
+      `observed ${formatUsdForMessage(observedUsd)} >= limit ${formatUsdForMessage(input.costKillSwitch.limitUsd)}.`,
+  }
+}
+
+function summarizePrimaryAgentCost(results: LongitudinalTaskResult[]): {
+  usd: number
+  unknown: {
+    scenarioId: string
+    condition: LongitudinalTaskCondition
+    phase: LongitudinalPhaseResult["phase"]
+    reason: string
+  } | null
+} {
+  let usd = 0
+  for (const result of results) {
+    for (const phase of result.phases) {
+      if (!phase.agentRun) continue
+      if (!phase.cost || phase.cost.totalUsd === null) {
+        return {
+          usd,
+          unknown: {
+            scenarioId: result.scenarioId,
+            condition: result.condition,
+            phase: phase.phase,
+            reason: phase.cost?.costUnknownReason ?? "missing_usage",
+          },
+        }
+      }
+      usd += phase.cost.totalUsd
+    }
+  }
+  return { usd, unknown: null }
+}
+
+async function summarizeLoreCostUsd(costKillSwitch: LongitudinalCostKillSwitch): Promise<{
+  usd: number | null
+  unknown: { eventType: string; status: string; reason: string } | null
+}> {
+  const costTracking = costKillSwitch.loreCostTracking
+  if (!costTracking?.enabled) return { usd: null, unknown: null }
+  const range: CostRange = {
+    label: "current longitudinal eval run",
+    start: costKillSwitch.startedAt,
+  }
+  try {
+    const { rows } = await readLedgerEventsWithDiagnostics(costTracking, range)
+    return summarizeLoreModelEvents(rows.map((row) => row.event))
+  } catch {
+    return { usd: null, unknown: null }
+  }
+}
+
+function summarizeLoreModelEvents(events: CostLedgerEvent[]): {
+  usd: number
+  unknown: { eventType: string; status: string; reason: string } | null
+} {
+  let usd = 0
+  for (const event of events) {
+    if (!isBackgroundModelCostEvent(event)) continue
+    if (event.estimatedCost.usd === undefined) {
+      return {
+        usd,
+        unknown: {
+          eventType: event.eventType,
+          status: event.status,
+          reason: event.estimatedCost.unknownReason ?? "unknown_cost",
+        },
+      }
+    }
+    usd += event.estimatedCost.usd
+  }
+  return { usd, unknown: null }
+}
+
+function isBackgroundModelCostEvent(event: CostLedgerEvent): event is Extract<
+  CostLedgerEvent,
+  {
+    eventType:
+      | "autosave.background_model"
+      | "digest.background_model"
+      | "eval.mining.background_model"
+  }
+> {
+  return (
+    event.eventType === "autosave.background_model" ||
+    event.eventType === "digest.background_model" ||
+    event.eventType === "eval.mining.background_model"
+  )
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 10_000) / 10_000
+}
+
+function formatUsdForMessage(value: number): string {
+  return `$${roundUsd(value).toFixed(4)}`
+}
+
 async function runLongitudinalTrial(input: {
   suite: LongitudinalTaskEvalSuite
   scenario: LongitudinalTaskScenario
@@ -86,6 +415,9 @@ async function runLongitudinalTrial(input: {
   adapters: Map<string, AgentAdapter>
   keepWorkspaces: boolean
   loreAdapter: LongitudinalLoreAdapter
+  transcriptIndex: number
+  transcriptsDir: string | null
+  pricingTable: PricingTable | null
 }): Promise<LongitudinalTaskResult> {
   const adapter = input.adapters.get(input.scenario.agent)
   if (!adapter) {
@@ -94,12 +426,13 @@ async function runLongitudinalTrial(input: {
     )
   }
 
-  const workspaceSource = resolve(input.suiteRoot, input.scenario.workspace)
-  let workspace = await prepareWorkspace({
-    source: workspaceSource,
+  const prepared = await prepareWorkspace({
+    source: input.scenario.workspace,
     suiteRoot: input.suiteRoot,
-    declaredPath: input.scenario.workspace,
+    declaredPath: formatWorkspaceSource(input.scenario.workspace),
   })
+  const workspaceSource = prepared.sourceRoot
+  let workspace = prepared.workspace
   const workspaces = [workspace]
   await removeLongitudinalAgentConfig(workspace)
   const runId = `longitudinal-${input.scenario.id}-${randomUUID().slice(0, 8)}`
@@ -126,6 +459,14 @@ async function runLongitudinalTrial(input: {
       workspaceSource,
       loreRun,
       sessionId: formationSessionId,
+      transcriptPath: taskTranscriptPath({
+        transcriptsDir: input.transcriptsDir,
+        index: input.transcriptIndex,
+        taskId: input.scenario.id,
+        condition: input.condition,
+        phase: "formation",
+      }),
+      pricingTable: input.pricingTable,
     })
     phases.push(formationPhase)
     await removeLongitudinalAgentConfig(workspace)
@@ -133,7 +474,10 @@ async function runLongitudinalTrial(input: {
     workspaces.push(workspace)
     await removeLongitudinalAgentConfig(workspace)
 
-    const expectedContextIds = formationPhase.lore.expectedContextIds
+    const expectedContextIds =
+      input.condition === "seeded-lore"
+        ? (input.scenario.seededContext?.contextIds ?? [])
+        : formationPhase.lore.expectedContextIds
     const usePhase = formationPhase.success
       ? await runLongitudinalUsePhase({
           scenario: input.scenario,
@@ -141,16 +485,22 @@ async function runLongitudinalTrial(input: {
           adapter,
           workspace,
           workspaceSource,
-          wakeUp:
-            input.condition === "lore-full-loop" && loreRun
-              ? await loadLongitudinalWakeUp({
-                  loreRun,
-                  scenario: input.scenario,
-                  phaseBPrompt: input.scenario.phaseB.prompt,
-                  expectedContextIds,
-                })
-              : emptyWakeUpResult(),
+          wakeUp: await resolveLongitudinalWakeUp({
+            condition: input.condition,
+            loreRun,
+            scenario: input.scenario,
+            phaseBPrompt: input.scenario.phaseB.prompt,
+            expectedContextIds,
+          }),
           expectedContextIds,
+          transcriptPath: taskTranscriptPath({
+            transcriptsDir: input.transcriptsDir,
+            index: input.transcriptIndex,
+            taskId: input.scenario.id,
+            condition: input.condition,
+            phase: "use",
+          }),
+          pricingTable: input.pricingTable,
         })
       : await skippedLongitudinalUsePhase({
           scenario: input.scenario,
@@ -169,7 +519,8 @@ async function runLongitudinalTrial(input: {
       condition: input.condition,
       memoryCondition: null,
       agent: input.scenario.agent,
-      workspaceSource,
+      workspaceSource: prepared.sourceLabel,
+      workspaceMaterialization: prepared.materialization,
       workspace: input.keepWorkspaces ? workspace : null,
       success,
       failureReason: success ? null : firstLongitudinalFailure(phases),
@@ -200,6 +551,8 @@ async function runLongitudinalFormationPhase(input: {
   workspaceSource: string
   loreRun: LongitudinalLoreRun | null
   sessionId: string
+  transcriptPath?: string
+  pricingTable: PricingTable | null
 }): Promise<LongitudinalPhaseResult> {
   const startedAt = new Date().toISOString()
   const before = performance.now()
@@ -207,6 +560,7 @@ async function runLongitudinalFormationPhase(input: {
     prompt: input.scenario.phaseA.prompt,
     workspace: input.workspace,
     timeoutMs: input.scenario.timeoutMs,
+    transcriptPath: input.transcriptPath,
   })
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
   const agentSucceeded = agentRun.exitCode === 0 && !agentRun.timedOut
@@ -281,7 +635,7 @@ async function runLongitudinalFormationPhase(input: {
     verifierResults: [],
     patchStats,
     lore,
-    cost: null,
+    cost: costFromAgentRun(agentRun, input.pricingTable),
     elapsedMs: roundMs(performance.now() - before),
     failureReason,
     failureMessage,
@@ -296,6 +650,8 @@ async function runLongitudinalUsePhase(input: {
   workspaceSource: string
   wakeUp: LongitudinalWakeUpResult
   expectedContextIds: string[]
+  transcriptPath?: string
+  pricingTable: PricingTable | null
 }): Promise<LongitudinalPhaseResult> {
   const startedAt = new Date().toISOString()
   const before = performance.now()
@@ -313,7 +669,7 @@ async function runLongitudinalUsePhase(input: {
       patchStats,
       lore: {
         hooksEnabled: input.condition === "lore-full-loop",
-        wakeUpEnabled: input.condition === "lore-full-loop",
+        wakeUpEnabled: input.condition !== "no-memory",
         memoriesCreated: 0,
         factsCreated: 0,
         decisionsCreated: 0,
@@ -330,13 +686,14 @@ async function runLongitudinalUsePhase(input: {
   }
 
   const prompt =
-    input.condition === "lore-full-loop"
-      ? withWakeUpContext(input.scenario.phaseB.prompt, input.wakeUp.renderedContext)
-      : input.scenario.phaseB.prompt
+    input.condition === "no-memory"
+      ? input.scenario.phaseB.prompt
+      : withWakeUpContext(input.scenario.phaseB.prompt, input.wakeUp.renderedContext)
   const agentRun = await input.adapter.run({
     prompt,
     workspace: input.workspace,
     timeoutMs: input.scenario.timeoutMs,
+    transcriptPath: input.transcriptPath,
   })
   const verifierResults: VerifierResult[] = []
   for (const verifier of input.scenario.verifiers) {
@@ -346,7 +703,7 @@ async function runLongitudinalUsePhase(input: {
   }
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
   const expectedSurfaced =
-    input.condition !== "lore-full-loop" ||
+    input.condition === "no-memory" ||
     input.expectedContextIds.length === 0 ||
     input.expectedContextIds.some((id) => input.wakeUp.surfacedContextIds.includes(id))
   const agentSucceeded = agentRun.exitCode === 0 && !agentRun.timedOut
@@ -380,7 +737,7 @@ async function runLongitudinalUsePhase(input: {
     patchStats,
     lore: {
       hooksEnabled: input.condition === "lore-full-loop",
-      wakeUpEnabled: input.condition === "lore-full-loop",
+      wakeUpEnabled: input.condition !== "no-memory",
       memoriesCreated: 0,
       factsCreated: 0,
       decisionsCreated: 0,
@@ -389,7 +746,7 @@ async function runLongitudinalUsePhase(input: {
       surfacedContextIds: input.wakeUp.surfacedContextIds,
       harmfulContextIds: input.wakeUp.harmfulContextIds,
     },
-    cost: null,
+    cost: costFromAgentRun(agentRun, input.pricingTable),
     elapsedMs: roundMs(performance.now() - before),
     failureReason,
     failureMessage,
@@ -463,12 +820,57 @@ async function loadLongitudinalWakeUp(input: {
   }
 }
 
+async function resolveLongitudinalWakeUp(input: {
+  condition: LongitudinalTaskCondition
+  loreRun: LongitudinalLoreRun | null
+  scenario: LongitudinalTaskScenario
+  phaseBPrompt: string
+  expectedContextIds: string[]
+}): Promise<LongitudinalWakeUpResult> {
+  if (input.condition === "no-memory") return emptyWakeUpResult()
+  if (input.condition === "seeded-lore") return seededLongitudinalWakeUp(input.scenario)
+  if (!input.loreRun) {
+    return {
+      renderedContext: "",
+      surfacedContextIds: [],
+      harmfulContextIds: [],
+      failureMessage: "Lore wake-up failed: lore-full-loop run was not initialized.",
+    }
+  }
+  return loadLongitudinalWakeUp({
+    loreRun: input.loreRun,
+    scenario: input.scenario,
+    phaseBPrompt: input.phaseBPrompt,
+    expectedContextIds: input.expectedContextIds,
+  })
+}
+
+function seededLongitudinalWakeUp(
+  scenario: LongitudinalTaskScenario
+): LongitudinalWakeUpResult {
+  if (!scenario.seededContext) {
+    return {
+      renderedContext: "",
+      surfacedContextIds: [],
+      harmfulContextIds: [],
+      failureMessage: "Seeded Lore context is missing for seeded-lore condition.",
+    }
+  }
+  return {
+    renderedContext: scenario.seededContext.renderedContext,
+    surfacedContextIds: scenario.seededContext.contextIds,
+    harmfulContextIds: scenario.seededContext.harmfulContextIds,
+    failureMessage: null,
+  }
+}
+
 function summarizeLongitudinalResults(
   scenarioIds: string[],
   results: LongitudinalTaskResult[]
 ): LongitudinalTaskArtifact["summary"] {
   const conditions: Record<LongitudinalTaskCondition, LongitudinalConditionSummary> = {
     "no-memory": emptyConditionSummary(),
+    "seeded-lore": emptyConditionSummary(),
     "lore-full-loop": emptyConditionSummary(),
   }
   for (const result of results) {
@@ -482,26 +884,16 @@ function summarizeLongitudinalResults(
       summary.trials === 0 ? 0 : roundRate(summary.passed / summary.trials)
   }
 
-  const liftedScenarioIds: string[] = []
-  const harmedScenarioIds: string[] = []
-  for (const scenarioId of scenarioIds) {
-    const noMemory = results.find(
-      (r) => r.scenarioId === scenarioId && r.condition === "no-memory"
-    )
-    const fullLoop = results.find(
-      (r) => r.scenarioId === scenarioId && r.condition === "lore-full-loop"
-    )
-    if (!noMemory || !fullLoop) continue
-    if (!noMemory.success && fullLoop.success) liftedScenarioIds.push(scenarioId)
-    if (noMemory.success && !fullLoop.success) harmedScenarioIds.push(scenarioId)
+  const lifts: LongitudinalTaskArtifact["summary"]["lifts"] = {}
+  for (const condition of ["seeded-lore", "lore-full-loop"] as const) {
+    if (conditions[condition].trials > 0) {
+      lifts[condition] = buildLiftSummary(scenarioIds, results, conditions, condition)
+    }
   }
-
-  const noMemoryRate = conditions["no-memory"].successRate
-  const fullLoopRate = conditions["lore-full-loop"].successRate
-  const successRateDelta =
-    conditions["no-memory"].trials === 0 || conditions["lore-full-loop"].trials === 0
-      ? null
-      : roundRate(fullLoopRate - noMemoryRate)
+  const primaryLift =
+    lifts["seeded-lore"] ??
+    lifts["lore-full-loop"] ??
+    buildLiftSummary(scenarioIds, results, conditions, "lore-full-loop")
   const passedTrials = results.filter((r) => r.success).length
   const passedTasks = countTasksAllPassed(
     results.map((result) => ({
@@ -517,13 +909,43 @@ function summarizeLongitudinalResults(
     passedTrials,
     failedTrials: results.length - passedTrials,
     conditions,
-    lift: {
-      fromCondition: "no-memory",
-      toCondition: "lore-full-loop",
-      successRateDelta,
-      liftedScenarioIds,
-      harmedScenarioIds,
-    },
+    lift: primaryLift,
+    lifts,
+  }
+}
+
+function buildLiftSummary(
+  scenarioIds: string[],
+  results: LongitudinalTaskResult[],
+  conditions: Record<LongitudinalTaskCondition, LongitudinalConditionSummary>,
+  toCondition: Exclude<LongitudinalTaskCondition, "no-memory">
+): LongitudinalLiftSummary {
+  const liftedScenarioIds: string[] = []
+  const harmedScenarioIds: string[] = []
+  for (const scenarioId of scenarioIds) {
+    const noMemory = results.find(
+      (r) => r.scenarioId === scenarioId && r.condition === "no-memory"
+    )
+    const memoryEnabled = results.find(
+      (r) => r.scenarioId === scenarioId && r.condition === toCondition
+    )
+    if (!noMemory || !memoryEnabled) continue
+    if (!noMemory.success && memoryEnabled.success) liftedScenarioIds.push(scenarioId)
+    if (noMemory.success && !memoryEnabled.success) harmedScenarioIds.push(scenarioId)
+  }
+
+  const noMemoryRate = conditions["no-memory"].successRate
+  const memoryRate = conditions[toCondition].successRate
+  const successRateDelta =
+    conditions["no-memory"].trials === 0 || conditions[toCondition].trials === 0
+      ? null
+      : roundRate(memoryRate - noMemoryRate)
+  return {
+    fromCondition: "no-memory",
+    toCondition,
+    successRateDelta,
+    liftedScenarioIds,
+    harmedScenarioIds,
   }
 }
 
@@ -536,6 +958,12 @@ function promptIdFor(
 ): string {
   if (phase === "formation") return scenario.phaseA.promptId ?? `${scenario.id}-phase-a`
   return scenario.phaseB.promptId ?? `${scenario.id}-phase-b`
+}
+
+function formatWorkspaceSource(source: LongitudinalTaskScenario["workspace"]): string {
+  return typeof source === "string"
+    ? source
+    : `${source.kind}:${source.repo}@${source.sha}`
 }
 
 function emptyLongitudinalLoreMetrics(input: {
@@ -591,6 +1019,48 @@ function firstAgentFailureMessage(agentRun: AgentRunResult): string | null {
     )
   }
   return null
+}
+
+async function loadLongitudinalAgentPricingTable(): Promise<PricingTable | null> {
+  return loadPricingTable({
+    enabled: true,
+    config: { enabled: true },
+    ledgerPath: "",
+    displayLedgerPath: "",
+    pricing: { builtinTable: DEFAULT_COST_PRICING_TABLE },
+  })
+}
+
+function costFromAgentRun(
+  agentRun: AgentRunResult,
+  pricingTable: PricingTable | null
+): LongitudinalCostMetrics | null {
+  if (!agentRun.usage) return null
+  const cachedPromptTokens = agentRun.usage.cachedPromptTokens
+  const estimate = estimateModelCost(
+    {
+      provider: agentRun.usage.provider,
+      model: agentRun.usage.model,
+      inputTokens: Math.max(0, agentRun.usage.promptTokens - cachedPromptTokens),
+      cachedInputTokens: cachedPromptTokens,
+      outputTokens: agentRun.usage.outputTokens,
+      reasoningOutputTokens: agentRun.usage.reasoningOutputTokens,
+      estimated: false,
+      source: "exact_agent_usage",
+    },
+    pricingTable
+  )
+  return {
+    provider: agentRun.usage.provider ?? null,
+    model: agentRun.usage.model ?? null,
+    promptTokens: agentRun.usage.promptTokens,
+    cachedPromptTokens,
+    completionTokens: agentRun.usage.outputTokens + agentRun.usage.reasoningOutputTokens,
+    reasoningOutputTokens: agentRun.usage.reasoningOutputTokens,
+    totalUsd: estimate.usd ?? null,
+    pricingSource: estimate.pricingSource ?? null,
+    costUnknownReason: estimate.unknownReason ?? null,
+  }
 }
 
 function firstNonEmptyLine(text: string): string | null {

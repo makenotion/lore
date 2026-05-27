@@ -187,6 +187,11 @@ describe("runConversationMining", () => {
     expect(result.exitSignal).toBeNull()
     expect(result.writeBudgetExceeded).toBe(false)
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
+    expect(result.promptPayload).toMatchObject({
+      redacted: true,
+      tokenEstimator: "chars_per_token_4",
+    })
+    expect(result.promptPayload.estimatedInputTokens).toBeGreaterThan(0)
     expect(handle.stdinEnded).toBe(true)
     expect(handle.stdinWrites.join("")).toContain("session transcript text")
   })
