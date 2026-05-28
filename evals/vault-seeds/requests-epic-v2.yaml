@@ -1,0 +1,118 @@
+version: 1
+id: requests-epic-v2
+description: >-
+  Focused seed corpus for the cross-host redirect-resolution security epic.
+  Entries model durable findings from realistic upstream-style work on
+  Requests' `SessionRedirectMixin.rebuild_*` machinery at a pinned pre-fix
+  revision.
+repository:
+  repo: psf/requests
+  sha: 0e322af87745eff34caffe4df68456ebc20d9068
+vault:
+  project:
+    name: requests
+    path: .
+    tags: ["python", "http", "client", "oss", "security"]
+  topics:
+    - id: redirects/auth-stripping
+      name: Redirect auth stripping
+      description: >-
+        Authorization and credential handling across redirects, netrc lookup,
+        and the should_strip_auth host/port/scheme rules.
+    - id: redirects/method-rewrite
+      name: Redirect method rewriting
+      description: >-
+        301/302/303 method rewriting and body, Content-Length, Content-Type,
+        and Transfer-Encoding stripping on redirect.
+    - id: redirects/proxy-rebuild
+      name: Redirect proxy rebuild
+      description: >-
+        Proxy re-resolution across redirects and Proxy-Authorization handling
+        for plaintext versus tunneled schemes.
+  memories:
+    - id: requests/netrc-host-from-hostname
+      title: netrc lookup must key on the parsed hostname, not the netloc
+      topics: ["redirects/auth-stripping"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Resolving netrc credentials from the raw netloc lets embedded userinfo
+        decide the lookup key, so credentials can be selected for a host that
+        is not the request target.
+      body: |
+        Requests resolves `.netrc` credentials while rebuilding auth on a
+        request. The lookup key must be the real connection host. Deriving it
+        from the URL netloc (the substring before the first `:`) is unsafe
+        because a netloc can carry `userinfo@host` segments, so a value such as
+        `trusted.example:token@other.example` makes the lookup key follow the
+        userinfo rather than the host the request actually reaches.
+
+        Take the host from the parsed URL's hostname component so userinfo,
+        ports, and other netloc decorations cannot steer credential selection.
+        Treat this as a credential-confused-deputy risk, not a formatting
+        nicety: the same parsing also runs while following redirects, so a
+        crafted Location can otherwise hand one host's stored secrets to a
+        different host.
+      scenarios: ["requests-cross-host-redirect-security-epic-v2"]
+    - id: requests/redirect-auth-host-boundary
+      title: Explicit Authorization is host-bound across redirects
+      topics: ["redirects/auth-stripping"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        A caller-supplied Authorization header must not survive a redirect that
+        crosses the host (or otherwise changes the security origin), while
+        same-origin hops keep it.
+      body: |
+        Authorization the caller set explicitly is scoped to the origin it was
+        sent to. When a redirect changes the effective origin, that header has
+        to be dropped before the next hop so credentials are not forwarded to a
+        host the caller never authenticated against.
+
+        Keep the origin comparison centralized so every rebuild path agrees on
+        what counts as the same origin. The comparison considers host first and
+        then the port and scheme relationship, including the deliberate
+        carve-out that a plain-to-secure upgrade on standard ports is not
+        treated as a new origin. Do not reimplement the comparison inline in the
+        auth rebuild step.
+      scenarios: ["requests-cross-host-redirect-security-epic-v2"]
+    - id: requests/redirect-method-and-body
+      title: Redirect method rewrites also reset the request entity
+      topics: ["redirects/method-rewrite"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        303 (and the browser-style 301/302 cases) rewrite the method to GET and
+        must also clear the body and its entity headers.
+      body: |
+        Method rewriting on redirect and entity stripping are one combined
+        obligation. A 303 response rewrites the method to GET; the historical
+        browser behavior also turns 302 and a POST-to-301 into GET. Whenever the
+        method no longer carries the original entity, the body must be cleared
+        along with Content-Length, Content-Type, and Transfer-Encoding so a GET
+        does not ship a stale entity or a misleading length header.
+
+        Permanent and temporary redirects that preserve the method (307/308)
+        intentionally keep the body, which is why this logic lives in the
+        redirect loop rather than being applied unconditionally.
+      scenarios: ["requests-cross-host-redirect-security-epic-v2"]
+    - id: requests/redirect-proxy-auth-scope
+      title: Rebuilt proxy auth is scoped to plaintext hops
+      topics: ["redirects/proxy-rebuild"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Proxy re-resolution on redirect re-applies Proxy-Authorization for
+        plaintext targets but must not attach it when the next hop is tunneled.
+      body: |
+        Rebuilding proxies on a redirect re-resolves the proxy configuration for
+        the new URL and re-derives Proxy-Authorization from the selected proxy.
+        That credential belongs only on plaintext requests where the proxy sees
+        the request line directly. For a tunneled (secure) target the transport
+        establishes the tunnel and handles proxy authentication, so attaching
+        Proxy-Authorization to the request would leak it past the proxy.
+
+        Drop any inherited Proxy-Authorization first, then re-apply it only when
+        the rebuilt scheme is not the tunneled one. This keeps the header
+        correct across hops that change scheme mid-chain.
+      scenarios: ["requests-cross-host-redirect-security-epic-v2"]

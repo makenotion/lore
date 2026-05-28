@@ -72,14 +72,25 @@ describe("parseEvalRunCliOptions", () => {
       runner: "task",
       difficulty: "hard",
       scenarioId: ["one", "two"],
+      condition: ["no-memory", "seeded-lore"],
       parallel: "4",
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value.difficulty).toBe("hard")
       expect(result.value.scenarioIds).toEqual(["one", "two"])
+      expect(result.value.conditions).toEqual(["no-memory", "seeded-lore"])
       expect(result.value.parallelism).toBe(4)
     }
+  })
+
+  it("rejects invalid longitudinal condition values", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      condition: ["full-lore"],
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("--condition")
   })
 
   it("parses deterministic longitudinal sample flags", () => {
@@ -673,9 +684,17 @@ function longitudinalArtifact(input: {
       lift: {
         fromCondition: "no-memory",
         toCondition: "lore-full-loop",
+        pairedTrials: 0,
+        pairedScenarioIds: [],
+        pairedNoMemoryPassed: 0,
+        pairedMemoryPassed: 0,
         successRateDelta: null,
         liftedScenarioIds: [],
         harmedScenarioIds: [],
+        contextSatisfiedScenarioIds: [],
+        contextMissedScenarioIds: [],
+        reportable: false,
+        reportingIssues: [],
       },
       lifts: {},
     },

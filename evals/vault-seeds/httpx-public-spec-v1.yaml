@@ -1,0 +1,120 @@
+version: 1
+id: httpx-public-spec-v1
+description: >-
+  Focused seed corpus for an HTTPX longitudinal suite. Entries model durable
+  protocol and transport findings from realistic upstream-style work at pinned
+  HTTPX revisions.
+repository:
+  repo: encode/httpx
+  sha: b5addb64f0161ff6bfe94c124ef76f6a1fba5254
+vault:
+  project:
+    name: httpx
+    path: .
+    tags: ["python", "http", "client", "oss"]
+  topics:
+    - id: urls/encoding
+      name: URL encoding
+      description: URL component quoting, query parameter encoding, raw query preservation, and percent escapes.
+    - id: transports/asgi
+      name: ASGI transport
+      description: ASGI scope construction, path/query separation, and in-process async transport behavior.
+    - id: auth/digest
+      name: Digest auth
+      description: DigestAuth challenge parsing, response hash construction, retry requests, and cookies.
+    - id: client/redirects
+      name: Client redirects
+      description: Redirect loops, request/response hook dispatch, auth interaction, and response closing.
+    - id: proxies/environment
+      name: Environment proxies
+      description: Proxy environment variable parsing, NO_PROXY bypass patterns, and mount key construction.
+  memories:
+    - id: httpx/url-component-encoding
+      title: URL quoting rules differ between raw queries and params
+      topics: ["urls/encoding"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `params=` uses query-parameter encoding, while raw URL query strings
+        preserve literal `/` and existing valid percent escapes.
+      body: |
+        HTTPX needs separate quoting rules for separate URL construction paths.
+        Raw URL parsing should preserve valid percent escapes and should allow
+        literal `/` in the query component. `params=` construction is
+        query-parameter/form-style encoding and should percent-encode `/` in
+        values while encoding spaces as `+`.
+
+        Avoid replacing all query construction with one generic quoting helper.
+        The raw URL parser and `params=` path intentionally have different safe
+        character sets.
+      scenarios: ["httpx-cross-boundary-protocol-epic-v1"]
+    - id: httpx/asgi-raw-path-without-query
+      title: ASGI raw_path excludes query bytes
+      topics: ["transports/asgi", "urls/encoding"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        ASGI `scope["raw_path"]` contains only the percent-encoded path; the
+        query string belongs in `scope["query_string"]`.
+      body: |
+        `ASGITransport` builds an ASGI scope from an HTTPX request URL. The
+        request URL's raw path may include `?query` bytes, but ASGI separates
+        these fields. `scope["raw_path"]` should split before `?`, while
+        `scope["query_string"]` carries the raw query bytes.
+      scenarios: ["httpx-cross-boundary-protocol-epic-v1"]
+    - id: httpx/digest-auth-rfc2069-and-cookies
+      title: DigestAuth no-qop and retry cookies are separate obligations
+      topics: ["auth/digest"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        RFC 2069 digest challenges omit `qop` and use a shorter response hash;
+        digest retries should also carry cookies from the 401 response.
+      body: |
+        Digest challenges without `qop` use the RFC 2069 response formula:
+        `H(HA1:nonce:HA2)`. Challenges with `qop=auth` use nonce count, client
+        nonce, qop, and the RFC 7616 formula. Keep both formulas explicit so a
+        qop fix does not regress old no-qop servers.
+
+        The 401 challenge response can also set cookies. Before yielding the
+        retried digest request, merge those cookies onto the request so the
+        authenticated retry carries server-issued session state.
+      scenarios: ["httpx-cross-boundary-protocol-epic-v1"]
+    - id: httpx/no-proxy-scheme-entries
+      title: NO_PROXY URL entries are scheme-specific bypass patterns
+      topics: ["proxies/environment"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `NO_PROXY` values containing `://` should become scheme-specific mount
+        keys, not wildcard host patterns.
+      body: |
+        `NO_PROXY` accepts host-like patterns and URL-like entries. Hostnames
+        such as `github.com` become wildcard host bypasses like
+        `all://*github.com`, but entries containing `://` are already
+        URL-pattern style and should become scheme-specific bypass mount keys
+        such as `http://internal.local`.
+
+        The parsing layer should decide this before wildcard host expansion so
+        a value like `http://internal.local` is not misinterpreted as the
+        hostname pattern `*http://internal.local`.
+      scenarios: ["httpx-cross-boundary-protocol-epic-v1"]
+    - id: httpx/event-hooks-redirect-loop
+      title: Event hooks should run for every redirect hop
+      topics: ["client/redirects"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Request and response hooks belong inside the redirect loop so tracing
+        observes intermediate 3xx responses and follow-up requests.
+      body: |
+        Event hooks are used for tracing and instrumentation, so redirect
+        handling should dispatch hooks for each outgoing request and each
+        received response in the chain. Running hooks only around the outer
+        send call hides intermediate 3xx responses and follow-up requests.
+
+        Place hook dispatch inside both sync and async redirect loops. Preserve
+        response body and closing semantics: hook placement should not force
+        response bodies to be read earlier than the redirect machinery already
+        requires, and sync/async behavior should stay mirrored.
+      scenarios: ["httpx-event-hooks-redirect-chain-v1"]

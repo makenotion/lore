@@ -1,0 +1,109 @@
+version: 1
+id: pytest-epic-v2
+description: >-
+  Focused seed corpus for a hard cross-boundary pytest longitudinal scenario.
+  Entries model durable findings from realistic upstream-style work that spans
+  marker-expression parsing, marker matching, collection-time deselection, and
+  selection reporting at a pinned pytest revision.
+repository:
+  repo: pytest-dev/pytest
+  sha: e8fa8dd31c365cb5b52f8bdf1966e13cbf66e9ec
+vault:
+  project:
+    name: pytest
+    path: .
+    tags: ["python", "testing", "oss"]
+  topics:
+    - id: mark/expression
+      name: Marker expressions
+      description: Marker-expression scanning, parsing, value typing, and the grammar for `-m`/`-k`.
+    - id: mark/matching
+      name: Marker matching
+      description: How markers and their arguments are stored on a node and matched during selection.
+    - id: collection/selection
+      name: Collection selection
+      description: Collection-time deselection of items by marker/keyword and selected/deselected reporting.
+    - id: tests/pytester
+      name: Pytester regressions
+      description: pytest's own pytester-based regression tests for marks and selection.
+  memories:
+    - id: pytest/marker-expression-argument-values
+      title: Marker expressions need typed argument values in the grammar
+      topics: ["mark/expression", "mark/matching"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `-m` evaluation splits into a syntax layer that must tokenize
+        `name(arg=value)` calls with typed values and a semantic layer that
+        compares those values against the arguments on each applied marker.
+      body: |
+        Marker selection on `-m` runs through two cooperating layers and the
+        boundary between them matters.
+
+        The expression scanner and parser own syntax. To support argument
+        matching they must tokenize a `name(arg=value)` call form: introduce
+        tokens for `=`, `,`, and quoted strings, and parse one or more
+        comma-separated `arg=value` pairs after an identifier. Values must be
+        typed rather than treated as raw text: quoted strings become strings,
+        bare integers (including negatives) become integers, and the literals
+        `True`, `False`, and `None` become their Python values. These call
+        expressions must remain composable with `and`, `or`, `not`, and
+        parentheses exactly like bare names.
+
+        The matcher layer owns semantics: a marker call matches a node only
+        when an applied marker of that name carries arguments equal to every
+        argument written in the expression. Bare `name` still matches on
+        presence alone. Keeping syntax in the parser and value comparison in
+        the matcher is what lets the two evolve without leaking into each
+        other.
+      scenarios: ["pytest-config-collection-cache-epic-v2"]
+    - id: pytest/markmatcher-stores-marks-per-name
+      title: The marker matcher must keep marks, not just names
+      topics: ["mark/matching", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Index a node's markers by name keeping each applied mark and its
+        arguments, match on any application when a name repeats, and keep the
+        keyword matcher name-only.
+      body: |
+        Marker-argument comparison can only happen if the matcher remembers the
+        arguments. Building the matcher from a node should index markers by
+        name and keep each applied marker object (with its keyword arguments)
+        instead of collapsing to a set of names. Argument comparison then runs
+        against those stored arguments at match time.
+
+        Repeated markers are normal: the same marker name can be applied to a
+        node more than once with different arguments. An argument match against
+        any one of those applications should select the node, so the matcher
+        iterates the applications for a name and succeeds on the first that
+        satisfies every requested argument.
+
+        The keyword matcher backing `-k` is a different concern: `-k` is a
+        name/substring matcher and should keep rejecting call syntax so the two
+        selection mechanisms do not blur together.
+      scenarios: ["pytest-config-collection-cache-epic-v2"]
+    - id: pytest/marker-selection-deselection-and-counts
+      title: Argument matching stays a collection-time deselection step
+      topics: ["collection/selection", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Marker-argument matching still deselects non-matching items during
+        collection and must preserve selected/deselected counts, name-only `-m`
+        behavior, and existing expression-error reporting.
+      body: |
+        Adding argument matching does not move selection out of collection. It
+        is still a deselection pass: items whose markers do not match the
+        expression are removed during collection and reported as deselected,
+        and the selected/deselected counts and `--collect-only` listing must
+        stay accurate for the richer expressions.
+
+        The change must be additive. Name-only `-m "name"` selection,
+        `and`/`or`/`not` composition, and the existing "wrong expression"
+        error reporting for malformed expressions must all behave as before.
+        Regressions should exercise typed values, multiple arguments, repeated
+        markers, boolean composition, and the resulting deselected counts so
+        the feature is locked in across the parsing, matching, and reporting
+        boundaries.
+      scenarios: ["pytest-config-collection-cache-epic-v2"]

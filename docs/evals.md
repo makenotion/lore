@@ -204,6 +204,12 @@ candidates. Candidate culling must be blind to condition deltas: remove tasks
 only for objective validity failures such as no-op pass, verifier ambiguity,
 prompt out-of-bounds behavior, flake rate, runtime, or cost.
 
+Phase B starts from a clean rematerialization of the original workspace source,
+not the Phase A workspace. Phase A edits are preserved only as transcript and
+patch evidence for adjudication; they must not become implicit implementation
+state for `no-memory`, `seeded-lore`, or `lore-full-loop`. Any cross-session
+benefit must therefore flow through seeded context or Lore formation/wake-up.
+
 Keep raw and adjudicated measurements separate. If a run fails because of
 harness validation, infrastructure, or an over-narrow verifier, preserve the raw
 artifact and classify the row before scoring. A row marked `harness-error` is
@@ -213,6 +219,14 @@ results objectively prove that an agent satisfied the intended scenario under a
 repaired verifier, an adjudicated score may be reported without rerunning that
 condition. Final reports should include raw, adjudicated, and exclusion-only
 sensitivity views.
+
+For `lore-full-loop`, formation and wake-up phase errors are product failures
+unless they were caused by external infrastructure or harness setup. Expected
+context matching is diagnostic, not an outcome override: missing expected memory
+can explain a verifier failure, but it does not turn a verifier-passing task
+into a failure. Longitudinal task artifacts write transcript and patch sidecars
+next to the JSON result so reviewers can adjudicate verifier false negatives
+after temporary workspaces are cleaned up.
 
 ```bash
 npm run build

@@ -66,6 +66,17 @@ const verifierSchema = z.discriminatedUnion("type", [
       timeoutMs: z.number().int().positive().default(120_000),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("patched-command"),
+      patch: z.string().min(1),
+      command: z.string().min(1),
+      args: z.array(z.string()).default([]),
+      cwd: z.string().min(1).optional(),
+      timeoutMs: z.number().int().positive().default(120_000),
+      patchTimeoutMs: z.number().int().positive().default(30_000),
+    })
+    .strict(),
 ])
 
 const memoryConditionSchema = z.enum(TASK_EVAL_MEMORY_CONDITIONS)
@@ -291,6 +302,13 @@ export const taskEvalSuiteSchema = z.union([
 ])
 
 export type TaskEvalVerifier = z.infer<typeof verifierSchema>
+type PatchedCommandVerifier = Extract<TaskEvalVerifier, { type: "patched-command" }>
+export type TaskEvalVerifierArtifact =
+  | Exclude<TaskEvalVerifier, { type: "patched-command" }>
+  | (Omit<PatchedCommandVerifier, "patch"> & {
+      patchSha256: string
+      patchBytes: number
+    })
 export type GitWorkspaceSource = z.infer<typeof gitWorkspaceSourceSchema>
 export type TaskEvalWorkspaceSource = z.infer<typeof workspaceSourceSchema>
 export type TaskEvalTask = z.infer<typeof taskEvalTaskSchema>
@@ -368,9 +386,17 @@ export interface AgentAdapter {
 }
 
 export interface VerifierResult {
-  verifier: TaskEvalVerifier
+  verifier: TaskEvalVerifierArtifact
   passed: boolean
   message: string
+  output?: VerifierOutputEvidence | null
+}
+
+export interface VerifierOutputEvidence {
+  path: string
+  format: "verifier-output-json"
+  bytes: number
+  truncated: boolean
 }
 
 /**
@@ -418,6 +444,13 @@ export interface PatchStats {
   linesRemoved: number
 }
 
+export interface PatchEvidence {
+  path: string
+  format: "git-diff"
+  bytes: number
+  truncated: boolean
+}
+
 export interface LongitudinalLoreMetrics {
   hooksEnabled: boolean
   wakeUpEnabled: boolean
@@ -452,6 +485,7 @@ export interface LongitudinalPhaseResult {
   agentRun: AgentRunResult | null
   verifierResults: VerifierResult[]
   patchStats: PatchStats
+  patch: PatchEvidence | null
   lore: LongitudinalLoreMetrics
   cost: LongitudinalCostMetrics | null
   elapsedMs: number
@@ -498,9 +532,17 @@ export interface LongitudinalConditionSummary {
 export interface LongitudinalLiftSummary {
   fromCondition: "no-memory"
   toCondition: Exclude<LongitudinalTaskCondition, "no-memory">
+  pairedTrials: number
+  pairedScenarioIds: string[]
+  pairedNoMemoryPassed: number
+  pairedMemoryPassed: number
   successRateDelta: number | null
   liftedScenarioIds: string[]
   harmedScenarioIds: string[]
+  contextSatisfiedScenarioIds: string[]
+  contextMissedScenarioIds: string[]
+  reportable: boolean
+  reportingIssues: string[]
 }
 
 export type WorkspaceMaterialization =
@@ -542,6 +584,7 @@ export interface LongitudinalTaskArtifact {
     kind: "longitudinal"
     parallelism?: number
     difficulty?: LongitudinalScenarioDifficulty
+    conditions?: LongitudinalTaskCondition[]
     sample?: LongitudinalScenarioSampleSelection
   }
   termination: LongitudinalRunTermination | null
@@ -698,6 +741,11 @@ export interface RunTaskEvalOptions {
    * execute one scenario triple at a time.
    */
   scenarioIds?: string[]
+  /**
+   * Longitudinal-only memory-condition filter. Useful for calibration runs
+   * that measure one condition before spending on the full triple.
+   */
+  conditions?: LongitudinalTaskCondition[]
   /**
    * Longitudinal-only scenario worker count. Conditions within a scenario
    * still run sequentially so each scenario remains a coherent triple.

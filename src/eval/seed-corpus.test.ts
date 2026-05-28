@@ -47,7 +47,7 @@ describe("seed corpus", () => {
     ).toBe(true)
     expect(
       corpus.vault.facts.find((fact) => fact.id === "gh-cli/fact-powered-scenario-target")
-    ).toMatchObject({ object: "75" })
+    ).toMatchObject({ object: "202" })
     for (const memory of corpus.vault.memories) {
       if (memory.provenanceKind === "pr-derived") {
         expect(memory.sourcePullRequests.length).toBeGreaterThan(0)
@@ -62,6 +62,26 @@ describe("seed corpus", () => {
       expect(decision.sourcePullRequests).toEqual([])
       expect(decision.provenanceKind).toBe("generalized")
     }
+  })
+
+  it("loads the focused GitHub CLI capability-edge v3 corpus", async () => {
+    const corpus = await loadSeedCorpus(
+      "evals/vault-seeds/github-cli-capability-edge-v3.yaml"
+    )
+
+    expect(corpus).toMatchObject({
+      id: "github-cli-capability-edge-v3",
+      repository: {
+        repo: "cli/cli",
+        sha: "9a593ce81b593dee752cc11737d1a3ef768e52b3",
+      },
+    })
+    const memoryIds = corpus.vault.memories.map((memory) => memory.id)
+    expectUnique(memoryIds)
+    expect(memoryIds).toContain("gh-cli/auth-git-credential-requested-user")
+    expect(memoryIds).toContain("gh-cli/run-artifact-zip-safe-atomic")
+    expect(memoryIds).toContain("gh-cli/pr-close-delete-branch-worktree-guard")
+    expect(memoryIds).toContain("gh-cli/issue-develop-ref-validation")
   })
 })
 

@@ -1,0 +1,37 @@
+version: 1
+id: werkzeug-public-spec-v1
+description: >-
+  Focused seed corpus for a Werkzeug longitudinal suite. Entries model durable
+  implementation findings from realistic upstream-style work at pinned
+  Werkzeug revisions.
+repository:
+  repo: pallets/werkzeug
+  sha: 1049dd6b2a363e1ef302b4161c340fb8582f627a
+vault:
+  project:
+    name: werkzeug
+    path: .
+    tags: ["python", "wsgi", "http", "oss"]
+  topics:
+    - id: formparser/multipart
+      name: Multipart form parsing
+      description: Sans-IO multipart decoding, form parser chunking, boundary detection, and binary data preservation.
+  memories:
+    - id: werkzeug/multipart-partial-boundary-crlf
+      title: Multipart partial-boundary search must preserve real CR bytes
+      topics: ["formparser/multipart"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Multipart decoding should defer possible CRLF boundary prefixes across
+        chunks without stripping CR bytes that are real payload data.
+      body: |
+        Multipart boundaries start after a line break, so the parser needs to
+        retain possible partial `\r\n--boundary` prefixes at the end of a read
+        chunk. It should not split a `\r\n` pair across emitted data events.
+
+        The inverse is just as important: if a CR byte appears too far from the
+        end of the buffer to be part of a possible boundary prefix, it is user
+        payload and must be emitted. Large uploads that end with one or two CR
+        bytes near the parser buffer size should round-trip exactly.
+      scenarios: ["werkzeug-multipart-boundary-crlf-epic-v1"]

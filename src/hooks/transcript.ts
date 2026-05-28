@@ -80,6 +80,60 @@ function parseCodexEvent(entry: Record<string, unknown>): TranscriptMessage | nu
   }
 }
 
+function parseCodexEvalRunStart(
+  entry: Record<string, unknown>
+): TranscriptMessage | null {
+  if (entry["type"] !== "lore.eval.agent_run.started") return null
+  const prompt = entry["prompt"]
+  if (typeof prompt !== "string" || prompt.length === 0) return null
+  return {
+    role: "user",
+    text: stripSystemReminders(prompt),
+  }
+}
+
+function parseCodexItem(entry: Record<string, unknown>): TranscriptMessage | null {
+  if (entry["type"] !== "item.completed") return null
+  const item = entry["item"]
+  if (!item || typeof item !== "object") return null
+  const typedItem = item as {
+    type?: unknown
+    text?: unknown
+    command?: unknown
+    aggregated_output?: unknown
+    exit_code?: unknown
+  }
+
+  if (typedItem.type === "agent_message" && typeof typedItem.text === "string") {
+    return {
+      role: "assistant",
+      text: stripSystemReminders(typedItem.text),
+    }
+  }
+
+  if (typedItem.type !== "command_execution") return null
+  const command = typeof typedItem.command === "string" ? typedItem.command : ""
+  const output =
+    typeof typedItem.aggregated_output === "string"
+      ? capTranscriptPart(typedItem.aggregated_output, 12_000)
+      : ""
+  const exitCode =
+    typeof typedItem.exit_code === "number" ? `\nExit code: ${typedItem.exit_code}` : ""
+  const text = [`Command: ${command}${exitCode}`, output && `Output:\n${output}`]
+    .filter(Boolean)
+    .join("\n")
+  if (text.length === 0) return null
+  return {
+    role: "assistant",
+    text: stripSystemReminders(text),
+  }
+}
+
+function capTranscriptPart(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}\n...(truncated)`
+}
+
 export function inspectTranscript(transcriptRaw: string): TranscriptInspection {
   const messages: TranscriptMessage[] = []
   let malformedLineCount = 0
@@ -92,7 +146,11 @@ export function inspectTranscript(transcriptRaw: string): TranscriptInspection {
 
     try {
       const entry = JSON.parse(line) as Record<string, unknown>
-      const parsed = parseClaudeMessage(entry) ?? parseCodexEvent(entry)
+      const parsed =
+        parseClaudeMessage(entry) ??
+        parseCodexEvent(entry) ??
+        parseCodexEvalRunStart(entry) ??
+        parseCodexItem(entry)
       if (!parsed || parsed.text.length === 0) {
         ignoredLineCount++
         continue

@@ -52,6 +52,7 @@ export interface EvalRunCliOptions {
   difficulty?: LongitudinalScenarioDifficulty
   sample?: LongitudinalScenarioSampleRequest
   scenarioIds?: string[]
+  conditions?: LongitudinalTaskCondition[]
   parallelism?: number
   /**
    * Prefix slice for sample runs. Bench-only — rejected on every
@@ -76,6 +77,7 @@ export interface EvalRunRawCliOptions {
   sample?: string
   sampleSeed?: string
   scenarioId?: string[]
+  condition?: string[]
   parallel?: string
   limit?: string
   json?: boolean
@@ -156,6 +158,8 @@ export function parseEvalRunCliOptions(
 
   const parallelism = parseOptionalPositiveInteger("--parallel", raw.parallel)
   if (!parallelism.ok) return parallelism
+  const conditions = parseOptionalLongitudinalConditions(raw.condition)
+  if (!conditions.ok) return conditions
 
   return {
     ok: true,
@@ -171,6 +175,7 @@ export function parseEvalRunCliOptions(
       difficulty: difficulty.value,
       sample: sample.value,
       scenarioIds: raw.scenarioId,
+      conditions: conditions.value,
       parallelism: parallelism.value,
       limit,
       json: !!raw.json,
@@ -180,7 +185,10 @@ export function parseEvalRunCliOptions(
 
 export function validateEvalRunRunnerCompatibility(
   runner: EvalRunner | undefined,
-  raw: Pick<EvalRunRawCliOptions, "baseline" | "minLift" | "maxHarm" | "project">
+  raw: Pick<
+    EvalRunRawCliOptions,
+    "baseline" | "minLift" | "maxHarm" | "project" | "condition"
+  >
 ): CliParseResult<void> {
   if (runner === "notion" && (raw.project === undefined || raw.project.length === 0)) {
     return {
@@ -439,6 +447,32 @@ function parseOptionalLongitudinalDifficulty(
   }
 }
 
+function parseOptionalLongitudinalConditions(
+  raw: string[] | undefined
+): CliParseResult<LongitudinalTaskCondition[] | undefined> {
+  if (raw === undefined || raw.length === 0) return { ok: true, value: undefined }
+  const valid = new Set(["no-memory", "seeded-lore", "lore-full-loop"])
+  const seen = new Set<string>()
+  const conditions: LongitudinalTaskCondition[] = []
+  for (const condition of raw) {
+    if (!valid.has(condition)) {
+      return {
+        ok: false,
+        message:
+          '--condition must be one of: no-memory, seeded-lore, lore-full-loop; got "' +
+          condition +
+          '"',
+      }
+    }
+    if (seen.has(condition)) {
+      return { ok: false, message: `--condition includes duplicate ${condition}.` }
+    }
+    seen.add(condition)
+    conditions.push(condition as LongitudinalTaskCondition)
+  }
+  return { ok: true, value: conditions }
+}
+
 function parseOptionalLongitudinalSample(
   raw: string | undefined,
   seed: string | undefined
@@ -538,6 +572,10 @@ function collectScenarioId(value: string, previous: string[]): string[] {
   return [...previous, value]
 }
 
+function collectCondition(value: string, previous: string[]): string[] {
+  return [...previous, value]
+}
+
 export function formatTaskProgressEvent(event: TaskEvalProgressEvent): string {
   if (event.type === "run-stop") {
     const loreCost =
@@ -614,6 +652,12 @@ evalCommand.addCommand(
       []
     )
     .option(
+      "--condition <condition>",
+      "Task longitudinal runs only: run a single memory condition; repeat for multiple conditions",
+      collectCondition,
+      []
+    )
+    .option(
       "--parallel <n>",
       "Task longitudinal runs only: run scenario triples in up to n child processes; cost guard checks between triples"
     )
@@ -634,6 +678,7 @@ evalCommand.addCommand(
           sample?: string
           sampleSeed?: string
           scenarioId?: string[]
+          condition?: string[]
           parallel?: string
           limit?: string
           json?: boolean
@@ -704,12 +749,13 @@ evalCommand.addCommand(
           if (
             (parsed.value.difficulty !== undefined ||
               (parsed.value.scenarioIds?.length ?? 0) > 0 ||
+              (parsed.value.conditions?.length ?? 0) > 0 ||
               parsed.value.sample !== undefined ||
               parsed.value.parallelism !== undefined) &&
             parsed.value.runner !== "task"
           ) {
             console.error(
-              "Eval failed: --difficulty, --sample, --scenario-id, and --parallel are only supported with --runner task (or a suite YAML with `runner: task`)."
+              "Eval failed: --difficulty, --sample, --scenario-id, --condition, and --parallel are only supported with --runner task (or a suite YAML with `runner: task`)."
             )
             process.exit(1)
             return
@@ -721,6 +767,7 @@ evalCommand.addCommand(
               difficulty: parsed.value.difficulty,
               sample: parsed.value.sample,
               scenarioIds: parsed.value.scenarioIds,
+              conditions: parsed.value.conditions,
               parallelism: parsed.value.parallelism,
               onProgress: parsed.value.json
                 ? undefined

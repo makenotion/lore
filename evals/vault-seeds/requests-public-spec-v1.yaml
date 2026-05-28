@@ -1,0 +1,61 @@
+version: 1
+id: requests-public-spec-v1
+description: >-
+  Focused seed corpus for a Requests longitudinal suite. Entries model durable
+  implementation findings from realistic upstream-style work at pinned
+  Requests revisions.
+repository:
+  repo: psf/requests
+  sha: a4f9a5999bdb9bf2d6e7c8aa973b28cacb17134f
+vault:
+  project:
+    name: requests
+    path: .
+    tags: ["python", "http", "client", "oss"]
+  topics:
+    - id: proxies/environment
+      name: Environment proxies
+      description: NO_PROXY parsing, proxy bypass matching, and environment precedence.
+    - id: request-body/streaming
+      name: Request body streaming
+      description: Prepared request body detection, length calculation, redirects, and rewind behavior.
+  memories:
+    - id: requests/no-proxy-domain-boundaries
+      title: NO_PROXY suffix matching must respect domain boundaries
+      topics: ["proxies/environment"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        NO_PROXY host entries should match the exact host or a dot-separated
+        subdomain, not arbitrary string suffixes.
+      body: |
+        Requests' `should_bypass_proxies` should not use plain `endswith`
+        matching for host names. A `NO_PROXY=localhost` entry should match
+        `localhost`, but not `prelocalhost`. A domain entry should match the
+        exact domain and dot-separated subdomains, while a port-qualified entry
+        should only match the same port.
+
+        Normalize leading dots before comparison, check exact host and
+        host-with-port first, then require a leading dot boundary for subdomain
+        matches.
+      scenarios: ["requests-no-proxy-domain-boundary-v1"]
+    - id: requests/getattr-stream-rewind
+      title: Attribute-proxy stream wrappers still need rewind tracking
+      topics: ["request-body/streaming"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        File-like wrappers that expose `__iter__`, `tell`, and `seek` through
+        `__getattr__` should be treated as rewindable streaming bodies.
+      body: |
+        Python's special method lookup does not make `isinstance(wrapper,
+        Iterable)` true when `__iter__` is supplied only through
+        `__getattr__`. Requests still needs to detect those wrapper objects as
+        streaming request bodies because `tell` and `seek` are available for
+        redirect rewinds.
+
+        Body preparation should consider either `isinstance(data, Iterable)` or
+        `hasattr(data, "__iter__")`, then record `_body_position` from
+        `tell()`. That lets 307/308 redirects rewind and replay the original
+        stream instead of treating the body as unrewindable.
+      scenarios: ["requests-getattr-stream-rewind-v1"]

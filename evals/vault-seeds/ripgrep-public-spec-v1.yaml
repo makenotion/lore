@@ -1,0 +1,92 @@
+version: 1
+id: ripgrep-public-spec-v1
+description: >-
+  Focused seed corpus for a ripgrep longitudinal suite. Entries model durable
+  implementation findings from realistic upstream-style work at pinned
+  ripgrep revisions.
+repository:
+  repo: BurntSushi/ripgrep
+  sha: 4857d6fa67db69a95cd4b6f2adda5d807d4d0119
+vault:
+  project:
+    name: ripgrep
+    path: .
+    tags: ["rust", "cli", "search", "oss"]
+  topics:
+    - id: ignore/walking
+      name: Ignore walking
+      description: Path traversal, ignore-file matching, gitignore semantics, and root/cwd-relative normalization.
+    - id: printer/json
+      name: JSON printer
+      description: JSON-lines output schema, match/context/end/summary messages, replacement data, and statistics.
+    - id: searcher/terminators
+      name: Searcher line terminators
+      description: Searcher line terminators, binary handling, match delivery, and printer/searcher coordination.
+  memories:
+    - id: ripgrep/global-ignore-cwd-rooting
+      title: Global ignore files are rooted at process cwd
+      topics: ["ignore/walking"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Global ignore files supplied through `--ignore-file` and git global
+        excludes should interpret anchored patterns relative to process cwd.
+      body: |
+        Ignore files supplied through `--ignore-file` and git global excludes
+        behave like global gitignore files: anchored patterns such as
+        `/haystack` should be interpreted relative to the process current
+        working directory, even when the searched path is an absolute root
+        elsewhere.
+
+        Ordinary project `.ignore` and `.gitignore` files remain rooted at
+        their own containing directory. The fix belongs where the ignore walker
+        constructs global gitignore matchers and normalizes roots, not in the
+        glob syntax itself.
+      scenarios: ["rg-global-ignore-absolute-cwd-v1", "rg-cross-boundary-correctness-epic-v1"]
+    - id: ripgrep/json-summary-stats-before-end
+      title: JSON summary stats must be tallied even without begin/end messages
+      topics: ["printer/json", "searcher/terminators"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `--json --stats` should account for searched files and bytes even when
+        a no-match file never emits begin/end JSON messages.
+      body: |
+        The JSON printer may omit per-file begin/end messages when a searched
+        file has no matches, but sink finish still has byte/search accounting.
+        Summary statistics must be updated before deciding whether to emit the
+        file end message so `--json --stats` reports searched files and bytes
+        accurately for no-match searches.
+      scenarios: ["rg-json-stats-no-matches-v1", "rg-cross-boundary-correctness-epic-v1"]
+    - id: ripgrep/json-replacement-preserves-original-match
+      title: JSON replacement is per-submatch metadata
+      topics: ["printer/json"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `--json -r` should preserve original match data and add replacement
+        output as optional per-submatch arbitrary data.
+      body: |
+        With `--json -r`, the JSON schema should preserve the original line
+        text, original submatch text, and offsets. Replacement output belongs
+        in an optional `replacement` arbitrary-data field on each submatch,
+        using the same capture interpolation semantics as the standard printer.
+
+        Do not replace the JSON `lines` or `match` fields. Consumers rely on
+        those fields reflecting the original haystack bytes.
+      scenarios: ["rg-json-replacement-submatches-v1", "rg-cross-boundary-correctness-epic-v1"]
+    - id: ripgrep/null-data-line-regexp-slow-path
+      title: Null-data line-regexp needs terminator-aware matching
+      topics: ["searcher/terminators"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `--null-data --line-regexp` needs a matching path that treats NUL as
+        the logical record terminator.
+      body: |
+        `--null-data` changes ripgrep's logical line terminator to NUL. When it
+        is combined with `--line-regexp`, fast paths that rely on regex anchors
+        understanding only `\n` can miss whole-record matches. The searcher must
+        use a terminator-aware path so `-x` matches entire NUL-delimited
+        records without matching substrings inside larger records.
+      scenarios: ["rg-null-data-line-regexp-v1", "rg-cross-boundary-correctness-epic-v1"]

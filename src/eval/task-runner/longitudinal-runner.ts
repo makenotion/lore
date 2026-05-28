@@ -12,20 +12,34 @@ import {
   readLedgerEventsWithDiagnostics,
   resolveCostTracking,
   type CostRange,
+  type BackgroundModelCostEvent,
   type CostLedgerEvent,
   type PricingTable,
   type ResolvedCostTracking,
 } from "../../core/cost-ledger.js"
 import type { MiningResult } from "../../hooks/conversation-mining.js"
-import { formatTranscriptSessionContent } from "../../hooks/transcript.js"
+import {
+  formatTranscriptSessionContent,
+  listTranscriptMessages,
+} from "../../hooks/transcript.js"
 import { defaultAdapters } from "./codex-adapter.js"
 import {
   defaultLongitudinalLoreAdapter,
   LongitudinalAdapterRefusedError,
   removeLongitudinalAgentConfig,
 } from "./lore-adapter.js"
-import { computePatchStats, roundMs, roundRate } from "./patch-stats.js"
-import { countTasksAllPassed, defaultArtifactPath } from "./shared.js"
+import {
+  computePatchStats,
+  roundMs,
+  roundRate,
+  writePatchEvidence,
+} from "./patch-stats.js"
+import {
+  isChildProcessRunning,
+  killChildProcessGroup,
+  registerDetachedChildProcessGroup,
+} from "./process-groups.js"
+import { defaultArtifactPath } from "./shared.js"
 import type {
   AgentAdapter,
   AgentRunResult,
@@ -51,7 +65,12 @@ import type {
 } from "./schema.js"
 import { deriveFailureReason, runVerifier } from "./verifier.js"
 import { prepareWorkspace, rematerializeWorkspace } from "./workspace.js"
-import { resolveTranscriptDir, taskTranscriptPath } from "./transcripts.js"
+import {
+  resolveTranscriptDir,
+  taskPatchPath,
+  taskTranscriptPath,
+  taskVerifierOutputPath,
+} from "./transcripts.js"
 
 const LONGITUDINAL_DIFFICULTIES = ["easy", "medium", "hard"] as const
 
@@ -65,8 +84,14 @@ export async function runLongitudinalTaskEvalSuite(
   )
   const selection = selectLongitudinalScenarios(loaded.suite, options)
   const scenarios = selection.scenarios
+  const selectedConditions = selectLongitudinalConditions(loaded.suite, options)
   const parallelism = normalizeLongitudinalParallelism(options.parallelism)
   const scenarioIds = scenarios.map((scenario) => scenario.id)
+  if (options.transcriptsDir !== undefined) {
+    throw new Error(
+      "Longitudinal task runs keep transcript and patch sidecars artifact-adjacent and do not support transcriptsDir overrides."
+    )
+  }
 
   if (parallelism > 1) {
     return runLongitudinalTaskEvalSuiteInChildProcesses({
@@ -75,6 +100,7 @@ export async function runLongitudinalTaskEvalSuite(
       startedAt,
       outPath,
       scenarios,
+      selectedConditions,
       parallelism,
       sample: selection.sample,
     })
@@ -82,17 +108,18 @@ export async function runLongitudinalTaskEvalSuite(
 
   const adapters = options.adapters ?? defaultAdapters()
   const loreAdapter = options.longitudinalLoreAdapter ?? defaultLongitudinalLoreAdapter()
-  const transcriptsDir = resolveTranscriptDir(options.transcriptsDir, outPath)
+  const transcriptsDir = resolveTranscriptDir(undefined, outPath)
   const pricingTable = await loadLongitudinalAgentPricingTable()
   const costKillSwitch = await resolveLongitudinalCostKillSwitch({
     suite: loaded.suite,
     options,
     startedAt,
+    selectedConditions,
   })
 
   const results: LongitudinalTaskResult[] = []
   let termination: LongitudinalRunTermination | null = null
-  const totalTrials = scenarios.length * loaded.suite.conditions.length
+  const totalTrials = scenarios.length * selectedConditions.length
   await writeLongitudinalArtifact({
     suite: loaded.suite,
     startedAt,
@@ -100,12 +127,13 @@ export async function runLongitudinalTaskEvalSuite(
     outPath,
     termination,
     scenarioIds,
+    selectedConditions,
     parallelism,
     difficulty: options.difficulty,
     sample: selection.sample,
   })
   for (const [scenarioIndex, scenario] of scenarios.entries()) {
-    for (const [conditionIndex, condition] of loaded.suite.conditions.entries()) {
+    for (const [conditionIndex, condition] of selectedConditions.entries()) {
       const beforeLaunchTermination = await maybeStopForCostKillSwitch({
         costKillSwitch,
         results,
@@ -122,6 +150,7 @@ export async function runLongitudinalTaskEvalSuite(
           outPath,
           termination,
           scenarioIds,
+          selectedConditions,
           parallelism,
           difficulty: options.difficulty,
           sample: selection.sample,
@@ -129,7 +158,7 @@ export async function runLongitudinalTaskEvalSuite(
         return { artifact, outPath }
       }
 
-      const index = scenarioIndex * loaded.suite.conditions.length + conditionIndex + 1
+      const index = scenarioIndex * selectedConditions.length + conditionIndex + 1
       options.onProgress?.({
         type: "trial-start",
         runner: "task",
@@ -165,6 +194,7 @@ export async function runLongitudinalTaskEvalSuite(
         outPath,
         termination,
         scenarioIds,
+        selectedConditions,
         parallelism,
         difficulty: options.difficulty,
         sample: selection.sample,
@@ -196,6 +226,7 @@ export async function runLongitudinalTaskEvalSuite(
           outPath,
           termination,
           scenarioIds,
+          selectedConditions,
           parallelism,
           difficulty: options.difficulty,
           sample: selection.sample,
@@ -212,6 +243,7 @@ export async function runLongitudinalTaskEvalSuite(
     outPath,
     termination,
     scenarioIds,
+    selectedConditions,
     parallelism,
     difficulty: options.difficulty,
     sample: selection.sample,
@@ -225,6 +257,7 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
   startedAt: string
   outPath: string
   scenarios: LongitudinalTaskScenario[]
+  selectedConditions: LongitudinalTaskCondition[]
   parallelism: number
   sample: LongitudinalScenarioSampleSelection | undefined
 }): Promise<{ artifact: LongitudinalTaskArtifact; outPath: string }> {
@@ -250,9 +283,10 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
     suite: input.loaded.suite,
     options: input.options,
     startedAt: input.startedAt,
+    selectedConditions: input.selectedConditions,
   })
   const scenarioIds = input.scenarios.map((scenario) => scenario.id)
-  const totalTrials = input.scenarios.length * input.loaded.suite.conditions.length
+  const totalTrials = input.scenarios.length * input.selectedConditions.length
   const shardDir = `${input.outPath}-shards`
   await mkdir(shardDir, { recursive: true })
 
@@ -265,6 +299,15 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
   const orderedResults = () =>
     resultSlots.filter((result): result is LongitudinalTaskResult => result !== undefined)
   const writeCurrentArtifact = async () => {
+    if (termination && costKillSwitch) {
+      termination =
+        (await maybeStopForCostKillSwitch({
+          costKillSwitch,
+          results: orderedResults(),
+          completedTrials: orderedResults().length,
+          totalPlannedTrials: totalTrials,
+        })) ?? termination
+    }
     const write = writeQueue.then(() =>
       writeLongitudinalArtifact({
         suite: input.loaded.suite,
@@ -273,6 +316,7 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
         outPath: input.outPath,
         termination,
         scenarioIds,
+        selectedConditions: input.selectedConditions,
         parallelism: input.parallelism,
         difficulty: input.options.difficulty,
         sample: input.sample,
@@ -304,23 +348,25 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
         completedTrials: orderedResults().length,
         totalPlannedTrials: totalTrials,
       })
+      if (termination) return
       if (beforeLaunchTermination) {
         termination = beforeLaunchTermination
         emitStopOnce(termination)
+        await stopActiveShardChildren(activeShardChildren)
         await writeCurrentArtifact()
         return
       }
 
       const scenario = input.scenarios[scenarioIndex]!
-      for (const [conditionIndex, condition] of input.loaded.suite.conditions.entries()) {
+      if (termination) return
+      for (const [conditionIndex, condition] of input.selectedConditions.entries()) {
         input.options.onProgress?.({
           type: "trial-start",
           runner: "task",
           taskId: scenario.id,
           scenarioId: scenario.id,
           condition,
-          index:
-            scenarioIndex * input.loaded.suite.conditions.length + conditionIndex + 1,
+          index: scenarioIndex * input.selectedConditions.length + conditionIndex + 1,
           total: totalTrials,
         })
       }
@@ -333,27 +379,30 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
           `${String(scenarioIndex + 1).padStart(3, "0")}-${scenario.id}.json`
         ),
         scenario,
-        expectedConditions: input.loaded.suite.conditions,
+        selectedConditions: input.selectedConditions,
         activeShardChildren,
       }).catch((err: unknown) => {
         if (!isRecoverableLongitudinalShardError(err)) throw err
         return completeLongitudinalShardResults({
           scenario,
           results: [],
-          expectedConditions: input.loaded.suite.conditions,
+          expectedConditions: input.selectedConditions,
           harnessErrorMessage: `Longitudinal shard runner failed: ${errorMessage(err)}`,
         })
       })
 
-      for (const result of shardResults) {
-        const conditionIndex = input.loaded.suite.conditions.indexOf(result.condition)
+      for (const result of filterShardResultsForTerminatedRun(
+        shardResults,
+        termination
+      )) {
+        const conditionIndex = input.selectedConditions.indexOf(result.condition)
         if (conditionIndex === -1) {
           throw new Error(
             `Shard ${scenario.id} returned unsupported condition ${result.condition}.`
           )
         }
         const globalIndex =
-          scenarioIndex * input.loaded.suite.conditions.length + conditionIndex + 1
+          scenarioIndex * input.selectedConditions.length + conditionIndex + 1
         resultSlots[globalIndex - 1] = result
         input.options.onProgress?.({
           type: "trial-finish",
@@ -377,6 +426,7 @@ async function runLongitudinalTaskEvalSuiteInChildProcesses(input: {
       if (afterShardTermination) {
         termination = afterShardTermination
         emitStopOnce(termination)
+        await stopActiveShardChildren(activeShardChildren)
         await writeCurrentArtifact()
         return
       }
@@ -407,6 +457,7 @@ async function writeLongitudinalArtifact(input: {
   outPath: string
   termination: LongitudinalRunTermination | null
   scenarioIds: string[]
+  selectedConditions: readonly LongitudinalTaskCondition[]
   parallelism: number
   difficulty: RunTaskEvalOptions["difficulty"]
   sample: LongitudinalScenarioSampleSelection | undefined
@@ -420,11 +471,16 @@ async function writeLongitudinalArtifact(input: {
       kind: "longitudinal",
       parallelism: input.parallelism,
       ...(input.difficulty ? { difficulty: input.difficulty } : {}),
+      conditions: [...input.selectedConditions],
       ...(input.sample ? { sample: input.sample } : {}),
     },
     termination: input.termination,
     results: input.results,
-    summary: summarizeLongitudinalResults(input.scenarioIds, input.results),
+    summary: summarizeLongitudinalResults(
+      input.scenarioIds,
+      input.results,
+      input.selectedConditions
+    ),
   }
   await writeJsonArtifactAtomically(input.outPath, artifact)
   return artifact
@@ -553,6 +609,31 @@ function filterLongitudinalScenarios(
   return scenarios
 }
 
+function selectLongitudinalConditions(
+  suite: LongitudinalTaskEvalSuite,
+  options: RunTaskEvalOptions
+): LongitudinalTaskCondition[] {
+  if (!options.conditions || options.conditions.length === 0) {
+    return [...suite.conditions]
+  }
+  const suiteConditions = new Set(suite.conditions)
+  const selected: LongitudinalTaskCondition[] = []
+  const seen = new Set<LongitudinalTaskCondition>()
+  for (const condition of options.conditions) {
+    if (!suiteConditions.has(condition)) {
+      throw new Error(
+        `Longitudinal condition filter selected "${condition}", but the suite only defines ${suite.conditions.join(", ")}.`
+      )
+    }
+    if (seen.has(condition)) {
+      throw new Error(`Longitudinal condition filter includes duplicate "${condition}".`)
+    }
+    seen.add(condition)
+    selected.push(condition)
+  }
+  return selected
+}
+
 function normalizeLongitudinalParallelism(value: number | undefined): number {
   if (value === undefined) return 1
   if (!Number.isInteger(value) || value < 1) {
@@ -583,7 +664,7 @@ async function runLongitudinalScenarioShard(input: {
   cliPath: string
   shardPath: string
   scenario: LongitudinalTaskScenario
-  expectedConditions: readonly LongitudinalTaskCondition[]
+  selectedConditions: readonly LongitudinalTaskCondition[]
   activeShardChildren: Set<ChildProcess>
 }): Promise<LongitudinalTaskResult[]> {
   const args = [
@@ -597,6 +678,7 @@ async function runLongitudinalScenarioShard(input: {
     input.scenario.id,
     "--out",
     input.shardPath,
+    ...input.selectedConditions.flatMap((condition) => ["--condition", condition]),
   ]
   const child = spawn(process.execPath, args, {
     env: {
@@ -608,6 +690,7 @@ async function runLongitudinalScenarioShard(input: {
     stdio: ["ignore", "pipe", "pipe"],
   })
   input.activeShardChildren.add(child)
+  const unregisterDetachedChild = registerDetachedChildProcessGroup(child)
   let stdout = ""
   let stderr = ""
   child.stdout?.setEncoding("utf-8")
@@ -624,6 +707,7 @@ async function runLongitudinalScenarioShard(input: {
     child.once("close", (code) => resolveClose(code))
   }).finally(() => {
     input.activeShardChildren.delete(child)
+    unregisterDetachedChild()
   })
   let artifact: LongitudinalTaskArtifact
   try {
@@ -654,7 +738,7 @@ async function runLongitudinalScenarioShard(input: {
   return completeLongitudinalShardResults({
     scenario: input.scenario,
     results: artifact.results,
-    expectedConditions: input.expectedConditions,
+    expectedConditions: input.selectedConditions,
     harnessErrorMessage: formatShardHarnessError({
       scenarioId: input.scenario.id,
       exitCode,
@@ -714,6 +798,36 @@ export function completeLongitudinalShardResults(input: {
       })
     ),
   ]
+}
+
+export function filterShardResultsForTerminatedRun(
+  results: LongitudinalTaskResult[],
+  termination: LongitudinalRunTermination | null
+): LongitudinalTaskResult[] {
+  if (
+    termination?.reason === "cost-kill-switch" ||
+    termination?.reason === "cost-unknown"
+  ) {
+    return results.filter((result) => !isSyntheticShardTerminationResult(result))
+  }
+  return results
+}
+
+function isSyntheticShardTerminationResult(result: LongitudinalTaskResult): boolean {
+  if (result.failureReason !== "harness-error") return false
+  if (result.agentRun !== null) return false
+  if (result.verifiers.length > 0) return false
+  if (result.phases.length !== 1) return false
+  const phase = result.phases[0]!
+  if (phase.failureReason !== "harness-error") return false
+  if (phase.agentRun !== null || phase.cost !== null || phase.patch !== null) return false
+  if (phase.verifierResults.length > 0) return false
+  const message = phase.failureMessage ?? ""
+  return (
+    message.includes("Longitudinal shard runner failed:") ||
+    (message.includes("Longitudinal shard ") &&
+      message.includes("returned an incomplete artifact"))
+  )
 }
 
 export function assertLongitudinalShardResultsComplete(input: {
@@ -797,6 +911,7 @@ function harnessErrorResult(input: {
     agentRun: null,
     verifierResults: [],
     patchStats: { filesChanged: 0, linesAdded: 0, linesRemoved: 0 },
+    patch: null,
     lore: emptyLongitudinalLoreMetrics({
       hooksEnabled: input.condition === "lore-full-loop",
       wakeUpEnabled: false,
@@ -859,11 +974,11 @@ function errorMessage(err: unknown): string {
 }
 
 async function stopActiveShardChildren(children: Set<ChildProcess>): Promise<void> {
-  const active = [...children].filter(isChildRunning)
+  const active = [...children].filter(isChildProcessRunning)
   if (active.length === 0) return
 
   await stopShardChildrenWithSignal(active, "SIGTERM", 5_000)
-  const remaining = active.filter(isChildRunning)
+  const remaining = active.filter(isChildProcessRunning)
   if (remaining.length > 0) {
     await stopShardChildrenWithSignal(remaining, "SIGKILL", 2_000)
   }
@@ -882,24 +997,8 @@ async function stopShardChildrenWithSignal(
 }
 
 function waitForChildClose(child: ChildProcess): Promise<void> {
-  if (!isChildRunning(child)) return Promise.resolve()
+  if (!isChildProcessRunning(child)) return Promise.resolve()
   return new Promise((resolveClose) => child.once("close", () => resolveClose()))
-}
-
-function killChildProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.pid === undefined) {
-    child.kill(signal)
-    return
-  }
-  try {
-    process.kill(-child.pid, signal)
-  } catch {
-    child.kill(signal)
-  }
-}
-
-function isChildRunning(child: ChildProcess): boolean {
-  return child.exitCode === null && child.signalCode === null
 }
 
 function capCapturedOutput(value: string): string {
@@ -911,13 +1010,16 @@ function capCapturedOutput(value: string): string {
 interface LongitudinalCostKillSwitch {
   limitUsd: number
   startedAt: Date
+  loreProjectNamePrefix: string | null
   loreCostTracking: ResolvedCostTracking | null
+  loreCostTrackingError: string | null
 }
 
 async function resolveLongitudinalCostKillSwitch(input: {
   suite: LongitudinalTaskEvalSuite
   options: RunTaskEvalOptions
   startedAt: string
+  selectedConditions: readonly LongitudinalTaskCondition[]
 }): Promise<LongitudinalCostKillSwitch | null> {
   const suiteLimitUsd =
     process.env["LORE_EVAL_LONGITUDINAL_IGNORE_SUITE_COST_KILL_SWITCH"] === "1"
@@ -926,21 +1028,68 @@ async function resolveLongitudinalCostKillSwitch(input: {
   const limitUsd = input.options.costKillSwitchUsd ?? suiteLimitUsd
   if (limitUsd === undefined) return null
 
+  const needsLoreCostTracking = input.selectedConditions.includes("lore-full-loop")
+  if (!needsLoreCostTracking) {
+    return {
+      limitUsd,
+      startedAt: new Date(input.startedAt),
+      loreProjectNamePrefix: null,
+      loreCostTracking: null,
+      loreCostTrackingError: null,
+    }
+  }
+  const tracking = await loadLongitudinalLoreCostTracking({ required: true })
+  const sandboxProjectName = process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"]
+  const sandboxProjectError = sandboxProjectName
+    ? null
+    : "LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT is required when a longitudinal cost kill-switch includes lore-full-loop."
   return {
     limitUsd,
     startedAt: new Date(input.startedAt),
-    loreCostTracking: await loadLongitudinalLoreCostTracking(),
+    loreProjectNamePrefix: sandboxProjectName
+      ? `${sandboxProjectName}/longitudinal-`
+      : null,
+    loreCostTracking: tracking.loreCostTracking,
+    loreCostTrackingError: tracking.loreCostTrackingError ?? sandboxProjectError,
   }
 }
 
-async function loadLongitudinalLoreCostTracking(): Promise<ResolvedCostTracking | null> {
+async function loadLongitudinalLoreCostTracking(input: { required: boolean }): Promise<{
+  loreCostTracking: ResolvedCostTracking | null
+  loreCostTrackingError: string | null
+}> {
   const configRoot = process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
-  if (!configRoot) return null
+  if (!configRoot) {
+    return {
+      loreCostTracking: null,
+      loreCostTrackingError: input.required
+        ? "LORE_EVAL_LONGITUDINAL_CONFIG_ROOT is required when a longitudinal cost kill-switch includes lore-full-loop."
+        : null,
+    }
+  }
   try {
     const config = await loadConfig(join(configRoot, ".lore.yaml"))
-    return resolveCostTracking(config, configRoot)
-  } catch {
-    return null
+    const loreCostTracking = resolveCostTracking(config, configRoot)
+    if (input.required && !loreCostTracking.enabled) {
+      return {
+        loreCostTracking,
+        loreCostTrackingError:
+          "Lore cost tracking must be enabled when a longitudinal cost kill-switch includes lore-full-loop.",
+      }
+    }
+    return {
+      loreCostTracking,
+      loreCostTrackingError: null,
+    }
+  } catch (err) {
+    return {
+      loreCostTracking: null,
+      loreCostTrackingError: input.required
+        ? err instanceof Error
+          ? err.message
+          : String(err)
+        : null,
+    }
   }
 }
 
@@ -1036,27 +1185,50 @@ async function summarizeLoreCostUsd(costKillSwitch: LongitudinalCostKillSwitch):
   usd: number | null
   unknown: { eventType: string; status: string; reason: string } | null
 }> {
+  if (costKillSwitch.loreCostTrackingError) {
+    return {
+      usd: null,
+      unknown: {
+        eventType: "eval.cost_tracking",
+        status: "error",
+        reason: costKillSwitch.loreCostTrackingError,
+      },
+    }
+  }
   const costTracking = costKillSwitch.loreCostTracking
-  if (!costTracking?.enabled) return { usd: null, unknown: null }
+  if (!costTracking?.enabled) return { usd: 0, unknown: null }
   const range: CostRange = {
     label: "current longitudinal eval run",
     start: costKillSwitch.startedAt,
   }
   try {
     const { rows } = await readLedgerEventsWithDiagnostics(costTracking, range)
-    return summarizeLoreModelEvents(rows.map((row) => row.event))
-  } catch {
-    return { usd: null, unknown: null }
+    return summarizeLoreModelEvents(
+      rows.map((row) => row.event),
+      costKillSwitch.loreProjectNamePrefix
+    )
+  } catch (err) {
+    return {
+      usd: null,
+      unknown: {
+        eventType: "eval.cost_ledger",
+        status: "error",
+        reason: err instanceof Error ? err.message : String(err),
+      },
+    }
   }
 }
 
-function summarizeLoreModelEvents(events: CostLedgerEvent[]): {
+function summarizeLoreModelEvents(
+  events: CostLedgerEvent[],
+  projectNamePrefix: string | null
+): {
   usd: number
   unknown: { eventType: string; status: string; reason: string } | null
 } {
   let usd = 0
   for (const event of events) {
-    if (!isBackgroundModelCostEvent(event)) continue
+    if (!isLongitudinalEvalMiningCostEvent(event, projectNamePrefix)) continue
     if (event.estimatedCost.usd === undefined) {
       return {
         usd,
@@ -1072,20 +1244,15 @@ function summarizeLoreModelEvents(events: CostLedgerEvent[]): {
   return { usd, unknown: null }
 }
 
-function isBackgroundModelCostEvent(event: CostLedgerEvent): event is Extract<
-  CostLedgerEvent,
-  {
-    eventType:
-      | "autosave.background_model"
-      | "digest.background_model"
-      | "eval.mining.background_model"
-  }
-> {
-  return (
-    event.eventType === "autosave.background_model" ||
-    event.eventType === "digest.background_model" ||
-    event.eventType === "eval.mining.background_model"
-  )
+function isLongitudinalEvalMiningCostEvent(
+  event: CostLedgerEvent,
+  projectNamePrefix: string | null
+): event is BackgroundModelCostEvent & {
+  eventType: "eval.mining.background_model"
+} {
+  if (event.eventType !== "eval.mining.background_model") return false
+  if (!projectNamePrefix) return false
+  return event.projectName?.startsWith(projectNamePrefix) ?? false
 }
 
 function roundUsd(value: number): number {
@@ -1139,35 +1306,46 @@ async function runLongitudinalTrial(input: {
       await removeLongitudinalAgentConfig(workspace)
     }
 
-    const formationSessionId = `${runId}-formation`
-    const formationPhase = await runLongitudinalFormationPhase({
-      scenario: input.scenario,
-      condition: input.condition,
-      adapter,
-      workspace,
-      workspaceSource,
-      loreRun,
-      sessionId: formationSessionId,
-      transcriptPath: taskTranscriptPath({
-        transcriptsDir: input.transcriptsDir,
-        index: input.transcriptIndex,
-        taskId: input.scenario.id,
+    let formationPhase: LongitudinalPhaseResult | null = null
+    if (input.condition === "lore-full-loop") {
+      const formationSessionId = `${runId}-formation`
+      formationPhase = await runLongitudinalFormationPhase({
+        scenario: input.scenario,
         condition: input.condition,
-        phase: "formation",
-      }),
-      pricingTable: input.pricingTable,
-    })
-    phases.push(formationPhase)
-    await removeLongitudinalAgentConfig(workspace)
-    workspace = await rematerializeWorkspace(workspace)
-    workspaces.push(workspace)
-    await removeLongitudinalAgentConfig(workspace)
+        adapter,
+        workspace,
+        workspaceSource,
+        loreRun,
+        sessionId: formationSessionId,
+        transcriptPath: taskTranscriptPath({
+          transcriptsDir: input.transcriptsDir,
+          index: input.transcriptIndex,
+          taskId: input.scenario.id,
+          condition: input.condition,
+          phase: "formation",
+        }),
+        patchPath: taskPatchPath({
+          transcriptsDir: input.transcriptsDir,
+          index: input.transcriptIndex,
+          taskId: input.scenario.id,
+          condition: input.condition,
+          phase: "formation",
+        }),
+        pricingTable: input.pricingTable,
+      })
+      phases.push(formationPhase)
+      await removeLongitudinalAgentConfig(workspace)
+      workspace = await rematerializeWorkspace(workspaceSource)
+      workspaces.push(workspace)
+      await removeLongitudinalAgentConfig(workspace)
+    }
 
     const expectedContextIds =
       input.condition === "seeded-lore"
         ? (input.scenario.seededContext?.contextIds ?? [])
-        : formationPhase.lore.expectedContextIds
-    const usePhase = formationPhase.success
+        : (formationPhase?.lore.expectedContextIds ?? [])
+    const shouldRunUsePhase = formationPhase?.success ?? true
+    const usePhase = shouldRunUsePhase
       ? await runLongitudinalUsePhase({
           scenario: input.scenario,
           condition: input.condition,
@@ -1189,6 +1367,15 @@ async function runLongitudinalTrial(input: {
             condition: input.condition,
             phase: "use",
           }),
+          patchPath: taskPatchPath({
+            transcriptsDir: input.transcriptsDir,
+            index: input.transcriptIndex,
+            taskId: input.scenario.id,
+            condition: input.condition,
+            phase: "use",
+          }),
+          transcriptsDir: input.transcriptsDir,
+          transcriptIndex: input.transcriptIndex,
           pricingTable: input.pricingTable,
         })
       : await skippedLongitudinalUsePhase({
@@ -1197,11 +1384,27 @@ async function runLongitudinalTrial(input: {
           workspace,
           workspaceSource,
           expectedContextIds,
-          formationPhase,
+          formationPhase: formationPhase!,
+          patchPath: taskPatchPath({
+            transcriptsDir: input.transcriptsDir,
+            index: input.transcriptIndex,
+            taskId: input.scenario.id,
+            condition: input.condition,
+            phase: "use",
+          }),
         })
     phases.push(usePhase)
 
-    const success = phases.every((phase) => phase.success)
+    const phaseSuccess =
+      input.condition === "lore-full-loop"
+        ? phases.every((phase) => phase.success)
+        : usePhase.success
+    const success = phaseSuccess
+    const failureReason = success
+      ? null
+      : firstLongitudinalFailure(
+          input.condition === "lore-full-loop" ? phases : [usePhase]
+        )
     return {
       taskId: input.scenario.id,
       scenarioId: input.scenario.id,
@@ -1213,7 +1416,7 @@ async function runLongitudinalTrial(input: {
       workspaceMaterialization: prepared.materialization,
       workspace: input.keepWorkspaces ? workspace : null,
       success,
-      failureReason: success ? null : firstLongitudinalFailure(phases),
+      failureReason,
       agentRun: usePhase.agentRun,
       verifiers: usePhase.verifierResults,
       phases,
@@ -1242,6 +1445,7 @@ async function runLongitudinalFormationPhase(input: {
   loreRun: LongitudinalLoreRun | null
   sessionId: string
   transcriptPath?: string
+  patchPath?: string
   pricingTable: PricingTable | null
 }): Promise<LongitudinalPhaseResult> {
   const startedAt = new Date().toISOString()
@@ -1253,6 +1457,11 @@ async function runLongitudinalFormationPhase(input: {
     transcriptPath: input.transcriptPath,
   })
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
+  const patch = await writePatchEvidence({
+    sourceRoot: input.workspaceSource,
+    workspaceRoot: input.workspace,
+    outPath: input.patchPath,
+  }).catch(() => null)
   const agentSucceeded = agentRun.exitCode === 0 && !agentRun.timedOut
   let lore = emptyLongitudinalLoreMetrics({
     hooksEnabled: input.condition === "lore-full-loop",
@@ -1264,13 +1473,27 @@ async function runLongitudinalFormationPhase(input: {
   let failureMessage: string | null = agentSucceeded
     ? null
     : firstAgentFailureMessage(agentRun)
+  const formationLinesChanged = patchStats.linesAdded + patchStats.linesRemoved
+  if (agentSucceeded && formationLinesChanged > 0) {
+    failureReason = "formation"
+    failureMessage =
+      `Phase A must be read-only, but changed ${patchStats.filesChanged} file` +
+      `${patchStats.filesChanged === 1 ? "" : "s"} ` +
+      `(+${patchStats.linesAdded}/-${patchStats.linesRemoved} lines).`
+  }
 
-  if (input.condition === "lore-full-loop" && input.loreRun && agentSucceeded) {
+  if (
+    input.condition === "lore-full-loop" &&
+    input.loreRun &&
+    agentSucceeded &&
+    failureReason === null
+  ) {
     try {
-      const transcript = formatTranscriptSessionContent([
-        { role: "user", text: input.scenario.phaseA.prompt },
-        { role: "assistant", text: summarizeAgentResponse(agentRun) },
-      ])
+      const transcript = await longitudinalFormationTranscript({
+        transcriptPath: input.transcriptPath,
+        prompt: input.scenario.phaseA.prompt,
+        agentRun,
+      })
       const formed = await input.loreRun.formContext({
         scenario: input.scenario,
         transcript,
@@ -1315,6 +1538,7 @@ async function runLongitudinalFormationPhase(input: {
     agentRun,
     verifierResults: [],
     patchStats,
+    patch,
     lore,
     cost: costFromAgentRun(agentRun, input.pricingTable),
     elapsedMs: roundMs(performance.now() - before),
@@ -1332,12 +1556,20 @@ async function runLongitudinalUsePhase(input: {
   wakeUp: LongitudinalWakeUpResult
   expectedContextIds: string[]
   transcriptPath?: string
+  patchPath?: string
+  transcriptsDir: string | null
+  transcriptIndex: number
   pricingTable: PricingTable | null
 }): Promise<LongitudinalPhaseResult> {
   const startedAt = new Date().toISOString()
   const before = performance.now()
   if (input.wakeUp.failureMessage !== null && input.wakeUp.failureMessage !== undefined) {
     const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
+    const patch = await writePatchEvidence({
+      sourceRoot: input.workspaceSource,
+      workspaceRoot: input.workspace,
+      outPath: input.patchPath,
+    }).catch(() => null)
     return {
       phase: "use",
       promptId: promptIdFor(input.scenario, "use"),
@@ -1348,6 +1580,7 @@ async function runLongitudinalUsePhase(input: {
       agentRun: null,
       verifierResults: [],
       patchStats,
+      patch,
       lore: {
         hooksEnabled: input.condition === "lore-full-loop",
         wakeUpEnabled: input.condition !== "no-memory",
@@ -1377,12 +1610,29 @@ async function runLongitudinalUsePhase(input: {
     transcriptPath: input.transcriptPath,
   })
   const verifierResults: VerifierResult[] = []
-  for (const verifier of input.scenario.verifiers) {
+  for (const [verifierIndex, verifier] of input.scenario.verifiers.entries()) {
     verifierResults.push(
-      await runVerifier(verifier, input.workspace, input.workspaceSource)
+      await runVerifier(
+        verifier,
+        input.workspace,
+        input.workspaceSource,
+        taskVerifierOutputPath({
+          transcriptsDir: input.transcriptsDir,
+          index: input.transcriptIndex,
+          taskId: input.scenario.id,
+          condition: input.condition,
+          phase: "use",
+          verifierIndex,
+        })
+      )
     )
   }
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
+  const patch = await writePatchEvidence({
+    sourceRoot: input.workspaceSource,
+    workspaceRoot: input.workspace,
+    outPath: input.patchPath,
+  }).catch(() => null)
   const agentSucceeded = agentRun.exitCode === 0 && !agentRun.timedOut
   const verifierSucceeded = verifierResults.every((r) => r.passed)
   let failureReason: LongitudinalFailureReason | null = null
@@ -1408,6 +1658,7 @@ async function runLongitudinalUsePhase(input: {
     agentRun,
     verifierResults,
     patchStats,
+    patch,
     lore: {
       hooksEnabled: input.condition === "lore-full-loop",
       wakeUpEnabled: input.condition !== "no-memory",
@@ -1433,10 +1684,16 @@ async function skippedLongitudinalUsePhase(input: {
   workspaceSource: string
   expectedContextIds: string[]
   formationPhase: LongitudinalPhaseResult
+  patchPath?: string
 }): Promise<LongitudinalPhaseResult> {
   const startedAt = new Date().toISOString()
   const before = performance.now()
   const patchStats = await computePatchStats(input.workspaceSource, input.workspace)
+  const patch = await writePatchEvidence({
+    sourceRoot: input.workspaceSource,
+    workspaceRoot: input.workspace,
+    outPath: input.patchPath,
+  }).catch(() => null)
   const failureReason = input.formationPhase.failureReason ?? "formation"
   const detail =
     input.formationPhase.failureMessage ??
@@ -1452,6 +1709,7 @@ async function skippedLongitudinalUsePhase(input: {
     agentRun: null,
     verifierResults: [],
     patchStats,
+    patch,
     lore: {
       hooksEnabled: input.condition === "lore-full-loop",
       wakeUpEnabled: false,
@@ -1539,7 +1797,8 @@ function seededLongitudinalWakeUp(
 
 function summarizeLongitudinalResults(
   scenarioIds: string[],
-  results: LongitudinalTaskResult[]
+  results: LongitudinalTaskResult[],
+  expectedConditions: readonly LongitudinalTaskCondition[]
 ): LongitudinalTaskArtifact["summary"] {
   const conditions: Record<LongitudinalTaskCondition, LongitudinalConditionSummary> = {
     "no-memory": emptyConditionSummary(),
@@ -1560,20 +1819,19 @@ function summarizeLongitudinalResults(
   const lifts: LongitudinalTaskArtifact["summary"]["lifts"] = {}
   for (const condition of ["seeded-lore", "lore-full-loop"] as const) {
     if (conditions[condition].trials > 0) {
-      lifts[condition] = buildLiftSummary(scenarioIds, results, conditions, condition)
+      lifts[condition] = buildLiftSummary(scenarioIds, results, condition)
     }
   }
   const primaryLift =
     lifts["lore-full-loop"] ??
     lifts["seeded-lore"] ??
-    buildLiftSummary(scenarioIds, results, conditions, "lore-full-loop")
+    buildLiftSummary(scenarioIds, results, "lore-full-loop")
   const passedTrials = results.filter((r) => r.success).length
-  const passedTasks = countTasksAllPassed(
-    results.map((result) => ({
-      taskId: result.scenarioId,
-      success: result.success,
-    }))
-  )
+  const passedTasks = countLongitudinalTasksAllConditionsPassed({
+    scenarioIds,
+    results,
+    conditions: expectedConditions,
+  })
   return {
     tasks: scenarioIds.length,
     passedTasks,
@@ -1587,14 +1845,38 @@ function summarizeLongitudinalResults(
   }
 }
 
+function countLongitudinalTasksAllConditionsPassed(input: {
+  scenarioIds: string[]
+  results: LongitudinalTaskResult[]
+  conditions: readonly LongitudinalTaskCondition[]
+}): number {
+  let passed = 0
+  for (const scenarioId of input.scenarioIds) {
+    const byCondition = new Map(
+      input.results
+        .filter((result) => result.scenarioId === scenarioId)
+        .map((result) => [result.condition, result])
+    )
+    if (
+      input.conditions.every((condition) => byCondition.get(condition)?.success === true)
+    ) {
+      passed += 1
+    }
+  }
+  return passed
+}
+
 function buildLiftSummary(
   scenarioIds: string[],
   results: LongitudinalTaskResult[],
-  conditions: Record<LongitudinalTaskCondition, LongitudinalConditionSummary>,
   toCondition: Exclude<LongitudinalTaskCondition, "no-memory">
 ): LongitudinalLiftSummary {
   const liftedScenarioIds: string[] = []
   const harmedScenarioIds: string[] = []
+  const pairedScenarioIds: string[] = []
+  const contextSatisfiedScenarioIds: string[] = []
+  const contextMissedScenarioIds: string[] = []
+  const reportingIssues: string[] = []
   for (const scenarioId of scenarioIds) {
     const noMemory = results.find(
       (r) => r.scenarioId === scenarioId && r.condition === "no-memory"
@@ -1603,23 +1885,80 @@ function buildLiftSummary(
       (r) => r.scenarioId === scenarioId && r.condition === toCondition
     )
     if (!noMemory || !memoryEnabled) continue
+    pairedScenarioIds.push(scenarioId)
     if (!noMemory.success && memoryEnabled.success) liftedScenarioIds.push(scenarioId)
     if (noMemory.success && !memoryEnabled.success) harmedScenarioIds.push(scenarioId)
+    if (memoryConditionContextSatisfied(memoryEnabled)) {
+      contextSatisfiedScenarioIds.push(scenarioId)
+    } else {
+      contextMissedScenarioIds.push(scenarioId)
+    }
   }
 
-  const noMemoryRate = conditions["no-memory"].successRate
-  const memoryRate = conditions[toCondition].successRate
+  let pairedNoMemoryPassed = 0
+  let pairedMemoryPassed = 0
+  for (const scenarioId of pairedScenarioIds) {
+    const noMemory = results.find(
+      (r) => r.scenarioId === scenarioId && r.condition === "no-memory"
+    )
+    const memoryEnabled = results.find(
+      (r) => r.scenarioId === scenarioId && r.condition === toCondition
+    )
+    if (!noMemory || !memoryEnabled) continue
+    if (noMemory.success) pairedNoMemoryPassed += 1
+    if (memoryEnabled.success) pairedMemoryPassed += 1
+  }
+  const pairedTrials = pairedScenarioIds.length
   const successRateDelta =
-    conditions["no-memory"].trials === 0 || conditions[toCondition].trials === 0
+    pairedTrials === 0
       ? null
-      : roundRate(memoryRate - noMemoryRate)
+      : roundRate(pairedMemoryPassed / pairedTrials - pairedNoMemoryPassed / pairedTrials)
+  const missingPairCount = scenarioIds.length - pairedTrials
+  if (pairedTrials === 0) {
+    reportingIssues.push(
+      `No paired no-memory/${toCondition} scenario results are present.`
+    )
+  } else if (missingPairCount > 0) {
+    reportingIssues.push(
+      `${missingPairCount} scenario(s) are missing a paired no-memory/${toCondition} result.`
+    )
+  }
+  if (contextMissedScenarioIds.length > 0) {
+    reportingIssues.push(
+      `${contextMissedScenarioIds.length} paired ${toCondition} scenario(s) did not surface all expected context ids.`
+    )
+  }
   return {
     fromCondition: "no-memory",
     toCondition,
+    pairedTrials,
+    pairedScenarioIds,
+    pairedNoMemoryPassed,
+    pairedMemoryPassed,
     successRateDelta,
     liftedScenarioIds,
     harmedScenarioIds,
+    contextSatisfiedScenarioIds,
+    contextMissedScenarioIds,
+    reportable: reportingIssues.length === 0,
+    reportingIssues,
   }
+}
+
+function memoryConditionContextSatisfied(result: LongitudinalTaskResult): boolean {
+  const usePhase = result.phases.find((phase) => phase.phase === "use")
+  if (!usePhase) return false
+  return longitudinalUsePhaseContextSatisfied(usePhase)
+}
+
+function longitudinalUsePhaseContextSatisfied(
+  usePhase: LongitudinalPhaseResult
+): boolean {
+  if (usePhase.lore.harmfulContextIds.length > 0) return false
+  const expected = usePhase.lore.expectedContextIds
+  if (expected.length === 0) return usePhase.lore.surfacedContextIds.length > 0
+  const surfaced = new Set(usePhase.lore.surfacedContextIds)
+  return expected.every((id) => surfaced.has(id))
 }
 
 function emptyConditionSummary(): LongitudinalConditionSummary {
@@ -1692,6 +2031,30 @@ function firstAgentFailureMessage(agentRun: AgentRunResult): string | null {
     )
   }
   return null
+}
+
+async function longitudinalFormationTranscript(input: {
+  transcriptPath: string | undefined
+  prompt: string
+  agentRun: AgentRunResult
+}): Promise<string> {
+  if (input.transcriptPath) {
+    try {
+      const messages = listTranscriptMessages(
+        await readFile(input.transcriptPath, "utf-8")
+      )
+      if (messages.some((message) => message.role === "assistant")) {
+        return formatTranscriptSessionContent(messages)
+      }
+    } catch {
+      // Fall back to a minimal transcript when an injected adapter does not
+      // produce a sidecar.
+    }
+  }
+  return formatTranscriptSessionContent([
+    { role: "user", text: input.prompt },
+    { role: "assistant", text: summarizeAgentResponse(input.agentRun) },
+  ])
 }
 
 async function loadLongitudinalAgentPricingTable(): Promise<PricingTable | null> {

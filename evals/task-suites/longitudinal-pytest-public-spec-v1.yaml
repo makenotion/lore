@@ -1,0 +1,500 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-pytest-public-spec-v1
+description: >-
+  Public-spec pytest longitudinal suite. Scenarios are pinned immediately
+  before real upstream-style fixes and verified through pytest's public
+  behavior using focused hidden tests.
+seededCorpus: ../vault-seeds/pytest-public-spec-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: pytest-native-toml-config-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pytest-dev/pytest
+      sha: 147467db1cd00cdb5e1e56b954bd2cf95ddedf4b
+    phaseA:
+      promptId: pytest-native-toml-config-v1-formation
+      prompt: >-
+        We will add first-class TOML configuration support in a later session.
+        Inspect pytest config discovery, pyproject parsing, ini value typing,
+        rootdir/config-file reporting, and pytester config tests. Produce a
+        durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: pytest-native-toml-config-v1-use
+      prompt: >-
+        Add native TOML configuration support. `pytest.toml` and `.pytest.toml`
+        should be first-class config files using a top-level `[pytest]` table,
+        should outrank `pytest.ini`, `tox.ini`, `setup.cfg`, and
+        `pyproject.toml`, and should count as config files even when empty.
+        `pyproject.toml` should support native `[tool.pytest]` values while
+        preserving `[tool.pytest.ini_options]` compatibility. Preserve rootdir
+        discovery, config-file reporting, and existing ini behavior. Add focused
+        regressions.
+    expectedContext:
+      description: >-
+        Native TOML config should be discovered before legacy config files,
+        keep native value types, preserve pyproject compatibility, and treat
+        empty pytest.toml files as config.
+      keywords:
+        - pytest.toml
+        - .pytest.toml
+        - native TOML
+        - config discovery
+        - ini_options
+    seededContext:
+      renderedContext: |
+        - [memory] pytest/config-native-toml-precedence: `pytest.toml` and `.pytest.toml` are first-class pytest config files that outrank legacy config files, including when empty. They use a top-level `[pytest]` table and keep native TOML types; `pyproject.toml` keeps `[tool.pytest.ini_options]` compatibility while adding native `[tool.pytest]`.
+      contextIds:
+        - pytest/config-native-toml-precedence
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/testing/test_config_native_toml_hidden.py b/testing/test_config_native_toml_hidden.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/testing/test_config_native_toml_hidden.py
+          @@ -0,0 +1,62 @@
+          +from __future__ import annotations
+          +
+          +from _pytest.pytester import Pytester
+          +
+          +
+          +def test_hidden_pytest_toml_precedes_legacy_configs(pytester: Pytester) -> None:
+          +    pytester.makeini(
+          +        """
+          +        [pytest]
+          +        addopts = --maxfail=1
+          +        """
+          +    )
+          +    pytester.makepyprojecttoml(
+          +        """
+          +        [tool.pytest.ini_options]
+          +        addopts = "--maxfail=2"
+          +        """
+          +    )
+          +    pytest_toml = pytester.path / "pytest.toml"
+          +    pytest_toml.write_text(
+          +        """
+          +        [pytest]
+          +        addopts = ["--maxfail=3", "--strict-markers"]
+          +        testpaths = ["tests"]
+          +        """,
+          +        encoding="utf-8",
+          +    )
+          +
+          +    config = pytester.parseconfig()
+          +
+          +    assert config.inipath == pytest_toml
+          +    assert config.getini("addopts") == ["--maxfail=3", "--strict-markers"]
+          +    assert config.getini("testpaths") == ["tests"]
+          +
+          +
+          +def test_hidden_dot_pytest_toml_precedes_pytest_ini(pytester: Pytester) -> None:
+          +    pytester.makeini(
+          +        """
+          +        [pytest]
+          +        addopts = --maxfail=1
+          +        """
+          +    )
+          +    dot_pytest_toml = pytester.path / ".pytest.toml"
+          +    dot_pytest_toml.write_text(
+          +        """
+          +        [pytest]
+          +        addopts = ["--maxfail=4"]
+          +        """,
+          +        encoding="utf-8",
+          +    )
+          +
+          +    config = pytester.parseconfig()
+          +
+          +    assert config.inipath == dot_pytest_toml
+          +    assert config.getini("addopts") == ["--maxfail=4"]
+          +
+          +
+          +def test_hidden_empty_pytest_toml_stops_fallback(pytester: Pytester) -> None:
+          +    pytester.makeini("[pytest]\naddopts = --maxfail=1\n")
+          +    empty_pytest_toml = pytester.path / "pytest.toml"
+          +    empty_pytest_toml.write_text("", encoding="utf-8")
+          +
+          +    config = pytester.parseconfig()
+          +
+          +    assert config.inipath == empty_pytest_toml
+          +    assert config.getini("addopts") == []
+        command: bash
+        args:
+          - -lc
+          - SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTEST=9.0.0 uv run --with-editable . python -m pytest testing/test_config_native_toml_hidden.py -q
+        timeoutMs: 180000
+
+  - id: pytest-lastfailed-nested-package-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pytest-dev/pytest
+      sha: 24534cdd29d74e302e86db1a719c99e024d7903e
+    phaseA:
+      promptId: pytest-lastfailed-nested-package-v1-formation
+      prompt: >-
+        We will fix a last-failed cache bug in a later session. Inspect the
+        cacheprovider last-failed plugin, collection skipping, package/module
+        collectors, and pytester stateful cache tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: pytest-lastfailed-nested-package-v1-use
+      prompt: >-
+        Fix `pytest --last-failed` so file-skipping still works when the
+        previous failure is in a test module nested under a Python package.
+        A second run should skip unrelated files, keep the package collectors
+        needed to reach the previously failing module, report the skipped-file
+        count, and preserve existing last-failed behavior for non-package tests.
+        Add focused regressions.
+    expectedContext:
+      description: >-
+        Last-failed path skipping should include nested package ancestors so
+        package collectors remain reachable while unrelated files are skipped.
+      keywords:
+        - last-failed
+        - cacheprovider
+        - package
+        - skipped file
+        - collector
+    seededContext:
+      renderedContext: |
+        - [memory] pytest/lastfailed-package-paths: `--last-failed` stores failing node IDs but skips collection by path. For failures inside packages, derive a path set that includes the failing file and its parent directories so package collectors remain reachable while unrelated test files are skipped.
+      contextIds:
+        - pytest/lastfailed-package-paths
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/testing/test_cacheprovider_lastfailed_hidden.py b/testing/test_cacheprovider_lastfailed_hidden.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/testing/test_cacheprovider_lastfailed_hidden.py
+          @@ -0,0 +1,35 @@
+          +from __future__ import annotations
+          +
+          +from _pytest.pytester import Pytester
+          +
+          +
+          +def test_hidden_lastfailed_skip_collection_with_nested_package(
+          +    pytester: Pytester,
+          +) -> None:
+          +    pytester.makepyfile(
+          +        **{
+          +            "test_unrelated.py": """
+          +                def test_unrelated():
+          +                    pass
+          +            """,
+          +            "pkg/__init__.py": "",
+          +            "pkg/test_failure.py": """
+          +                def test_failure():
+          +                    assert False
+          +            """,
+          +        }
+          +    )
+          +
+          +    first = pytester.runpytest()
+          +    first.stdout.fnmatch_lines(
+          +        [
+          +            "collected 2 items",
+          +            "*1 failed*1 passed*",
+          +        ]
+          +    )
+          +
+          +    second = pytester.runpytest("--last-failed")
+          +    second.stdout.fnmatch_lines(
+          +        [
+          +            "collected 1 item",
+          +            "run-last-failure: rerun previous 1 failure (skipped 1 file)",
+          +            "*= 1 failed in *",
+          +        ]
+          +    )
+        command: bash
+        args:
+          - -lc
+          - SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTEST=9.0.0 uv run --with-editable . python -m pytest testing/test_cacheprovider_lastfailed_hidden.py -q
+        timeoutMs: 180000
+
+  - id: pytest-parametrize-trailing-comma-v1
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pytest-dev/pytest
+      sha: dde81b1948d1592b0156c2fdb79522ade6b4b857
+    phaseA:
+      promptId: pytest-parametrize-trailing-comma-v1-formation
+      prompt: >-
+        We will fix a parametrization parsing edge case in a later session.
+        Inspect Metafunc parametrization, argname parsing, tuple argname
+        behavior, and pytester functional parametrization tests. Produce a
+        durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: pytest-parametrize-trailing-comma-v1-use
+      prompt: >-
+        Fix `@pytest.mark.parametrize("arg,", values)` so a single string
+        argname with a trailing comma behaves like the tuple form `("arg",)`.
+        One-element tuple argvalues should be unpacked for the argument, while
+        the existing `"arg"` no-comma behavior, multi-argument string behavior,
+        and tuple argname behavior remain unchanged. Add focused regressions.
+    expectedContext:
+      description: >-
+        A trailing comma in string argnames should make a single-argument
+        parametrization follow tuple-form unpacking while preserving no-comma
+        string behavior.
+      keywords:
+        - parametrize
+        - trailing comma
+        - argnames
+        - Metafunc
+        - tuple
+    seededContext:
+      renderedContext: |
+        - [memory] pytest/parametrize-single-name-trailing-comma: In parametrization, `"arg,"` is a one-item argname tuple and should unpack one-element tuple argvalues like `("arg",)`. Plain `"arg"` should continue to pass tuple argvalues through as tuple values.
+      contextIds:
+        - pytest/parametrize-single-name-trailing-comma
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/testing/python/test_metafunc_trailing_comma_hidden.py b/testing/python/test_metafunc_trailing_comma_hidden.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/testing/python/test_metafunc_trailing_comma_hidden.py
+          @@ -0,0 +1,50 @@
+          +from __future__ import annotations
+          +
+          +from _pytest.pytester import Pytester
+          +
+          +
+          +def test_hidden_parametrize_single_arg_trailing_comma_functional(
+          +    pytester: Pytester,
+          +) -> None:
+          +    pytester.makepyfile(
+          +        """
+          +        import pytest
+          +
+          +        scenarios = [("a",), ("b",)]
+          +
+          +        @pytest.mark.parametrize(("arg",), scenarios)
+          +        def test_tuple_form(arg):
+          +            assert arg in ("a", "b")
+          +            assert isinstance(arg, str)
+          +
+          +        @pytest.mark.parametrize("arg,", scenarios)
+          +        def test_string_trailing_comma(arg):
+          +            assert arg in ("a", "b")
+          +            assert isinstance(arg, str)
+          +
+          +        @pytest.mark.parametrize("arg", scenarios)
+          +        def test_string_no_comma(arg):
+          +            assert arg in (("a",), ("b",))
+          +            assert isinstance(arg, tuple)
+          +        """
+          +    )
+          +
+          +    result = pytester.runpytest("-q")
+          +
+          +    result.assert_outcomes(passed=6)
+          +
+          +
+          +def test_hidden_parametrize_trailing_comma_preserves_plain_values(
+          +    pytester: Pytester,
+          +) -> None:
+          +    pytester.makepyfile(
+          +        """
+          +        import pytest
+          +
+          +        @pytest.mark.parametrize("arg,", [("x",), ("y",)])
+          +        def test_single_tuple_argname(arg):
+          +            assert arg in {"x", "y"}
+          +
+          +        @pytest.mark.parametrize("arg", ["x", "y"])
+          +        def test_single_plain_argname(arg):
+          +            assert arg in {"x", "y"}
+          +        """
+          +    )
+          +
+          +    result = pytester.runpytest("-q")
+          +    result.assert_outcomes(passed=4)
+        command: bash
+        args:
+          - -lc
+          - SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTEST=9.0.0 uv run --with-editable . python -m pytest testing/python/test_metafunc_trailing_comma_hidden.py -q
+        timeoutMs: 180000
+
+  - id: pytest-parametrize-indirect-directness-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pytest-dev/pytest
+      sha: 3aabdca3f301dca9c3574bb4e15226a9387dee61
+    phaseA:
+      promptId: pytest-parametrize-indirect-directness-v1-formation
+      prompt: >-
+        We will fix a parametrization/fixture interaction bug in a later
+        session. Inspect fixture closure calculation, direct parametrization
+        discovery, `indirect` handling, and pytester collection tests. Produce
+        a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: pytest-parametrize-indirect-directness-v1-use
+      prompt: >-
+        Fix parametrization so `indirect=[...]` marks only the listed arguments
+        as indirect when deciding which direct parametrized arguments override
+        fixtures. A direct parametrized argument should still override a
+        parametrized fixture with the same name even when another unrelated
+        argument in the same `parametrize` call is indirect. Preserve
+        `indirect=True`, `indirect=False`, duplicate-parameter errors, and
+        existing fixture parametrization behavior. Add focused regressions.
+    expectedContext:
+      description: >-
+        Parametrize directness should be resolved per argument, so a truthy
+        indirect list does not hide unrelated direct arguments from fixture
+        override logic.
+      keywords:
+        - parametrize
+        - indirect
+        - directness
+        - fixture
+        - duplicate
+    seededContext:
+      renderedContext: |
+        - [memory] pytest/parametrize-indirect-directness: `indirect=[...]` is per-argument. Direct parametrization discovery should use the same directness resolution as Metafunc so unrelated direct args still override same-name parametrized fixtures when another arg is indirect.
+      contextIds:
+        - pytest/parametrize-indirect-directness
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/testing/python/test_collect_indirect_directness_hidden.py b/testing/python/test_collect_indirect_directness_hidden.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/testing/python/test_collect_indirect_directness_hidden.py
+          @@ -0,0 +1,43 @@
+          +from __future__ import annotations
+          +
+          +from _pytest.pytester import Pytester
+          +
+          +
+          +def test_hidden_parametrize_overrides_fixture_with_unrelated_indirect(
+          +    pytester: Pytester,
+          +) -> None:
+          +    pytester.makepyfile(
+          +        """
+          +        import pytest
+          +
+          +        @pytest.fixture(params=["a", "b"])
+          +        def target(request):
+          +            return request.param
+          +
+          +        @pytest.fixture
+          +        def val(request):
+          +            return int(request.param)
+          +
+          +        @pytest.mark.parametrize(
+          +            ["val", "target"],
+          +            [
+          +                ("1", 1),
+          +                ("2", 2),
+          +            ],
+          +            indirect=["val"],
+          +        )
+          +        def test(val, target):
+          +            assert val == target
+          +        """
+          +    )
+          +
+          +    result = pytester.runpytest("-q")
+          +
+          +    assert result.ret == 0
+          +    result.assert_outcomes(passed=2)
+        command: bash
+        args:
+          - -lc
+          - SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTEST=9.0.0 uv run --with-editable . python -m pytest testing/python/test_collect_indirect_directness_hidden.py -q
+        timeoutMs: 180000
+
+  - id: pytest-assertion-no-terminalreporter-v1
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pytest-dev/pytest
+      sha: 05c837dc3178814b581fd378cdda9363c2392ecd
+    phaseA:
+      promptId: pytest-assertion-no-terminalreporter-v1-formation
+      prompt: >-
+        We will fix an assertion rewriting crash in a later session. Inspect
+        assertion comparison formatting, terminal writer access, disabled plugin
+        behavior, and assertion rewrite tests. Produce a durable implementation
+        plan only; do not edit files.
+    phaseB:
+      promptId: pytest-assertion-no-terminalreporter-v1-use
+      prompt: >-
+        Fix assertion rewriting so an assertion failure inside a run started
+        with `-p no:terminalreporter` raises a normal `AssertionError` instead
+        of crashing while formatting the rewritten assertion. Preserve default
+        assertion introspection, reporter-enabled formatting, and existing
+        assertion rewrite behavior. Add focused regressions.
+    expectedContext:
+      description: >-
+        Rewritten assertion formatting should not assume the terminalreporter
+        plugin is loaded.
+      keywords:
+        - assertion rewriting
+        - terminalreporter
+        - AssertionError
+        - terminal writer
+        - plugin
+    seededContext:
+      renderedContext: |
+        - [memory] pytest/assertion-without-terminalreporter: Assertion rewriting should not require the terminalreporter plugin. Guard reporter-dependent terminal-writer access and keep ordinary AssertionError formatting working when `-p no:terminalreporter` is used.
+      contextIds:
+        - pytest/assertion-without-terminalreporter
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/testing/test_assertrewrite_terminalreporter_hidden.py b/testing/test_assertrewrite_terminalreporter_hidden.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/testing/test_assertrewrite_terminalreporter_hidden.py
+          @@ -0,0 +1,24 @@
+          +from __future__ import annotations
+          +
+          +from _pytest.pytester import Pytester
+          +
+          +
+          +def test_hidden_assertion_failure_when_terminalreporter_is_disabled(
+          +    pytester: Pytester,
+          +) -> None:
+          +    pytester.makepyfile(
+          +        """
+          +        import pytest
+          +
+          +        def test():
+          +            with pytest.raises(AssertionError) as excinfo:
+          +                assert 0 == 1
+          +            assert excinfo.value.args[0] == "assert 0 == 1"
+          +        """
+          +    )
+          +
+          +    reprec = pytester.inline_run("-p", "no:terminalreporter")
+          +
+          +    reprec.assertoutcome(passed=1)
+        command: bash
+        args:
+          - -lc
+          - SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTEST=9.0.0 uv run --with-editable . python -m pytest testing/test_assertrewrite_terminalreporter_hidden.py -q
+        timeoutMs: 180000

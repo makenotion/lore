@@ -74,6 +74,8 @@ export {
   CodexAgentAdapter,
   createIsolatedCodexHome,
   parseCodexConfigModel,
+  resolveCodexExecutable,
   readConfiguredCodexModel,
+  resolveExecutableOnPath,
 } from "./task-runner/codex-adapter.js"
 export { CODEX_CAPTURE_CAP_BYTES } from "./task-runner/capture.js"

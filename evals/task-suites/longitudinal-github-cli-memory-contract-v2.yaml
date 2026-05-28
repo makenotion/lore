@@ -1,0 +1,1459 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-memory-contract-v2
+description: "Memory-contract v2 pilot: Phase A explicitly captures the same
+  feature contract that seeded context and hidden verifiers measure."
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: gh-cli-autolink-edit-replacement-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: &a1
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-autolink-edit-replacement-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh repo
+        autolink edit <id>. Inspect repo autolink create/list/view/delete
+        command structure, REST clients, fields, confirmation prompts, and
+        admin-error handling. Produce a durable implementation plan only; do not
+        edit files. The plan must resolve whether the codebase supports a
+        PATCH/update endpoint or whether edit should be delete-and-recreate
+        replacement semantics, and it must specify command registration, flags,
+        no-field validation, tests, and user-facing replacement/new-ID
+        messaging."
+    phaseB:
+      promptId: gh-cli-autolink-edit-replacement-memory-contract-v2-use
+      prompt: Implement the autolink edit follow-up exactly as planned in the prior
+        investigation.
+    expectedContext:
+      description: Autolink edit should follow the repo-supported update model,
+        including registration, optional fields, no-field validation, tests, and
+        replacement/new-ID messaging if PATCH is unavailable.
+      keywords:
+        - autolink
+        - edit
+        - replacement
+        - delete
+        - create
+    seededContext:
+      renderedContext: "- [memory] gh-cli/autolink-edit-replacement: Add `gh repo
+        autolink edit <id>` as a sibling autolink command. The repository
+        autolinks surface used here has list/create/view/delete but no supported
+        PATCH/update route, so implement edit as view current autolink, delete
+        it, then create a replacement with changed `--key-prefix`,
+        `--url-template`, and numeric/alphanumeric fields. Reject no-field edits
+        before HTTP. Help text and confirmation prompts should disclose that
+        replacement may create a new ID. Preserve create/view/delete-style
+        admin/404 handling and add package-local tests for registration,
+        validation, replacement request order, and user messaging."
+      contextIds:
+        - gh-cli/autolink-edit-replacement
+    verifiers:
+      - type: patched-command
+        patch: >
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+
+          new file mode 100644
+
+          index 0000000..0000000
+
+          --- /dev/null
+
+          +++ b/.lore-hidden-verify.mjs
+
+          @@ -0,0 +1,30 @@
+
+          +import fs from 'node:fs';
+
+          +import path from 'node:path';
+
+          +const NL = String.fromCharCode(10);
+
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+
+          +function exists(p) { return fs.existsSync(p); }
+
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+
+          +function filesUnder(dir) {
+
+          +  const out = [];
+
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+
+          +    const p = path.join(dir, ent.name);
+
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+
+          +    else out.push(p);
+
+          +  }
+
+          +  return out;
+
+          +}
+
+          +
+
+          +assert(exists('pkg/cmd/repo/autolink/edit/edit.go'), 'missing edit
+          command package');
+
+          +const root = read('pkg/cmd/repo/autolink/autolink.go');
+
+          +const edit = read('pkg/cmd/repo/autolink/edit/edit.go');
+
+          +const tests = filesUnder('pkg/cmd/repo/autolink').filter(f =>
+          f.endsWith('_test.go')).map(read).join(NL);
+
+          +const combined = edit + NL + tests;
+
+          +assert(/NewCmdEdit|cmdEdit/.test(root), 'autolink root does not
+          register edit command');
+
+          +assert(/Use:\s*"edit <id>"/.test(edit), 'edit command usage is
+          missing id argument');
+
+          +assert(/key[-_]?prefix|KeyPrefix/.test(edit) &&
+          /url[-_]?template|URLTemplate/.test(edit), 'edit command lacks key/url
+          fields');
+
+          +assert(/no fields|use flags|at least one|NFlag\(\)\s*==\s*0/i.test(edit), 'edit
+          command does not reject no-field edits');
+
+          +assert(/view|View|Get|Find/.test(combined), 'replacement edit does
+          not read the current autolink');
+
+          +assert(/delete|Delete/.test(combined) &&
+          /create|Create/.test(combined), 'replacement edit does not delete and
+          recreate autolinks');
+
+          +assert(/replacement|new ID|new
+          id|recreate|delete.*create|create.*delete/i.test(combined), 'tests or
+          help do not disclose replacement/new-ID semantics');
+
+          +assert(/admin|404|not found/i.test(tests), 'tests do not cover
+          admin/404 style');
+
+          +assert(!/PATCH/.test(edit), 'edit command should not invent a direct
+          PATCH update path');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/repo/autolink/...
+        timeoutMs: 300000
+  - id: gh-cli-key-add-dry-run-fingerprint-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-key-add-dry-run-fingerprint-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: --dry-run
+        --json for both gh ssh-key add and gh gpg-key add. Inspect SSH/GPG key
+        add/list flows, stdin/file input, duplicate/scope errors, host
+        resolution, key parsing, fingerprint computation, acceptance fixtures,
+        and upload boundaries. Produce a durable implementation plan only; do
+        not edit files. The plan must specify JSON fields, local fingerprint
+        computation, auth-check behavior, stdin/file coverage, and tests proving
+        no upload endpoint is called during dry-run."
+    phaseB:
+      promptId: gh-cli-key-add-dry-run-fingerprint-memory-contract-v2-use
+      prompt: Implement the key-add dry-run follow-up exactly as planned in the prior
+        investigation.
+    expectedContext:
+      description: SSH and GPG key add dry-run should parse key material, emit JSON
+        with title/type/fingerprint/host, avoid upload endpoints, and preserve
+        normal uploads.
+      keywords:
+        - ssh-key
+        - gpg-key
+        - dry-run
+        - fingerprint
+        - upload
+    seededContext:
+      renderedContext: "- [memory] gh-cli/key-add-dry-run-fingerprint: Add `--dry-run
+        --json` to both `gh ssh-key add` and `gh gpg-key add`. Dry-run should
+        read stdin or file input once, parse enough key material to report
+        title, key type, fingerprint, and host, avoid upload/public mutation
+        endpoints entirely, and leave duplicate/scope/normal upload behavior
+        unchanged."
+      contextIds:
+        - gh-cli/key-add-dry-run-fingerprint
+    verifiers:
+      - type: patched-command
+        patch: >
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+
+          new file mode 100644
+
+          index 0000000..0000000
+
+          --- /dev/null
+
+          +++ b/.lore-hidden-verify.mjs
+
+          @@ -0,0 +1,28 @@
+
+          +import fs from 'node:fs';
+
+          +import path from 'node:path';
+
+          +const NL = String.fromCharCode(10);
+
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+
+          +function exists(p) { return fs.existsSync(p); }
+
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+
+          +function filesUnder(dir) {
+
+          +  const out = [];
+
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+
+          +    const p = path.join(dir, ent.name);
+
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+
+          +    else out.push(p);
+
+          +  }
+
+          +  return out;
+
+          +}
+
+          +
+
+          +const ssh = filesUnder('pkg/cmd/ssh-key/add').map(read).join(NL);
+
+          +const gpg = filesUnder('pkg/cmd/gpg-key/add').map(read).join(NL);
+
+          +const sshTest = read('pkg/cmd/ssh-key/add/add_test.go');
+
+          +const gpgTest = read('pkg/cmd/gpg-key/add/add_test.go');
+
+          +const all = [ssh, gpg, sshTest, gpgTest].join(NL);
+
+          +assert(/dry-run|DryRun/.test(ssh), 'ssh-key add lacks dry-run path');
+
+          +assert(/dry-run|DryRun/.test(gpg), 'gpg-key add lacks dry-run path');
+
+          +assert(/json|Exporter|JSON/.test(ssh) &&
+          /json|Exporter|JSON/.test(gpg), 'both key commands must expose JSON
+          dry-run output');
+
+          +assert(/fingerprint|Fingerprint/.test(ssh) &&
+          /fingerprint|Fingerprint/.test(gpg), 'both key commands must
+          compute/report fingerprints');
+
+          +assert(/stdin|file|ReadFile|IO/.test(all), 'tests or implementation
+          do not cover stdin/file input');
+
+          +assert(/not called|no
+          request|unexpected|Exclude|upload/i.test(sshTest), 'ssh dry-run tests
+          do not guard upload boundary');
+
+          +assert(/not called|no
+          request|unexpected|Exclude|upload/i.test(gpgTest), 'gpg dry-run tests
+          do not guard upload boundary');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/ssh-key/add
+            ./pkg/cmd/gpg-key/add
+        timeoutMs: 300000
+  - id: gh-cli-api-jq-paginate-stream-memory-contract-v2
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-api-jq-paginate-stream-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh api
+        --paginate --jq should stream each paginated response through jq instead
+        of buffering everything, while preserving --slurp aggregation and
+        --template conflicts. Inspect gh api pagination, jq filtering, slurp
+        aggregation, template/jq validation, writer flushing, REST/GraphQL
+        paginate tests, and response-header behavior. Produce a durable
+        implementation plan only; do not edit files. The plan must specify
+        streaming behavior, flush points, REST and GraphQL coverage, and
+        compatibility boundaries."
+    phaseB:
+      promptId: gh-cli-api-jq-paginate-stream-memory-contract-v2-use
+      prompt: Implement the jq pagination follow-up exactly as planned in the prior
+        investigation.
+    expectedContext:
+      description: API jq pagination should stream and flush each page unless slurp
+        explicitly requests aggregation, without breaking template conflicts,
+        REST, GraphQL, or verbose headers.
+      keywords:
+        - gh api
+        - --jq
+        - --paginate
+        - --slurp
+        - flush
+    seededContext:
+      renderedContext: "- [memory] gh-cli/api-jq-paginate-stream: `gh api --paginate
+        --jq <expr>` should evaluate jq against each REST or GraphQL page and
+        flush output before requesting the next page. `--slurp` should keep
+        aggregate behavior, `--jq` and `--template` must remain mutually
+        exclusive, and verbose response headers must keep their existing output
+        shape."
+      contextIds:
+        - gh-cli/api-jq-paginate-stream
+    verifiers:
+      - type: patched-command
+        patch: >
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+
+          new file mode 100644
+
+          index 0000000..0000000
+
+          --- /dev/null
+
+          +++ b/.lore-hidden-verify.mjs
+
+          @@ -0,0 +1,25 @@
+
+          +import fs from 'node:fs';
+
+          +import path from 'node:path';
+
+          +const NL = String.fromCharCode(10);
+
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+
+          +function exists(p) { return fs.existsSync(p); }
+
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+
+          +function filesUnder(dir) {
+
+          +  const out = [];
+
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+
+          +    const p = path.join(dir, ent.name);
+
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+
+          +    else out.push(p);
+
+          +  }
+
+          +  return out;
+
+          +}
+
+          +
+
+          +const api = read('pkg/cmd/api/api.go');
+
+          +const tests = [read('pkg/cmd/api/api_test.go'),
+          exists('pkg/cmd/api/pagination_test.go') ?
+          read('pkg/cmd/api/pagination_test.go') : ''].join(NL);
+
+          +assert(/Flush|flush/.test(api), 'api implementation does not flush
+          per page');
+
+          +assert(/Paginate/.test(api) && /JQ|jq/.test(api), 'api implementation
+          does not connect jq to pagination');
+
+          +assert(/Slurp/.test(api + tests), 'slurp behavior is not preserved or
+          tested');
+
+          +assert(/template|Template/.test(api + tests), 'template conflict is
+          not preserved or tested');
+
+          +assert(/GraphQL|graphql/.test(tests), 'GraphQL pagination is not
+          covered');
+
+          +assert(/REST|repositories|issues|Link/.test(tests), 'REST pagination
+          is not covered');
+
+          +assert(/header|ShowResponseHeaders|HTTP\/1\.1/i.test(api + tests),
+          'verbose/header behavior is not covered');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/api
+        timeoutMs: 300000
+  - id: gh-cli-pr-merge-queue-plan-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-pr-merge-queue-plan-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh pr merge
+        --dry-run --json. Inspect merge strategy resolution, auto-merge, merge
+        queue behavior, already-queued PRs, admin bypass, branch deletion,
+        GraphQL mutation construction, and tests. Produce a durable
+        implementation plan only; do not edit files. The plan must specify JSON
+        plan fields, operation names or equivalent semantics for direct merge,
+        enabling auto-merge, adding to the queue, and already queued, and tests
+        proving no merge, queue, auto-merge, publish, or delete-branch mutation
+        runs during dry-run."
+    phaseB:
+      promptId: gh-cli-pr-merge-queue-plan-memory-contract-v2-use
+      prompt: Implement the PR merge dry-run follow-up exactly as planned in the prior
+        investigation.
+    expectedContext:
+      description: PR merge dry-run JSON should compute the existing queue/auto-merge
+        state machine without executing merge, enqueue, auto-merge, publish, or
+        delete mutations.
+      keywords:
+        - pr merge
+        - dry-run
+        - merge queue
+        - auto-merge
+        - json
+    seededContext:
+      renderedContext: "- [memory] gh-cli/pr-merge-queue-plan-json: Add `gh pr merge
+        --dry-run --json` that returns planned action `merge`,
+        `enableAutoMerge`, `enqueue`, or `alreadyQueued`, effective strategy,
+        branch deletion intent, and admin-bypass state. Ready PRs requiring a
+        queue should plan enqueue; blocked PRs should plan enableAutoMerge;
+        already queued PRs should plan alreadyQueued; `--admin` bypasses queue
+        planning; dry-run must execute no merge, enqueue, auto-merge,
+        delete-branch, or publish mutation."
+      contextIds:
+        - gh-cli/pr-merge-queue-plan-json
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,28 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function exists(p) { return fs.existsSync(p); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +
+          +const merge = read('pkg/cmd/pr/merge/merge.go');
+          +const tests = read('pkg/cmd/pr/merge/merge_test.go');
+          +assert(/dry-run|DryRun/.test(merge), 'merge command lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json/.test(merge), 'merge dry-run lacks JSON output');
+          +for (const word of ['merge', 'alreadyQueued']) assert(merge.includes(word) || tests.includes(word), 'missing planned action ' + word);
+          +assert(/enableAutoMerge|autoMerge/.test(merge + tests), 'missing planned action enable-auto-merge');
+          +assert(/enqueue|addToMergeQueue|AddPullRequestToMergeQueue/.test(merge + tests), 'missing planned action enqueue/add-to-queue');
+          +assert(/strategy|mergeMethod/.test(merge + tests) && /deleteBranch/.test(merge + tests) && /admin/.test(merge + tests), 'plan fields are incomplete');
+          +assert(/mergeQueue|queue|required/i.test(merge + tests), 'merge queue state is not covered');
+          +assert(/AutoMerge|auto-merge|blocked/i.test(merge + tests), 'auto-merge state is not covered');
+          +assert(/MergePullRequest|EnablePullRequestAutoMerge|AddPullRequestToMergeQueue|deleteBranch/.test(tests), 'tests do not mention mutation boundaries');
+          +assert(/not called|unexpected|no request|Exclude/i.test(tests), 'dry-run mutation boundary is not guarded');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/pr/merge
+        timeoutMs: 300000
+  - id: gh-cli-secret-variable-env-file-plan-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-secret-variable-env-file-plan-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: --dry-run
+        --json for gh secret set -f <envfile> and gh variable set -f <envfile>.
+        Inspect secret set, variable set, dotenv parsing, target resolution,
+        selected repository handling, environment/org/repo visibility, secret
+        encryption/public-key boundaries, and tests. Produce a durable
+        implementation plan only; do not edit files. The plan must specify
+        shared parser/planner logic, JSON plan fields, target validation,
+        selected repository/environment modeling, and tests proving dry-run
+        performs no network writes, public-key fetches, or encryption."
+    phaseB:
+      promptId: gh-cli-secret-variable-env-file-plan-memory-contract-v2-use
+      prompt: Implement the secret/variable env-file dry-run follow-up exactly as
+        planned in the prior investigation.
+    expectedContext:
+      description: Secret and variable dotenv imports can share plan construction
+        while keeping encryption, visibility, target validation, and write
+        boundaries command-specific.
+      keywords:
+        - secret set
+        - variable set
+        - dry-run
+        - dotenv
+        - json
+    seededContext:
+      renderedContext: "- [memory] gh-cli/secret-variable-env-file-plan: Add
+        `--dry-run --json` to both `gh secret set -f <envfile>` and `gh variable
+        set -f <envfile>`. Share dotenv parser/planner logic. Plans must include
+        key, target scope, selected repositories or environment, and action.
+        Dry-run validates repo/org/environment targets but performs no network
+        writes; secret dry-run must not fetch public keys or encrypt values.
+        Normal set behavior remains unchanged."
+      contextIds:
+        - gh-cli/secret-variable-env-file-plan
+    verifiers:
+      - type: patched-command
+        patch: >
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+
+          new file mode 100644
+
+          index 0000000..0000000
+
+          --- /dev/null
+
+          +++ b/.lore-hidden-verify.mjs
+
+          @@ -0,0 +1,29 @@
+
+          +import fs from 'node:fs';
+
+          +import path from 'node:path';
+
+          +const NL = String.fromCharCode(10);
+
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+
+          +function exists(p) { return fs.existsSync(p); }
+
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+
+          +function filesUnder(dir) {
+
+          +  const out = [];
+
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+
+          +    const p = path.join(dir, ent.name);
+
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+
+          +    else out.push(p);
+
+          +  }
+
+          +  return out;
+
+          +}
+
+          +
+
+          +const secret = read('pkg/cmd/secret/set/set.go');
+
+          +const variable = read('pkg/cmd/variable/set/set.go');
+
+          +const secretTests = filesUnder('pkg/cmd/secret').filter(f =>
+          f.endsWith('_test.go')).map(read).join(NL);
+
+          +const variableTests = filesUnder('pkg/cmd/variable').filter(f =>
+          f.endsWith('_test.go')).map(read).join(NL);
+
+          +const allTests = secretTests + NL + variableTests;
+
+          +assert(/dry-run|DryRun/.test(secret) &&
+          /dry-run|DryRun/.test(variable), 'both commands need dry-run');
+
+          +assert(/json|JSON|Exporter/.test(secret) &&
+          /json|JSON|Exporter/.test(variable), 'both commands need JSON
+          output');
+
+          +assert(/dotenv|godotenv|envfile|EnvFile/.test(secret + variable),
+          'dotenv/envfile parsing is missing');
+
+          +assert(/plan|Plan/.test(secret + variable + allTests), 'plan
+          construction is missing');
+
+          +assert(/selectedRepositories|selected
+          repositories|--repos|RepositoryNames/.test(secret + variable +
+          allTests), 'selected repository targets are not modeled');
+
+          +assert(/environment|EnvName|--env/.test(secret + variable +
+          allTests), 'environment targets are not modeled');
+
+          +assert(/public key|PublicKey|encrypt|Encrypt/.test(secret +
+          secretTests), 'secret encryption boundary is not covered');
+
+          +assert(/not called|unexpected|no
+          request|Exclude/i.test(secretTests) && /not called|unexpected|no
+          request|Exclude/i.test(variableTests), 'tests do not guard no-write
+          dry-run behavior for both commands');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/secret/set
+            ./pkg/cmd/variable/set ./pkg/cmd/secret/shared
+            ./pkg/cmd/variable/shared
+        timeoutMs: 300000
+  - id: gh-cli-repo-create-dry-run-json-plan-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-repo-create-dry-run-json-plan-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh repo
+        create <name> --dry-run --json. Inspect noninteractive validation,
+        owner and template resolution, REST-vs-GraphQL create paths,
+        gitignore/license/readme options, team handling, clone/push/remote side
+        effects, and tests. Produce a durable implementation plan only; do not
+        edit files. The plan must specify stable JSON fields, where validation
+        can stop before mutation, how template-generated repository updates are
+        avoided, and tests proving no create, clone, remote, or push side
+        effects run during dry-run. Keep interactive dry-run out of scope."
+    phaseB:
+      promptId: gh-cli-repo-create-dry-run-json-plan-memory-contract-v2-use
+      prompt: Implement the repo-create dry-run follow-up exactly as planned in the
+        prior investigation.
+    expectedContext:
+      description: Repo create dry-run JSON should reuse create planning and
+        validation while avoiding repository creation, template updates, clone,
+        remote, and push side effects.
+      keywords:
+        - repo create
+        - dry-run
+        - json
+        - template
+        - clone
+    seededContext:
+      renderedContext: "- [memory] gh-cli/repo-create-dry-run-plan: Add
+        noninteractive `gh repo create <name> --dry-run --json`. Reuse existing
+        validation and owner/template planning, emit stable fields for name,
+        owner, visibility, description, homepage, template, team,
+        gitignoreTemplate, licenseTemplate, addReadme, clone, push, and remote,
+        and return before REST/GraphQL create calls, template update calls, git
+        clone, remote setup, or push. Interactive dry-run remains out of scope."
+      contextIds:
+        - gh-cli/repo-create-dry-run-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,25 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +
+          +const impl = filesUnder('pkg/cmd/repo/create').map(read).join(NL);
+          +const tests = filesUnder('pkg/cmd/repo/create').filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'repo create lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'repo create lacks JSON dry-run output');
+          +for (const word of ['name', 'owner', 'visibility', 'description', 'homepage', 'template', 'team', 'clone', 'push', 'remote']) assert(new RegExp(word, 'i').test(all), 'missing plan field ' + word);
+          +assert(/gitignoreTemplate|gitignore|licenseTemplate|license|addReadme|readme/i.test(all), 'template option fields are incomplete');
+          +assert(/POST|PATCH|repos|generate/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard create/template mutation boundary');
+          +assert(/git clone|remote add|push|CommandStubber/i.test(tests) && /not called|unexpected|dry-run/i.test(tests), 'tests do not guard git side effects');
+          +assert(/noninteractive|interactive|IsStdinTTY|IsStdoutTTY/i.test(all), 'noninteractive boundary is not represented');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/repo/create
+        timeoutMs: 300000
+  - id: gh-cli-repo-fork-dry-run-json-plan-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-repo-fork-dry-run-json-plan-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh repo
+        fork [repo] --dry-run --json. Inspect repository parsing, owner/name
+        selection, fork API mutation, fork rename behavior, clone and remote
+        setup, default-branch-only payloads, passthrough git arguments, prompts,
+        and CommandStubber tests. Produce a durable implementation plan only; do
+        not edit files. The plan must specify JSON plan fields and tests proving
+        dry-run avoids fork API, rename API, clone, and remote side effects while
+        preserving normal fork behavior."
+    phaseB:
+      promptId: gh-cli-repo-fork-dry-run-json-plan-memory-contract-v2-use
+      prompt: Implement the repo-fork dry-run follow-up exactly as planned in the
+        prior investigation.
+    expectedContext:
+      description: Repo fork dry-run JSON should parse the same fork, clone,
+        remote, and passthrough options while avoiding fork, rename, clone, and
+        remote side effects.
+      keywords:
+        - repo fork
+        - dry-run
+        - json
+        - defaultBranchOnly
+        - remote
+    seededContext:
+      renderedContext: "- [memory] gh-cli/repo-fork-dry-run-plan: Add `gh repo
+        fork [repo] --dry-run --json` that prints source, targetOwner,
+        forkName, defaultBranchOnly, clone, remote, remoteName, and passthrough
+        gitArgs. Dry-run must return before the fork API, rename API, git clone,
+        or remote setup. Preserve normal fork behavior and existing
+        default-branch-only fork payload behavior."
+      contextIds:
+        - gh-cli/repo-fork-dry-run-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,24 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +
+          +const impl = filesUnder('pkg/cmd/repo/fork').map(read).join(NL);
+          +const tests = filesUnder('pkg/cmd/repo/fork').filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'repo fork lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'repo fork lacks JSON dry-run output');
+          +for (const word of ['source', 'targetOwner', 'forkName', 'defaultBranchOnly', 'clone', 'remote', 'remoteName', 'gitArgs']) assert(new RegExp(word, 'i').test(all), 'missing plan field ' + word);
+          +assert(/fork|rename/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard fork or rename API boundary');
+          +assert(/git clone|remote|CommandStubber/i.test(tests) && /not called|unexpected|dry-run/i.test(tests), 'tests do not guard clone or remote side effects');
+          +assert(/defaultBranchOnly|default-branch-only|default branch/i.test(all), 'default-branch-only behavior is not preserved or tested');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/repo/fork
+        timeoutMs: 300000
+  - id: gh-cli-cache-delete-older-than-dry-run-json-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-cache-delete-older-than-dry-run-json-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: extend gh
+        cache delete --all with --older-than <duration>, --dry-run, and --json.
+        Inspect cache delete-all selection, list pagination, ref filtering,
+        last_accessed_at timestamp fields, delete-by-id/key behavior, dry-run
+        boundaries, and tests. Produce a durable implementation plan only; do
+        not edit files. The plan must specify filtering semantics, JSON selected
+        cache fields, --ref interaction, --older-than validation, normal apply
+        behavior, and tests proving no DELETE calls happen during dry-run."
+    phaseB:
+      promptId: gh-cli-cache-delete-older-than-dry-run-json-memory-contract-v2-use
+      prompt: Implement the cache-delete age-filter dry-run follow-up exactly as
+        planned in the prior investigation.
+    expectedContext:
+      description: Cache delete age filtering should reuse paginated cache
+        selection, preserve ref filtering, support dry-run JSON, and avoid DELETE
+        requests in dry-run.
+      keywords:
+        - cache delete
+        - older-than
+        - dry-run
+        - json
+        - DELETE
+    seededContext:
+      renderedContext: "- [memory] gh-cli/cache-delete-age-filter-dry-run: Extend
+        `gh cache delete --all` with `--older-than <duration>`, `--dry-run`, and
+        `--json`. Filter listed caches by `last_accessed_at` older than the
+        duration, preserve `--ref`, reject `--older-than` without `--all`, emit
+        deterministic selected cache JSON in dry-run, never DELETE in dry-run,
+        and in apply mode delete only selected cache IDs."
+      contextIds:
+        - gh-cli/cache-delete-age-filter-dry-run
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,16 @@
+          +import fs from 'node:fs';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +const impl = read('pkg/cmd/cache/delete/delete.go');
+          +const tests = read('pkg/cmd/cache/delete/delete_test.go');
+          +const all = impl + NL + tests;
+          +assert(/older-than|OlderThan|ParseDuration|Duration/.test(impl), 'cache delete lacks older-than duration filtering');
+          +assert(/dry-run|DryRun/.test(impl), 'cache delete lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'cache delete lacks JSON dry-run output');
+          +assert(/last_accessed_at|LastAccessedAt|lastAccessedAt/.test(all), 'age filter does not use last_accessed_at');
+          +assert(/--ref|RefName|ref/.test(all), 'ref filtering is not preserved');
+          +assert(/--all|DeleteAll|all/.test(all) && /older-than|OlderThan/.test(all) && /FlagError|error|reject/i.test(all), 'older-than without all is not validated');
+          +assert(/page=2|Link|next|pagination|Paginate/i.test(tests), 'paginated selection is not covered');
+          +assert(/DELETE/.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard dry-run DELETE boundary');
+          +assert(/DELETE/.test(tests) && /older-than|selected|LastAccessed|last_accessed_at/i.test(tests), 'apply-mode selected deletion is not covered');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/cache/delete ./pkg/cmd/cache/shared
+        timeoutMs: 300000
+  - id: gh-cli-label-sync-file-plan-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-label-sync-file-plan-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh label
+        sync --file <labels.yml|labels.json> [--prune] [--dry-run --json].
+        Inspect label command registration, label create/edit/delete payloads,
+        file parsing helpers, YAML/JSON dependency availability, color
+        validation, dry-run output conventions, fetch-existing-label behavior,
+        and package-local tests. Produce a durable implementation plan only; do
+        not edit files. The plan must specify validation-before-mutation
+        semantics, deterministic create/update/delete planning, prune behavior,
+        dry-run JSON fields, and tests proving no mutation calls happen during
+        dry-run."
+    phaseB:
+      promptId: gh-cli-label-sync-file-plan-memory-contract-v2-use
+      prompt: Implement the label sync file-plan follow-up exactly as planned in the
+        prior investigation.
+    expectedContext:
+      description: Label sync should parse and validate all input before producing
+        or applying a deterministic create/update/delete/prune plan.
+      keywords:
+        - label sync
+        - file
+        - dry-run
+        - prune
+        - plan
+    seededContext:
+      renderedContext: "- [memory] gh-cli/label-sync-bulk-plan: Add `gh label sync
+        --file <labels.yml|labels.json> [--prune] [--dry-run --json]`. Parse
+        label objects with name, color, and optional description; validate
+        duplicate names and invalid colors before any network mutation; fetch
+        existing labels; produce deterministic create/update/delete operations;
+        prune labels absent from the file only when `--prune` is set; and make
+        dry-run JSON include the ordered plan without create, update, or delete
+        requests."
+      contextIds:
+        - gh-cli/label-sync-bulk-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,27 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function exists(p) { return fs.existsSync(p); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +
+          +const labelRoot = read('pkg/cmd/label/label.go');
+          +const labelFiles = filesUnder('pkg/cmd/label').map(read).join(NL);
+          +const tests = filesUnder('pkg/cmd/label').filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/sync|NewCmdSync/.test(labelRoot + labelFiles), 'label root does not register sync command');
+          +assert(/--file|FileName|labels\.ya?ml|labels\.json|YAML|yaml|json/i.test(labelFiles), 'label sync lacks YAML/JSON file input');
+          +assert(/dry-run|DryRun/.test(labelFiles) && /Exporter|AddJSON|--json|json|JSON/.test(labelFiles), 'label sync lacks dry-run JSON output');
+          +assert(/prune|Prune/.test(labelFiles), 'label sync lacks prune behavior');
+          +assert(/duplicate/i.test(tests) && /invalid color|color/i.test(tests), 'tests do not cover duplicate names and invalid colors');
+          +assert(/create/i.test(tests) && /update|edit|PATCH/i.test(tests) && /delete|DELETE/i.test(tests), 'tests do not cover create/update/delete planning');
+          +assert(/deterministic|sorted|sort\.|ordered|order/i.test(labelFiles + tests), 'deterministic plan ordering is not represented');
+          +assert(/POST|PATCH|DELETE/.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard dry-run mutation boundary');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/label/...
+        timeoutMs: 300000
+  - id: gh-cli-status-json-aggregate-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-status-json-aggregate-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh status
+        --json. Inspect top-level status aggregation, assigned issue and pull
+        request queries, review request and mention queries, pagination, human
+        display-name formatting, JSON exporter conventions, and tests. Produce a
+        durable implementation plan only; do not edit files. The plan must
+        specify stable JSON section names and fields, raw-login-vs-display-name
+        boundaries, pagination preservation, and tests proving human output is
+        unchanged."
+    phaseB:
+      promptId: gh-cli-status-json-aggregate-memory-contract-v2-use
+      prompt: Implement the status JSON aggregate follow-up exactly as planned in the
+        prior investigation.
+    expectedContext:
+      description: Status JSON should emit stable machine-readable aggregates with
+        raw API fields while preserving human output and pagination behavior.
+      keywords:
+        - gh status
+        - json
+        - assignedIssues
+        - reviewRequests
+        - raw login
+    seededContext:
+      renderedContext: "- [memory] gh-cli/status-json-raw-aggregate: Add `gh status
+        --json` with stable arrays for assignedIssues, assignedPullRequests,
+        reviewRequests, and mentions. Include repo, number, title, url, state,
+        raw author login, and draft/review metadata where applicable. Preserve
+        existing human output and pagination behavior; JSON must keep raw API
+        logins rather than display-name formatting."
+      contextIds:
+        - gh-cli/status-json-raw-aggregate
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,14 @@
+          +import fs from 'node:fs';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +const impl = read('pkg/cmd/status/status.go');
+          +const tests = read('pkg/cmd/status/status_test.go');
+          +const all = impl + NL + tests;
+          +assert(/AddJSONFlags|Exporter|JSON|json/.test(impl), 'status lacks JSON exporter support');
+          +for (const section of ['assignedIssues', 'assignedPullRequests', 'reviewRequests', 'mentions']) assert(all.includes(section), 'missing JSON section ' + section);
+          +for (const field of ['repo', 'number', 'title', 'url', 'state']) assert(new RegExp(field, 'i').test(all), 'missing JSON field ' + field);
+          +assert(/author|login/.test(all), 'raw author login is not represented');
+          +assert(/DisplayName|display name|display-name|raw|not contain|login/i.test(tests), 'tests do not cover raw-login vs display-name boundary');
+          +assert(/page=2|hasNextPage|endCursor|NextPage|pagination/i.test(tests), 'pagination behavior is not covered');
+          +assert(/human|TTY|Display|section|stdout/i.test(tests), 'human output preservation is not covered');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/status
+        timeoutMs: 300000
+  - id: gh-cli-issue-create-dry-run-json-metadata-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-issue-create-dry-run-json-metadata-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh issue
+        create --dry-run --json. Inspect issue create metadata resolution,
+        template/body-file handling, special assignees, project/milestone/label
+        behavior, web mode, and mutation boundaries. Produce a durable
+        implementation plan only; do not edit files. The plan must specify JSON
+        fields, read-only validation, unsupported mode boundaries, and tests
+        proving no issue or project mutation runs during dry-run."
+    phaseB:
+      promptId: gh-cli-issue-create-dry-run-json-metadata-memory-contract-v2-use
+      prompt: Implement the issue-create dry-run follow-up exactly as planned in
+        the prior investigation.
+    expectedContext:
+      description: Issue create dry-run JSON should resolve metadata and body
+        inputs while avoiding issue creation, project mutation, and browser
+        side effects.
+      keywords:
+        - issue create
+        - dry-run
+        - json
+        - metadata
+        - project
+    seededContext:
+      renderedContext: "- [memory] gh-cli/issue-create-dry-run-metadata: Add
+        noninteractive `gh issue create --dry-run --json`. It may perform
+        read-only repo, template, body-file/stdin, assignee, label, milestone,
+        and project resolution, but must not POST issues, add project items, or
+        open the browser. JSON should include repo, title, body, assignees,
+        labels, milestone, projects, template, and action=create."
+      contextIds:
+        - gh-cli/issue-create-dry-run-metadata
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,17 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) { const out = []; for (const ent of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, ent.name); if (ent.isDirectory()) out.push(...filesUnder(p)); else out.push(p); } return out; }
+          +const impl = filesUnder('pkg/cmd/issue/create').map(read).join(NL);
+          +const tests = filesUnder('pkg/cmd/issue/create').filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const shared = filesUnder('pkg/cmd/pr/shared').map(read).join(NL);
+          +const all = impl + NL + tests + NL + shared;
+          +assert(/dry-run|DryRun/.test(impl), 'issue create lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'issue create lacks JSON dry-run output');
+          +for (const field of ['repo', 'title', 'body', 'assignees', 'labels', 'milestone', 'projects', 'template']) assert(new RegExp(field, 'i').test(all), 'missing JSON field ' + field);
+          +assert(/body-file|body file|stdin|template/i.test(all), 'body-file/stdin/template inputs are not represented');
+          +assert(/assignee|label|milestone|project/i.test(tests), 'metadata resolution tests are missing');
+          +assert(/web|browser|Browse|OpenBrowser/i.test(all), 'web/browser boundary is not represented');
+          +assert(/POST|Project|mutation|CreateIssue/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard issue/project mutation boundary');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/issue/create ./pkg/cmd/pr/shared
+        timeoutMs: 300000
+  - id: gh-cli-workflow-run-dry-run-json-dispatch-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-workflow-run-dry-run-json-dispatch-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh
+        workflow run --dry-run --json. Inspect workflow selection, default-ref
+        resolution, workflow YAML input parsing, stdin JSON, raw/magic fields,
+        dispatch feature detection, and dispatch request construction. Existing
+        workflow run --json means read inputs from stdin; in dry-run mode the
+        same flag must also select JSON plan output while preserving stdin JSON
+        input when stdin has data. Produce a durable implementation plan only;
+        do not edit files. The plan must specify JSON plan fields, input schema
+        validation, ref behavior, and tests proving no dispatch request runs
+        during dry-run."
+    phaseB:
+      promptId: gh-cli-workflow-run-dry-run-json-dispatch-memory-contract-v2-use
+      prompt: Implement the workflow-run dry-run follow-up exactly as planned in
+        the prior investigation.
+    expectedContext:
+      description: Workflow run dry-run JSON should resolve workflow/ref,
+        preserve stdin JSON input semantics, and validate workflow_dispatch
+        inputs while avoiding the dispatch POST.
+      keywords:
+        - workflow run
+        - dry-run
+        - json
+        - workflow_dispatch
+        - inputs
+    seededContext:
+      renderedContext: "- [memory] gh-cli/workflow-run-dry-run-dispatch-plan: Add
+        `gh workflow run --dry-run --json` that resolves the workflow and ref,
+        fetches workflow YAML at that ref to validate workflow_dispatch inputs,
+        accepts either stdin JSON or -f/-F fields, reports workflow path/name,
+        ref, inputs, returnRunDetails, and action=dispatch, then returns before
+        the workflow dispatch POST. Preserve normal workflow run --json as
+        stdin input; under --dry-run, --json also selects JSON plan output."
+      contextIds:
+        - gh-cli/workflow-run-dry-run-dispatch-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,14 @@
+          +import fs from 'node:fs';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +const impl = read('pkg/cmd/workflow/run/run.go');
+          +const tests = read('pkg/cmd/workflow/run/run_test.go');
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'workflow run lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'workflow run lacks JSON dry-run output');
+          +for (const field of ['workflow', 'path', 'name', 'ref', 'inputs', 'returnRunDetails']) assert(new RegExp(field, 'i').test(all), 'missing JSON plan field ' + field);
+          +assert(/workflow_dispatch|yaml|YAML|inputs|required|choice|default/i.test(all), 'workflow_dispatch input schema validation is missing');
+          +assert(/stdin|json|raw-field|field|magic/i.test(all), 'stdin and field input handling is not represented');
+          +assert(/POST|dispatch/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard dispatch POST boundary');
+          +assert(/normal|dispatch|POST/i.test(tests), 'normal dispatch behavior is not covered');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/workflow/run
+        timeoutMs: 300000
+  - id: gh-cli-run-rerun-dry-run-json-selection-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-run-rerun-dry-run-json-selection-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh run
+        rerun --dry-run --json. Inspect rerun selection, job lookup,
+        failed-only behavior, debug payloads, prompt mode, run/job endpoint
+        differences, and output. Produce a durable implementation plan only; do
+        not edit files. The plan must specify JSON fields and tests proving
+        dry-run performs read-only lookup but no rerun POST."
+    phaseB:
+      promptId: gh-cli-run-rerun-dry-run-json-selection-memory-contract-v2-use
+      prompt: Implement the run-rerun dry-run follow-up exactly as planned in the
+        prior investigation.
+    expectedContext:
+      description: Run rerun dry-run JSON should preserve run/job selection and
+        failed/debug modes while avoiding rerun POSTs.
+      keywords:
+        - run rerun
+        - dry-run
+        - json
+        - job
+        - failed
+    seededContext:
+      renderedContext: "- [memory] gh-cli/run-rerun-dry-run-selection: Add `gh run
+        rerun --dry-run --json`. Preserve current precedence where --job
+        overrides a positional run ID after warning. Dry-run may GET the job or
+        run to resolve runID/jobID, but must not POST rerun endpoints. JSON
+        should include repo, mode=run|failed|job, runID, jobID, debug,
+        endpointKind, and action=rerun."
+      contextIds:
+        - gh-cli/run-rerun-dry-run-selection
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,14 @@
+          +import fs from 'node:fs';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +const impl = read('pkg/cmd/run/rerun/rerun.go');
+          +const tests = read('pkg/cmd/run/rerun/rerun_test.go');
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'run rerun lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'run rerun lacks JSON dry-run output');
+          +for (const field of ['repo', 'mode', 'runID', 'jobID', 'debug', 'endpointKind']) assert(new RegExp(field, 'i').test(all), 'missing JSON plan field ' + field);
+          +assert(/job/i.test(tests) && /positional|run id|warning|override|precedence/i.test(tests), 'job-vs-run precedence is not tested');
+          +assert(/failed|debug/i.test(tests), 'failed-only or debug planning is not tested');
+          +assert(/GET|lookup|read/i.test(tests), 'read-only lookup coverage is missing');
+          +assert(/POST|rerun/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard rerun POST boundary');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/run/rerun
+        timeoutMs: 300000
+  - id: gh-cli-release-create-dry-run-json-assets-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-release-create-dry-run-json-assets-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session:
+        noninteractive gh release create --dry-run --json. Inspect release
+        create validation, generated notes, tag verification, no-commits
+        checks, asset parsing, draft-while-uploading, publish/delete cleanup,
+        and tests. Produce a durable implementation plan only; do not edit
+        files. The plan must specify JSON fields, allowed read-only checks, and
+        tests proving no release, upload, publish, or delete mutation runs
+        during dry-run."
+    phaseB:
+      promptId: gh-cli-release-create-dry-run-json-assets-memory-contract-v2-use
+      prompt: Implement the release-create dry-run follow-up exactly as planned in
+        the prior investigation.
+    expectedContext:
+      description: Release create dry-run JSON should validate release inputs and
+        assets while avoiding create, upload, publish, discussion, and cleanup
+        mutations.
+      keywords:
+        - release create
+        - dry-run
+        - json
+        - assets
+        - publish
+    seededContext:
+      renderedContext: "- [memory] gh-cli/release-create-dry-run-assets-plan: Add
+        noninteractive `gh release create --dry-run --json`. Preserve flag
+        validation and local asset parsing. Allow read-only tag,
+        generated-notes, and no-commits checks when required, but never create
+        releases, upload assets, publish draft releases, start discussions, or
+        delete cleanup drafts. JSON should expose tag, target, title,
+        notesSource, draft/prerelease/latest, assets, discussionCategory,
+        failOnNoCommits, and planned steps."
+      contextIds:
+        - gh-cli/release-create-dry-run-assets-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,18 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) { const out = []; for (const ent of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, ent.name); if (ent.isDirectory()) out.push(...filesUnder(p)); else out.push(p); } return out; }
+          +const impl = filesUnder('pkg/cmd/release/create').map(read).join(NL);
+          +const tests = filesUnder('pkg/cmd/release/create').filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const shared = filesUnder('pkg/cmd/release/shared').map(read).join(NL);
+          +const all = impl + NL + tests + NL + shared;
+          +assert(/dry-run|DryRun/.test(impl), 'release create lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'release create lacks JSON dry-run output');
+          +for (const field of ['tag', 'target', 'title', 'notesSource', 'draft', 'prerelease', 'latest', 'assets', 'discussionCategory', 'failOnNoCommits']) assert(new RegExp(field, 'i').test(all), 'missing JSON plan field ' + field);
+          +assert(/generate|generated notes|notes/i.test(all), 'generated notes path is not represented');
+          +assert(/verify|tag|no-commits|no commits/i.test(all), 'tag/no-commits checks are not represented');
+          +assert(/asset|label|upload/i.test(all), 'asset parsing/upload planning is not represented');
+          +assert(/publish|draft|delete|cleanup|discussion/i.test(tests), 'publish/delete/discussion behavior is not tested');
+          +assert(/POST|PATCH|DELETE|upload/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard release mutation boundary');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/release/create ./pkg/cmd/release/shared
+        timeoutMs: 300000
+  - id: gh-cli-release-upload-dry-run-json-clobber-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-release-upload-dry-run-json-clobber-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh release
+        upload --dry-run --json. Inspect asset argument parsing, display
+        labels, sanitized filename collision logic, release fetch, clobber
+        behavior, concurrent upload boundaries, and tests. Produce a durable
+        implementation plan only; do not edit files. The plan must specify JSON
+        fields and tests proving dry-run fetches only what it needs and never
+        deletes or uploads assets."
+    phaseB:
+      promptId: gh-cli-release-upload-dry-run-json-clobber-memory-contract-v2-use
+      prompt: Implement the release-upload dry-run follow-up exactly as planned in
+        the prior investigation.
+    expectedContext:
+      description: Release upload dry-run JSON should plan asset upload or
+        replacement based on sanitized-name collisions while avoiding deletes
+        and uploads.
+      keywords:
+        - release upload
+        - dry-run
+        - json
+        - clobber
+        - sanitized
+    seededContext:
+      renderedContext: "- [memory] gh-cli/release-upload-dry-run-clobber-plan: Add
+        `gh release upload --dry-run --json`. Dry-run should fetch the target
+        release to compare sanitized asset names, report each local asset with
+        original path, upload name, label, size, existing match, and
+        action=upload|replace|blocked. Without --clobber, collisions are
+        blocked; with --clobber, plan delete-then-upload but perform neither
+        DELETE nor upload."
+      contextIds:
+        - gh-cli/release-upload-dry-run-clobber-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,14 @@
+          +import fs from 'node:fs';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +const impl = read('pkg/cmd/release/upload/upload.go');
+          +const tests = read('pkg/cmd/release/upload/upload_test.go');
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'release upload lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl), 'release upload lacks JSON dry-run output');
+          +for (const field of ['original', 'path', 'upload', 'name', 'label', 'size', 'existing', 'action']) assert(new RegExp(field, 'i').test(all), 'missing asset plan field ' + field);
+          +assert(/sanitize|Sanitize|sanitized/i.test(all), 'sanitized filename collision logic is not represented');
+          +assert(/clobber|replace|blocked|collision/i.test(tests), 'clobber and collision plans are not tested');
+          +assert(/GET|release/i.test(tests), 'target release fetch is not tested');
+          +assert(/DELETE|upload/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard delete/upload boundary');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/release/upload ./pkg/cmd/release/shared
+        timeoutMs: 300000
+  - id: gh-cli-codespace-create-dry-run-json-plan-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-codespace-create-dry-run-json-plan-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh
+        codespace create --dry-run --json. Inspect codespace create option
+        resolution, repo/branch prompts, location and machine selection,
+        devcontainer discovery, display-name limits, idle/retention validation,
+        web mode, permissions prompts, and create/status polling. Produce a
+        durable implementation plan only; do not edit files. The plan must
+        specify JSON fields and tests proving no codespace create, permission
+        acceptance, polling, or browser side effect runs during dry-run."
+    phaseB:
+      promptId: gh-cli-codespace-create-dry-run-json-plan-memory-contract-v2-use
+      prompt: Implement the codespace-create dry-run follow-up exactly as planned
+        in the prior investigation.
+    expectedContext:
+      description: Codespace create dry-run JSON should resolve create options
+        and validations while avoiding create, permission, polling, and browser
+        side effects.
+      keywords:
+        - codespace create
+        - dry-run
+        - json
+        - permissions
+        - polling
+    seededContext:
+      renderedContext: "- [memory] gh-cli/codespace-create-dry-run-plan: Add `gh
+        codespace create --dry-run --json`. Resolve repo, branch, location,
+        machine, devcontainer path, displayName, idleTimeout, retentionPeriod,
+        and permissionsOptOut into a plan. Preserve validation and
+        prompt/default behavior where possible, but dry-run must not call
+        create, accept permissions, poll status, run post-create checks, or open
+        the browser."
+      contextIds:
+        - gh-cli/codespace-create-dry-run-plan
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,17 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) { const out = []; for (const ent of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, ent.name); if (ent.isDirectory()) out.push(...filesUnder(p)); else out.push(p); } return out; }
+          +const impl = read('pkg/cmd/codespace/create.go');
+          +const tests = read('pkg/cmd/codespace/create_test.go');
+          +const all = impl + NL + tests;
+          +assert(/create/.test(impl) && /dry-run|DryRun/.test(impl), 'codespace create lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl) && /--dry-run/i.test(tests) && /--json/i.test(tests), 'codespace create lacks JSON dry-run output or exact command-form tests');
+          +for (const field of ['repo', 'branch', 'location', 'machine', 'devcontainer', 'displayName', 'idleTimeout', 'retentionPeriod', 'permissions']) assert(new RegExp(field, 'i').test(all), 'missing plan field ' + field);
+          +assert(/display-name|displayName|idle|retention|duration/i.test(tests), 'validation tests are missing');
+          +assert(/prompt|default|branch|repo/i.test(tests), 'repo/branch prompt-default behavior is not tested');
+          +assert(/web|browser|Browse|OpenBrowser/i.test(all), 'web/browser boundary is not represented');
+          +assert(/permission|accept/i.test(tests), 'permission behavior is not tested');
+          +assert(/create|poll|status|browser/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard create/permission/poll/browser side effects');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/codespace
+        timeoutMs: 300000
+  - id: gh-cli-extension-install-dry-run-json-resolution-memory-contract-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *a1
+    phaseA:
+      promptId: gh-cli-extension-install-dry-run-json-resolution-memory-contract-v2-formation
+      prompt: "We will implement a follow-up feature in a later session: gh
+        extension install --dry-run --json. Inspect extension install local and
+        remote paths, repository validation, built-in command conflicts,
+        already-installed handling, --force, --pin, binary-vs-script
+        resolution, manager side effects, and tests. Produce a durable
+        implementation plan only; do not edit files. The plan must specify JSON
+        fields and tests proving dry-run performs validation/planning without
+        clone, symlink, upgrade, or install writes."
+    phaseB:
+      promptId: gh-cli-extension-install-dry-run-json-resolution-memory-contract-v2-use
+      prompt: Implement the extension-install dry-run follow-up exactly as planned
+        in the prior investigation.
+    expectedContext:
+      description: Extension install dry-run JSON should resolve local and remote
+        install actions while avoiding clone, symlink, upgrade, and install
+        writes.
+      keywords:
+        - extension install
+        - dry-run
+        - json
+        - pin
+        - force
+    seededContext:
+      renderedContext: "- [memory] gh-cli/extension-install-dry-run-resolution: Add
+        `gh extension install --dry-run --json`. For remote installs, validate
+        owner/gh-* repo naming, built-in conflicts, installed-extension
+        conflicts, --force upgrade intent, and optional pin. For local `.`,
+        reject --pin, inspect the working directory enough to name the
+        extension, but do not symlink or write. JSON should include sourceType,
+        repository/path, extensionName, pin, force, action=install|upgrade|blocked,
+        and reason."
+      contextIds:
+        - gh-cli/extension-install-dry-run-resolution
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,20 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) { const out = []; for (const ent of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, ent.name); if (ent.isDirectory()) out.push(...filesUnder(p)); else out.push(p); } return out; }
+          +const command = read('pkg/cmd/extension/command.go');
+          +const installStart = command.indexOf('Use:   "install <repository>"');
+          +const upgradeStart = command.indexOf('Use:   "upgrade"');
+          +const impl = command.slice(installStart, upgradeStart) + NL + read('pkg/cmd/extension/manager.go');
+          +const tests = read('pkg/cmd/extension/command_test.go') + NL + read('pkg/cmd/extension/manager_test.go');
+          +const exts = filesUnder('pkg/extensions').map(read).join(NL);
+          +const all = impl + NL + tests + NL + exts;
+          +assert(installStart >= 0 && upgradeStart > installStart && /install/.test(impl) && /dry-run|DryRun/.test(impl), 'extension install lacks dry-run mode');
+          +assert(/Exporter|AddJSON|--json|json|JSON/.test(impl) && /install/i.test(tests) && /--dry-run/i.test(tests) && /--json/i.test(tests), 'extension install lacks JSON dry-run output or exact command-form tests');
+          +for (const field of ['sourceType', 'repository', 'path', 'extensionName', 'pin', 'force', 'action', 'reason']) assert(new RegExp(field, 'i').test(all), 'missing plan field ' + field);
+          +assert(/local|remote|working directory|current directory|local repository/i.test(all), 'local vs remote install resolution is not represented');
+          +assert(/built.?in|conflict|already|installed|force|upgrade/i.test(tests), 'conflict/force upgrade behavior is not tested');
+          +assert(/pin/i.test(tests) && /local|reject|error/i.test(tests), 'local --pin rejection is not tested');
+          +assert(/clone|symlink|InstallLocal|Install\(|Upgrade/i.test(tests) && /unexpected|not called|no request|fail/i.test(tests) && /dry-run|DryRun/.test(tests), 'tests do not guard install manager side effects');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/extension ./pkg/extensions
+        timeoutMs: 300000
+costKillSwitchUsd: 2500

@@ -22,7 +22,11 @@ import {
 import { deriveFailureReason, runVerifier } from "./verifier.js"
 import { prepareWorkspace, seedMemoryCondition } from "./workspace.js"
 import { roundMs } from "./patch-stats.js"
-import { resolveTranscriptDir, taskTranscriptPath } from "./transcripts.js"
+import {
+  resolveTranscriptDir,
+  taskTranscriptPath,
+  taskVerifierOutputPath,
+} from "./transcripts.js"
 
 export async function loadTaskEvalSuite(path: string): Promise<{
   suite: TaskEvalSuite
@@ -31,7 +35,7 @@ export async function loadTaskEvalSuite(path: string): Promise<{
 }> {
   const absolute = resolve(path)
   const raw = await readFile(absolute, "utf-8")
-  const parsed = parseYaml(raw) as unknown
+  const parsed = parseYaml(raw, { maxAliasCount: 1000 }) as unknown
   const suite = taskEvalSuiteSchema.parse(parsed)
   if (isLongitudinalTaskEvalSuite(suite) && suite.seededCorpus) {
     const corpus = await loadSeedCorpus(resolve(dirname(absolute), suite.seededCorpus))
@@ -76,10 +80,11 @@ export async function runTaskEvalSuite(
     options.difficulty !== undefined ||
     options.sample !== undefined ||
     (options.scenarioIds?.length ?? 0) > 0 ||
+    (options.conditions?.length ?? 0) > 0 ||
     options.parallelism !== undefined
   ) {
     throw new Error(
-      "--difficulty, --sample, --scenario-id, and --parallel are only supported for longitudinal task suites."
+      "--difficulty, --sample, --scenario-id, --condition, and --parallel are only supported for longitudinal task suites."
     )
   }
 
@@ -123,6 +128,8 @@ export async function runTaskEvalSuite(
           taskId: task.id,
           condition: null,
         }),
+        transcriptsDir,
+        transcriptIndex: index,
       })
       results.push(result)
       options.onProgress?.({
@@ -161,6 +168,8 @@ export async function runTaskEvalSuite(
           taskId: task.id,
           condition,
         }),
+        transcriptsDir,
+        transcriptIndex: index,
       })
       results.push(result)
       options.onProgress?.({
@@ -207,6 +216,8 @@ async function runTaskEvalTrial(input: {
   adapters: Map<string, AgentAdapter>
   keepWorkspaces: boolean
   transcriptPath?: string
+  transcriptsDir: string | null
+  transcriptIndex: number
 }): Promise<TaskEvalResult> {
   const adapter = input.adapters.get(input.task.agent)
   if (!adapter) {
@@ -236,8 +247,21 @@ async function runTaskEvalTrial(input: {
       transcriptPath: input.transcriptPath,
     })
     const verifierResults: VerifierResult[] = []
-    for (const verifier of input.task.verifiers) {
-      verifierResults.push(await runVerifier(verifier, workspace, prepared.sourceRoot))
+    for (const [verifierIndex, verifier] of input.task.verifiers.entries()) {
+      verifierResults.push(
+        await runVerifier(
+          verifier,
+          workspace,
+          prepared.sourceRoot,
+          taskVerifierOutputPath({
+            transcriptsDir: input.transcriptsDir,
+            index: input.transcriptIndex,
+            taskId: input.task.id,
+            condition: input.condition,
+            verifierIndex,
+          })
+        )
+      )
     }
     const success =
       agentRun.exitCode === 0 &&

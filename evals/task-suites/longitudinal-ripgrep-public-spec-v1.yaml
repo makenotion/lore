@@ -1,0 +1,531 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-ripgrep-public-spec-v1
+description: >-
+  Public-spec ripgrep longitudinal suite. Scenarios are pinned immediately
+  before real upstream fixes and verified through public CLI behavior using
+  focused hidden integration tests.
+seededCorpus: ../vault-seeds/ripgrep-public-spec-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: rg-global-ignore-absolute-cwd-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: BurntSushi/ripgrep
+      sha: 9ec08522bee566c8fbf03c340acd7a1ff1789a9f
+    phaseA:
+      promptId: rg-global-ignore-absolute-cwd-v1-formation
+      prompt: >-
+        We will fix an ignore-walking bug in a later session. Inspect ripgrep's
+        handling of `--ignore-file`, git global excludes, cwd/root path
+        normalization, absolute search paths, and integration regression tests.
+        Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: rg-global-ignore-absolute-cwd-v1-use
+      prompt: >-
+        Fix ripgrep so ignore files supplied with `--ignore-file` and git
+        global excludes apply anchored patterns relative to the process current
+        working directory, even when the searched path is absolute and the
+        command is run from a nested directory. Preserve ordinary `.ignore` and
+        `.gitignore` behavior, relative search path behavior, and path spelling
+        in displayed results. Add focused regressions.
+    expectedContext:
+      description: >-
+        Global ignore files are rooted at cwd, while ordinary project ignore
+        files remain rooted at their containing directory.
+      keywords:
+        - --ignore-file
+        - global gitignore
+        - current working directory
+        - absolute path
+        - anchored pattern
+    seededContext:
+      renderedContext: |
+        - [memory] ripgrep/global-ignore-cwd-rooting: Ignore files supplied through `--ignore-file` and git global excludes behave like global gitignore files: anchored patterns such as `/haystack` should be interpreted relative to the process current working directory, even when the searched path is an absolute root elsewhere. Ordinary project `.ignore` and `.gitignore` files remain rooted at their own containing directory.
+      contextIds:
+        - ripgrep/global-ignore-cwd-rooting
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/tests.rs b/tests/tests.rs
+          --- a/tests/tests.rs
+          +++ b/tests/tests.rs
+          @@ -4,6 +4,7 @@ mod macros;
+           
+           // Corpora.
+           mod hay;
+          +mod hidden_longitudinal;
+           // Utilities for making tests nicer to read and easier to write.
+           mod util;
+           
+          diff --git a/tests/hidden_longitudinal.rs b/tests/hidden_longitudinal.rs
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/hidden_longitudinal.rs
+          @@ -0,0 +1,27 @@
+          +use crate::util::{Dir, TestCommand};
+          +
+          +rgtest!(hidden_global_ignore_absolute_cwd, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create_dir("a/b/c");
+          +    dir.create("a/b/c/haystack", "");
+          +    dir.create(".test.gitignore", "/haystack");
+          +
+          +    let dir_path = if cfg!(windows) {
+          +        dir.path().to_path_buf()
+          +    } else {
+          +        dir.path().canonicalize().unwrap()
+          +    };
+          +    let ignore_file_path = dir_path.join(".test.gitignore");
+          +
+          +    cmd.current_dir(dir.path().join("a/b/c"))
+          +        .arg("--files")
+          +        .arg("--ignore-file")
+          +        .arg(ignore_file_path.display().to_string())
+          +        .arg(&dir_path);
+          +
+          +    let output = cmd.cmd().output().unwrap();
+          +    assert!(
+          +        !output.status.success(),
+          +        "anchored global ignore did not suppress the absolute-root file: {:?}",
+          +        output
+          +    );
+          +    assert_eq!("", String::from_utf8_lossy(&output.stdout));
+          +    assert_eq!("", String::from_utf8_lossy(&output.stderr));
+          +});
+        command: cargo
+        args:
+          - test
+          - --test
+          - integration
+          - hidden_global_ignore_absolute_cwd
+          - --quiet
+        timeoutMs: 300000
+
+  - id: rg-json-stats-no-matches-v1
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: BurntSushi/ripgrep
+      sha: b610d1cb1506feab33459c5853e4c0d0cb16a6e2
+    phaseA:
+      promptId: rg-json-stats-no-matches-v1-formation
+      prompt: >-
+        We will fix JSON statistics accounting in a later session. Inspect the
+        JSON printer sink lifecycle, match/no-match begin/end behavior, summary
+        stats, and public JSON integration tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: rg-json-stats-no-matches-v1-use
+      prompt: >-
+        Fix `rg --json --stats` so summary statistics accurately count searched
+        files and bytes even when no file emits a match and no per-file JSON
+        begin/end message is printed. Preserve existing JSON match, context,
+        end, and summary schema behavior. Add focused regressions.
+    expectedContext:
+      description: >-
+        JSON summary stats must be tallied before no-match sink finish returns.
+      keywords:
+        - --json
+        - --stats
+        - summary
+        - no matches
+        - bytes searched
+    seededContext:
+      renderedContext: |
+        - [memory] ripgrep/json-summary-stats-before-end: The JSON printer may omit per-file begin/end messages when a searched file has no matches, but sink finish still has byte/search accounting. Summary statistics must be updated before deciding whether to emit the file end message so `--json --stats` reports searched files and bytes accurately for no-match searches.
+      contextIds:
+        - ripgrep/json-summary-stats-before-end
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/tests.rs b/tests/tests.rs
+          --- a/tests/tests.rs
+          +++ b/tests/tests.rs
+          @@ -4,6 +4,7 @@ mod macros;
+           
+           // Corpora.
+           mod hay;
+          +mod hidden_longitudinal;
+           // Utilities for making tests nicer to read and easier to write.
+           mod util;
+           
+          diff --git a/tests/hidden_longitudinal.rs b/tests/hidden_longitudinal.rs
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/hidden_longitudinal.rs
+          @@ -0,0 +1,32 @@
+          +use serde_json::Value;
+          +
+          +use crate::util::{Dir, TestCommand};
+          +
+          +rgtest!(hidden_json_stats_no_matches, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create("haystack", "abc\n");
+          +    cmd.args(&["--json", "--stats", "NOMATCH", "haystack"]);
+          +
+          +    let output = cmd.cmd().output().unwrap();
+          +    assert!(
+          +        !output.status.success(),
+          +        "no-match search should keep ripgrep's no-match exit status"
+          +    );
+          +    assert_eq!("", String::from_utf8_lossy(&output.stderr));
+          +    let stdout = String::from_utf8_lossy(&output.stdout);
+          +    let lines: Vec<&str> = stdout.lines().collect();
+          +    assert_eq!(1, lines.len(), "expected only the summary JSON message: {stdout}");
+          +
+          +    let summary: Value = serde_json::from_str(lines[0]).unwrap();
+          +    assert_eq!("summary", summary["type"]);
+          +    let stats = &summary["data"]["stats"];
+          +    assert_eq!(1, stats["searches"]);
+          +    assert_eq!(0, stats["searches_with_match"]);
+          +    assert_eq!(4, stats["bytes_searched"]);
+          +    assert_eq!(0, stats["matched_lines"]);
+          +    assert_eq!(0, stats["matches"]);
+          +});
+        command: cargo
+        args:
+          - test
+          - --test
+          - integration
+          - hidden_json_stats_no_matches
+          - --quiet
+        timeoutMs: 300000
+
+  - id: rg-json-replacement-submatches-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: BurntSushi/ripgrep
+      sha: 5be67c1244f494414629f71be859e0e1552dd6fd
+    phaseA:
+      promptId: rg-json-replacement-submatches-v1-formation
+      prompt: >-
+        We will make JSON output support replacements in a later session.
+        Inspect standard printer replacement interpolation, JSON match/context
+        message schema, submatch arbitrary-data encoding, and CLI flag wiring.
+        Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: rg-json-replacement-submatches-v1-use
+      prompt: >-
+        Make `-r/--replace` work with `--json`. JSON output should preserve the
+        original line text, original submatch text, and offsets, and should add
+        replacement text as optional per-submatch arbitrary data using the same
+        capture interpolation semantics as standard output. Preserve existing
+        JSON schema compatibility for searches without replacements. Add
+        focused regressions.
+    expectedContext:
+      description: >-
+        JSON replacement should be optional per-submatch metadata while keeping
+        original match text and offsets intact.
+      keywords:
+        - --json
+        - --replace
+        - submatches
+        - replacement
+        - capture interpolation
+    seededContext:
+      renderedContext: |
+        - [memory] ripgrep/json-replacement-preserves-original-match: With `--json -r`, the JSON schema should preserve the original line text, original submatch text, and offsets. Replacement output belongs in an optional `replacement` arbitrary-data field on each submatch, using the same capture interpolation semantics as the standard printer.
+      contextIds:
+        - ripgrep/json-replacement-preserves-original-match
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/tests.rs b/tests/tests.rs
+          --- a/tests/tests.rs
+          +++ b/tests/tests.rs
+          @@ -4,6 +4,7 @@ mod macros;
+           
+           // Corpora.
+           mod hay;
+          +mod hidden_longitudinal;
+           // Utilities for making tests nicer to read and easier to write.
+           mod util;
+           
+          diff --git a/tests/hidden_longitudinal.rs b/tests/hidden_longitudinal.rs
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/hidden_longitudinal.rs
+          @@ -0,0 +1,30 @@
+          +use serde_json::Value;
+          +
+          +use crate::util::{Dir, TestCommand};
+          +
+          +rgtest!(hidden_json_replacement_submatches, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create("data", "alpha=beta\n");
+          +    let stdout = cmd
+          +        .args(&["--json", "-r", "$2-$1", r"(\w+)=(\w+)", "data"])
+          +        .stdout();
+          +    let messages: Vec<Value> = stdout
+          +        .lines()
+          +        .map(|line| serde_json::from_str(line).unwrap())
+          +        .collect();
+          +    let message = messages
+          +        .iter()
+          +        .find(|message| message["type"] == "match")
+          +        .expect("expected a match JSON message");
+          +    let data = &message["data"];
+          +    assert_eq!("alpha=beta\n", data["lines"]["text"]);
+          +
+          +    let submatch = &data["submatches"][0];
+          +    assert_eq!("alpha=beta", submatch["match"]["text"]);
+          +    assert_eq!("beta-alpha", submatch["replacement"]["text"]);
+          +    assert_eq!(0, submatch["start"]);
+          +    assert_eq!(10, submatch["end"]);
+          +});
+        command: cargo
+        args:
+          - test
+          - --test
+          - integration
+          - hidden_json_replacement_submatches
+          - --quiet
+        timeoutMs: 300000
+
+  - id: rg-null-data-line-regexp-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: BurntSushi/ripgrep
+      sha: 2d518dd1f96147690c1eadf58023cec3eb0e108a
+    phaseA:
+      promptId: rg-null-data-line-regexp-v1-formation
+      prompt: >-
+        We will fix a searcher line-terminator bug in a later session. Inspect
+        `--null-data`, `--line-regexp`, regex anchor synthesis, fast/slow
+        search paths, and regression tests around NUL-delimited records.
+        Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: rg-null-data-line-regexp-v1-use
+      prompt: >-
+        Fix `--null-data --line-regexp` so whole-record matching respects NUL
+        line terminators. A pattern should match an entire NUL-delimited record
+        without matching substrings inside larger records. Preserve normal
+        newline line-regexp behavior and existing null-data output. Add focused
+        regressions.
+    expectedContext:
+      description: >-
+        Null-data changes the logical line terminator to NUL, so line-regexp
+        matching must avoid anchor paths that only understand newline.
+      keywords:
+        - --null-data
+        - --line-regexp
+        - NUL
+        - line terminator
+        - fast path
+    seededContext:
+      renderedContext: |
+        - [memory] ripgrep/null-data-line-regexp-slow-path: `--null-data` changes ripgrep's logical line terminator to NUL. When it is combined with `--line-regexp`, fast paths that rely on regex anchors understanding only `\n` can miss whole-record matches. The searcher must use a terminator-aware path so `-x` matches entire NUL-delimited records.
+      contextIds:
+        - ripgrep/null-data-line-regexp-slow-path
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/tests.rs b/tests/tests.rs
+          --- a/tests/tests.rs
+          +++ b/tests/tests.rs
+          @@ -4,6 +4,7 @@ mod macros;
+           
+           // Corpora.
+           mod hay;
+          +mod hidden_longitudinal;
+           // Utilities for making tests nicer to read and easier to write.
+           mod util;
+           
+          diff --git a/tests/hidden_longitudinal.rs b/tests/hidden_longitudinal.rs
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/hidden_longitudinal.rs
+          @@ -0,0 +1,13 @@
+          +use crate::util::{Dir, TestCommand};
+          +
+          +rgtest!(hidden_null_data_line_regexp, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create("haystack", "foo\0bar\0quux\0partialbar\0");
+          +    let got = cmd
+          +        .args(&["--null-data", "--line-regexp", "bar", "haystack"])
+          +        .stdout();
+          +    eqnice!("bar\0", got);
+          +});
+        command: cargo
+        args:
+          - test
+          - --test
+          - integration
+          - hidden_null_data_line_regexp
+          - --quiet
+        timeoutMs: 300000
+
+  - id: rg-cross-boundary-correctness-epic-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: BurntSushi/ripgrep
+      sha: 2d518dd1f96147690c1eadf58023cec3eb0e108a
+    phaseA:
+      promptId: rg-cross-boundary-correctness-epic-v1-formation
+      prompt: >-
+        We will do a multi-area ripgrep correctness hardening pass in a later
+        session. Inspect global ignore handling, cwd/root normalization, JSON
+        printer summary statistics, JSON replacement output, searcher line
+        terminators, and the integration regression test harness. Produce a
+        durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: rg-cross-boundary-correctness-epic-v1-use
+      prompt: >-
+        Implement a multi-area ripgrep correctness hardening pass. Fix global
+        ignore files supplied through `--ignore-file` and git global excludes so
+        anchored patterns are rooted at process cwd even when searching an
+        absolute root from a nested directory. Fix `rg --json --stats` so
+        summary statistics count searched files and bytes even when there are no
+        matches and no per-file begin/end messages. Make `-r/--replace` work
+        with `--json` by adding optional per-submatch replacement data while
+        preserving original line text, match text, and offsets. Fix
+        `--null-data --line-regexp` so whole-record matching respects NUL record
+        terminators without matching substrings inside larger records. Preserve
+        existing behavior outside these edges and add focused regressions.
+    expectedContext:
+      description: >-
+        The task crosses ignore walking, JSON printer accounting/replacement,
+        and searcher line-terminator behavior.
+      keywords:
+        - --ignore-file
+        - --json
+        - --stats
+        - --replace
+        - --null-data
+        - --line-regexp
+    seededContext:
+      renderedContext: |
+        - [memory] ripgrep/global-ignore-cwd-rooting: Ignore files supplied through `--ignore-file` and git global excludes behave like global gitignore files: anchored patterns such as `/haystack` should be interpreted relative to the process current working directory, even when the searched path is an absolute root elsewhere. Ordinary project `.ignore` and `.gitignore` files remain rooted at their own containing directory.
+        - [memory] ripgrep/json-summary-stats-before-end: The JSON printer may omit per-file begin/end messages when a searched file has no matches, but sink finish still has byte/search accounting. Summary statistics must be updated before deciding whether to emit the file end message so `--json --stats` reports searched files and bytes accurately for no-match searches.
+        - [memory] ripgrep/json-replacement-preserves-original-match: With `--json -r`, the JSON schema should preserve the original line text, original submatch text, and offsets. Replacement output belongs in an optional `replacement` arbitrary-data field on each submatch, using the same capture interpolation semantics as the standard printer.
+        - [memory] ripgrep/null-data-line-regexp-slow-path: `--null-data` changes ripgrep's logical line terminator to NUL. When it is combined with `--line-regexp`, fast paths that rely on regex anchors understanding only `\n` can miss whole-record matches. The searcher must use a terminator-aware path so `-x` matches entire NUL-delimited records.
+      contextIds:
+        - ripgrep/global-ignore-cwd-rooting
+        - ripgrep/json-summary-stats-before-end
+        - ripgrep/json-replacement-preserves-original-match
+        - ripgrep/null-data-line-regexp-slow-path
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/tests.rs b/tests/tests.rs
+          --- a/tests/tests.rs
+          +++ b/tests/tests.rs
+          @@ -4,6 +4,7 @@ mod macros;
+           
+           // Corpora.
+           mod hay;
+          +mod hidden_longitudinal;
+           // Utilities for making tests nicer to read and easier to write.
+           mod util;
+           
+          diff --git a/tests/hidden_longitudinal.rs b/tests/hidden_longitudinal.rs
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/hidden_longitudinal.rs
+          @@ -0,0 +1,95 @@
+          +use serde_json::Value;
+          +
+          +use crate::util::{Dir, TestCommand};
+          +
+          +rgtest!(hidden_epic_global_ignore_absolute_cwd, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create_dir("a/b/c");
+          +    dir.create("a/b/c/haystack", "");
+          +    dir.create(".test.gitignore", "/haystack");
+          +
+          +    let dir_path = if cfg!(windows) {
+          +        dir.path().to_path_buf()
+          +    } else {
+          +        dir.path().canonicalize().unwrap()
+          +    };
+          +    let ignore_file_path = dir_path.join(".test.gitignore");
+          +
+          +    cmd.current_dir(dir.path().join("a/b/c"))
+          +        .arg("--files")
+          +        .arg("--ignore-file")
+          +        .arg(ignore_file_path.display().to_string())
+          +        .arg(&dir_path);
+          +
+          +    let output = cmd.cmd().output().unwrap();
+          +    assert!(
+          +        !output.status.success(),
+          +        "anchored global ignore did not suppress the absolute-root file: {:?}",
+          +        output
+          +    );
+          +    assert_eq!("", String::from_utf8_lossy(&output.stdout));
+          +    assert_eq!("", String::from_utf8_lossy(&output.stderr));
+          +});
+          +
+          +rgtest!(hidden_epic_json_stats_no_matches, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create("haystack", "abc\n");
+          +    cmd.args(&["--json", "--stats", "NOMATCH", "haystack"]);
+          +
+          +    let output = cmd.cmd().output().unwrap();
+          +    assert!(!output.status.success());
+          +    assert_eq!("", String::from_utf8_lossy(&output.stderr));
+          +    let stdout = String::from_utf8_lossy(&output.stdout);
+          +    let lines: Vec<&str> = stdout.lines().collect();
+          +    assert_eq!(1, lines.len(), "expected only the summary JSON message: {stdout}");
+          +
+          +    let summary: Value = serde_json::from_str(lines[0]).unwrap();
+          +    assert_eq!("summary", summary["type"]);
+          +    let stats = &summary["data"]["stats"];
+          +    assert_eq!(1, stats["searches"]);
+          +    assert_eq!(0, stats["searches_with_match"]);
+          +    assert_eq!(4, stats["bytes_searched"]);
+          +    assert_eq!(0, stats["matched_lines"]);
+          +    assert_eq!(0, stats["matches"]);
+          +});
+          +
+          +rgtest!(hidden_epic_json_replacement_submatches, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create("data", "alpha=beta\n");
+          +    let stdout = cmd
+          +        .args(&["--json", "-r", "$2-$1", r"(\w+)=(\w+)", "data"])
+          +        .stdout();
+          +    let messages: Vec<Value> = stdout
+          +        .lines()
+          +        .map(|line| serde_json::from_str(line).unwrap())
+          +        .collect();
+          +    let message = messages
+          +        .iter()
+          +        .find(|message| message["type"] == "match")
+          +        .expect("expected a match JSON message");
+          +    let data = &message["data"];
+          +    assert_eq!("alpha=beta\n", data["lines"]["text"]);
+          +
+          +    let submatch = &data["submatches"][0];
+          +    assert_eq!("alpha=beta", submatch["match"]["text"]);
+          +    assert_eq!("beta-alpha", submatch["replacement"]["text"]);
+          +    assert_eq!(0, submatch["start"]);
+          +    assert_eq!(10, submatch["end"]);
+          +});
+          +
+          +rgtest!(hidden_epic_null_data_line_regexp, |dir: Dir, mut cmd: TestCommand| {
+          +    dir.create("haystack", "foo\0bar\0quux\0partialbar\0");
+          +    let got = cmd
+          +        .args(&["--null-data", "--line-regexp", "bar", "haystack"])
+          +        .stdout();
+          +    eqnice!("bar\0", got);
+          +});
+        command: cargo
+        args:
+          - test
+          - --test
+          - integration
+          - hidden_epic
+          - --quiet
+        timeoutMs: 300000

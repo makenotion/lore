@@ -1,0 +1,246 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-requests-public-spec-v1
+description: >-
+  Public-spec Requests longitudinal suite. Scenarios are pinned before real
+  upstream fixes and verified through deterministic local tests with no
+  networked HTTP requests.
+seededCorpus: ../vault-seeds/requests-public-spec-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: requests-no-proxy-domain-boundary-v1
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: psf/requests
+      sha: 3816cfa1abd42dca21b9e837f26c59b246016aaf
+    phaseA:
+      promptId: requests-no-proxy-domain-boundary-v1-formation
+      prompt: >-
+        We will fix NO_PROXY matching in a later session. Inspect
+        `should_bypass_proxies`, environment proxy handling, URL host/port
+        parsing, and existing proxy bypass tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: requests-no-proxy-domain-boundary-v1-use
+      prompt: >-
+        Fix Requests' `NO_PROXY` matching so host entries respect domain
+        boundaries. Entries should match the exact host and dot-separated
+        subdomains, but must not match arbitrary suffixes such as
+        `prelocalhost` for `localhost`. Port-qualified entries should only
+        match the same port. Preserve existing IP, CIDR, file URL, explicit
+        `no_proxy` argument, and environment precedence behavior. Add focused
+        regressions.
+    expectedContext:
+      description: >-
+        NO_PROXY matching should compare exact host/host:port first, then use
+        dot-boundary subdomain matching rather than raw suffix matching.
+      keywords:
+        - NO_PROXY
+        - should_bypass_proxies
+        - domain boundary
+        - port
+        - suffix
+    seededContext:
+      renderedContext: |
+        - [memory] requests/no-proxy-domain-boundaries: `NO_PROXY` host entries match exact hosts and dot-separated subdomains only. Strip leading dots before exact comparison, then add a dot boundary for subdomain matching; do not let `localhost` match `prelocalhost`, and keep port-qualified entries port-specific.
+      contextIds:
+        - requests/no-proxy-domain-boundaries
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/test_lore_hidden_proxy.py b/tests/test_lore_hidden_proxy.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/test_lore_hidden_proxy.py
+          @@ -0,0 +1,25 @@
+          +import pytest
+          +
+          +from requests.utils import should_bypass_proxies
+          +
+          +
+          +@pytest.mark.parametrize(
+          +    "url, expected",
+          +    (
+          +        ("http://localhost/", True),
+          +        ("http://notlocalhost/", False),
+          +        ("http://anotherdomain.com:8888/", True),
+          +        ("http://newdomain.com:1234/", True),
+          +        ("http://www.newdomain.com:1234/", True),
+          +        ("http://badnewdomain.com:1234/", False),
+          +        ("http://newdomain.com/", False),
+          +        ("http://newdomain.com:1235/", False),
+          +        ("http://d.o.t/", True),
+          +        ("http://foo.d.o.t/", True),
+          +    ),
+          +)
+          +def test_hidden_no_proxy_domain_boundaries(url, expected):
+          +    no_proxy = "localhost, anotherdomain.com, newdomain.com:1234, .d.o.t"
+          +
+          +    assert should_bypass_proxies(url, no_proxy=no_proxy) is expected
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest
+          - python
+          - -m
+          - pytest
+          - tests/test_lore_hidden_proxy.py
+          - -q
+        timeoutMs: 180000
+
+  - id: requests-getattr-stream-rewind-v1
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: psf/requests
+      sha: 0b401c76b6e80a4eecf3c690085b2553f6e261ca
+    phaseA:
+      promptId: requests-getattr-stream-rewind-v1-formation
+      prompt: >-
+        We will fix redirect rewind handling for wrapped streams in a later
+        session. Inspect `PreparedRequest.prepare_body`, stream detection,
+        `super_len`, `_body_position`, `rewind_body`, and redirect retry tests.
+        Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: requests-getattr-stream-rewind-v1-use
+      prompt: >-
+        Fix request body preparation so file-like wrappers that expose stream
+        methods through `__getattr__` are treated as rewindable streaming
+        bodies. The prepared request should record `_body_position` from
+        `tell()` so redirect retries can call `rewind_body` and replay the
+        original content. Preserve ordinary bytes, strings, mappings, tuple/list
+        form data, length calculation, and existing unrewindable-body errors.
+        Add focused regressions without using live network services.
+    expectedContext:
+      description: >-
+        Attribute-proxy stream wrappers need `hasattr(data, "__iter__")`
+        detection because `isinstance(..., Iterable)` misses special methods
+        exposed only through `__getattr__`.
+      keywords:
+        - prepare_body
+        - __getattr__
+        - rewind_body
+        - _body_position
+        - redirect
+    seededContext:
+      renderedContext: |
+        - [memory] requests/getattr-stream-rewind: Python special-method lookup means `isinstance(wrapper, Iterable)` misses file-like wrappers that proxy `__iter__`, `tell`, and `seek` through `__getattr__`. Treat `hasattr(data, "__iter__")` as stream evidence too, then record `_body_position` so 307/308 redirects can rewind.
+      contextIds:
+        - requests/getattr-stream-rewind
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/test_lore_hidden_streams.py b/tests/test_lore_hidden_streams.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/test_lore_hidden_streams.py
+          @@ -0,0 +1,74 @@
+          +import io
+          +
+          +import requests
+          +from requests.adapters import BaseAdapter
+          +from requests.utils import rewind_body
+          +
+          +
+          +class AttrProxy:
+          +    def __init__(self, payload):
+          +        self._file = io.BytesIO(payload)
+          +
+          +    def __getattr__(self, name):
+          +        return getattr(self._file, name)
+          +
+          +
+          +class RecordingRedirectAdapter(BaseAdapter):
+          +    def __init__(self):
+          +        super().__init__()
+          +        self.payloads = []
+          +
+          +    def send(self, request, **kwargs):
+          +        body = request.body
+          +        if hasattr(body, "read"):
+          +            payload = body.read()
+          +        elif body is None:
+          +            payload = b""
+          +        elif isinstance(body, bytes):
+          +            payload = body
+          +        else:
+          +            payload = bytes(body)
+          +
+          +        self.payloads.append(payload)
+          +
+          +        response = requests.Response()
+          +        response.request = request
+          +        response.url = request.url
+          +        response.raw = io.BytesIO(b"")
+          +        response.raw.release_conn = lambda *args: None
+          +        response._content = b""
+          +        response._content_consumed = True
+          +
+          +        if len(self.payloads) == 1:
+          +            response.status_code = 307
+          +            response.headers["Location"] = "https://example.test/final"
+          +        else:
+          +            response.status_code = 200
+          +
+          +        return response
+          +
+          +    def close(self):
+          +        pass
+          +
+          +
+          +def test_hidden_getattr_stream_body_position_and_rewind():
+          +    body = AttrProxy(b"data")
+          +
+          +    prepared = requests.Request(
+          +        "POST",
+          +        "https://example.test/upload",
+          +        data=body,
+          +    ).prepare()
+          +
+          +    assert prepared.headers["Content-Length"] == "4"
+          +    assert prepared._body_position == 0
+          +
+          +    assert body.read(2) == b"da"
+          +    rewind_body(prepared)
+          +
+          +    assert body.tell() == 0
+          +    assert body.read() == b"data"
+          +
+          +
+          +def test_hidden_getattr_stream_replays_across_307_redirect():
+          +    session = requests.Session()
+          +    adapter = RecordingRedirectAdapter()
+          +    session.mount("https://", adapter)
+          +
+          +    response = session.post(
+          +        "https://example.test/start",
+          +        data=AttrProxy(b"data"),
+          +    )
+          +
+          +    assert response.status_code == 200
+          +    assert adapter.payloads == [b"data", b"data"]
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest
+          - python
+          - -m
+          - pytest
+          - tests/test_lore_hidden_streams.py
+          - -q
+        timeoutMs: 180000

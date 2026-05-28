@@ -9,7 +9,7 @@ headline benchmark.
 - Suite: `evals/task-suites/longitudinal-github-cli-powered-candidates.yaml`
 - OSS target: `cli/cli@9a593ce81b593dee752cc11737d1a3ef768e52b3`
 - Conditions: `no-memory`, `seeded-lore`, `lore-full-loop`
-- Current candidate pool: 38 easy, 22 medium, 15 hard scenarios
+- Current candidate pool: 66 easy, 114 medium, 22 hard scenarios
 - Target no-memory calibration bands:
   - Easy: 80-95% pass
   - Medium: 50-75% pass
@@ -19,11 +19,13 @@ The pool is intentionally uneven. As scenarios become too easy for the model,
 they should be demoted, and new harder scenarios should be added to restore the
 capability edge.
 
-## Provenance
+## Historical Checkpoint Provenance
 
 The deterministic checkpoint sample below was derived from completed scenario
 triples already present in local raw artifacts. No new benchmark rows were
-counted from aborted sample attempts.
+counted from aborted sample attempts. This sample is historical: it describes
+the then-current suite state and should not be treated as reproducible against
+the latest 202-scenario candidate pool without the archived artifact set.
 
 Raw artifacts used as provenance:
 
@@ -60,6 +62,12 @@ scenario prompts, verifiers, and the pinned workspace SHA did not change. It is
 weaker for confirmatory inference than a fresh predeclared run unless selection
 is demonstrably independent of observed outcomes. Repeated runs of the same
 scenario must not be counted as independent statistical units.
+
+Two selected checkpoint IDs are no longer present in the current suite:
+`gh-cli-repo-edit-visibility-warning` and
+`gh-cli-repo-edit-security-validation`. That is acceptable for a historical
+checkpoint, but it is another reason this sample must not be used as the frozen
+holdout for the current candidate pool.
 
 ## Sample Results
 
@@ -123,6 +131,41 @@ bands. In the deterministic sample, no-memory passed 80% of medium scenarios
 and 60% of hard scenarios. That leaves too little failure surface for Lore to
 show measurable lift.
 
+## Frontier Hard Calibration
+
+A 16-scenario no-memory calibration of the new frontier-hard tranche completed
+with raw `1/16` pass and `15/16` verifier failures. Transcript review showed
+the failures were overwhelmingly harness false negatives: the agents
+implemented the requested behavior and passed focused package tests, while the
+verifiers assumed overly specific implementation paths.
+
+After adjudication, the tranche is effectively `16/16` no-memory pass. This is
+a difficulty-calibration failure, not model-performance failure. These scenarios
+are useful as broad feature/regression rows after verifier repair, but they
+should not be counted as hard capability-edge rows in a lift claim.
+
+An additional no-memory calibration of the first 2026-05-28 hard tranche was
+stopped early after 15 completed rows were 15/15 pass after adjudication. The
+raw result was 7/15 pass, but the eight failures were verifier false negatives
+where transcripts showed completed behavior and package tests. Those rows were
+demoted to medium, and their verifiers were repaired to avoid path, naming, and
+assertion-prose overfitting.
+
+After this calibration, the suite added a new hard-candidate tranche that
+crosses multiple command packages, API boundaries, output modes, concurrency,
+security/privacy, and mutation safeguards. New hard prompts are allowed to omit
+the exact regression-test name so the prompt does not carry the answer key.
+These rows still need no-memory calibration before they can anchor a headline
+holdout sample.
+
+A follow-up 8-scenario no-memory calibration of that tranche was stopped after
+6 completed rows because the completed candidates were effectively `6/6`
+no-memory pass after adjudicating one verifier false negative. The six
+completed candidates were demoted to medium. The remaining two rows,
+`gh-cli-ruleset-check-json-export` and
+`gh-cli-attestation-verify-oci-platform-index`, remain hard candidates pending
+calibration.
+
 ## Measurement Interpretation
 
 Current evidence supports:
@@ -163,3 +206,10 @@ Do not spend more on the current easy-heavy sample. Add or promote genuinely
 hard scenarios as calibration work until the hard no-memory pass rate lands near
 20-45%. Then run a fresh predeclared stratified holdout sample before making a
 publishable lift claim.
+
+The adjudication rubric for future confirmatory runs is now documented in
+`docs/evals-adjudication-rules.md`. Runs that predate that rubric should remain
+internal directional checkpoints. In particular, full-loop formation or wake-up
+misses count as full-loop failures unless caused by external infrastructure or
+harness setup; they are not excluded just because the intended memory was not
+available.

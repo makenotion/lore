@@ -160,7 +160,15 @@ async function populateGitCache(
       await rm(temp, { recursive: true, force: true })
       return
     }
-    await rename(temp, cachePath)
+    try {
+      await rename(temp, cachePath)
+    } catch (err) {
+      if (await pathExists(cachePath)) {
+        await rm(temp, { recursive: true, force: true })
+        return
+      }
+      throw err
+    }
   } catch (err) {
     await rm(temp, { recursive: true, force: true })
     const message = err instanceof Error ? err.message : String(err)

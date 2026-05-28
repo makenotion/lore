@@ -1,8 +1,17 @@
 import { existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
-import { mkdtemp, mkdir, writeFile, readFile, stat, rm, readdir } from "node:fs/promises"
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  stat,
+  rm,
+  readdir,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { delimiter, join, posix } from "node:path"
+import { delimiter, dirname, join, posix } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
   BENCH_CHILD_CLEARED_ENV_KEYS,
@@ -18,6 +27,8 @@ import {
   LongitudinalAdapterRefusedError,
   longitudinalMiningAgentForScenario,
   parseCodexConfigModel,
+  resolveCodexExecutable,
+  resolveExecutableOnPath,
   selectExpectedContextIds,
   type LongitudinalAgentConfigServices,
   type LongitudinalLoreAdapter,
@@ -32,7 +43,9 @@ import {
 import {
   assertLongitudinalShardResultsComplete,
   completeLongitudinalShardResults,
+  filterShardResultsForTerminatedRun,
 } from "./task-runner/longitudinal-runner.js"
+import { writePatchEvidence } from "./task-runner/patch-stats.js"
 import { loadSeedCorpus } from "./seed-corpus.js"
 
 describe("task-runner", () => {
@@ -68,12 +81,12 @@ describe("task-runner", () => {
       "lore-full-loop",
     ])
     expect(loaded.suite.seededCorpus).toBe("../vault-seeds/github-cli-powered.yaml")
-    expect(loaded.suite.scenarios).toHaveLength(75)
+    expect(loaded.suite.scenarios).toHaveLength(202)
     expect(loaded.suite.scenarios.every((scenario) => scenario.seededContext)).toBe(true)
     expect(countByDifficulty(loaded.suite.scenarios)).toEqual({
-      easy: 38,
-      medium: 22,
-      hard: 15,
+      easy: 66,
+      medium: 114,
+      hard: 22,
     })
 
     const corpus = await loadSeedCorpus("evals/vault-seeds/github-cli-powered.yaml")
@@ -95,8 +108,13 @@ describe("task-runner", () => {
       for (const contextId of contextIds)
         expect(corpusContextIds.has(contextId)).toBe(true)
       const testName = poweredScenarioTestName(scenario.id)
-      expect(scenario.phaseB.prompt).toContain(testName)
-      expect(verifiersIncludeTestName(scenario.verifiers, testName)).toBe(true)
+      if (
+        scenario.difficulty !== "hard" &&
+        !POWERED_SCENARIOS_WITH_PROMPT_SAFE_TEST_NAME_OMISSION.has(scenario.id)
+      ) {
+        expect(scenario.phaseB.prompt).toContain(testName)
+        expect(verifiersIncludeTestName(scenario.verifiers, testName)).toBe(true)
+      }
       for (const packageDir of goPackageDirsForFileVerifiers(scenario.verifiers)) {
         expect(
           scenario.verifiers.some(
@@ -114,6 +132,130 @@ describe("task-runner", () => {
         })
       ).toBe(true)
     }
+  })
+
+  it("keeps the GitHub CLI capability-edge v3 seeded context tied to the corpus", async () => {
+    const loaded = await loadTaskEvalSuite(
+      "evals/task-suites/longitudinal-github-cli-capability-edge-v3.yaml"
+    )
+
+    if (!("longitudinal" in loaded.suite) || loaded.suite.longitudinal !== true) {
+      throw new Error("expected longitudinal suite")
+    }
+
+    expect(loaded.suite.conditions).toEqual([
+      "no-memory",
+      "seeded-lore",
+      "lore-full-loop",
+    ])
+    expect(loaded.suite.seededCorpus).toBe(
+      "../vault-seeds/github-cli-capability-edge-v3.yaml"
+    )
+
+    const corpus = await loadSeedCorpus(
+      "evals/vault-seeds/github-cli-capability-edge-v3.yaml"
+    )
+    const memoryById = new Map(corpus.vault.memories.map((memory) => [memory.id, memory]))
+    const scenarioIds = new Set(loaded.suite.scenarios.map((scenario) => scenario.id))
+
+    expect(countByDifficulty(loaded.suite.scenarios)).toEqual({
+      easy: 1,
+      medium: 1,
+      hard: 5,
+    })
+    expect(corpus.vault.memories.length).toBeGreaterThanOrEqual(
+      loaded.suite.scenarios.length
+    )
+
+    for (const memory of corpus.vault.memories) {
+      for (const scenarioId of memory.scenarios) {
+        expect(scenarioIds.has(scenarioId)).toBe(true)
+      }
+    }
+    for (const scenario of loaded.suite.scenarios) {
+      const seededContext = scenario.seededContext
+      expect(seededContext).toBeDefined()
+      const renderedContext = seededContext?.renderedContext ?? ""
+      expect(renderedContext).not.toMatch(/TestHidden|hidden verifier|verifier patch/i)
+      for (const contextId of seededContext?.contextIds ?? []) {
+        const memory = memoryById.get(contextId)
+        expect(memory).toBeDefined()
+        expect(memory?.scenarios).toContain(scenario.id)
+      }
+    }
+  })
+
+  it("loads the GitHub CLI public-spec suite with realistic neighboring context", async () => {
+    const loaded = await loadTaskEvalSuite(
+      "evals/task-suites/longitudinal-github-cli-public-spec-v1.yaml"
+    )
+
+    if (!("longitudinal" in loaded.suite) || loaded.suite.longitudinal !== true) {
+      throw new Error("expected longitudinal suite")
+    }
+
+    expect(loaded.suite.name).toBe("lore-longitudinal-github-cli-public-spec-v1")
+    expect(loaded.suite.seededCorpus).toBe(
+      "../vault-seeds/github-cli-public-spec-v1.yaml"
+    )
+    const corpus = await loadSeedCorpus(
+      "evals/vault-seeds/github-cli-public-spec-v1.yaml"
+    )
+    const memoryIds = new Set(corpus.vault.memories.map((memory) => memory.id))
+    expect(memoryIds).toContain("gh-cli/ref-validation-shared-boundary")
+    expect(memoryIds).toContain("gh-cli/auth-token-source-boundaries")
+
+    for (const scenario of loaded.suite.scenarios) {
+      expect(scenario.phaseB.prompt).not.toContain("exactly as planned")
+      const contextIds = scenario.seededContext?.contextIds ?? []
+      expect(contextIds.length).toBeGreaterThanOrEqual(2)
+      for (const contextId of contextIds) {
+        expect(memoryIds.has(contextId)).toBe(true)
+      }
+    }
+  })
+
+  it("keeps GitHub CLI memory-contract verifier patches internally consistent", async () => {
+    const loaded = await loadTaskEvalSuite(
+      "evals/task-suites/longitudinal-github-cli-memory-contract-v2.yaml"
+    )
+
+    if (!("longitudinal" in loaded.suite) || loaded.suite.longitudinal !== true) {
+      throw new Error("expected longitudinal suite")
+    }
+
+    let patchedVerifierCount = 0
+    for (const scenario of loaded.suite.scenarios) {
+      for (const verifier of scenario.verifiers) {
+        if (verifier.type !== "patched-command") continue
+        patchedVerifierCount += 1
+        expectPatchHunksToMatchLineCounts(verifier.patch, scenario.id)
+
+        const dir = await mkdtemp(join(tmpdir(), "lore-eval-patch-check-"))
+        try {
+          git(dir, ["init", "--quiet"])
+          const patchPath = join(dir, "verifier.patch")
+          await writeFile(patchPath, verifier.patch, "utf-8")
+          expect(() =>
+            execFileSync("git", ["apply", "--check", patchPath], {
+              cwd: dir,
+              stdio: "pipe",
+            })
+          ).not.toThrow()
+          execFileSync("git", ["apply", patchPath], {
+            cwd: dir,
+            stdio: "pipe",
+          })
+          execFileSync(process.execPath, ["--check", ".lore-hidden-verify.mjs"], {
+            cwd: dir,
+            stdio: "pipe",
+          })
+        } finally {
+          await rm(dir, { recursive: true, force: true })
+        }
+      }
+    }
+    expect(patchedVerifierCount).toBe(17)
   })
 
   it("copies the workspace, runs the agent, and reports verifier success", async () => {
@@ -171,6 +313,61 @@ tasks:
       runner: { mode: "task" },
       summary: { passedTasks: 1 },
     })
+  })
+
+  it("does not pass verifier answer keys to the task agent prompt or workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lore-task-answer-key-test-"))
+    try {
+      const suiteDir = join(root, "evals", "task-suites")
+      const workspaceDir = join(root, "evals", "workspaces", "answer-key")
+      await mkdir(suiteDir, { recursive: true })
+      await mkdir(workspaceDir, { recursive: true })
+      await writeFile(join(workspaceDir, "README.md"), "fixture\n", "utf-8")
+
+      const answerKey = "ANSWER_KEY_SENTINEL_DO_NOT_SHOW_AGENT"
+      const suitePath = join(suiteDir, "suite.yaml")
+      await writeFile(
+        suitePath,
+        `
+version: 1
+name: answer-key-boundary
+tasks:
+  - id: answer-key-hidden
+    prompt: Create ok.txt with the expected final content.
+    agent: codex
+    workspace: ../workspaces/answer-key
+    verifiers:
+      - type: file-contents-match
+        path: ok.txt
+        pattern: ${answerKey}
+`.trimStart(),
+        "utf-8"
+      )
+
+      const observedPrompts: string[] = []
+      const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+        observedPrompts.push(prompt)
+        expect(prompt).not.toContain(answerKey)
+        expect(existsSync(join(workspace, "suite.yaml"))).toBe(false)
+        expect(existsSync(join(workspace, "task-suite.yaml"))).toBe(false)
+        await writeFile(join(workspace, "ok.txt"), answerKey, "utf-8")
+        return successResult()
+      })
+
+      const { artifact } = await runTaskEvalSuite(suitePath, {
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      })
+
+      expect(observedPrompts).toEqual(["Create ok.txt with the expected final content."])
+      expect(artifact.summary).toMatchObject({
+        passedTasks: 1,
+        failedTasks: 0,
+        passedTrials: 1,
+        failedTrials: 0,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("materializes git workspaces from a pinned SHA and records metadata", async () => {
@@ -257,6 +454,127 @@ tasks:
       else process.env["LORE_EVAL_GIT_REMOTE_BASE_URL"] = priorRemoteBase
       if (priorCacheDir === undefined) delete process.env["LORE_EVAL_WORKSPACE_CACHE_DIR"]
       else process.env["LORE_EVAL_WORKSPACE_CACHE_DIR"] = priorCacheDir
+    }
+  }, 15_000)
+
+  it("writes staged git changes into patch evidence", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-eval-git-patch-"))
+    try {
+      git(workspace, ["init", "--quiet"])
+      await writeFile(join(workspace, "tracked.txt"), "before\n", "utf-8")
+      git(workspace, ["add", "tracked.txt"])
+      git(workspace, [
+        "-c",
+        "user.name=Lore Eval",
+        "-c",
+        "user.email=lore-eval@example.com",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+      ])
+
+      await writeFile(join(workspace, "tracked.txt"), "after\n", "utf-8")
+      git(workspace, ["add", "tracked.txt"])
+
+      const patchPath = join(workspace, "evidence.patch")
+      const patch = await writePatchEvidence({
+        sourceRoot: workspace,
+        workspaceRoot: workspace,
+        outPath: patchPath,
+      })
+
+      expect(patch?.bytes).toBeGreaterThan(0)
+      await expect(readFile(patchPath, "utf-8")).resolves.toContain("+after")
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("writes committed git changes into patch evidence", async () => {
+    const source = await mkdtemp(join(tmpdir(), "lore-eval-git-source-"))
+    const workspace = await mkdtemp(join(tmpdir(), "lore-eval-git-workspace-"))
+    try {
+      git(source, ["init", "--quiet"])
+      await writeFile(join(source, "tracked.txt"), "before\n", "utf-8")
+      git(source, ["add", "tracked.txt"])
+      git(source, [
+        "-c",
+        "user.name=Lore Eval",
+        "-c",
+        "user.email=lore-eval@example.com",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+      ])
+      await rm(workspace, { recursive: true, force: true })
+      execFileSync("git", ["clone", "--quiet", source, workspace])
+      await writeFile(join(workspace, "tracked.txt"), "after\n", "utf-8")
+      git(workspace, ["add", "tracked.txt"])
+      git(workspace, [
+        "-c",
+        "user.name=Lore Eval",
+        "-c",
+        "user.email=lore-eval@example.com",
+        "commit",
+        "--quiet",
+        "-m",
+        "agent change",
+      ])
+
+      const patchPath = join(workspace, "evidence.patch")
+      const patch = await writePatchEvidence({
+        sourceRoot: source,
+        workspaceRoot: workspace,
+        outPath: patchPath,
+      })
+
+      expect(patch?.bytes).toBeGreaterThan(0)
+      await expect(readFile(patchPath, "utf-8")).resolves.toContain("+after")
+    } finally {
+      await rm(source, { recursive: true, force: true })
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it("truncates large patch evidence without dropping the sidecar", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-eval-git-large-patch-"))
+    try {
+      git(workspace, ["init", "--quiet"])
+      await writeFile(join(workspace, "tracked.txt"), "before\n", "utf-8")
+      git(workspace, ["add", "tracked.txt"])
+      git(workspace, [
+        "-c",
+        "user.name=Lore Eval",
+        "-c",
+        "user.email=lore-eval@example.com",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+      ])
+
+      await writeFile(
+        join(workspace, "tracked.txt"),
+        `${"x".repeat(2_200_000)}\n`,
+        "utf-8"
+      )
+
+      const patchPath = join(workspace, "evidence.patch")
+      const patch = await writePatchEvidence({
+        sourceRoot: workspace,
+        workspaceRoot: workspace,
+        outPath: patchPath,
+      })
+
+      expect(patch?.truncated).toBe(true)
+      expect(patch?.bytes).toBeLessThanOrEqual(2_000_000)
+      await expect(readFile(patchPath, "utf-8")).resolves.toContain(
+        "patch-evidence-truncated"
+      )
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
     }
   })
 
@@ -361,6 +679,77 @@ tasks:
     expect(artifact.summary.failedTrials).toBe(0)
     expect(artifact.results[0]!.verifiers[0]!.message).toContain(
       "Pattern matched in shared/helper.go"
+    )
+  })
+
+  it("expands globs in any-file content verifiers", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: {},
+      suite: `version: 1
+name: any-file-glob-verifier
+tasks:
+  - id: agent-adds-test
+    prompt: Add a regression test.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: any-file-contents-match
+        paths:
+          - pkg/example/*_test.go
+        pattern: TestNewBehavior
+`,
+    })
+
+    const adapter = mockAdapter("codex", async ({ workspace }) => {
+      await mkdir(join(workspace, "pkg", "example"), { recursive: true })
+      await writeFile(
+        join(workspace, "pkg", "example", "bar_test.go"),
+        "package example\n\nfunc TestNewBehavior(t *testing.T) {}\n",
+        "utf-8"
+      )
+      return successResult()
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+    })
+
+    expect(artifact.summary.failedTrials).toBe(0)
+    expect(artifact.results[0]!.verifiers[0]!.message).toContain(
+      "Pattern matched in pkg/example/bar_test.go"
+    )
+  })
+
+  it("rejects escaping glob paths in any-file content verifiers", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: {},
+      suite: `version: 1
+name: any-file-escaping-glob-verifier
+tasks:
+  - id: verifier-escape
+    prompt: Leave files alone.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: any-file-contents-match
+        paths:
+          - ../*.go
+        pattern: SENTINEL
+        mode: forbid
+`,
+    })
+
+    const adapter = mockAdapter("codex", async () => successResult())
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+    })
+
+    expect(artifact.summary.failedTrials).toBe(1)
+    expect(artifact.results[0]!.verifiers[0]!.message).toContain(
+      'Verifier path "../*.go" escapes the workspace'
     )
   })
 
@@ -758,6 +1147,145 @@ tasks:
     expect(artifact.results[0]!.verifiers[0]!.message).toContain("Command passed")
   })
 
+  it("runs patched-command verifiers in an isolated verifier workspace", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: {
+        "impl.js": "module.exports = () => 'fixture'\n",
+        "package.json": '{"name": "x"}\n',
+      },
+      suite: `version: 1
+name: patched-command-verifier
+tasks:
+  - id: patched-command-checks-agent-output
+    prompt: Update impl.js to return ok.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/hidden-test.js b/hidden-test.js
+          new file mode 100644
+          index 0000000..1191247
+          --- /dev/null
+          +++ b/hidden-test.js
+          @@ -0,0 +1,3 @@
+          +const actual = require('./impl.js')()
+          +if (actual !== 'ok') {
+          +  throw new Error('expected ok, got ' + actual)
+          +}
+        command: node
+        args:
+          - hidden-test.js
+`,
+    })
+
+    const adapter = mockAdapter("codex", async ({ workspace }) => {
+      await writeFile(
+        join(workspace, "impl.js"),
+        "module.exports = () => 'ok'\n",
+        "utf-8"
+      )
+      return successResult()
+    })
+
+    const outPath = join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json")
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath,
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      keepWorkspaces: true,
+    })
+
+    const result = artifact.results[0]!
+    expect(result.success).toBe(true)
+    expect(result.verifiers[0]!.message).toContain("Patched command passed")
+    expect(result.verifiers[0]!.verifier).toMatchObject({
+      type: "patched-command",
+      command: "node",
+      patchBytes: expect.any(Number),
+      patchSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+    const persisted = await readFile(outPath, "utf-8")
+    expect(persisted).not.toContain("diff --git")
+    expect(persisted).not.toContain("expected ok")
+    const workspace = result.workspace
+    expect(workspace).not.toBeNull()
+    await expect(stat(join(workspace as string, "hidden-test.js"))).rejects.toThrow()
+  })
+
+  it("omits patched-command failure output from artifacts", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: {
+        "impl.js": "module.exports = () => 'fixture'\n",
+        "package.json": '{"name": "x"}\n',
+      },
+      suite: `version: 1
+name: patched-command-output-redaction
+tasks:
+  - id: patched-command-redacts-hidden-output
+    prompt: Leave impl.js unchanged.
+    agent: codex
+    workspace: ../workspaces/x
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/hidden-test.js b/hidden-test.js
+          new file mode 100644
+          index 0000000..a5c20fd
+          --- /dev/null
+          +++ b/hidden-test.js
+          @@ -0,0 +1 @@
+          +throw new Error('HIDDEN_OUTPUT_SHOULD_NOT_LEAK')
+        command: node
+        args:
+          - hidden-test.js
+`,
+    })
+
+    const outPath = join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json")
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath,
+      adapters: new Map<string, AgentAdapter>([
+        ["codex", mockAdapter("codex", async () => successResult())],
+      ]),
+    })
+
+    const message = artifact.results[0]!.verifiers[0]!.message
+    const persisted = await readFile(outPath, "utf-8")
+    expect(artifact.results[0]!.failureReason).toBe("verifiers")
+    expect(message).toContain("hidden verifier output omitted")
+    expect(message).not.toContain("HIDDEN_OUTPUT_SHOULD_NOT_LEAK")
+    expect(persisted).not.toContain("HIDDEN_OUTPUT_SHOULD_NOT_LEAK")
+
+    const output = artifact.results[0]!.verifiers[0]!.output
+    expect(output).toMatchObject({
+      format: "verifier-output-json",
+      truncated: false,
+    })
+    const outputJson = JSON.parse(await readFile(output!.path, "utf-8")) as {
+      stage: string
+      command: string
+      args: string[]
+      exitCode: number
+      timedOut: boolean
+      stdoutTruncated: boolean
+      stderrTruncated: boolean
+      stdout: string
+      stderr: string
+    }
+    expect(outputJson).toMatchObject({
+      stage: "command",
+      command: "node",
+      args: ["hidden-test.js"],
+      exitCode: 1,
+      timedOut: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    })
+    expect(`${outputJson.stdout}\n${outputJson.stderr}`).toContain(
+      "HIDDEN_OUTPUT_SHOULD_NOT_LEAK"
+    )
+  })
+
   it("keeps multi-line command verifier output for adjudication", async () => {
     const { suitePath } = await writeTaskSuite({
       workspace: { "package.json": '{"name": "x"}\n' },
@@ -866,12 +1394,15 @@ tasks:
         difficulty: "hard",
         sample: { seed: "sample", counts: { hard: 1 } },
         scenarioIds: ["one-task"],
+        conditions: ["no-memory"],
         parallelism: 2,
         adapters: new Map<string, AgentAdapter>([
           ["codex", mockAdapter("codex", async () => successResult())],
         ]),
       })
-    ).rejects.toThrow("--difficulty, --sample, --scenario-id, and --parallel")
+    ).rejects.toThrow(
+      "--difficulty, --sample, --scenario-id, --condition, and --parallel"
+    )
   })
 
   it("runs longitudinal suites across no-memory and lore-full-loop conditions", async () => {
@@ -918,36 +1449,65 @@ scenarios:
       "utf-8"
     )
 
-    const phaseWorkspaces: Array<{ prompt: string; workspace: string }> = []
-    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
-      phaseWorkspaces.push({ prompt, workspace })
-      const servicePath = join(workspace, "profile-service.js")
-      if (prompt.includes("createUserProfile")) {
-        await writeFile(
-          servicePath,
-          (await readFile(servicePath, "utf-8")) +
-            "\nexport function createUserProfile(input) {\n" +
-            "  if (!input || !input.name) return err('missing name')\n" +
-            "  return ok({ id: 'u1', name: input.name })\n" +
-            "}\n",
-          "utf-8"
-        )
+    const phaseWorkspaces: Array<{
+      prompt: string
+      workspace: string
+      hasCreateUserProfileAtStart: boolean
+    }> = []
+    const adapter = mockAdapter(
+      "codex",
+      async ({ prompt, workspace, transcriptPath }) => {
+        const servicePath = join(workspace, "profile-service.js")
+        phaseWorkspaces.push({
+          prompt,
+          workspace,
+          hasCreateUserProfileAtStart: (await readFile(servicePath, "utf-8")).includes(
+            "createUserProfile"
+          ),
+        })
+        if (prompt.includes("createUserProfile")) {
+          if (transcriptPath) {
+            await mkdir(dirname(transcriptPath), { recursive: true })
+            await writeFile(
+              transcriptPath,
+              [
+                JSON.stringify({
+                  type: "lore.eval.agent_run.started",
+                  prompt,
+                }),
+                JSON.stringify({
+                  type: "item.completed",
+                  item: {
+                    type: "command_execution",
+                    command: "rg -n 'function ok|function err' profile-service.js",
+                    aggregated_output:
+                      "profile-service.js:1:export function ok(value)\n" +
+                      "profile-service.js:2:export function err(error)\n",
+                    exit_code: 0,
+                  },
+                }),
+              ].join("\n") + "\n",
+              "utf-8"
+            )
+          }
+        }
+        if (prompt.includes("Retrieved Lore context")) {
+          await writeFile(
+            servicePath,
+            (await readFile(servicePath, "utf-8")) +
+              "\nexport function fetchUserProfile(userId) {\n" +
+              "  if (!userId) return err('missing userId')\n" +
+              "  return ok({ id: userId, name: 'Ada' })\n" +
+              "}\n",
+            "utf-8"
+          )
+        }
+        return successResult()
       }
-      if (prompt.includes("Retrieved Lore context")) {
-        await writeFile(
-          servicePath,
-          (await readFile(servicePath, "utf-8")) +
-            "\nexport function fetchUserProfile(userId) {\n" +
-            "  if (!userId) return err('missing userId')\n" +
-            "  return ok({ id: userId, name: 'Ada' })\n" +
-            "}\n",
-          "utf-8"
-        )
-      }
-      return successResult()
-    })
+    )
 
     let cleanupCalls = 0
+    let formationTranscript = ""
     const progressEvents: string[] = []
     const loreAdapter: LongitudinalLoreAdapter = {
       async createRun({ workspace }) {
@@ -966,7 +1526,8 @@ scenarios:
         return {
           projectId: "project-1",
           projectName: "Eval Sandbox/result-boundary",
-          async formContext() {
+          async formContext({ transcript }) {
+            formationTranscript = transcript
             return {
               projectId: "project-1",
               projectName: "Eval Sandbox/result-boundary",
@@ -1015,12 +1576,16 @@ scenarios:
       "trial-start:2/2:lore-full-loop",
       "trial-finish:2/2:lore-full-loop",
     ])
-    expect(phaseWorkspaces[0]?.workspace).not.toBe(phaseWorkspaces[1]?.workspace)
-    expect(phaseWorkspaces[2]?.workspace).not.toBe(phaseWorkspaces[3]?.workspace)
+    expect(phaseWorkspaces[1]?.workspace).not.toBe(phaseWorkspaces[2]?.workspace)
+    expect(phaseWorkspaces[0]?.hasCreateUserProfileAtStart).toBe(false)
+    expect(phaseWorkspaces[2]?.hasCreateUserProfileAtStart).toBe(false)
+    expect(formationTranscript).toContain("Command: rg -n")
+    expect(formationTranscript).toContain("export function err(error)")
     expect(artifact.runner).toMatchObject({ mode: "task", kind: "longitudinal" })
     if (!isLongitudinalTaskArtifact(artifact)) {
       throw new Error("expected longitudinal artifact")
     }
+    expect(artifact.runner.conditions).toEqual(["no-memory", "lore-full-loop"])
     expect(artifact.summary.conditions["no-memory"]).toMatchObject({
       trials: 1,
       passed: 0,
@@ -1045,7 +1610,423 @@ scenarios:
     expect(fullLoop?.phases[1]?.patchStats.filesChanged).toBe(1)
   })
 
-  it("treats expected context misses as diagnostic for full-loop performance", async () => {
+  it("filters longitudinal runs to selected memory conditions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lore-eval-condition-filter-"))
+    const suitesDir = join(dir, "task-suites")
+    const workspaceDir = join(dir, "workspaces", "condition-filter")
+    await mkdir(suitesDir, { recursive: true })
+    await mkdir(workspaceDir, { recursive: true })
+    await writeFile(join(workspaceDir, "feature.txt"), "base\n", "utf-8")
+    const suitePath = join(suitesDir, "longitudinal.yaml")
+    await writeFile(
+      suitePath,
+      `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-condition-filter
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: condition-filter
+    agent: codex
+    workspace: ../workspaces/condition-filter
+    phaseA:
+      prompt: Inspect the feature surface and capture a plan only.
+    phaseB:
+      prompt: Implement the feature.
+    seededContext:
+      renderedContext: "- [memory] ctx-condition: Prior plan."
+      contextIds: ["ctx-condition"]
+    verifiers:
+      - type: file-contents-match
+        path: feature.txt
+        pattern: implemented
+`,
+      "utf-8"
+    )
+
+    const progressEvents: string[] = []
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      conditions: ["no-memory"],
+      adapters: new Map<string, AgentAdapter>([
+        [
+          "codex",
+          mockAdapter("codex", async ({ prompt, workspace }) => {
+            if (prompt.includes("Implement")) {
+              await writeFile(join(workspace, "feature.txt"), "implemented\n", "utf-8")
+            }
+            return successResult()
+          }),
+        ],
+      ]),
+      onProgress(event) {
+        if (event.type !== "run-stop") {
+          progressEvents.push(
+            `${event.type}:${event.index}/${event.total}:${event.condition}`
+          )
+        }
+      },
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(progressEvents).toEqual([
+      "trial-start:1/1:no-memory",
+      "trial-finish:1/1:no-memory",
+    ])
+    expect(artifact.runner.conditions).toEqual(["no-memory"])
+    expect(artifact.results.map((result) => result.condition)).toEqual(["no-memory"])
+    expect(artifact.summary.conditions["no-memory"].trials).toBe(1)
+    expect(artifact.summary.conditions["seeded-lore"].trials).toBe(0)
+    expect(artifact.summary.conditions["lore-full-loop"].trials).toBe(0)
+    expect(artifact.summary.passedTasks).toBe(1)
+  })
+
+  it("falls back to the final agent response when the transcript has no assistant content", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "notes.js": "export const notes = []\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-transcript-fallback
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: transcript-fallback
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect notes.js and summarize the useful convention.
+    phaseB:
+      prompt: Add rememberedNote using the previous convention.
+    expectedContext:
+      keywords: ["rememberedNote"]
+    verifiers:
+      - type: file-contents-match
+        path: notes.js
+        pattern: 'rememberedNote'
+`,
+    })
+
+    const adapter = mockAdapter(
+      "codex",
+      async ({ prompt, workspace, transcriptPath }) => {
+        if (prompt.includes("summarize")) {
+          if (transcriptPath) {
+            await mkdir(dirname(transcriptPath), { recursive: true })
+            await writeFile(
+              transcriptPath,
+              `${JSON.stringify({
+                type: "lore.eval.agent_run.started",
+                prompt,
+              })}\n`,
+              "utf-8"
+            )
+          }
+          return {
+            ...successResult(),
+            stdout: "Assistant found that rememberedNote should be appended to notes.",
+          }
+        }
+        await writeFile(
+          join(workspace, "notes.js"),
+          "export const notes = ['rememberedNote']\n",
+          "utf-8"
+        )
+        return successResult()
+      }
+    )
+
+    let formationTranscript = ""
+    const loreAdapter: LongitudinalLoreAdapter = {
+      async createRun() {
+        return {
+          projectId: "project-1",
+          projectName: "Eval Sandbox/transcript-fallback",
+          async formContext({ transcript }) {
+            formationTranscript = transcript
+            return {
+              projectId: "project-1",
+              projectName: "Eval Sandbox/transcript-fallback",
+              mining: null,
+              memoriesCreated: 1,
+              factsCreated: 0,
+              decisionsCreated: 0,
+              tasksCreated: 0,
+              createdContextIds: ["ctx-note"],
+              expectedContextIds: ["ctx-note"],
+            }
+          },
+          async loadContext() {
+            return {
+              renderedContext: "- [memory] ctx-note: rememberedNote should be appended.",
+              surfacedContextIds: ["ctx-note"],
+              harmfulContextIds: [],
+              failureMessage: null,
+            }
+          },
+          async cleanup() {},
+        }
+      },
+    }
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      longitudinalLoreAdapter: loreAdapter,
+    })
+
+    expect(formationTranscript).toContain("Assistant found")
+    expect(artifact.summary.passedTasks).toBe(1)
+  })
+
+  it("fails longitudinal formation when Phase A edits the workspace", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "notes.js": "export const notes = []\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-read-only-formation
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: read-only-formation
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect notes.js and do not edit files.
+    phaseB:
+      prompt: Add rememberedNote using the previous convention.
+    expectedContext:
+      keywords: ["rememberedNote"]
+    verifiers:
+      - type: file-contents-match
+        path: notes.js
+        pattern: 'rememberedNote'
+`,
+    })
+
+    let formContextCalls = 0
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      if (prompt.includes("do not edit files")) {
+        await writeFile(
+          join(workspace, "notes.js"),
+          "export const notes = ['phase-a-leak']\n",
+          "utf-8"
+        )
+      }
+      return successResult()
+    })
+    const loreAdapter: LongitudinalLoreAdapter = {
+      async createRun() {
+        return {
+          projectId: "project-1",
+          projectName: "Eval Sandbox/read-only-formation",
+          async formContext() {
+            formContextCalls += 1
+            return {
+              projectId: "project-1",
+              projectName: "Eval Sandbox/read-only-formation",
+              mining: null,
+              memoriesCreated: 1,
+              factsCreated: 0,
+              decisionsCreated: 0,
+              tasksCreated: 0,
+              createdContextIds: ["ctx-note"],
+              expectedContextIds: ["ctx-note"],
+            }
+          },
+          async loadContext() {
+            return {
+              renderedContext: "- [memory] ctx-note: rememberedNote should be appended.",
+              surfacedContextIds: ["ctx-note"],
+              harmfulContextIds: [],
+              failureMessage: null,
+            }
+          },
+          async cleanup() {},
+        }
+      },
+    }
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      longitudinalLoreAdapter: loreAdapter,
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    expect(formContextCalls).toBe(0)
+    expect(artifact.results[0]?.failureReason).toBe("formation")
+    expect(artifact.results[0]?.phases[0]?.failureMessage).toContain(
+      "Phase A must be read-only"
+    )
+    expect(artifact.results[0]?.phases[1]?.agentRun).toBeNull()
+  })
+
+  it("allows longitudinal formation when Phase A only normalizes whitespace", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "notes.js": "export const notes = []\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-read-only-whitespace
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: read-only-whitespace
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect notes.js and do not edit files.
+    phaseB:
+      prompt: Add rememberedNote using the previous convention.
+    expectedContext:
+      keywords: ["rememberedNote"]
+    verifiers:
+      - type: file-contents-match
+        path: notes.js
+        pattern: 'rememberedNote'
+`,
+    })
+
+    let formContextCalls = 0
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      if (prompt.includes("do not edit files")) {
+        // Incidental read-only touch: rewrite with identical content but no
+        // trailing newline. Raw bytes differ (filesChanged > 0) yet no content
+        // line changed, so the read-only gate must not fire.
+        await writeFile(join(workspace, "notes.js"), "export const notes = []", "utf-8")
+      } else {
+        await writeFile(
+          join(workspace, "notes.js"),
+          "export const notes = []\nexport const rememberedNote = true\n",
+          "utf-8"
+        )
+      }
+      return successResult()
+    })
+    const loreAdapter: LongitudinalLoreAdapter = {
+      async createRun() {
+        return {
+          projectId: "project-1",
+          projectName: "Eval Sandbox/read-only-whitespace",
+          async formContext() {
+            formContextCalls += 1
+            return {
+              projectId: "project-1",
+              projectName: "Eval Sandbox/read-only-whitespace",
+              mining: null,
+              memoriesCreated: 1,
+              factsCreated: 0,
+              decisionsCreated: 0,
+              tasksCreated: 0,
+              createdContextIds: ["ctx-note"],
+              expectedContextIds: ["ctx-note"],
+            }
+          },
+          async loadContext() {
+            return {
+              renderedContext: "- [memory] ctx-note: rememberedNote should be appended.",
+              surfacedContextIds: ["ctx-note"],
+              harmfulContextIds: [],
+              failureMessage: null,
+            }
+          },
+          async cleanup() {},
+        }
+      },
+    }
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      longitudinalLoreAdapter: loreAdapter,
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    // Formation proceeded (gate did not fire on the zero-line touch) and Phase B ran.
+    expect(formContextCalls).toBe(1)
+    expect(artifact.results[0]?.phases[0]?.failureReason).toBeNull()
+    expect(artifact.results[0]?.phases[0]?.patchStats.linesAdded).toBe(0)
+    expect(artifact.results[0]?.phases[0]?.patchStats.linesRemoved).toBe(0)
+    expect(artifact.results[0]?.phases[1]?.agentRun).not.toBeNull()
+    expect(artifact.results[0]?.success).toBe(true)
+  })
+
+  it("skips no-memory formation and scores Phase B directly", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "notes.js": "export const notes = []\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-no-memory-formation-diagnostic
+conditions:
+  - no-memory
+scenarios:
+  - id: no-memory-formation-diagnostic
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect notes.js and do not edit files.
+    phaseB:
+      prompt: Add rememberedNote.
+    expectedContext:
+      keywords: ["rememberedNote"]
+    verifiers:
+      - type: file-contents-match
+        path: notes.js
+        pattern: 'rememberedNote'
+`,
+    })
+
+    const prompts: string[] = []
+    const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+      prompts.push(prompt)
+      if (prompt.includes("do not edit files")) {
+        await writeFile(
+          join(workspace, "notes.js"),
+          "export const notes = ['phase-a-edit']\n",
+          "utf-8"
+        )
+      }
+      if (prompt.includes("rememberedNote")) {
+        await writeFile(
+          join(workspace, "notes.js"),
+          "export const rememberedNote = true\n",
+          "utf-8"
+        )
+      }
+      return successResult()
+    })
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+    })
+
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+    const result = artifact.results[0]!
+    expect(result.success).toBe(true)
+    expect(result.failureReason).toBeNull()
+    expect(prompts).toEqual(["Add rememberedNote."])
+    expect(result.phases).toHaveLength(1)
+    expect(result.phases[0]?.phase).toBe("use")
+    expect(result.phases[0]?.success).toBe(true)
+    expect(result.phases[0]?.agentRun).not.toBeNull()
+  })
+
+  it("records expected context misses without failing full-loop success", async () => {
     const { suitePath } = await writeTaskSuite({
       workspace: { "status.js": "export function status() { return 'ok' }\n" },
       suite: `version: 1
@@ -1208,7 +2189,7 @@ scenarios:
         await writeFile(join(workspace, "second.txt"), "done\n", "utf-8")
       }
       return successResultWithUsage({
-        promptTokens: 1000,
+        promptTokens: 3000,
         cachedPromptTokens: 0,
         outputTokens: 0,
         reasoningOutputTokens: 0,
@@ -1225,7 +2206,7 @@ scenarios:
       },
     })
 
-    expect(prompts).toHaveLength(2)
+    expect(prompts).toHaveLength(1)
     if (!isLongitudinalTaskArtifact(artifact)) {
       throw new Error("expected longitudinal artifact")
     }
@@ -1293,7 +2274,7 @@ scenarios:
       adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
     })
 
-    expect(prompts).toHaveLength(2)
+    expect(prompts).toHaveLength(1)
     if (!isLongitudinalTaskArtifact(artifact)) {
       throw new Error("expected longitudinal artifact")
     }
@@ -1305,7 +2286,7 @@ scenarios:
     })
   })
 
-  it("counts failed Lore mining model rows toward the cost kill-switch", async () => {
+  it("ignores Lore ledger rows when selected conditions do not include full-loop", async () => {
     const configRoot = await mkdtemp(join(tmpdir(), "lore-eval-cost-root-"))
     const ledgerPath = join(configRoot, "eval-costs.jsonl")
     await writeFile(
@@ -1401,19 +2382,251 @@ scenarios:
       if (!isLongitudinalTaskArtifact(artifact)) {
         throw new Error("expected longitudinal artifact")
       }
-      expect(artifact.results).toHaveLength(1)
-      expect(artifact.termination).toMatchObject({
-        reason: "cost-kill-switch",
-        observedUsd: 1,
-        loreUsd: 1,
-        completedTrials: 1,
-        totalPlannedTrials: 2,
+      expect(artifact.results).toHaveLength(2)
+      expect(artifact.termination).toBeNull()
+      expect(artifact.summary.conditions["no-memory"]).toMatchObject({
+        trials: 2,
+        passed: 1,
+        failed: 1,
       })
     } finally {
       if (previousConfigRoot === undefined) {
         delete process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
       } else {
         process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = previousConfigRoot
+      }
+    }
+  })
+
+  it("requires a sandbox project prefix for full-loop cost kill-switch accounting", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "lore-eval-cost-root-"))
+    const ledgerPath = join(configRoot, "eval-costs.jsonl")
+    await writeFile(
+      join(configRoot, ".lore.yaml"),
+      `vault:
+  pageId: abc123
+costTracking:
+  enabled: true
+  ledgerPath: ${JSON.stringify(ledgerPath)}
+`,
+      "utf-8"
+    )
+    const previousConfigRoot = process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+    const previousSandbox = process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"]
+    process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = configRoot
+    delete process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"]
+    try {
+      const { suitePath } = await writeTaskSuite({
+        workspace: { "README.md": "fixture\n" },
+        suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-lore-cost-sandbox-required
+costKillSwitchUsd: 10
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: first-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the first task.
+    phaseB:
+      prompt: Finish the first task.
+    expectedContext:
+      description: First task context.
+      keywords: ["first"]
+    verifiers:
+      - type: file-exists
+        path: first.txt
+`,
+      })
+
+      const prompts: string[] = []
+      const adapter = mockAdapter("codex", async ({ prompt }) => {
+        prompts.push(prompt)
+        return successResult()
+      })
+
+      const { artifact } = await runTaskEvalSuite(suitePath, {
+        now: new Date("2026-05-27T00:00:00.000Z"),
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      })
+
+      if (!isLongitudinalTaskArtifact(artifact)) {
+        throw new Error("expected longitudinal artifact")
+      }
+      expect(prompts).toEqual([])
+      expect(artifact.results).toEqual([])
+      expect(artifact.termination).toMatchObject({
+        reason: "cost-unknown",
+        completedTrials: 0,
+        totalPlannedTrials: 1,
+      })
+      expect(artifact.termination?.message).toContain(
+        "LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"
+      )
+    } finally {
+      if (previousConfigRoot === undefined) {
+        delete process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+      } else {
+        process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = previousConfigRoot
+      }
+      if (previousSandbox === undefined) {
+        delete process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"]
+      } else {
+        process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"] = previousSandbox
+      }
+    }
+  })
+
+  it("scopes full-loop Lore cost kill-switch accounting to the sandbox project", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "lore-eval-cost-root-"))
+    const ledgerPath = join(configRoot, "eval-costs.jsonl")
+    await writeFile(
+      join(configRoot, ".lore.yaml"),
+      `vault:
+  pageId: abc123
+costTracking:
+  enabled: true
+  ledgerPath: ${JSON.stringify(ledgerPath)}
+`,
+      "utf-8"
+    )
+    const miningCostRow = (projectName: string, usd: number) =>
+      `${JSON.stringify({
+        schemaVersion: 1,
+        timestamp: "2026-05-27T00:00:01.000Z",
+        eventType: "eval.mining.background_model",
+        source: "cli",
+        projectName,
+        status: "success",
+        payload: {
+          redacted: true,
+          tokenEstimator: "chars_per_token_4",
+          inputBytes: 4,
+          estimatedInputTokens: 1,
+        },
+        modelUsage: {
+          provider: "openai",
+          model: "gpt-5.5",
+          inputTokens: 1,
+          estimated: true,
+          source: "prompt_estimate",
+        },
+        estimatedCost: {
+          usd,
+          pricingSource: "test",
+          estimated: true,
+        },
+      })}\n`
+    await writeFile(
+      ledgerPath,
+      miningCostRow("Other Sandbox/longitudinal-other", 100) +
+        miningCostRow("Eval Sandbox/longitudinal-current", 0.25),
+      "utf-8"
+    )
+
+    const previousConfigRoot = process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+    const previousSandbox = process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"]
+    process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = configRoot
+    process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"] = "Eval Sandbox"
+    try {
+      const { suitePath } = await writeTaskSuite({
+        workspace: { "README.md": "fixture\n" },
+        suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-lore-cost-sandbox-scope
+costKillSwitchUsd: 0.5
+conditions:
+  - lore-full-loop
+scenarios:
+  - id: first-task
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect the first task.
+    phaseB:
+      prompt: Finish the first task.
+    expectedContext:
+      description: First task context.
+      keywords: ["first"]
+    verifiers:
+      - type: file-exists
+        path: first.txt
+`,
+      })
+
+      const prompts: string[] = []
+      const adapter = mockAdapter("codex", async ({ prompt, workspace }) => {
+        prompts.push(prompt)
+        if (prompt.includes("Retrieved Lore context")) {
+          await writeFile(join(workspace, "first.txt"), "done\n", "utf-8")
+        }
+        return successResultWithUsage({
+          promptTokens: 0,
+          cachedPromptTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        })
+      })
+      const loreAdapter: LongitudinalLoreAdapter = {
+        async createRun() {
+          return {
+            projectId: "project-1",
+            projectName: "Eval Sandbox/longitudinal-current",
+            async formContext() {
+              return {
+                projectId: "project-1",
+                projectName: "Eval Sandbox/longitudinal-current",
+                mining: null,
+                memoriesCreated: 1,
+                factsCreated: 0,
+                decisionsCreated: 0,
+                tasksCreated: 0,
+                createdContextIds: ["ctx-first"],
+                expectedContextIds: ["ctx-first"],
+              }
+            },
+            async loadContext() {
+              return {
+                renderedContext: "- [memory] ctx-first: Finish the first task.",
+                surfacedContextIds: ["ctx-first"],
+                harmfulContextIds: [],
+                failureMessage: null,
+              }
+            },
+            async cleanup() {},
+          }
+        },
+      }
+
+      const { artifact } = await runTaskEvalSuite(suitePath, {
+        now: new Date("2026-05-27T00:00:00.000Z"),
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+        longitudinalLoreAdapter: loreAdapter,
+      })
+
+      if (!isLongitudinalTaskArtifact(artifact)) {
+        throw new Error("expected longitudinal artifact")
+      }
+      expect(prompts).toHaveLength(2)
+      expect(artifact.results).toHaveLength(1)
+      expect(artifact.results[0]?.success).toBe(true)
+      expect(artifact.termination).toBeNull()
+    } finally {
+      if (previousConfigRoot === undefined) {
+        delete process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+      } else {
+        process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = previousConfigRoot
+      }
+      if (previousSandbox === undefined) {
+        delete process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"]
+      } else {
+        process.env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"] = previousSandbox
       }
     }
   })
@@ -1489,14 +2702,60 @@ scenarios:
       liftedScenarioIds: ["seeded-cache-prefix"],
     })
     const seeded = artifact.results.find((r) => r.condition === "seeded-lore")
-    expect(seeded?.phases[1]?.lore.wakeUpEnabled).toBe(true)
-    expect(seeded?.phases[1]?.lore.surfacedContextIds).toEqual(["ctx-cache"])
+    expect(seeded?.phases[0]?.lore.wakeUpEnabled).toBe(true)
+    expect(seeded?.phases[0]?.lore.surfacedContextIds).toEqual(["ctx-cache"])
+    expect(seeded?.phases[0]?.patch?.path.split(/[\\/]/u).pop()).toBe(
+      "002-seeded-cache-prefix-seeded-lore-use.patch"
+    )
+    expect(await readFile(seeded?.phases[0]?.patch?.path ?? "", "utf-8")).toContain(
+      "cache.js"
+    )
     expect(transcriptPaths.map((p) => p?.split(/[\\/]/u).pop())).toEqual([
-      "001-seeded-cache-prefix-no-memory-formation.codex.jsonl",
       "001-seeded-cache-prefix-no-memory-use.codex.jsonl",
-      "002-seeded-cache-prefix-seeded-lore-formation.codex.jsonl",
       "002-seeded-cache-prefix-seeded-lore-use.codex.jsonl",
     ])
+  })
+
+  it("rejects custom transcript directories for longitudinal runs", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "status.js": "export const status = 'ok'\n" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-transcript-dir-guard
+conditions:
+  - no-memory
+scenarios:
+  - id: transcript-dir-guard
+    difficulty: easy
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect status.
+    phaseB:
+      prompt: Write status.
+    expectedContext:
+      description: status stays ok.
+      keywords: ["status"]
+    verifiers:
+      - type: file-contents-match
+        path: status.js
+        pattern: ok
+`,
+    })
+
+    const adapter = mockAdapter("codex", async () => successResult())
+
+    await expect(
+      runTaskEvalSuite(suitePath, {
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        transcriptsDir: join(
+          await mkdtemp(join(tmpdir(), "lore-eval-transcripts-")),
+          "custom"
+        ),
+        adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      })
+    ).rejects.toThrow(/artifact-adjacent/)
   })
 
   it("filters longitudinal suites by difficulty and scenario id", async () => {
@@ -1814,6 +3073,155 @@ scenarios:
       "harness-error",
     ])
     expect(results[1]?.phases[0]?.failureMessage).toContain("shard exited")
+  })
+
+  it("keeps completed late shard rows after a cost stop but drops killed placeholders", () => {
+    const completed = {
+      scenarioId: "first",
+      condition: "no-memory",
+      failureReason: null,
+      phases: [],
+    } as never
+    const killedPlaceholder = {
+      scenarioId: "first",
+      condition: "seeded-lore",
+      failureReason: "harness-error",
+      agentRun: null,
+      verifiers: [],
+      phases: [
+        {
+          agentRun: null,
+          cost: null,
+          patch: null,
+          verifierResults: [],
+          failureReason: "harness-error",
+          failureMessage:
+            "Longitudinal shard first returned an incomplete artifact (exit signal).",
+        },
+      ],
+    } as never
+
+    expect(
+      filterShardResultsForTerminatedRun([completed, killedPlaceholder], {
+        reason: "cost-kill-switch",
+      } as never)
+    ).toEqual([completed])
+    expect(filterShardResultsForTerminatedRun([killedPlaceholder], null)).toEqual([
+      killedPlaceholder,
+    ])
+  })
+
+  it("requires every selected longitudinal condition before a task counts as passed", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "done.txt": "" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-partial-cost-stop
+conditions:
+  - no-memory
+  - seeded-lore
+scenarios:
+  - id: partial
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect partial.
+    phaseB:
+      prompt: Finish partial.
+    expectedContext:
+      keywords: ["partial"]
+    seededContext:
+      renderedContext: "- [memory] ctx-partial: partial"
+      contextIds: ["ctx-partial"]
+    verifiers:
+      - type: file-exists
+        path: done.txt
+`,
+    })
+
+    const adapter = mockAdapter("codex", async () =>
+      successResultWithUsage({
+        promptTokens: 1_000_000,
+        cachedPromptTokens: 0,
+        outputTokens: 1_000,
+        reasoningOutputTokens: 0,
+      })
+    )
+
+    const { artifact } = await runTaskEvalSuite(suitePath, {
+      outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+      adapters: new Map<string, AgentAdapter>([["codex", adapter]]),
+      costKillSwitchUsd: 0.0001,
+    })
+    if (!isLongitudinalTaskArtifact(artifact)) {
+      throw new Error("expected longitudinal artifact")
+    }
+
+    expect(artifact.results).toHaveLength(1)
+    expect(artifact.results[0]?.success).toBe(true)
+    expect(artifact.termination?.reason).toBe("cost-kill-switch")
+    expect(artifact.summary.passedTrials).toBe(1)
+    expect(artifact.summary.passedTasks).toBe(0)
+    expect(artifact.summary.failedTasks).toBe(1)
+  })
+
+  it("does not require Lore cost config when full-loop is not selected", async () => {
+    const { suitePath } = await writeTaskSuite({
+      workspace: { "done.txt": "" },
+      suite: `version: 1
+runner: task
+longitudinal: true
+name: longitudinal-cost-config-missing
+conditions:
+  - no-memory
+scenarios:
+  - id: cost-config-missing
+    agent: codex
+    workspace: ../workspaces/x
+    phaseA:
+      prompt: Inspect cost.
+    phaseB:
+      prompt: Finish cost.
+    verifiers:
+      - type: file-exists
+        path: done.txt
+`,
+    })
+
+    const prior = process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+    process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = await mkdtemp(
+      join(tmpdir(), "lore-eval-missing-config-")
+    )
+    try {
+      const { artifact } = await runTaskEvalSuite(suitePath, {
+        outPath: join(await mkdtemp(join(tmpdir(), "lore-eval-task-")), "out.json"),
+        adapters: new Map<string, AgentAdapter>([
+          [
+            "codex",
+            mockAdapter("codex", async () =>
+              successResultWithUsage({
+                promptTokens: 1,
+                cachedPromptTokens: 0,
+                outputTokens: 1,
+                reasoningOutputTokens: 0,
+              })
+            ),
+          ],
+        ]),
+        costKillSwitchUsd: 1,
+      })
+      if (!isLongitudinalTaskArtifact(artifact)) {
+        throw new Error("expected longitudinal artifact")
+      }
+
+      expect(artifact.results).toHaveLength(1)
+      expect(artifact.results[0]?.success).toBe(true)
+      expect(artifact.termination).toBeNull()
+    } finally {
+      if (prior === undefined) delete process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"]
+      else process.env["LORE_EVAL_LONGITUDINAL_CONFIG_ROOT"] = prior
+    }
   })
 
   it("keeps primary longitudinal agents Lore-tool-free while mining has MCP config", async () => {
@@ -2503,6 +3911,57 @@ describe("buildCodexChildEnv", () => {
     expect(env["GOCACHE"]).toContain("lore-eval-go-build-cache")
   })
 
+  it("strips mise shims when HOME is isolated for eval subprocesses", () => {
+    const env = buildCodexChildEnv(
+      {
+        PATH: [
+          "/Users/example/.local/share/mise/shims",
+          "/opt/mise/shims/",
+          "/usr/local/bin",
+          "/custom/other-shims",
+          "/usr/bin",
+        ].join(delimiter),
+        HOME: "/Users/example",
+      },
+      { codexHome: "/tmp/lore-eval-codex-home-test" }
+    )
+
+    expect(env["PATH"]).toBe(
+      ["/usr/local/bin", "/custom/other-shims", "/usr/bin"].join(delimiter)
+    )
+  })
+
+  it("resolves codex from a non-mise PATH entry for isolated eval subprocesses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lore-codex-path-test-"))
+    try {
+      const shimDir = join(root, "mise", "shims")
+      const binDir = join(root, "bin")
+      await mkdir(shimDir, { recursive: true })
+      await mkdir(binDir)
+      const shimCodexPath = join(shimDir, "codex")
+      const codexPath = join(binDir, "codex")
+      await writeFile(shimCodexPath, "#!/bin/sh\nexit 1\n")
+      await chmod(shimCodexPath, 0o755)
+      await writeFile(codexPath, "#!/bin/sh\nexit 0\n")
+      await chmod(codexPath, 0o755)
+
+      const pathValue = [shimDir, binDir].join(delimiter)
+      expect(resolveExecutableOnPath("codex", pathValue)).toBe(shimCodexPath)
+      expect(resolveCodexExecutable({ PATH: pathValue })).toBe(codexPath)
+      const env = buildCodexChildEnv(
+        {
+          PATH: pathValue,
+          HOME: "/Users/example",
+        },
+        { codexHome: "/tmp/lore-eval-codex-home-test" }
+      )
+      expect(env["PATH"]).toBe(binDir)
+      expect(resolveCodexExecutable({ PATH: shimDir })).toBeNull()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("preserves explicit Go cache paths for eval subprocesses", () => {
     const env = buildCodexChildEnv(
       {
@@ -2650,6 +4109,15 @@ function countByDifficulty(
   }
 }
 
+const POWERED_SCENARIOS_WITH_PROMPT_SAFE_TEST_NAME_OMISSION = new Set([
+  "gh-cli-variable-ambiguous-remote-scope",
+  "gh-cli-api-graphql-paginate-field",
+  "gh-cli-skills-install-transactional-lockfile",
+  "gh-cli-pr-status-head-repo-disambiguation",
+  "gh-cli-release-create-generated-notes-target-rollback",
+  "gh-cli-agent-task-create-wait-exit-status",
+])
+
 function poweredScenarioTestName(scenarioId: string): string {
   return `Test${scenarioId
     .split("-")
@@ -2734,6 +4202,41 @@ describe("selectExpectedContextIds", () => {
     expect(ids).toEqual([])
   })
 })
+
+function expectPatchHunksToMatchLineCounts(patch: string, label: string): void {
+  const lines = patch.split("\n")
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index]
+    if (!header.startsWith("@@ ")) continue
+    const match = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(header)
+    expect(match, `${label}: malformed patch hunk header ${header}`).not.toBeNull()
+    const expectedOld = match?.[1] === undefined ? 1 : Number(match[1])
+    const expectedNew = match?.[2] === undefined ? 1 : Number(match[2])
+    let actualOld = 0
+    let actualNew = 0
+    for (index += 1; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (index === lines.length - 1 && line === "") continue
+      if (line.startsWith("@@ ")) {
+        index -= 1
+        break
+      }
+      if (line.startsWith("\\ No newline")) continue
+      if (line.startsWith("+")) {
+        actualNew += 1
+      } else if (line.startsWith("-")) {
+        actualOld += 1
+      } else {
+        actualOld += 1
+        actualNew += 1
+      }
+    }
+    expect(
+      { old: actualOld, new: actualNew },
+      `${label}: patch hunk ${header} line count mismatch`
+    ).toEqual({ old: expectedOld, new: expectedNew })
+  }
+}
 
 async function writeTaskSuite(input: {
   workspace: Record<string, string>
@@ -2883,7 +4386,11 @@ describe("bench spawn argv carries NO secrets", () => {
   it("pins bench HOME and CODEX_HOME to an isolated config home", () => {
     const childEnv = buildBenchCodexChildEnv(
       {
-        PATH: "/usr/bin",
+        PATH: [
+          "/Users/example/.local/share/mise/shims",
+          "/opt/mise/shims/",
+          "/usr/bin",
+        ].join(delimiter),
         HOME: "/Users/example",
         CODEX_HOME: "/Users/example/.codex",
         CODEX_TRACE: "1",
@@ -2900,6 +4407,7 @@ describe("bench spawn argv carries NO secrets", () => {
 
     expect(childEnv["HOME"]).toBe("/tmp/lore-eval-codex-home-bench")
     expect(childEnv["CODEX_HOME"]).toBe("/tmp/lore-eval-codex-home-bench")
+    expect(childEnv["PATH"]).toBe("/usr/bin")
     expect(childEnv["CODEX_TRACE"]).toBeUndefined()
     expect(childEnv["OPENAI_API_KEY"]).toBe("sk-bench-only")
   })

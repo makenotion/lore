@@ -1,0 +1,973 @@
+version: 1
+id: github-cli-public-spec-v1
+description: >-
+  Focused seed corpus for the GitHub CLI public-spec longitudinal suite.
+  Entries model durable implementation plans, adjacent project knowledge, and
+  realistic neighboring memories from prior engineering sessions at the pinned
+  repository SHA.
+repository:
+  repo: cli/cli
+  sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+vault:
+  project:
+    name: GitHub CLI
+    path: .
+    tags: ["go", "cli", "cobra"]
+  topics:
+    - id: commands/auth
+      name: Auth commands
+      description: Authentication command behavior, multi-account config, and credential helpers.
+    - id: commands/api
+      name: API command and HTTP client
+      description: API request construction, verbose HTTP logs, and transport boundaries.
+    - id: commands/attestation
+      name: Attestation commands
+      description: Attestation lookup, verification, and offline bundle download behavior.
+    - id: commands/run
+      name: Workflow run commands
+      description: Workflow run artifact download, ZIP extraction, and filesystem safety.
+    - id: commands/release
+      name: Release commands
+      description: Release creation, asset uploads, discussion creation, and publication state.
+    - id: commands/secret
+      name: Secret commands
+      description: Secret command parsing, encryption, and mutation behavior.
+    - id: commands/variable
+      name: Variable commands
+      description: Variable command parsing and mutation behavior.
+    - id: commands/pr-issue
+      name: Pull request and issue commands
+      description: Pull request and issue command state changes, branch handling, and linked branches.
+    - id: commands/search
+      name: Search commands
+      description: GitHub search command query construction, raw syntax, and shared command flags.
+    - id: commands/project
+      name: Project commands
+      description: GitHub Projects v2 command queries, owner routing, and field/item pagination.
+    - id: commands/repo
+      name: Repository commands
+      description: Repository command git-side effects and mutation boundaries.
+    - id: commands/gist
+      name: Gist commands
+      description: Gist creation, file collection, and API payload behavior.
+    - id: git/client
+      name: Git client
+      description: Shared git command wrappers and parsed commit/ref behavior.
+    - id: tests/commands
+      name: Command package tests
+      description: Package-local tests using httpmock, command stubs, and hidden verifier patches.
+    - id: cli/security
+      name: CLI safety boundaries
+      description: Local filesystem, credential, and destructive-command safety constraints.
+  memories:
+    - id: gh-cli/auth-git-credential-requested-user
+      title: Git credential helper should honor requested inactive users
+      topics: ["commands/auth", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh auth git-credential get` can use the Git credential username as a
+        per-host account selector without switching the active account.
+      body: |
+        The credential helper currently routes through the active host token.
+        The follow-up should keep that behavior when Git does not provide a
+        username, but when Git asks for `username=<login>` it should look up
+        that host/user token directly from auth config and return it without
+        changing the active user. Environment-sourced tokens still return
+        `x-access-token` because they are not per-user writable config entries.
+
+        Preserve the existing gist-host fallback: credentials requested for
+        `gist.github.com` should be looked up against `github.com`, while the
+        helper output should still echo the requested gist host. Unknown users
+        should fail silently with no credential output. Package tests should
+        cover requested inactive users, gist-host requested users, env-token
+        precedence, and unknown-user misses.
+      scenarios: ["gh-cli-auth-git-credential-requested-user-v3"]
+    - id: gh-cli/run-artifact-zip-safe-atomic
+      title: Artifact ZIP extraction must validate then extract atomically
+      topics: ["commands/run", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Actions artifact ZIP extraction should reject unsafe archives before
+        writing files and avoid leaving partial output behind.
+      body: |
+        `gh run download` uses the shared ZIP extraction helper after fetching
+        an artifact archive. The safety follow-up should validate the full ZIP
+        entry set before writing any destination files. Reject path traversal,
+        absolute paths, symlink or special file modes, and duplicate destination
+        entries. Extraction should use a staging directory and then publish
+        successfully extracted files so a failure leaves the destination
+        unchanged. Valid archives should still create directories and preserve
+        executable bits for executable files.
+      scenarios: ["gh-cli-run-download-zip-safe-atomic-v3"]
+    - id: gh-cli/pr-close-delete-branch-worktree-guard
+      title: PR close branch cleanup should respect linked git worktrees
+      topics: ["commands/pr-issue", "commands/repo", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh pr close --delete-branch` should not delete a local branch that is
+        checked out in another git worktree.
+      body: |
+        Before deleting a local branch for `gh pr close --delete-branch`, inspect
+        `git worktree list --porcelain`. If the PR head branch is checked out in
+        another worktree, skip only the local branch deletion and print a clear
+        warning naming the branch/worktree conflict. The pull request close and
+        same-repository remote branch deletion still proceed. Current-worktree
+        branch deletion keeps the existing default-branch checkout behavior.
+      scenarios: ["gh-cli-pr-close-delete-branch-worktree-guard-v3"]
+    - id: gh-cli/issue-develop-ref-validation
+      title: Issue develop should validate branch refs before side effects
+      topics: ["commands/pr-issue", "commands/repo", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh issue develop` should reject unsafe local and API-returned branch
+        names before GraphQL mutations or git commands.
+      body: |
+        Branch names accepted by `gh issue develop --name`, `--base`, and the
+        linked-branch API response should be checked with Git refname rules
+        before creating linked branches, setting branch config, fetching, or
+        checking out. Reject names with colon, `..`, `@{`, leading dash,
+        trailing slash or dot, control characters, and other invalid ref forms.
+        Valid slash-containing names remain supported and should be passed to
+        git as argv arguments, not interpolated shell strings.
+      scenarios: ["gh-cli-issue-develop-ref-validation-v3"]
+    - id: gh-cli/pr-checkout-ref-validation
+      title: PR checkout should validate branch refs before git commands
+      topics: ["commands/pr-issue", "commands/repo", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh pr checkout` should validate API-returned and user-supplied branch
+        names before constructing fetch refspecs, checkout targets, or branch
+        config keys.
+      body: |
+        `gh pr checkout` builds git fetch refspecs, checkout targets,
+        reset/merge refs, and `branch.<name>.*` config keys from PR
+        `headRefName` and `--branch`. Validate every branch name before it is
+        interpolated into git arguments or config keys. Reject leading dash,
+        colon, `..`, `@{`, trailing slash or dot, `.lock`,
+        empty/control-character forms, and other malformed ref names. Keep
+        valid slash-containing names such as `feature/slash` and
+        `local/topic/slash`, and preserve `--detach` behavior where no local
+        branch is created.
+      scenarios: ["gh-cli-pr-checkout-ref-validation-v3"]
+    - id: gh-cli/auth-refresh-scope-normalization
+      title: Auth refresh should normalize OAuth scopes before the flow
+      topics: ["commands/auth", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh auth refresh` should merge additional existing, requested,
+        credential-helper, and removed scopes case-insensitively while
+        preserving stable order.
+      body: |
+        `gh auth refresh` gathers scopes from the current token, the HTTPS
+        credential-helper prompt, `--scopes`, and `--remove-scopes` before
+        calling the OAuth flow. The merge should trim whitespace, lowercase
+        scope names, dedupe case-insensitively, and preserve the first-seen
+        order after normalization. Removal should also be case-insensitive so
+        `--remove-scopes WORKFLOW` removes an existing `workflow` scope. The
+        OAuth flow already prepends the default minimum scopes (`repo`,
+        `read:org`, and `gist`), so refresh should pass only additional scopes
+        into `AuthFlow`. The behavior belongs in refresh scope assembly rather
+        than in the OAuth browser flow because tests stub `AuthFlow` and assert
+        the scopes passed into it.
+      scenarios: ["gh-cli-auth-refresh-scope-normalization-v3"]
+    - id: gh-cli/api-verbose-secret-redaction
+      title: Verbose HTTP logs should redact secret-shaped JSON fields
+      topics: ["commands/api", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh api --verbose` logging must not leak secret-shaped JSON request or
+        response fields, while the actual outbound request remains unchanged.
+      body: |
+        The API HTTP client composes auth headers and verbose logging around the
+        request transport. Existing verbose logs already redact the
+        `Authorization` header; the follow-up should also redact JSON fields
+        named `token`, `access_token`, `client_secret`, or `password` in verbose
+        request and response logs. Redaction must happen on the logging copy so
+        the real request still carries the original Authorization header and
+        request body. Non-secret fields should remain visible in the verbose
+        log so debugging output stays useful.
+      scenarios: ["gh-cli-api-verbose-secret-redaction-v3"]
+    - id: gh-cli/api-input-nested-query-encoding
+      title: API input fields should preserve nested query keys
+      topics: ["commands/api", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh api --input` moves field flags to the URL query string, where
+        nested bracket paths must be preserved instead of flattened.
+      body: |
+        When `gh api` receives `--input`, the input file or stdin bytes become
+        the request body and `-f`/`-F` fields become URL query parameters. The
+        nested field parser already produces maps and arrays for bracket
+        syntax, but the query serializer must reconstruct the full bracket
+        path. Preserve keys such as `filters[state]`, repeated `labels[]`, and
+        arrays of objects like `properties[][property_name]` and
+        `properties[][allowed_values][]`. Do not collapse them to leaf keys such
+        as `state`, `property_name`, or `allowed_values[]`.
+      scenarios: ["gh-cli-api-input-nested-query-encoding-v1"]
+    - id: gh-cli/api-input-body-boundary
+      title: API input query fixes should not rewrite body parsing
+      topics: ["commands/api"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        The `--input` nested-query fix belongs at query serialization, not in
+        global field parsing or request-body JSON construction.
+      body: |
+        Non-`--input` REST requests still send parsed field maps as JSON
+        request bodies, and GraphQL requests still group fields other than
+        `query` and `operationName` under `variables`. The input-file path is
+        the special case: it uses the input reader as the body and appends
+        fields to the URL. A focused fix should preserve method defaults,
+        pagination restrictions, simple query encoding, and output filtering.
+      scenarios: ["gh-cli-api-input-nested-query-encoding-v1"]
+    - id: gh-cli/search-query-file-raw-syntax
+      title: Search query files should preserve raw search syntax
+      topics: ["commands/search", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh search --query-file` style input should feed the search package as a
+        raw expression instead of tokenized keyword arguments.
+      body: |
+        The search package has two keyword paths: `Keywords` for command-line
+        terms that can be quoted or escaped by gh, and `ImmutableKeywords` for a
+        raw expression supplied by the user. A query file is the raw-expression
+        case because users put advanced issue search operators, parentheses,
+        quoted phrases, and negated qualifiers in the file expecting GitHub's
+        search parser to receive them intact.
+
+        Implement the flag through shared search command plumbing where possible
+        so issues, pull requests, repositories, code, and commits do not drift.
+        Read `--query-file -` from command stdin, trim only surrounding
+        whitespace, reject positional query arguments with the file flag, and
+        continue to combine the raw expression with ordinary qualifier flags.
+      scenarios: ["gh-cli-search-query-file-raw-syntax-v1"]
+    - id: gh-cli/search-query-file-command-boundary
+      title: Search query-file support should be broad and non-invasive
+      topics: ["commands/search"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Query-file support belongs in search command option assembly without
+        changing output, web, JSON, or qualifier behavior.
+      body: |
+        Adding query-file support should not change the search API layer,
+        result rendering, JSON exporters, or web URL opening. The command should
+        still reject missing input, invalid limits, incompatible flags, and
+        command-specific qualifier errors the same way it does today. The new
+        path should only decide where raw keywords come from before the existing
+        searcher sees the query.
+      scenarios: ["gh-cli-search-query-file-raw-syntax-v1"]
+    - id: gh-cli/project-view-field-pagination
+      title: Project view should paginate displayed fields
+      topics: ["commands/project", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh project view` asks for field data but only gets one GraphQL page,
+        so projects with more than 100 fields have truncated field output.
+      body: |
+        `gh project view` calls `NewProject(..., fields=true)` with
+        `firstItems=0` and `firstFields=LimitMax`. That avoids fetching project
+        items while still displaying the field list, but it currently keeps only
+        the first fields connection page. The fix should paginate the fields
+        connection for numbered user, organization, and viewer projects and
+        append the later field nodes to the same `Project.Fields` data used by
+        human output.
+
+        Keep the item boundary intact: `project view` should not fetch project
+        item nodes merely to paginate fields. Preserve web mode URL opening,
+        owner prompt selection, project-number lookup, JSON exporter shape, and
+        existing `field-list` behavior.
+      scenarios: ["gh-cli-project-view-fields-pagination-v1"]
+    - id: gh-cli/project-view-owner-query-boundary
+      title: Project owner query variants should stay aligned
+      topics: ["commands/project"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Project view owner variants duplicate user, organization, and viewer
+        GraphQL wrappers, so pagination fixes need to cover all three.
+      body: |
+        Projects v2 queries have separate wrappers for user owners, organization
+        owners, and the current viewer. A durable field-pagination fix should
+        avoid making only one owner path correct. Reuse shared pagination
+        helpers where possible, but do not change item pagination limits or
+        switch numbered view lookups to an item-heavy query shape.
+      scenarios: ["gh-cli-project-view-fields-pagination-v1"]
+    - id: gh-cli/pr-merge-queue-delete-branch-order
+      title: Merge-queue enqueue is not a completed merge for branch deletion
+      topics: ["commands/pr-issue", "commands/repo", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh pr merge --delete-branch` should not delete branches when a merge
+        queue request only enqueues the pull request.
+      body: |
+        A merge-queue success means the pull request was accepted into the
+        queue; it does not mean the head branch is safe to delete. When a base
+        branch requires a merge queue and `--admin` is not used, `--delete-branch`
+        should not delete the local branch or the same-repository remote branch
+        after enqueue. The command should still enqueue the pull request and
+        report the queue message.
+
+        `--admin` bypasses the queue and performs an immediate merge, so normal
+        branch cleanup can run there. Fork pull requests should keep the existing
+        remote-delete protection, and non-queue merges keep the existing
+        immediate deletion behavior.
+      scenarios: ["gh-cli-pr-merge-queue-delete-branch-order-v1"]
+    - id: gh-cli/pr-merge-cleanup-queue-boundary
+      title: PR merge branch cleanup depends on terminal merge state
+      topics: ["commands/pr-issue", "commands/repo"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Branch cleanup after `gh pr merge` should be tied to terminal merge
+        success, not any successful merge-related mutation.
+      body: |
+        The merge command can perform several successful mutations: enabling
+        auto-merge, adding to the merge queue, disabling auto-merge, or directly
+        merging. Only the direct merge and already-merged cleanup paths should
+        lead to local or remote branch deletion. Queue and auto-merge paths are
+        pending states and should leave branches alone even when
+        `--delete-branch` was requested.
+      scenarios: ["gh-cli-pr-merge-queue-delete-branch-order-v1"]
+    - id: gh-cli/comment-last-visible-viewer-comment
+      title: Comment edit/delete last should target newest visible viewer comment
+      topics: ["commands/pr-issue", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh pr comment` and `gh issue comment` share last-comment mutation
+        logic that should ignore hidden comments and choose by creation time.
+      body: |
+        `--edit-last` and `--delete-last` operate on comments authored by the
+        current viewer. The GraphQL comments connection can contain comments
+        that are minimized/hidden, comments from other users, and pages whose
+        local node order should not be treated as the semantic "last" choice.
+        The shared commentable logic should select the newest non-minimized
+        viewer-authored comment by `CreatedAt`.
+
+        Keep `--create-if-none`, web mode, editor/body-file flows, inline body
+        updates, noninteractive delete confirmation, and PR/issue command
+        symmetry. The fix belongs in shared commentable/comment selection so PR
+        and issue commands do not drift.
+      scenarios: ["gh-cli-comment-last-visible-viewer-comment-v1"]
+    - id: gh-cli/commentable-shared-selection-boundary
+      title: Comment selection should stay shared between PR and issue commands
+      topics: ["commands/pr-issue"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR and issue comment commands delegate last-comment mutation to the
+        shared PR commentable helper.
+      body: |
+        Both `gh pr comment` and `gh issue comment` populate a
+        `CommentableOptions` struct and call the same shared run path for
+        creating, editing, and deleting comments. Last-comment eligibility and
+        ordering should therefore be fixed once in shared code, before
+        `CommentUpdate` or `CommentDelete`, rather than separately in each
+        command wrapper.
+      scenarios: ["gh-cli-comment-last-visible-viewer-comment-v1"]
+    - id: gh-cli/auth-token-source-boundaries
+      title: Auth token sources have different account-selection semantics
+      topics: ["commands/auth", "cli/security"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Auth commands distinguish persisted host-user tokens from host-scoped
+        environment tokens when selecting accounts or composing OAuth scopes.
+      body: |
+        Persisted auth config can represent multiple users for a host and can
+        be queried by login without changing the active user. Environment
+        tokens are host-scoped process inputs instead of writable per-user
+        config entries, so commands that surface them should keep the existing
+        `x-access-token` behavior. Refresh flows compose token-header state,
+        credential-helper prompts, CLI flags, and OAuth defaults at the command
+        boundary so browser-flow tests can assert the exact additional scopes
+        passed onward.
+      scenarios:
+        - gh-cli-auth-git-credential-requested-user-v3
+        - gh-cli-auth-refresh-scope-normalization-v3
+    - id: gh-cli/auth-token-keyring-error-propagation
+      title: Auth token should report real secure-storage failures
+      topics: ["commands/auth", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh auth token` should not collapse keyring access failures into the
+        same message used for a missing token.
+      body: |
+        Active-token resolution and `--secure-storage` lookup both cross the
+        keyring boundary. Errors that mean "not found" should keep the existing
+        missing-token behavior, but other keyring errors such as a locked or
+        unavailable secure store should be surfaced to the user. Otherwise
+        operators are told to log in again when the real problem is local
+        credential-store access.
+      scenarios: ["gh-cli-auth-token-keyring-error-propagation-v1"]
+    - id: gh-cli/auth-token-lookup-precedence
+      title: Auth token lookup keeps env and compatibility precedence
+      topics: ["commands/auth", "cli/security"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Env/config tokens still take precedence, and the old blank-keyring-slot
+        fallback only applies to missing active-user keyring entries.
+      body: |
+        `gh auth token` should still return environment tokens before touching
+        secure storage, and insecure config tokens should keep their existing
+        behavior. For old keyring layouts, a missing active-user keyring entry
+        can fall back to the blank keyring slot. That compatibility fallback
+        should not hide real secure-storage errors.
+      scenarios: ["gh-cli-auth-token-keyring-error-propagation-v1"]
+    - id: gh-cli/run-download-filesystem-boundaries
+      title: Workflow run downloads publish files through shared extraction code
+      topics: ["commands/run", "cli/security"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow run artifact download safety belongs at the shared ZIP
+        extraction boundary, not only in an individual command wrapper.
+      body: |
+        The run download path crosses HTTP artifact retrieval, ZIP parsing,
+        safepaths normalization, and local filesystem publication. Safety
+        invariants such as validate-before-write, duplicate detection, rollback,
+        and executable-bit preservation should live at the shared extraction
+        seam so current and future callers inherit the same behavior.
+      scenarios: ["gh-cli-run-download-zip-safe-atomic-v3"]
+    - id: gh-cli/destructive-git-side-effect-boundaries
+      title: Destructive PR commands separate remote mutations from local cleanup
+      topics: ["commands/pr-issue", "commands/repo", "cli/security"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Local git cleanup guards should not suppress already-confirmed remote
+        API mutations.
+      body: |
+        PR and repo commands often combine remote API mutations with local git
+        cleanup. When a local safety guard blocks only the filesystem or git
+        cleanup step, preserve the remote mutation that passed confirmation and
+        emit a focused warning for the skipped local side effect.
+      scenarios: ["gh-cli-pr-close-delete-branch-worktree-guard-v3"]
+    - id: gh-cli/ref-validation-shared-boundary
+      title: Branch-name validation belongs before git side-effect construction
+      topics: ["commands/pr-issue", "commands/repo", "cli/security"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Branch refs should be validated before building refspecs, checkout
+        targets, or branch config keys.
+      body: |
+        Commands that turn user-provided or API-returned branch names into git
+        arguments should validate before constructing side effects. Keep normal
+        slash-separated branch hierarchies valid, but reject names that Git can
+        parse as command options, refspec syntax, reflog selectors, lockfiles,
+        path traversal, control characters, or malformed ref components.
+      scenarios:
+        - gh-cli-issue-develop-ref-validation-v3
+        - gh-cli-pr-checkout-ref-validation-v3
+    - id: gh-cli/http-log-redaction-boundaries
+      title: Verbose HTTP redaction operates on cloned logging data
+      topics: ["commands/api", "cli/security"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        HTTP verbose logging should redact sensitive fields without mutating
+        transport payloads.
+      body: |
+        Verbose HTTP logs need enough request and response detail to debug API
+        calls, but the logging boundary should work on cloned or derived data.
+        Header redaction and secret-shaped JSON field redaction share the same
+        privacy boundary and should not change the outbound request body,
+        response handling, or non-secret diagnostic fields.
+      scenarios: ["gh-cli-api-verbose-secret-redaction-v3"]
+    - id: gh-cli/run-view-log-retry-pagination
+      title: Run view log retries must preserve pagination and cache safety
+      topics: ["commands/run", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh run view --log` should retry transient log endpoints, load every
+        job page before fallback log assignment, and cache only valid ZIP logs.
+      body: |
+        The run log path crosses run lookup, `shared.GetJobs` pagination,
+        run-log ZIP cache population, ZIP-to-job mapping, and fallback
+        `apiLogFetcher` calls. Retry only transient log responses that carry
+        `Retry-After`, and keep retry waits bounded and deterministic. Cache
+        population should happen only after the
+        response body is confirmed to be a valid ZIP; failed and non-ZIP
+        responses should not poison the cache. Build fallback log segments only
+        after all job pages have been loaded so later-page jobs still get API
+        fallback logs in output order.
+      scenarios: ["gh-cli-run-view-log-retry-pagination-v3"]
+    - id: gh-cli/run-log-fetch-boundaries
+      title: Run log fetch transport and segment ordering are separate seams
+      topics: ["commands/run", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Run log viewing has two transport helpers, while pagination and output
+        ordering are decided before log fetchers are assigned.
+      body: |
+        Workflow run log viewing first tries a run-level ZIP, then assigns
+        per-job API log fetchers for missing logs. Retry behavior belongs close
+        to the HTTP transport helpers for both paths. Cache safety belongs to
+        the run-log ZIP helper. `shared.GetJobs` pagination and deterministic
+        segment ordering belong before `populateLogSegments` assigns ZIP or API
+        fetchers, otherwise fallback logs from later pages can be dropped even
+        though the individual per-job log transport is working.
+      scenarios: ["gh-cli-run-view-log-retry-pagination-v3"]
+    - id: gh-cli/workflow-run-input-contract
+      title: Workflow run noninteractive inputs should validate before dispatch
+      topics: ["commands/run", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh workflow run` should validate `--json`, `-f`, and `-F` inputs
+        against the selected workflow YAML before creating dispatch events.
+      body: |
+        The noninteractive path for `gh workflow run` parses `--json`, raw
+        fields, and magic fields without loading the workflow YAML. The
+        validation follow-up should reuse workflow resolution plus
+        `GetWorkflowContent` at the selected dispatch ref, run `findInputs`,
+        and reject unknown names, missing required values without defaults,
+        invalid choices, and invalid boolean strings before request-body
+        construction. Interactive prompting already loads the workflow YAML and
+        should keep its current prompts and answers.
+      scenarios: ["gh-cli-workflow-run-noninteractive-input-contract-v4"]
+    - id: gh-cli/workflow-run-dispatch-seam
+      title: Workflow dispatch validation sits before the POST seam
+      topics: ["commands/run", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow run validation should not disturb dispatch feature detection,
+        output, or file-backed field expansion.
+      body: |
+        Keep `DispatchRunDetails` feature handling, 204/200 dispatch response
+        behavior, stdout rendering, and file-backed `-F` expansion unchanged.
+        The durable seam is between input parsing and the dispatch POST: parse
+        JSON and field inputs, fetch the workflow schema at the dispatch ref,
+        validate, then build the same request body for valid inputs.
+      scenarios: ["gh-cli-workflow-run-noninteractive-input-contract-v4"]
+    - id: gh-cli/release-create-discussion-temp-draft
+      title: Release discussions belong on publish when assets force a draft
+      topics: ["commands/release", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh release create` should not send `discussion_category_name` on the
+        temporary draft release used for asset uploads.
+      body: |
+        Asset uploads force non-draft release creation through a temporary
+        draft: check for an existing release, create a draft, upload assets,
+        then publish. Draft releases cannot create discussions, so
+        `discussion_category_name` should be omitted from the initial create
+        request and sent only on the publish PATCH. Explicit `--draft` with a
+        discussion category should remain invalid.
+      scenarios: ["gh-cli-release-create-assets-discussion-draft-publish-v4"]
+    - id: gh-cli/release-create-upload-state
+      title: Release asset upload state must preserve publish and cleanup
+      topics: ["commands/release", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release create fixes should keep the temporary-draft upload state
+        machine, make_latest behavior, and cleanup on failure intact.
+      body: |
+        Preserve the existing state machine around asset uploads: create the
+        temporary draft with the same release metadata, upload all assets, PATCH
+        the release to publish, and delete the draft when upload or publish
+        fails. Keep generated notes, `make_latest`, prerelease, target, and
+        final output behavior unchanged while moving discussion-category
+        creation to the publish step.
+      scenarios: ["gh-cli-release-create-assets-discussion-draft-publish-v4"]
+    - id: gh-cli/release-download-untrusted-filenames
+      title: Release download remote filenames are untrusted local paths
+      topics: ["commands/release", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh release download` should reject unsafe asset and archive filenames
+        before mapping them onto the local filesystem.
+      body: |
+        Release asset names and archive `Content-Disposition` filenames are
+        remote data that become local paths under `--dir`. Treat them as
+        untrusted filesystem input: reject absolute paths, traversal, empty or
+        base-only unsafe names, and normalized destination collisions. Valid
+        nested asset names should still land under the destination directory.
+        Explicit `--output` is different because the user supplied the local
+        path; keep its existing semantics, including `-` for stdout.
+      scenarios: ["gh-cli-release-download-asset-path-safety-v1"]
+    - id: gh-cli/release-download-preflight
+      title: Release download should preflight destinations before workers
+      topics: ["commands/release", "cli/security", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Multi-asset release downloads should validate destination paths before
+        starting concurrent downloads so one bad asset cannot leave partial
+        output behind.
+      body: |
+        `gh release download` starts worker goroutines for normal assets and
+        uses `destinationWriter` to check and copy each file. Safety validation
+        should run on the complete known destination set before workers start.
+        Archive downloads learn the filename only after the HTTP response
+        header is parsed, so they need a second validation immediately after
+        parsing `Content-Disposition` and before local file creation.
+      scenarios: ["gh-cli-release-download-asset-path-safety-v1"]
+    - id: gh-cli/release-upload-sanitized-name-collisions
+      title: Release upload should preflight sanitized filename collisions
+      topics: ["commands/release", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh release upload` should detect requested asset collisions after
+        GitHub-style filename sanitization before delete/upload workers start.
+      body: |
+        GitHub normalizes release asset filenames; the upload command already
+        mirrors that behavior with `sanitizeFileName` for `--clobber` checks
+        against existing assets. The same sanitized key should be used to
+        dedupe the requested upload set before workers start. Labels are
+        metadata after the filename and must not affect the collision key.
+      scenarios: ["gh-cli-release-upload-sanitized-collision-preflight-v1"]
+    - id: gh-cli/release-upload-side-effect-order
+      title: Release upload collision checks run before clobber deletes
+      topics: ["commands/release", "cli/security", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        `gh release upload --clobber` should allow one requested replacement
+        for an existing asset, but requested-vs-requested collisions should fail
+        before deleting anything.
+      body: |
+        `--clobber` marks a requested asset with the matching existing asset
+        URL, and deletion happens inside the upload worker before POST. Because
+        deletion is destructive, requested asset collisions must be detected
+        before any worker is launched. A single requested asset that collides
+        with one existing release asset remains a valid replacement when
+        `--clobber` is set.
+      scenarios: ["gh-cli-release-upload-sanitized-collision-preflight-v1"]
+    - id: gh-cli/release-delete-cleanup-tag-ref-encoding
+      title: Release cleanup-tag should encode the remote ref segment
+      topics: ["commands/release", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh release delete --cleanup-tag` deletes a Git refs REST path, so the
+        tag name must be path-escaped as one ref segment.
+      body: |
+        The cleanup-tag flow deletes `refs/tags/<tag>` through the REST API.
+        Interpolating the tag directly into the URL breaks tags containing
+        slashes, spaces, `?`, `#`, or other URL-significant bytes because the
+        value stops being one ref segment. Encode the tag segment for the
+        remote DELETE while preserving ordinary tag names.
+      scenarios: ["gh-cli-release-delete-cleanup-tag-ref-encoding-v1"]
+    - id: gh-cli/release-delete-local-tag-boundary
+      title: Remote tag escaping should not mutate local tag deletion
+      topics: ["commands/release", "commands/repo"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Local cleanup still operates on the literal tag name, not the encoded
+        REST path segment.
+      body: |
+        `gh release delete --cleanup-tag` only runs local `git tag -d` when no
+        repo override is used. That local command should receive the original
+        literal tag argument. URL escaping belongs only to the remote
+        `git/refs/tags/<tag>` request path, so the fix should not double-escape
+        or otherwise rewrite the local tag name.
+      scenarios: ["gh-cli-release-delete-cleanup-tag-ref-encoding-v1"]
+    - id: gh-cli/run-watch-annotation-cache
+      title: Run watch annotations cache per completed job
+      topics: ["commands/run", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh run watch` should cache annotations per completed job while
+        aggregating cached and fresh annotations for display.
+      body: |
+        `renderRun` receives a map keyed by job ID. Each cache entry should
+        contain annotations for exactly that job, not the aggregate annotations
+        rendered for every job so far. On each refresh, build a separate output
+        slice by appending cached annotations for completed jobs and freshly
+        fetched annotations for jobs that are not cached.
+      scenarios: ["gh-cli-run-watch-annotation-cache-per-job-v1"]
+    - id: gh-cli/run-watch-job-state-boundaries
+      title: Run watch cache policy follows job completion state
+      topics: ["commands/run", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Completed jobs can reuse cached annotations, while in-progress jobs and
+        missing-permission responses keep the existing refresh behavior.
+      body: |
+        A completed job's annotations are stable enough to cache after a
+        successful fetch. In-progress jobs should continue to fetch annotations
+        on subsequent refreshes until completion. If annotations return the
+        existing missing `checks:read` permission error, preserve the current
+        message and do not mutate the cache as if the fetch succeeded.
+      scenarios: ["gh-cli-run-watch-annotation-cache-per-job-v1"]
+    - id: gh-cli/run-rerun-job-name-selector
+      title: Run rerun job-name selection resolves to one database ID
+      topics: ["commands/run", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh run rerun --job-name` should select exactly one job from a run by
+        display name and rerun that job's database ID.
+      body: |
+        `gh run rerun --job` already accepts a job database ID, not the job URL
+        number users often see in the browser. A job-name selector should stay
+        run-scoped: require a run ID, fetch the run, page through all jobs with
+        the shared job-listing helper, match the exact job display name, and
+        then call the existing job rerun path with the matched database ID. If
+        zero or multiple jobs match, fail before any rerun POST.
+      scenarios: ["gh-cli-run-rerun-job-name-selector-v1"]
+    - id: gh-cli/run-rerun-job-selector-boundary
+      title: Run rerun selector flags are mutually exclusive
+      topics: ["commands/run"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        `--job-name` is a separate selector and should not change existing
+        `--job`, `--failed`, or debug semantics.
+      body: |
+        Preserve the current `--job` database-ID path, whole-run reruns,
+        failed-job reruns, prompt mode, and `--debug` request payload/output.
+        Because `--job-name` first resolves a run's jobs, it should be rejected
+        with `--job`, with `--failed`, or without a run ID in noninteractive
+        mode before making HTTP requests.
+      scenarios: ["gh-cli-run-rerun-job-name-selector-v1"]
+    - id: gh-cli/repo-sync-ref-validation
+      title: Repo sync should validate branch refs before side effects
+      topics: ["commands/repo", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh repo sync` branch values cross into local git refspecs and remote
+        REST paths, so they should be validated before sync side effects.
+      body: |
+        `gh repo sync --branch` and default branch names returned by the API are
+        used to build `git fetch` refspecs, local branch updates/creation,
+        merge-upstream payloads, latest-commit REST paths, and sync-fork PATCH
+        paths. Validate the branch name before any of those side effects.
+        Reject names that Git can parse as command options, refspec syntax,
+        reflog selectors, lockfiles, traversal-like path components, control
+        characters, or malformed ref components.
+      scenarios: ["gh-cli-repo-sync-branch-ref-validation-v1"]
+    - id: gh-cli/repo-sync-dual-path
+      title: Repo sync local and remote paths share the branch invariant
+      topics: ["commands/repo", "cli/security", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Local sync and remote fork sync need the same branch validation even
+        though they use different git and API seams.
+      body: |
+        Local sync resolves remotes and fetches `refs/heads/<branch>` before
+        checking branch ancestry or dirty-worktree state. Remote sync first
+        tries merge-upstream, then falls back through parent lookup,
+        latest-commit, and git-ref PATCH endpoints. Both paths should reject
+        malformed branch names before mutation while keeping ordinary branch
+        hierarchies such as `release/2026.05` valid.
+      scenarios: ["gh-cli-repo-sync-branch-ref-validation-v1"]
+    - id: gh-cli/gist-create-filename-map-collision
+      title: Gist create should reject duplicate remote filenames
+      topics: ["commands/gist", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh gist create` maps inputs into API payload files keyed by remote gist
+        filename, so duplicates should not be allowed to overwrite earlier
+        entries.
+      body: |
+        Gist creation collects local file paths and stdin into a map keyed by
+        the remote gist filename. Local files use `filepath.Base`; stdin uses
+        either the `--filename` override or a generated `gistfileN.txt` name.
+        Reject duplicate remote names before assigning into the map so later
+        inputs cannot silently replace earlier content in the API payload.
+      scenarios: ["gh-cli-gist-create-duplicate-filename-guard-v1"]
+    - id: gh-cli/gist-create-stdin-boundary
+      title: Gist create stdin filename override is part of collision detection
+      topics: ["commands/gist", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        `--filename` applies to stdin gist entries and should participate in
+        duplicate-name preflight without changing ordinary file basenames.
+      body: |
+        Keep existing stdin behavior: `--filename` names stdin content, and
+        stdin without an override uses the generated `gistfileN.txt` names.
+        File path inputs continue to use their basenames. Collision detection
+        should run before auth lookup, progress output, or the gist creation
+        request, while preserving binary-file checks and successful distinct
+        multi-file payloads.
+      scenarios: ["gh-cli-gist-create-duplicate-filename-guard-v1"]
+    - id: gh-cli/repo-clone-upstream-remote-name
+      title: Repo clone upstream remote names require git-safe validation
+      topics: ["commands/repo", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh repo clone --upstream-remote-name` becomes a local git remote name
+        for fork parents and should be validated before git side effects.
+      body: |
+        Upstream remote names are both git argv values and remote config key
+        components. Reject option-like names, path-like names containing `/`,
+        refspec-like names, empty names, and whitespace/control-character
+        forms before clone or remote setup side effects. Preserve ordinary
+        names such as `upstream` and `github`.
+      scenarios: ["gh-cli-repo-clone-upstream-remote-name-validation-v1"]
+    - id: gh-cli/repo-clone-side-effect-order
+      title: Repo clone upstream validation runs before fork clone side effects
+      topics: ["commands/repo", "cli/security", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Invalid fork upstream configuration should fail before creating the
+        local clone, while valid fork clones keep parent remote setup intact.
+      body: |
+        `gh repo clone` resolves canonical repo metadata before cloning. For
+        fork clones, validate `--upstream-remote-name` once it is known that the
+        parent remote would be used, but before `git clone`. The special
+        `@owner` value resolves to the parent owner and should then flow through
+        the same safe remote-name invariant before remote add/fetch/default
+        repository setup. `--no-upstream` bypasses upstream remote creation.
+      scenarios: ["gh-cli-repo-clone-upstream-remote-name-validation-v1"]
+    - id: gh-cli/repo-fork-remote-name-validation
+      title: Repo fork remote names require git-safe validation
+      topics: ["commands/repo", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh repo fork --remote-name` feeds a user-provided string into local
+        git remote config and should validate that string before side effects.
+      body: |
+        Fork flows that will add or rename a local remote should validate the
+        requested remote name before creating a fork through the API or running
+        git remote side effects. Reject option-like, path-like, refspec-like,
+        whitespace/control-character, and empty forms. Keep ordinary names such
+        as `fork` and `upstream`, existing remote reuse or rename behavior,
+        configured clone protocol, repository-argument cloning, `--fork-name`,
+        and `--default-branch-only` intact.
+      scenarios: ["gh-cli-repo-fork-remote-name-side-effect-order-v1"]
+    - id: gh-cli/repo-fork-remote-free-boundary
+      title: Repo fork remote-free flows should not validate unused remote names
+      topics: ["commands/repo", "cli/security", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Remote-name validation for repo fork applies only when a local remote
+        will be created or renamed.
+      body: |
+        `gh repo fork --remote=false` and fork-only flows that do not create a
+        local remote should not fail just because an otherwise invalid
+        `--remote-name` value is present. The boundary matters because fork
+        creation can be a remote-only mutation, while remote-name safety is a
+        local git config invariant.
+      scenarios: ["gh-cli-repo-fork-remote-name-side-effect-order-v1"]
+    - id: gh-cli/env-file-duplicate-key-preflight
+      title: Secret and variable env-file input should reject duplicate keys
+      topics: ["commands/secret", "commands/variable", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh secret set --env-file` and `gh variable set --env-file` should fail
+        on duplicate dotenv keys before lookups, encryption, or mutations.
+      body: |
+        Env-file bulk set commands parse dotenv input into key/value maps before
+        performing public-key lookup, repository lookup, encryption, or
+        create/update API calls. Duplicate keys should be detected while reading
+        the env-file or stdin input and should abort the command before any of
+        those side effects. Error messages should name the duplicate key so the
+        file can be repaired.
+      scenarios: ["gh-cli-secret-variable-env-file-duplicate-keys-v1"]
+    - id: gh-cli/env-file-shared-parser-boundary
+      title: Env-file duplicate detection should preserve dotenv grammar
+      topics: ["commands/secret", "commands/variable", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Duplicate-key detection should share the dotenv parsing boundary used
+        by secret and variable env-file commands.
+      body: |
+        Avoid ad hoc line parsing that would change accepted dotenv syntax.
+        Comments, quoted values, `export` prefixes if already supported, blank
+        lines, and `=` characters inside values should keep their existing
+        behavior for unique files. The same duplicate-key preflight should serve
+        secret and variable env-file inputs, including `--env-file -` stdin, so
+        the commands do not drift.
+      scenarios: ["gh-cli-secret-variable-env-file-duplicate-keys-v1"]
+    - id: gh-cli/attestation-download-predicate-server-filter
+      title: Attestation download should push predicate filtering to the API
+      topics: ["commands/attestation", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh attestation download --predicate-type` should send the predicate to
+        the attestation lookup API instead of fetching every bundle first.
+      body: |
+        The attestation API already accepts `FetchParams.PredicateType` and the
+        live client translates it into the `predicate_type` query parameter.
+        Download should populate that field before `GetByDigest` so the server
+        can avoid returning unrelated bundles. A server-side no-match should
+        keep the existing "No attestations found" non-error path and should not
+        write an empty metadata file.
+      scenarios: ["gh-cli-attestation-download-predicate-server-filter-v1"]
+    - id: gh-cli/attestation-download-client-filter-boundary
+      title: Attestation download keeps client filtering as compatibility only
+      topics: ["commands/attestation", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Predicate filtering may still be applied defensively after fetch, but
+        not as the only filtering mechanism.
+      body: |
+        Older or mocked attestation clients may still return mixed bundles, so
+        keeping the existing client-side predicate filter is acceptable as a
+        compatibility guard. The important boundary is that the fetch request
+        carries `PredicateType` and no-match semantics remain clear: no bundles
+        from the API is not a write, while malformed returned bundles still use
+        the existing filter error path.
+      scenarios: ["gh-cli-attestation-download-predicate-server-filter-v1"]
+    - id: gh-cli/pr-create-fill-skip-merge-commits
+      title: PR autofill should skip merge commits in multi-commit summaries
+      topics: ["commands/pr-issue", "git/client", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh pr create --fill` should avoid using merge commits as PR summary
+        content when a branch contains ordinary feature commits.
+      body: |
+        PR autofill builds titles and bodies from `GitClient.Commits`. Branches
+        that were updated with merge commits often place a noisy "Merge branch"
+        commit at the top of the range. Multi-commit summaries should ignore
+        merge commits and summarize the ordinary commits instead. The git
+        boundary can use `--no-merges` or include parent metadata and skip
+        commits with multiple parents.
+      scenarios: ["gh-cli-pr-create-fill-skip-merge-commits-v1"]
+    - id: gh-cli/pr-create-fill-first-boundary
+      title: PR autofill first-commit behavior should stay explicit
+      topics: ["commands/pr-issue", "git/client"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Merge filtering should not accidentally rewrite the meaning of
+        explicit fill modes or single-commit autofill.
+      body: |
+        `--fill`, `--fill-verbose`, and `--fill-first` share the commit reader
+        but have different user-facing intent. Merge filtering is intended for
+        noisy multi-commit summaries, not for changing explicit fill mode
+        precedence, title/body overrides, or the existing single-commit path.
+        Package tests should cover both the shared git commit parser and PR
+        create's autofill behavior.
+      scenarios: ["gh-cli-pr-create-fill-skip-merge-commits-v1"]

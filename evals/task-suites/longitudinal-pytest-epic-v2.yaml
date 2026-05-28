@@ -1,0 +1,176 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-pytest-epic-v2
+description: >-
+  Hard cross-boundary pytest longitudinal suite. The single scenario is pinned
+  before a real upstream-style feature that spans marker-expression parsing,
+  marker matching, collection-time deselection, and terminal reporting. It is
+  verified through pytest's public `-m` behavior using a hidden pytester-based
+  test with deterministic, independent assertions.
+seededCorpus: ../vault-seeds/pytest-epic-v2.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: pytest-config-collection-cache-epic-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pytest-dev/pytest
+      sha: e8fa8dd31c365cb5b52f8bdf1966e13cbf66e9ec
+    phaseA:
+      promptId: pytest-config-collection-cache-epic-v2-formation
+      prompt: >-
+        We will extend pytest marker selection in a later session. Inspect the
+        marker-expression scanner and parser, the `MarkMatcher` and
+        `KeywordMatcher` used to evaluate `-m`/`-k` against collected items,
+        how marks and their arguments are stored and iterated on a node, how
+        `-m` deselection runs during collection, how deselected and selected
+        counts are reported, and the marker-expression and mark regression
+        tests. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: pytest-config-collection-cache-epic-v2-use
+      prompt: >-
+        Let users filter by marker arguments from the `-m` command line, not
+        just by marker name. A marker expression like `-m "stage(name='ci')"`
+        should select only items whose `stage` marker was applied with a
+        matching argument, while bare `-m "stage"` keeps matching on name
+        alone. Argument values written in the expression should compare against
+        the values passed to the marker with their natural types, support more
+        than one argument in a single call, and combine with the existing
+        `and`/`or`/`not` operators and parentheses. When a node carries the
+        same marker more than once, a match on any application should select
+        it. Selection must keep deselecting non-matching items during
+        collection and keep reporting accurate selected and deselected counts.
+        Preserve existing name-only `-m` and `-k` behavior, keyword-expression
+        rejection of call syntax, and the marker-expression error reporting.
+        Add focused regressions.
+    expectedContext:
+      description: >-
+        Marker-argument selection belongs in the expression grammar plus the
+        marker matcher: the scanner/parser must accept typed argument values
+        and the matcher must compare them against the arguments stored on each
+        applied mark, while collection deselection and count reporting stay
+        intact.
+      keywords:
+        - marker expression
+        - keyword arguments
+        - MarkMatcher
+        - deselect
+        - typed value
+    seededContext:
+      renderedContext: |
+        - [memory] pytest/marker-expression-argument-values: `-m` evaluation splits across two layers. The expression scanner/parser owns syntax: it must tokenize `name(arg=value)` calls, accept typed values (quoted strings, integers including negatives, and the `True`/`False`/`None` literals), allow several comma-separated arguments, and keep these calls composable with `and`/`or`/`not` and parentheses. The matcher layer owns semantics: a marker call matches a node only when an applied marker of that name carries arguments equal to every argument written in the expression. Bare `name` still matches on presence alone.
+        - [memory] pytest/markmatcher-stores-marks-per-name: `MarkMatcher.from_item` should index a node's markers by name and keep each applied `Mark` (with its `kwargs`) rather than collapsing to a set of names, so argument comparisons can run later. When the same marker name is applied more than once, an argument match against any one application selects the node. The `KeywordMatcher` used for `-k` should keep rejecting call syntax so `-k` stays a name/substring matcher.
+        - [memory] pytest/marker-selection-deselection-and-counts: Marker-argument matching is still a collection-time deselection step. Items whose markers do not match are removed during collection and reported as deselected, and the selected/deselected counts plus `--collect-only` listing must stay accurate. Adding argument matching must not change name-only `-m` behavior or the existing "wrong expression" error reporting for malformed expressions.
+      contextIds:
+        - pytest/marker-expression-argument-values
+        - pytest/markmatcher-stores-marks-per-name
+        - pytest/marker-selection-deselection-and-counts
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/testing/test_mark_expression_kwargs_hidden.py b/testing/test_mark_expression_kwargs_hidden.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/testing/test_mark_expression_kwargs_hidden.py
+          @@ -0,0 +1,90 @@
+          +from __future__ import annotations
+          +
+          +from _pytest.pytester import Pytester
+          +
+          +
+          +SAMPLE = """
+          +    import pytest
+          +
+          +    @pytest.mark.endpoint(path="/users", retries=3, secure=True)
+          +    def test_users():
+          +        pass
+          +
+          +    @pytest.mark.endpoint(path="/orders", retries=3, secure=False)
+          +    def test_orders():
+          +        pass
+          +
+          +    @pytest.mark.endpoint(path="/users", retries=0, secure=True)
+          +    def test_users_legacy():
+          +        pass
+          +
+          +    @pytest.mark.budget(ceiling=-5)
+          +    def test_budget():
+          +        pass
+          +
+          +    @pytest.mark.fallback(handler=None)
+          +    def test_fallback():
+          +        pass
+          +
+          +    @pytest.mark.endpoint(path="/users")
+          +    @pytest.mark.endpoint(path="/health")
+          +    def test_multi_endpoint():
+          +        pass
+          +"""
+          +
+          +
+          +def _selected(pytester: Pytester, expr: str) -> list[str]:
+          +    result = pytester.runpytest("-m", expr, "--collect-only", "-q")
+          +    return sorted(
+          +        line.split("::")[-1] for line in result.stdout.lines if "::" in line
+          +    )
+          +
+          +
+          +def test_hidden_string_kwarg_selects_matching_marks(pytester: Pytester) -> None:
+          +    pytester.makepyfile(test_sample=SAMPLE)
+          +    result = pytester.runpytest("-m", "endpoint(path='/users')")
+          +    result.assert_outcomes(passed=3, deselected=3)
+          +    assert result.ret == 0
+          +    assert _selected(pytester, "endpoint(path='/users')") == [
+          +        "test_multi_endpoint",
+          +        "test_users",
+          +        "test_users_legacy",
+          +    ]
+          +
+          +
+          +def test_hidden_typed_kwargs_match_by_value_type(pytester: Pytester) -> None:
+          +    pytester.makepyfile(test_sample=SAMPLE)
+          +    assert _selected(pytester, "endpoint(retries=3)") == ["test_orders", "test_users"]
+          +    assert _selected(pytester, "endpoint(secure=False)") == ["test_orders"]
+          +    assert _selected(pytester, "budget(ceiling=-5)") == ["test_budget"]
+          +    assert _selected(pytester, "fallback(handler=None)") == ["test_fallback"]
+          +
+          +
+          +def test_hidden_multiple_kwargs_are_conjunctive(pytester: Pytester) -> None:
+          +    pytester.makepyfile(test_sample=SAMPLE)
+          +    assert _selected(
+          +        pytester, "endpoint(path='/users', retries=3, secure=True)"
+          +    ) == ["test_users"]
+          +
+          +    none_result = pytester.runpytest(
+          +        "-m", "endpoint(path='/users', retries=99)", "--collect-only", "-q"
+          +    )
+          +    assert [line for line in none_result.stdout.lines if "::" in line] == []
+          +    assert none_result.ret == 5
+          +
+          +
+          +def test_hidden_stacked_marks_match_any_and_report_deselection(
+          +    pytester: Pytester,
+          +) -> None:
+          +    pytester.makepyfile(test_sample=SAMPLE)
+          +    result = pytester.runpytest("-m", "endpoint(path='/health')")
+          +    result.assert_outcomes(passed=1, deselected=5)
+          +    assert result.ret == 0
+          +    assert _selected(pytester, "endpoint(path='/health')") == ["test_multi_endpoint"]
+          +
+          +
+          +def test_hidden_kwargs_compose_with_boolean_operators(pytester: Pytester) -> None:
+          +    pytester.makepyfile(test_sample=SAMPLE)
+          +    assert _selected(
+          +        pytester, "endpoint(path='/users') and not endpoint(retries=0)"
+          +    ) == ["test_multi_endpoint", "test_users"]
+        command: bash
+        args:
+          - -lc
+          - SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYTEST=9.0.0 uv run --with-editable . python -m pytest testing/test_mark_expression_kwargs_hidden.py -q
+        timeoutMs: 300000

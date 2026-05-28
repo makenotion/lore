@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { EventEmitter } from "node:events"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const { spawnMock } = vi.hoisted(() => ({
@@ -26,6 +26,7 @@ const envKeys = [
   "LORE_BENCH_OPENAI_API_KEY",
   "CODEX_HOME",
   "HOME",
+  "PATH",
 ] as const
 
 afterEach(async () => {
@@ -147,6 +148,7 @@ async function setupBenchRunEnv(): Promise<{ workspace: string }> {
   const workspace = await mkdtemp(join(tmpdir(), "lore-bench-adapter-test-"))
   tempDirs.push(sourceCodexHome, workspace)
   await writeFile(join(workspace, BENCH_MODE_SENTINEL), "")
+  await stageCodexOnPath()
   process.env["LORE_EVAL_BENCH_REAL"] = "1"
   process.env["LORE_BENCH_OPENAI_API_KEY"] = "sk-bench-only"
   process.env["CODEX_HOME"] = sourceCodexHome
@@ -161,11 +163,25 @@ async function setupTaskRunEnv(): Promise<{ workspace: string }> {
   const sourceCodexHome = await mkdtemp(join(tmpdir(), "lore-codex-source-home-"))
   const workspace = await mkdtemp(join(tmpdir(), "lore-task-adapter-test-"))
   tempDirs.push(sourceCodexHome, workspace)
+  await stageCodexOnPath()
   process.env["LORE_EVAL_TASK_REAL"] = "1"
   process.env["LORE_EVAL_TASK_TIMEOUT_KILL_GRACE_MS"] = "1"
   process.env["CODEX_HOME"] = sourceCodexHome
   process.env["HOME"] = sourceCodexHome
   return { workspace }
+}
+
+// Stage a resolvable, executable `codex` on PATH so the adapter's
+// resolveCodexExecutable pre-check passes regardless of whether the host (e.g. a
+// CI runner) actually has codex installed. spawn itself is mocked, so this file
+// is never executed — it only needs to be discoverable and executable.
+async function stageCodexOnPath(): Promise<void> {
+  const binDir = await mkdtemp(join(tmpdir(), "lore-codex-bin-"))
+  tempDirs.push(binDir)
+  const codexPath = join(binDir, "codex")
+  await writeFile(codexPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  await chmod(codexPath, 0o755)
+  process.env["PATH"] = `${binDir}${delimiter}${process.env["PATH"] ?? ""}`
 }
 
 function fakeChild(): EventEmitter & {

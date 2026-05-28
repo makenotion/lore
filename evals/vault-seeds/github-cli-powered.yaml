@@ -3,8 +3,8 @@ id: github-cli-powered
 description: >-
   Source-controlled seed corpus for the GitHub CLI powered-candidate
   longitudinal suite. Memories are PR-derived or generalized from GitHub CLI
-  conventions and rewritten as reusable project knowledge for 75 sibling-task
-  candidates at the pinned repository SHA.
+  conventions and rewritten as reusable project knowledge for an expanded pool
+  of sibling-task candidates at the pinned repository SHA.
 repository:
   repo: cli/cli
   sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
@@ -20,24 +20,69 @@ vault:
     - id: commands/alias
       name: Alias commands
       description: Conventions for `gh alias` command packages and tests.
+    - id: commands/gist
+      name: Gist commands
+      description: Gist list/edit/create command behavior, payloads, filtering, and tests.
+    - id: commands/auth
+      name: Auth commands
+      description: Conventions for account switching, token flows, and multi-account config.
+    - id: commands/codespace
+      name: Codespace commands
+      description: Codespace SSH, config, port-forwarding, and selector behavior.
+    - id: commands/workflow
+      name: Workflow commands
+      description: Workflow dispatch, selection, input collection, and REST payload behavior.
+    - id: commands/search
+      name: Search commands
+      description: Search command query construction, pagination, and JSON output behavior.
     - id: commands/skills
       name: Skill commands
       description: Conventions for `gh skill` command packages, discovery, and install flows.
     - id: commands/secret
       name: Secret commands
       description: Conventions for `gh secret` routing across applications and scopes.
+    - id: commands/variable
+      name: Variable commands
+      description: Actions variable list, set, delete, and sync behavior across scopes.
     - id: commands/repo
       name: Repository commands
       description: Conventions for `gh repo` command flags, payload mapping, and tests.
+    - id: commands/project
+      name: Project commands
+      description: Project v2 command mutations, field values, and changed-flag semantics.
     - id: commands/pr-issue
       name: Pull request and issue commands
       description: Conventions shared by `gh pr` and `gh issue` commands.
     - id: commands/release
       name: Release commands
       description: Release verification, asset verification, and release metadata behavior.
+    - id: commands/run
+      name: Workflow run commands
+      description: Conventions for `gh run` watch/view JSON output and exit behavior.
+    - id: commands/cache
+      name: Cache commands
+      description: Actions cache list/delete behavior, filters, and mutation boundaries.
+    - id: commands/label
+      name: Label commands
+      description: Repository label creation, editing, deletion, and bulk planning.
+    - id: commands/extension
+      name: Extension commands
+      description: Extension install, upgrade, metadata, and git command behavior.
+    - id: commands/status
+      name: Status command
+      description: Top-level status aggregation, human output, and machine-readable sections.
+    - id: commands/ruleset
+      name: Ruleset commands
+      description: Ruleset list, view, check, JSON output, and REST path boundaries.
+    - id: commands/discussion
+      name: Discussion commands
+      description: Conventions for repo-scoped discussion list/view/create command packages.
     - id: commands/attestation
       name: Attestation commands
       description: Attestation bundle loading, verification, and large-file handling.
+    - id: commands/agent-task
+      name: Agent task commands
+      description: Agent task creation, session lookup, CAPI interactions, and output behavior.
     - id: output/json
       name: Machine-readable output
       description: Patterns for JSON output modes and IO stream usage.
@@ -258,6 +303,7 @@ vault:
         - gh-cli-secret-list-application-column
         - gh-cli-secret-shared-application-alias
         - gh-cli-secret-set-no-store-json
+        - gh-cli-secret-unsupported-scope-error-helper
       sourcePullRequests:
         - repo: cli/cli
           number: 13421
@@ -280,14 +326,31 @@ vault:
       scenarios:
         - gh-cli-repo-edit-merge-commit-message
         - gh-cli-repo-edit-auto-merge-prerequisite
-        - gh-cli-repo-edit-security-validation
         - gh-cli-repo-edit-topic-cache
-        - gh-cli-repo-edit-visibility-warning
+        - gh-cli-repo-edit-security-push-protection-validation
       sourcePullRequests:
         - repo: cli/cli
           number: 12846
           title: "feat(repo): add --squash-merge-commit-message flag to gh repo edit"
           url: https://github.com/cli/cli/pull/12846
+    - id: gh-cli/pr-create-dry-run-boundary
+      title: PR create dry-run skips metadata mutation boundaries
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh pr create --dry-run` may prepare git state but should render the
+        preview without metadata resolution or PR mutation calls.
+      body: |
+        `gh pr create --dry-run` is a preview mode, not a partial create. It may
+        still perform git push preparation because that is documented behavior,
+        but once PR parameters are assembled it should render supplied metadata
+        strings directly. Do not resolve labels, reviewers, assignees,
+        milestones, or projects through API metadata helpers before the dry-run
+        preview, and do not create or update the pull request.
+      scenarios:
+        - gh-cli-pr-create-dry-run-skips-metadata-resolution
+      sourcePullRequests: []
     - id: gh-cli/pr-issue-display-names
       title: Human PR and issue output uses display names while JSON preserves raw API values
       topics: ["commands/pr-issue", "output/json", "tests/commands", "cli/ux"]
@@ -328,6 +391,7 @@ vault:
         see presentation-only strings.
       scenarios:
         - gh-cli-pr-checks-display-names
+        - gh-cli-pr-checks-watch-json-final-state
     - id: gh-cli/pr-finder-validation
       title: PR and issue finders should not skip API validation for number-only JSON
       topics: ["commands/pr-issue", "output/json", "tests/commands", "api/http"]
@@ -407,6 +471,24 @@ vault:
           number: 13210
           title: Record CI context in telemetry
           url: https://github.com/cli/cli/pull/13210
+    - id: gh-cli/search-advanced-fallback-pagination
+      title: Issue search fallback shares pagination and JSON output paths
+      topics: ["commands/search", "output/json", "tests/commands", "api/http"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Issue search feature detection changes query syntax, not REST
+        pagination or command JSON output behavior.
+      body: |
+        `gh search issues` chooses standard or advanced issue-search syntax
+        from feature detection. Unsupported hosts should use the standard query
+        string and omit `advanced_search=true`, while still following REST Link
+        pagination until the requested limit is met. Command-level `--json`
+        behavior should remain an exporter concern and should not fork the
+        searcher's pagination path.
+      scenarios:
+        - gh-cli-search-issues-advanced-fallback-pagination-json
+      sourcePullRequests: []
     - id: gh-cli/agentic-http-client-context
       title: Agent identity must be preserved through API and auth HTTP clients
       topics: ["api/http", "telemetry", "tests/commands"]
@@ -435,6 +517,86 @@ vault:
           number: 13023
           title: Record agentic invocations in User-Agent header
           url: https://github.com/cli/cli/pull/13023
+    - id: gh-cli/codespace-ssh-config-quoting
+      title: Codespace SSH config quotes generated identity paths consistently
+      topics: ["commands/codespace", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Generated codespace SSH config uses the automatic key path in both
+        IdentityFile and ProxyCommand.
+      body: |
+        `gh codespace ssh --config` renders OpenSSH config from a template. The
+        automatic private key path appears in the `IdentityFile` line and again
+        in the nested `ProxyCommand ... -- -i ...` invocation. When escaping or
+        quoting paths with whitespace, keep those two uses consistent and
+        preserve the `Host cs.<name>.<ref>` alias format.
+      scenarios:
+        - gh-cli-codespace-ssh-config-quotes-auto-key
+      sourcePullRequests: []
+    - id: gh-cli/auth-switch-disambiguation
+      title: Auth switch ambiguity errors include the host dimension
+      topics: ["commands/auth", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        `gh auth switch` should tell noninteractive users which host to specify
+        when a username matches multiple accounts.
+      body: |
+        Account-switch candidates are identified by both host and username.
+        `gh auth switch` can auto-switch only when the filtered candidates
+        identify one account, or when exactly two users exist on one host and
+        the inactive account is unambiguous. In noninteractive ambiguous cases,
+        include the matching hostnames and ask the user to pass `--hostname`
+        rather than returning only the generic disambiguation error.
+      scenarios:
+        - gh-cli-auth-switch-ambiguous-user-host-error
+      sourcePullRequests: []
+    - id: gh-cli/run-watch-json-final-state
+      title: Watch commands with JSON output emit one terminal-state payload
+      topics: ["commands/run", "output/json", "tests/commands", "cli/ux"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Watch-style commands that gain JSON output should skip alternate-screen
+        rendering and preserve terminal exit semantics.
+      body: |
+        `gh run watch` continuously refreshes human output until a run reaches a
+        terminal state. A JSON mode should not stream partial human refresh
+        frames or use the alternate screen. It should poll to the same terminal
+        state, fetch the final run/job data once, write one exporter payload,
+        and preserve `--exit-status` behavior for failed conclusions. Tests
+        should assert both the final JSON shape and the absence of human watch
+        rendering in JSON mode.
+      scenarios:
+        - gh-cli-run-watch-json-final-state
+      sourcePullRequests: []
+    - id: gh-cli/discussion-list-json-filters
+      title: Discussion list follows repo-scoped GraphQL and JSON exporter patterns
+      topics: ["commands/discussion", "output/json", "tests/commands", "api/http"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        Discussion list commands should register as repo-scoped command groups,
+        support filters, and expose stable JSON fields.
+      body: |
+        A repo-scoped `gh discussion list` command should follow neighboring
+        list command patterns: a command group registered from root through the
+        repo-resolving factory, package-local option parsing, GraphQL/httpmock
+        tests for filter variables, and `cmdutil.AddJSONFlags` for machine
+        output. JSON fields should be stable script-facing values rather than
+        human table strings.
+      scenarios:
+        - gh-cli-discussion-list-json-filters
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 13082
+          title: Add `discussion` command group scaffolding
+          url: https://github.com/cli/cli/pull/13082
+        - repo: cli/cli
+          number: 13084
+          title: Add `discussion list` command
+          url: https://github.com/cli/cli/pull/13084
     - id: gh-cli/release-digest-algorithm
       title: Release verification derives digest algorithm from ref length
       topics: ["commands/release", "commands/attestation", "tests/commands"]
@@ -528,6 +690,7 @@ vault:
         - gh-cli-repo-gitignore-list-json
         - gh-cli-repo-license-list-json
         - gh-cli-extension-upgrade-json
+        - gh-cli-extension-upgrade-json-dry-run-no-mutation
     - id: gh-cli/destructive-quiet-output
       title: Destructive commands can support quiet output without changing the operation
       topics: ["flags/cobra", "tests/commands", "cli/ux"]
@@ -563,11 +726,15 @@ vault:
         not transient display state. Validation-only and dry-run modes should
         keep their no-mutation contract even when diagnostics are emitted as
         JSON. Machine-readable output should preserve the same safety semantics
-        as human output rather than silently dropping warnings.
+        as human output rather than silently dropping warnings. Preview JSON
+        should keep provenance fields explicit, including upstream owner, repo,
+        and ref, while warnings remain on stderr instead of corrupting stdout
+        JSON.
       scenarios:
         - gh-cli-skills-install-upstream-tenancy-lockfile
         - gh-cli-skills-preview-hidden-upstream-provenance-json
         - gh-cli-skills-publish-strict-json-no-side-effects
+        - gh-cli-skills-update-atomic-install-failure
       sourcePullRequests: []
     - id: gh-cli/telemetry-privacy-boundaries
       title: Telemetry skip and host dimensions must stay observable without leaking raw values
@@ -623,6 +790,1982 @@ vault:
         implementation details such as scanner buffers or decoders evolve.
       scenarios:
         - gh-cli-attestation-jsonl-streaming-error-boundaries
+        - gh-cli-attestation-inspect-preserves-load-errors
+      sourcePullRequests: []
+    - id: gh-cli/api-nested-query-encoding
+      title: GET query encoding preserves nested field paths
+      topics: ["api/http", "tests/commands"]
+      confidence: medium
+      provenanceKind: pr-derived
+      synopsis: >-
+        `gh api` GET parameters should preserve the bracket path produced by
+        nested `-F` field parsing.
+      body: |
+        `gh api -F` parses bracketed keys into nested maps and slices so POST
+        bodies can become structured JSON. GET requests and `--input` query
+        parameters still need the original bracket path in the URL, such as
+        `properties[][property_name]`, rather than flattening nested maps to
+        just the leaf key. Keep scalar, byte, bool, nil, and array behavior
+        stable while adding nested query coverage.
+      scenarios:
+        - gh-cli-api-get-nested-query-encoding
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 8620
+          title: "Merge JSON responses from `gh api`"
+          url: https://github.com/cli/cli/pull/8620
+    - id: gh-cli/run-view-log-cache-attempts
+      title: Run log cache keys include workflow attempt identity
+      topics: ["commands/run", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: pr-derived
+      synopsis: >-
+        `gh run view --log --attempt` should not reuse cached logs from a
+        different attempt of the same run.
+      body: |
+        Workflow run logs can be requested for the whole run or for a specific
+        attempt. The cache key has to distinguish attempt-specific log URLs, not
+        just run ID and start time, or a second attempt can display stale logs
+        from a prior attempt. Preserve normal cache reuse for the same attempt
+        and keep the `attempts/<n>/logs` endpoint behavior covered by tests.
+      scenarios:
+        - gh-cli-run-view-log-attempt-cache-key
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 7831
+          title: "update(run): Use attempt input when fetching jobs"
+          url: https://github.com/cli/cli/pull/7831
+    - id: gh-cli/release-download-safe-paths
+      title: Release download rejects asset names that escape the destination
+      topics: ["commands/release", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release asset downloads should treat server-supplied filenames as
+        untrusted destination path elements.
+      body: |
+        Release asset names come from the API or archive response headers and
+        are eventually passed to a destination writer. Validate names before
+        creating directories or files so `../escape.txt` and absolute paths
+        cannot write outside the requested destination. Preserve `--output -`,
+        archive filename handling, clobber/skip-existing behavior, and normal
+        nested destination directories.
+      scenarios:
+        - gh-cli-release-download-safe-asset-paths
+      sourcePullRequests: []
+    - id: gh-cli/release-download-dry-run-plan
+      title: Release download can report a machine-readable plan without downloading
+      topics: ["commands/release", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Feature-sized release download changes should preserve asset selection
+        while separating planning output from download side effects.
+      body: |
+        Release download already has a selection phase that fetches release
+        metadata, filters assets by pattern or archive type, resolves output
+        destinations, and then performs asset downloads. A dry-run JSON plan
+        should reuse the selection logic, emit a stable array with asset name,
+        size, archive flag, API URL, and destination path, and avoid all asset
+        body requests. Keep `--output -`, archive downloads, clobber, and
+        skip-existing semantics from leaking into the planning-only path.
+      scenarios:
+        - gh-cli-release-download-dry-run-json-plan
+      sourcePullRequests: []
+    - id: gh-cli/project-item-empty-values
+      title: Project item edits use changed flags for empty values
+      topics: ["commands/project", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Project v2 mutations must distinguish an omitted flag from an
+        explicitly provided empty value.
+      body: |
+        `gh project item-edit` already uses Cobra changed bits for numeric,
+        title, and body fields so zero or empty values can be intentional.
+        Text field edits need the same treatment: `--text ""` should send an
+        empty string value, no update flags should still report no changes, and
+        `--text "" --clear` should remain mutually exclusive.
+      scenarios:
+        - gh-cli-project-item-edit-empty-text
+      sourcePullRequests: []
+    - id: gh-cli/workflow-run-input-types
+      title: Workflow dispatch prompts keep typed inputs as string payloads
+      topics: ["commands/workflow", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Interactive workflow dispatch should respect input type UX while
+        preserving string-valued dispatch payloads.
+      body: |
+        Workflow dispatch inputs are declared in workflow YAML and sent to the
+        REST API as string values. Interactive collection can provide better UX
+        for typed inputs, such as using select prompts for choices and boolean
+        values, while environment inputs remain text-like. Keep defaults,
+        required labels, old 204 responses, and the `return_run_details` feature
+        detection behavior intact when adding typed prompt coverage.
+      scenarios:
+        - gh-cli-workflow-run-typed-input-prompts
+      sourcePullRequests: []
+    - id: gh-cli/pr-checkout-local-branch-safety
+      title: PR checkout validates explicit local branch names before git commands
+      topics: ["commands/pr-issue", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: pr-derived
+      synopsis: >-
+        `gh pr checkout --branch` participates in fetch refspecs, checkout, and
+        branch config keys, so it needs the same safety treatment as PR heads.
+      body: |
+        PR checkout builds git fetch refspecs, local checkout commands, and
+        branch config entries from the selected local branch name. Explicit
+        `--branch` values should be validated before any git command queue is
+        built or executed, while normal branch names that include owner-style
+        path segments should continue to work.
+      scenarios:
+        - gh-cli-pr-checkout-branch-option-safety
+      sourcePullRequests:
+        - repo: cli/cli
+          number: 10479
+          title: "[gh pr checkout] Add --no-tags option to git fetch commands in checkout"
+          url: https://github.com/cli/cli/pull/10479
+    - id: gh-cli/release-upload-sanitized-collisions
+      title: Release upload detects sanitized asset-name collisions before mutation
+      topics: ["commands/release", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Upload-side asset-name checks must compare the names GitHub will store,
+        not only the raw local filenames.
+      body: |
+        `gh release upload --clobber` uses a client-side sanitizer to predict
+        GitHub's asset-name normalization before deleting existing assets.
+        Multiple local files that sanitize to the same asset name should fail
+        deterministically before any delete or upload request starts. Preserve
+        existing release-asset collision behavior and normal uploads for
+        distinct sanitized names.
+      scenarios:
+        - gh-cli-release-upload-sanitized-collision
+      sourcePullRequests: []
+    - id: gh-cli/run-download-artifact-path-boundaries
+      title: Run download path traversal checks allow safe dot-dot prefixes
+      topics: ["commands/run", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Artifact isolation should reject traversal components without rejecting
+        ordinary names that merely begin with two dots.
+      body: |
+        `gh run download` isolates artifacts by joining artifact names below a
+        destination directory through `safepaths.Absolute.Join`. The path check
+        should reject `..` and `../...` traversal results, but names like
+        `..coverage` are normal children of the destination and should remain
+        downloadable. Keep cross-platform separator behavior covered.
+      scenarios:
+        - gh-cli-run-download-dotdot-prefix-artifacts
+      sourcePullRequests: []
+    - id: gh-cli/repo-clone-wiki-upstream
+      title: Wiki clone upstream remotes preserve wiki URL semantics
+      topics: ["commands/repo", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Forked wiki clones strip `.wiki` for API lookup but need to reapply it
+        to both origin and upstream git remotes.
+      body: |
+        `gh repo clone OWNER/REPO.wiki` resolves repository metadata by looking
+        up `OWNER/REPO`, then clones the wiki remote by appending `.wiki.git`.
+        When the repository is a fork, the parent upstream remote should follow
+        the same wiki convention. `--no-upstream` should still skip parent
+        setup, and non-wiki fork clones should remain unchanged.
+      scenarios:
+        - gh-cli-repo-clone-fork-wiki-upstream
+      sourcePullRequests: []
+    - id: gh-cli/pr-merge-queue-side-effect-boundaries
+      title: PR merge queue, admin, and delete-branch paths preserve mutation boundaries
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Merge queue handling crosses flag validation, GraphQL mutations, and
+        post-merge branch cleanup, so unsupported combinations must fail early.
+      body: |
+        `gh pr merge` has separate paths for direct merges, merge queue
+        enqueueing, admin bypass, expected head OID matching, and local/remote
+        branch deletion. Queue-required PRs should not perform branch deletion
+        or direct merge mutations before validating the selected path; tests
+        should make those mutations unexpected in failure paths. Admin bypass
+        with `--match-head-commit` should preserve the expected head OID in the
+        mutation body while still avoiding cleanup after failed merges.
+      scenarios:
+        - gh-cli-pr-merge-queue-admin-delete-boundary
+      sourcePullRequests: []
+    - id: gh-cli/repo-transfer-command-pattern
+      title: Repository transfer commands combine confirmation, team lookup, and REST mutation
+      topics: ["commands/repo", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repo subcommands that mutate ownership should follow existing targeted
+        command package, confirmation, and REST-stub testing patterns.
+      body: |
+        Repository ownership transfer is a targeted repo operation. Implement it
+        as a package-local repo subcommand with `NewCmdTransfer(f, runF)`, root
+        registration in `repo.go`, confirmation or `--yes`, optional team slug
+        resolution, deterministic success output, and mocked REST tests. The
+        team lookup should happen before the transfer mutation so the final
+        payload can include `new_owner` and `team_ids`. Declined confirmation
+        should make no transfer request, and success output should be stable
+        enough for tests to assert exactly.
+      scenarios:
+        - gh-cli-repo-transfer-team-confirmation
+      sourcePullRequests: []
+    - id: gh-cli/workflow-run-watch-exit-status
+      title: Workflow dispatch can watch the created run with injectable polling
+      topics:
+        ["commands/workflow", "commands/run", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Feature-sized workflow dispatch/watch support crosses workflow input
+        parsing, run discovery, polling, and exit-status behavior.
+      body: |
+        `gh workflow run` already handles workflow selection, dispatch inputs,
+        refs, old 204 responses, and optional created-run details. Adding watch
+        behavior should reuse or mirror run-watch polling without sleeping in
+        tests. The command should dispatch, discover the created run when
+        necessary through the workflow runs endpoint filtered by ref and
+        workflow_dispatch, poll until completion, print watch progress
+        consistently, and return non-zero under `--exit-status` for failed
+        conclusions.
+      scenarios:
+        - gh-cli-workflow-run-watch-exit-status
+      sourcePullRequests: []
+    - id: gh-cli/run-cancel-bulk-filters
+      title: Run cancel bulk filters preserve list filtering and dry-run no-mutation behavior
+      topics: ["commands/run", "commands/workflow", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Bulk run cancellation is hard by scope because it combines workflow
+        resolution, run filtering, confirmation, dry-run, and per-run mutation.
+      body: |
+        Bulk `gh run cancel` should use the same filter semantics as run list:
+        workflow, branch, status, and event filters should select matching
+        queued or in-progress runs without client-side surprises. Bulk mode
+        should reject non-cancellable statuses such as completed before
+        listing. `--dry-run` should print selected runs in a deterministic order
+        and make no cancel or force-cancel requests. Applying with `--yes`
+        should POST normal cancellation only for selected runs and report an
+        exact summary count.
+      scenarios:
+        - gh-cli-run-cancel-bulk-filters-dry-run
+      sourcePullRequests: []
+    - id: gh-cli/variable-sync-env-file
+      title: Variable sync diffs env files against readable Actions variables
+      topics: ["commands/variable", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Variable sync is a feature-sized task that combines dotenv parsing,
+        list/set/delete endpoints, dry-run diff output, and target scoping.
+      body: |
+        Actions variables expose values, unlike secrets, so a repository
+        env-file sync can compute a real diff. Reuse variable list/set endpoint
+        conventions and define a small dotenv grammar with line-numbered parse
+        errors. Dry-run output should report creates, updates, unchanged rows,
+        and optional deletes without mutation. Applying with `--delete` should
+        only delete remote variables absent from the file when requested.
+      scenarios:
+        - gh-cli-variable-sync-env-file-dry-run
+      sourcePullRequests: []
+    - id: gh-cli/ruleset-json-output-family
+      title: Ruleset commands should expose JSON without changing human output
+      topics: ["tests/commands", "output/json", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Adding JSON across a command family is hard when each command has
+        different data sources, interactivity, and web/human output behavior.
+      body: |
+        Ruleset `list`, `view`, and `check` each have distinct data shapes and
+        human output paths. JSON support should use `cmdutil.AddJSONFlags` with
+        explicit per-command field lists, avoid pager and human sections in
+        machine mode, keep `--web` and interactive behavior unchanged, and
+        return unknown field errors through the standard exporter path.
+        Preserve the command-specific shapes: list exposes summary ruleset
+        fields, view exposes detailed REST-only fields such as bypass actors
+        and URL, and check exposes branch-rule fields rather than pretending it
+        returns full ruleset records.
+        Package-local tests should cover each command's JSON surface so a
+        parent-package smoke test does not hide command-specific gaps.
+      scenarios:
+        - gh-cli-ruleset-json-output-family
+      sourcePullRequests: []
+    - id: gh-cli/search-raw-query-syntax
+      title: Search commands can accept raw query syntax while preserving qualifier builders
+      topics: ["commands/search", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Raw search syntax is a hard search task because it crosses command
+        parsing, query builders, standard-vs-advanced syntax, and exclusivity.
+      body: |
+        Search commands normally quote positional keywords and build qualifiers
+        from flags. A raw query flag should place user text in
+        `ImmutableKeywords`, preserve flag-built qualifiers, reject ambiguous
+        combinations with positional keywords using a clear error, and continue
+        to flow through the standard and advanced issue search builders rather
+        than bypassing feature detection.
+      scenarios:
+        - gh-cli-search-raw-query-syntax
+      sourcePullRequests: []
+    - id: gh-cli/release-create-dry-run-plan
+      title: Release create dry-run JSON separates planning from mutations
+      topics: ["commands/release", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Feature-sized release create dry-run support should reuse validation
+        and asset planning while avoiding create, notes-generation, and upload
+        side effects.
+      body: |
+        `gh release create` crosses release metadata, generated notes, asset
+        upload planning, and output behavior. A dry-run JSON path should run
+        flag validation and local asset inspection, then emit stable fields for
+        the release and assets without calling release creation,
+        generated-notes, or upload endpoints. Tests should register those
+        endpoints as unexpected so planning cannot accidentally mutate remote
+        state.
+      scenarios:
+        - gh-cli-release-create-dry-run-json-plan
+      sourcePullRequests: []
+    - id: gh-cli/cache-delete-dry-run-boundary
+      title: Cache delete dry-run preserves selection without DELETE calls
+      topics: ["commands/cache", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Cache delete dry-run should reuse `--all` and `--ref` selection while
+        preserving the no-mutation boundary.
+      body: |
+        `gh cache delete --all` already lists caches before deleting selected
+        IDs. A dry-run mode should stop after selection, print cache IDs, keys,
+        and a deterministic total count, and make no DELETE requests. It should
+        preserve ref filtering, no-cache behavior, and the existing apply path
+        for normal deletion.
+      scenarios:
+        - gh-cli-cache-delete-all-dry-run
+      sourcePullRequests: []
+    - id: gh-cli/gist-edit-atomic-add-remove
+      title: Gist edit multi-file changes share one validated update payload
+      topics: ["commands/gist", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Multi-file gist edits are hard because current add/remove paths return
+        early and bypass the interactive edit payload assembly path.
+      body: |
+        `gh gist edit` should validate ownership before mutation, preserve
+        binary and empty-file guards, and build one update payload for all
+        changed files. Multiple `--add` and `--remove` values should be
+        applied atomically: duplicate final filenames and attempts to remove
+        every file should fail before the gist update request is made.
+      scenarios:
+        - gh-cli-gist-edit-atomic-add-remove
+      sourcePullRequests: []
+    - id: gh-cli/gist-list-json-filtered-files
+      title: Gist list JSON preserves filters without content rendering
+      topics: ["commands/gist", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Gist list JSON should expose metadata while preserving the existing
+        filter, visibility, pager, and content-highlighting behavior.
+      body: |
+        `gh gist list` already has filter and visibility modes plus a slower
+        `--include-content` rendering path. JSON output should use exporter
+        fields for gist metadata and files, respect `--filter`, `--public`,
+        `--secret`, and `--limit`, avoid pager/table rendering, and reject
+        `--include-content` with `--json` so stdout remains machine-readable.
+      scenarios:
+        - gh-cli-gist-list-json-filtered-files
+      sourcePullRequests: []
+    - id: gh-cli/workflow-disable-bulk-dry-run
+      title: Workflow disable bulk dry-run preserves active selection
+      topics: ["commands/workflow", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Bulk workflow disable should select active workflows and keep dry-run
+        output deterministic without issuing disable mutations.
+      body: |
+        `gh workflow disable` resolves a single active workflow before calling
+        the disable endpoint. A bulk mode should list active workflows, sort
+        planned candidates deterministically by workflow ID, prompt once before
+        applying multiple disables, and make no `PUT /disable` requests in
+        dry-run. Single-workflow behavior should remain unchanged.
+      scenarios:
+        - gh-cli-workflow-disable-all-dry-run
+      sourcePullRequests: []
+    - id: gh-cli/run-rerun-job-name-selector
+      title: Run rerun job-name selection uses job database IDs
+      topics: ["commands/run", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Job-name reruns are error-prone because browser job numbers differ
+        from the database IDs accepted by the rerun endpoint.
+      body: |
+        `gh run rerun --job-name` should fetch run jobs, select exactly one
+        failed job by exact name, and POST the rerun endpoint with that job's
+        database ID. It should preserve `--debug`, reject ambiguous or missing
+        matches, reject combining `--job` with `--job-name`, and never fall
+        back to rerunning the whole workflow run when a job name was supplied.
+      scenarios:
+        - gh-cli-run-rerun-job-name-selector
+      sourcePullRequests: []
+    - id: gh-cli/codespace-ports-visibility-dry-run-json
+      title: Codespace port visibility dry-run validates without tunnel mutation
+      topics: ["commands/codespace", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Codespace port visibility changes cross selector, dev-tunnels, privacy
+        validation, and JSON output behavior.
+      body: |
+        A dry-run for `gh codespace ports visibility` should parse the same
+        `<port>:<visibility>` arguments as apply mode, validate requested
+        visibility against allowed privacy settings, compare against current
+        tunnel visibility, and emit `sourcePort`, `currentVisibility`,
+        `requestedVisibility`, and `wouldChange` without calling tunnel update
+        APIs. Existing `gh codespace ports --json` output should not change.
+      scenarios:
+        - gh-cli-codespace-ports-visibility-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/release-edit-dry-run-json-plan
+      title: Release edit dry-run JSON exposes the planned PATCH payload
+      topics: ["commands/release", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release edit dry-run should preserve nil flag semantics and verify-tag
+        behavior while avoiding the edit mutation.
+      body: |
+        `gh release edit` uses nil string and bool flags to distinguish omitted
+        values from explicit empty or false values. A dry-run JSON mode should
+        fetch the release, apply existing validation such as `--verify-tag`,
+        and print the exact edit plan including `makeLatest` without calling
+        the PATCH endpoint. Normal edit behavior should remain unchanged.
+      scenarios:
+        - gh-cli-release-edit-dry-run-json-plan
+      sourcePullRequests: []
+    - id: gh-cli/auth-refresh-scope-boundary
+      title: Auth refresh scope changes preserve minimum scopes
+      topics: ["commands/auth", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Auth refresh scope handling should reject ambiguous add/remove inputs
+        and never remove the minimum credential scopes.
+      body: |
+        `gh auth refresh` carries old token scopes forward unless
+        `--reset-scopes` is set. Scope changes should trim and dedupe user
+        inputs, reject overlap between `--scopes` and `--remove-scopes`, and
+        prevent removal of minimum scopes such as `repo`, `read:org`, and
+        `gist`. Reset mode should not accidentally carry old token scopes into
+        the AuthFlow request.
+      scenarios:
+        - gh-cli-auth-refresh-scope-boundary
+      sourcePullRequests: []
+    - id: gh-cli/issue-create-dry-run-boundary
+      title: Issue create dry-run avoids metadata and issue mutations
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Issue create dry-run mirrors PR create boundaries but has extra
+        templates, recover files, and special assignee behavior.
+      body: |
+        `gh issue create --dry-run` should render a preview from supplied title,
+        body, labels, assignees, milestone, and projects without resolving
+        metadata IDs, adding project items, or creating an issue. It should
+        preserve template and recover handling, reject incompatible web mode,
+        and display raw user-supplied metadata strings in the preview.
+      scenarios:
+        - gh-cli-issue-create-dry-run-skips-metadata-resolution
+      sourcePullRequests: []
+    - id: gh-cli/pr-review-comments-file
+      title: PR review comment files attach pending line comments to the review
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Review comment-file support crosses JSON parsing, flag validation, and
+        GraphQL review mutation shape.
+      body: |
+        `gh pr review --comment-file` should parse an array of line-comment
+        objects, validate `side` values and non-empty bodies, reject approval
+        reviews with pending comments, and include those comments in the
+        existing AddPullRequestReview GraphQL mutation. Existing body,
+        body-file, and interactive review behavior should keep their current
+        validation rules.
+      scenarios:
+        - gh-cli-pr-review-comments-file
+      sourcePullRequests: []
+    - id: gh-cli/repo-fork-default-branch-only-clone
+      title: Repo fork default-branch-only also constrains clone flags
+      topics: ["commands/repo", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repo fork clone mode should translate default-branch-only into git
+        clone arguments without dropping user-provided clone flags.
+      body: |
+        `gh repo fork --default-branch-only` already affects the fork creation
+        payload. When combined with `--clone`, clone command construction
+        should also fetch only the fork's default branch while preserving user
+        git clone flags after `--`. Non-clone fork behavior, remote-only
+        behavior, fork creation payloads, and upstream remote setup should
+        remain unchanged.
+      scenarios:
+        - gh-cli-repo-fork-default-branch-only-clone
+      sourcePullRequests: []
+    - id: gh-cli/comment-dry-run-shared-boundary
+      title: Shared comment dry-run avoids comment and browser side effects
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR and issue comment commands share a mutation pipeline where dry-run
+        should plan create, edit, delete, and web actions without side effects.
+      body: |
+        `gh pr comment` and `gh issue comment` share `CommentableOptions` and
+        the same create/update/delete helpers. A dry-run should still resolve
+        the selected target and existing comments when edit/delete planning
+        needs them, but it should not create, update, delete, open a browser,
+        or prompt for destructive confirmation. Tests should exercise the
+        shared boundary so both commands stay aligned.
+      scenarios:
+        - gh-cli-comment-dry-run-shared-pr-issue
+      sourcePullRequests: []
+    - id: gh-cli/pr-merge-dry-run-json-plan
+      title: PR merge dry-run JSON reports merge plan without mutations
+      topics: ["commands/pr-issue", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR merge planning crosses direct merge, auto-merge, merge queue, admin,
+        expected-head, and branch-deletion behavior.
+      body: |
+        `gh pr merge` computes a plan from PR state, merge queue support,
+        auto-merge eligibility, admin overrides, requested merge method, and
+        optional branch deletion. A dry-run JSON mode should expose that plan
+        after validation but before any GraphQL merge, auto-merge, enqueue, or
+        delete-ref mutation. Queue/admin tests should register mutation
+        endpoints as unexpected in dry-run.
+      scenarios:
+        - gh-cli-pr-merge-dry-run-json-queue-plan
+      sourcePullRequests: []
+    - id: gh-cli/edit-dry-run-json-shared-boundary
+      title: PR and issue edit dry-run share Editable planning
+      topics: ["commands/pr-issue", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Edit dry-run planning should reuse the shared Editable metadata model
+        while preserving changed-flag semantics.
+      body: |
+        `gh pr edit` and `gh issue edit` both build an `Editable` describing
+        title, body, reviewers, assignees, labels, projects, and milestone
+        changes. Dry-run should output deterministic per-target plans and avoid
+        update, metadata, project, reviewer, and assignee mutations. Empty
+        strings are meaningful when Cobra changed bits say the user supplied
+        them; omitted flags should remain omitted.
+      scenarios:
+        - gh-cli-edit-dry-run-json-shared-pr-issue
+      sourcePullRequests: []
+    - id: gh-cli/workflow-enable-bulk-dry-run-json
+      title: Workflow enable bulk dry-run emits deterministic JSON plans
+      topics: ["commands/workflow", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Bulk workflow enable should select disabled workflows, sort output,
+        and keep dry-run free of enable mutations.
+      body: |
+        `gh workflow enable` resolves a single disabled workflow before
+        mutation. Bulk enable should reuse workflow listing, filter disabled
+        states, exclude active workflows, sort planned candidates by workflow
+        ID, and prompt once before applying multiple mutations. Dry-run JSON
+        should include stable plan fields and make no `PUT /enable` requests.
+      scenarios:
+        - gh-cli-workflow-enable-all-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/run-list-include-pr-runs
+      title: Run list include-prs only relaxes the shared exclusion query
+      topics: ["commands/run", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Run list excludes pull-request runs by default through a shared query
+        parameter that must change only when users opt in.
+      body: |
+        `gh run list` and shared run listing helpers append the
+        `exclude_pull_requests=true` query parameter by default. An opt-in
+        include-prs flag should change only that query parameter across
+        paginated requests, leaving filters, workflow-name hydration, limits,
+        and JSON export behavior intact.
+      scenarios:
+        - gh-cli-run-list-include-pr-runs-json
+      sourcePullRequests: []
+    - id: gh-cli/release-upload-dry-run-json-clobber-plan
+      title: Release upload dry-run plans sanitized asset collisions
+      topics: ["commands/release", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release upload dry-run should reuse filename sanitization and clobber
+        logic while avoiding delete and upload side effects.
+      body: |
+        `gh release upload` sanitizes asset names, parses optional labels,
+        detects existing asset collisions, and uses `--clobber` to delete
+        before uploading. Dry-run JSON should fetch enough release state to
+        produce the same collision plan, including would-delete and
+        would-upload fields, while registering delete and upload endpoints as
+        unexpected.
+      scenarios:
+        - gh-cli-release-upload-dry-run-json-clobber-plan
+      sourcePullRequests: []
+    - id: gh-cli/codespace-create-web-url-encoding
+      title: Codespace create web mode encodes browser query values
+      topics: ["commands/codespace", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Codespace create web mode builds a browser URL from selected options
+        and should encode query values without creating a codespace.
+      body: |
+        `gh codespace create --web` still resolves repository and option
+        context, then opens a browser URL instead of calling the create API.
+        Query values such as refs, devcontainer paths, display names, machine,
+        location, retention, and idle timeout should be encoded with structured
+        URL APIs so slashes, spaces, and plus signs do not corrupt separators.
+      scenarios:
+        - gh-cli-codespace-create-web-url-encoding
+      sourcePullRequests: []
+    - id: gh-cli/gist-create-duplicate-filename-guard
+      title: Gist create rejects duplicate derived filenames before POST
+      topics: ["commands/gist", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Gist create maps inputs by target filename, so duplicate targets must
+        fail before payload construction.
+      body: |
+        `gh gist create` derives target filenames from local paths and optional
+        stdin `--filename` values. Duplicate basenames from different
+        directories, repeated stdin filenames, or a `--filename` collision can
+        silently overwrite content unless validation runs before the gist POST
+        payload is built.
+      scenarios:
+        - gh-cli-gist-create-duplicate-filename-guard
+      sourcePullRequests: []
+    - id: gh-cli/gist-edit-source-binary-no-mutation
+      title: Gist edit validates replacement content before update mutation
+      topics: ["commands/gist", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Gist edit should apply binary guards to local replacement content just
+        as gist create does before mutation.
+      body: |
+        `gh gist edit` protects editor flows from binary remote content, but
+        local replacement sources such as `--add`, explicit source files, and
+        stdin also need binary-content validation. That validation belongs
+        before the PATCH payload is sent so failed replacements cannot mutate
+        the gist.
+      scenarios:
+        - gh-cli-gist-edit-source-binary-no-mutation
+      sourcePullRequests: []
+    - id: gh-cli/auth-logout-dry-run-plan
+      title: Auth logout dry-run reports the selected account without mutation
+      topics: ["commands/auth", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Auth logout dry-run should reuse host/user selection but stop before
+        credential removal.
+      body: |
+        `gh auth logout` must resolve host, username, active-account state, and
+        token source before mutating config. Dry-run JSON should report the
+        selected account and preserve ambiguity and environment-token errors,
+        while leaving authentication config unchanged.
+      scenarios:
+        - gh-cli-auth-logout-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/auth-setup-git-dry-run
+      title: Auth setup-git dry-run avoids credential-helper writes
+      topics: ["commands/auth", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Setup-git dry-run should preserve authenticated-host validation and
+        force semantics while avoiding git config writes.
+      body: |
+        `gh auth setup-git` selects authenticated hosts and configures the gh
+        credential helper through `ConfigureOurs`. Dry-run should report which
+        hosts would be configured, honor `--hostname` and `--force`, and avoid
+        any credential-helper writes.
+      scenarios:
+        - gh-cli-auth-setup-git-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/repo-create-dry-run-plan
+      title: Repo create dry-run plans repository and git side effects
+      topics: ["commands/repo", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repo create dry-run should validate the same options as create mode
+        while avoiding repo creation and local git side effects.
+      body: |
+        `gh repo create` can use REST and GraphQL paths, template generation,
+        team resolution, gitignore/license/readme options, clone, remote setup,
+        and push behavior. Noninteractive dry-run JSON should produce one
+        stable plan after validation and before repository creation, template
+        update, clone, remote, or push operations.
+      scenarios:
+        - gh-cli-repo-create-dry-run-json-plan
+      sourcePullRequests: []
+    - id: gh-cli/repo-fork-dry-run-plan
+      title: Repo fork dry-run plans fork, clone, remote, and git args
+      topics: ["commands/repo", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repo fork dry-run should parse the same fork/clone/remote options but
+        avoid fork API and git side effects.
+      body: |
+        `gh repo fork` combines repository parsing, fork mutation, optional
+        rename, clone, upstream remote setup, default-branch-only, and
+        passthrough git args. Dry-run JSON should expose the planned fork and
+        clone behavior without calling fork or rename APIs and without running
+        git commands.
+      scenarios:
+        - gh-cli-repo-fork-dry-run-json-plan
+      sourcePullRequests: []
+    - id: gh-cli/release-delete-asset-dry-run
+      title: Release delete-asset dry-run validates before DELETE
+      topics: ["commands/release", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release delete-asset dry-run should validate the selected asset while
+        skipping confirmation and DELETE side effects.
+      body: |
+        `gh release delete-asset` must fetch a release and find the named asset
+        before deleting it. Dry-run JSON should still validate the tag and
+        asset, report the asset identity and API URL, and avoid confirmation
+        and DELETE requests.
+      scenarios:
+        - gh-cli-release-delete-asset-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/cache-delete-age-filter-dry-run
+      title: Cache delete age filter reuses paginated dry-run selection
+      topics: ["commands/cache", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Cache delete age filtering should reuse cache selection, preserve ref
+        filtering, and avoid DELETE requests in dry-run.
+      body: |
+        `gh cache delete --all` lists caches before deleting selected IDs.
+        Adding an age filter should compare `last_accessed_at` after paginated
+        selection, preserve `--ref`, reject invalid flag combinations, and keep
+        dry-run JSON free of DELETE calls while normal apply mode deletes only
+        selected IDs.
+      scenarios:
+        - gh-cli-cache-delete-older-than-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/variable-set-env-file-parser-boundary
+      title: Variable env-file parsing fails before partial mutations
+      topics: ["commands/variable", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Actions variable env-file parsing needs line-numbered errors and a
+        preflight boundary before mutation fan-out.
+      body: |
+        `gh variable set --env-file` can fan out into multiple create/update
+        requests across repo, org, or environment scopes. Parsing should accept
+        blank/comment lines, empty values, embedded equals, and quoted values,
+        but malformed lines should produce line-numbered errors before any HTTP
+        request is attempted.
+      scenarios:
+        - gh-cli-variable-set-env-file-parser-boundary
+      sourcePullRequests: []
+    - id: gh-cli/label-sync-bulk-plan
+      title: Label sync separates parse, validate, plan, and apply
+      topics: ["commands/label", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Bulk label sync should validate all local label definitions before any
+        repository label mutation.
+      body: |
+        Label sync commands combine file parsing, duplicate detection, color
+        validation, existing-label reads, create/update/delete planning, and
+        optional prune behavior. Dry-run JSON should expose the full ordered
+        plan and make no mutating label requests.
+      scenarios:
+        - gh-cli-label-sync-file-plan
+      sourcePullRequests: []
+    - id: gh-cli/extension-pin-upgrade-plan
+      title: Extension upgrade planning should respect persisted pins
+      topics: ["commands/extension", "output/json", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Extension install metadata can constrain later upgrade behavior.
+      body: |
+        Extension install and upgrade both touch filesystem metadata and git
+        commands. A pinned extension needs durable metadata, upgrade planning
+        that skips pinned entries unless forced, and JSON output that explains
+        pinned skip reasons without changing non-pinned behavior.
+      scenarios:
+        - gh-cli-extension-pin-install-upgrade
+      sourcePullRequests: []
+    - id: gh-cli/workflow-run-dry-run-dispatch-plan
+      title: Workflow dispatch dry-run reports the string-valued payload
+      topics: ["commands/workflow", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow run dry-run should resolve the same dispatch payload as apply
+        mode without sending the dispatch POST.
+      body: |
+        Workflow dispatch inputs are string-valued in the REST payload even
+        when interactive prompts use typed UX for booleans or choices. Dry-run
+        planning should resolve workflow, ref, defaults, environment, and input
+        values while skipping dispatch and watch side effects.
+      scenarios:
+        - gh-cli-workflow-run-dry-run-json-dispatch-plan
+      sourcePullRequests: []
+    - id: gh-cli/repo-clone-sparse-plan
+      title: Repo clone sparse checkout plans git argv arrays
+      topics: ["commands/repo", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Sparse clone support should be tested through argv stubs, not shell
+        strings.
+      body: |
+        Repo clone already crosses URL resolution, branch/depth flags, fork
+        upstream setup, wiki clone behavior, and git command stubs. Sparse
+        checkout support should preserve those variants, pass user pathspecs as
+        argv elements, and let dry-run JSON report planned git commands without
+        executing them.
+      scenarios:
+        - gh-cli-repo-clone-sparse-dry-run-plan
+      sourcePullRequests: []
+    - id: gh-cli/auth-status-json-account-state
+      title: Auth status JSON models host and account state separately
+      topics: ["commands/auth", "output/json", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Auth status JSON may report token source categories but never token
+        material.
+      body: |
+        Multi-account auth config can contain multiple hosts and multiple users
+        per host. JSON status should preserve human exit semantics while
+        emitting account-state objects, supporting hostname filtering, and
+        redacting token values and token prefixes.
+      scenarios:
+        - gh-cli-auth-status-json-multi-account
+      sourcePullRequests: []
+    - id: gh-cli/status-json-raw-aggregate
+      title: Top-level status JSON preserves raw API fields
+      topics: ["commands/status", "output/json", "tests/commands", "commands/pr-issue"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Status JSON should expose stable aggregate sections without reusing
+        human display-name formatting.
+      body: |
+        `gh status` aggregates issues, pull requests, review requests, and
+        mentions. Machine-readable output should preserve raw API logins and
+        stable section names while keeping human output and pagination behavior
+        unchanged.
+      scenarios:
+        - gh-cli-status-json-aggregate
+      sourcePullRequests: []
+    - id: gh-cli/discussion-create-graphql-labels
+      title: Discussion create resolves category and labels before mutation
+      topics: ["commands/discussion", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Discussion creation should be side-effect free when category or label
+        lookup fails.
+      body: |
+        Discussion create commands combine command registration, category
+        lookup, label pagination, body-file input, and a GraphQL create
+        mutation. Resolve all category and label IDs before creating so lookup
+        failures never produce partial discussions.
+      scenarios:
+        - gh-cli-discussion-create-graphql-labels
+      sourcePullRequests: []
+    - id: gh-cli/discussion-threaded-replies-json
+      title: Discussion JSON comments need nested reply pagination
+      topics: ["commands/discussion", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Discussion comments and replies have independent cursors that should
+        remain stable in JSON output.
+      body: |
+        Threaded discussion rendering crosses GraphQL comment pagination, reply
+        pagination, human output, and JSON exporting. `--json comments` should
+        avoid human formatting and emit stable nested replies without duplicate
+        or skipped pages.
+      scenarios:
+        - gh-cli-discussion-view-threaded-replies-json
+      sourcePullRequests: []
+    - id: gh-cli/issue-close-duplicate-feature-gate
+      title: Duplicate issue closing is feature-gated before mutation
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Duplicate issue close support requires host capability checks and issue
+        ID resolution before closing.
+      body: |
+        Closing an issue as a duplicate crosses feature detection, duplicate
+        issue lookup, close mutation variables, comments, and existing close
+        reason behavior. Unsupported hosts or unresolved duplicate references
+        should fail before any close mutation.
+      scenarios:
+        - gh-cli-issue-close-duplicate-of-feature-gate
+      sourcePullRequests: []
+    - id: gh-cli/issue-create-minimal-metadata-query
+      title: Issue create should query only metadata required by flags
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Title/body-only issue creation should not require unrelated repository
+        metadata permissions.
+      body: |
+        Issue creation can require labels, milestones, assignees, and projects,
+        but broad metadata queries should only run when supplied flags need
+        them. Tests should reject old broad query shapes when creating simple
+        title/body issues.
+      scenarios:
+        - gh-cli-issue-create-minimal-metadata-query
+      sourcePullRequests: []
+    - id: gh-cli/project-draft-partial-update
+      title: Project draft issue edits preserve omitted fields
+      topics: ["commands/project", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Project draft issue mutations need changed-bit handling for omitted
+        versus explicitly empty fields.
+      body: |
+        Updating draft issue fields from `project item-edit` requires preserving
+        existing values for omitted title/body fields while still honoring
+        explicitly empty changed flags. No-change behavior should remain
+        distinct from explicit empty updates.
+      scenarios:
+        - gh-cli-project-item-edit-draft-partial-update
+      sourcePullRequests: []
+    - id: gh-cli/cache-large-database-ids
+      title: Actions cache IDs can exceed machine int ranges
+      topics: ["commands/cache", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Cache database IDs should preserve precision through parsing and API
+        endpoint construction.
+      body: |
+        Actions cache IDs are API database IDs, not local machine ints. Delete
+        and list paths should avoid truncation, preserve large IDs in JSON, and
+        construct DELETE endpoints from the exact parsed ID.
+      scenarios:
+        - gh-cli-cache-delete-large-database-id
+      sourcePullRequests: []
+    - id: gh-cli/workflow-run-created-details-path-escape
+      title: Workflow dispatch compatibility requires escaped file paths
+      topics: ["commands/workflow", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow run should support legacy 204 and created-run responses while
+        escaping workflow file IDs as path segments.
+      body: |
+        Workflow file names such as `.github/workflows/ci.yml` are path
+        segments in dispatch endpoints and must be escaped before REST calls.
+        Created-run response handling should preserve older 204 behavior and
+        keep feature-detection failures before mutation.
+      scenarios:
+        - gh-cli-workflow-run-created-run-details-path-escape
+      sourcePullRequests: []
+    - id: gh-cli/auth-bearer-config-all-flows
+      title: Bearer auth configuration must survive rebuilt clients
+      topics: ["commands/auth", "api/http", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Auth flows rebuild HTTP clients in several places and should preserve
+        configured bearer authorization.
+      body: |
+        API, login, refresh, status, and shared OAuth-scope checks can rebuild
+        request clients independently. Bearer authorization settings should be
+        threaded consistently through REST and GraphQL requests while command
+        output continues to redact token values.
+      scenarios:
+        - gh-cli-auth-bearer-auth-all-flows
+      sourcePullRequests: []
+    - id: gh-cli/run-log-control-sequence-sanitization
+      title: Workflow run logs are untrusted terminal output
+      topics: ["commands/run", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Run log rendering should strip or escape control sequences without
+        corrupting ordinary log text.
+      body: |
+        `gh run view --log` and `--log-failed` write remote log content to
+        user-visible streams. The human rendering boundary should sanitize OSC
+        and ANSI control sequences while preserving readable log content.
+      scenarios:
+        - gh-cli-run-view-log-sanitize-control-sequences
+      sourcePullRequests: []
+    - id: gh-cli/ruleset-view-database-id-path-escape
+      title: Ruleset view escapes database IDs in REST paths
+      topics: ["commands/ruleset", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Ruleset database IDs should be escaped as path segments before endpoint
+        construction.
+      body: |
+        Ruleset view builds REST paths from user-supplied or API-supplied IDs.
+        IDs containing slashes need path escaping at the endpoint boundary,
+        while numeric IDs should continue to call the same path shape.
+      scenarios:
+        - gh-cli-ruleset-view-database-id-path-escape
+      sourcePullRequests: []
+    - id: gh-cli/pr-update-branch-rebase-method
+      title: PR update branch methods belong in mutation variables
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Pull request update methods should be explicit only when the user asks
+        for a non-default strategy.
+      body: |
+        `gh pr update-branch` relies on PR selection, state validation, and a
+        GraphQL mutation. New update strategies should thread through mutation
+        variables while preserving the default branch-update behavior when no
+        strategy flag is supplied.
+      scenarios:
+        - gh-cli-pr-update-branch-rebase-method
+      sourcePullRequests: []
+    - id: gh-cli/pr-close-delete-branch-fork-guard
+      title: PR close branch deletion is same-repo and post-success only
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Deleting a PR head ref is a destructive post-close side effect and must
+        never target fork-owned refs.
+      body: |
+        `gh pr close` may know the head repository owner, branch ref, and close
+        mutation outcome. Remote branch deletion should run only after the close
+        mutation succeeds, and only when the head ref belongs to the same
+        repository as the pull request target.
+      scenarios:
+        - gh-cli-pr-close-delete-branch-fork-guard
+      sourcePullRequests: []
+    - id: gh-cli/issue-transfer-cross-repo
+      title: Issue transfer resolves target repositories before mutation
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Cross-repository issue transfer needs target repository ID lookup and
+        confirmation before calling the mutation.
+      body: |
+        Issue transfer workflows combine issue lookup, target repository
+        resolution, confirmation, and a GraphQL mutation. Lookup or prompt
+        failures should leave the source issue untouched, and tests should make
+        the mutation unexpected until all prerequisites succeed.
+      scenarios:
+        - gh-cli-issue-transfer-cross-repo
+      sourcePullRequests: []
+    - id: gh-cli/repo-sync-dry-run-divergence-plan
+      title: Repo sync dry-run reports divergence without git mutations
+      topics: ["commands/repo", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repository sync planning should reuse divergence checks while making
+        push and merge commands unexpected.
+      body: |
+        `gh repo sync` crosses remote lookup, default-branch selection, git
+        fetch, ahead/behind detection, and push or merge side effects. Dry-run
+        JSON should expose the same decision inputs without running mutation
+        commands.
+      scenarios:
+        - gh-cli-repo-sync-dry-run-divergence-plan
+      sourcePullRequests: []
+    - id: gh-cli/repo-rename-origin-remote-update
+      title: Repo rename updates origin only after API success
+      topics: ["commands/repo", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Local git remote updates are ordered after successful remote repository
+        renames.
+      body: |
+        Repository rename commands combine a remote API mutation with optional
+        local git side effects. Updating `origin` should be command-stubbed as
+        a post-success action, and API failures or non-git directories should
+        not run `git remote set-url`.
+      scenarios:
+        - gh-cli-repo-rename-origin-remote-update
+      sourcePullRequests: []
+    - id: gh-cli/api-graphql-paginate-pageinfo-validation
+      title: GraphQL pagination requires pageInfo fields
+      topics: ["api/http", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Paginated GraphQL calls need `hasNextPage` and `endCursor` before a
+        cursor loop can advance safely.
+      body: |
+        `gh api graphql --paginate` depends on the response containing
+        `pageInfo.hasNextPage` and `pageInfo.endCursor`. Missing pagination
+        metadata should produce a clear error instead of partial looping, while
+        valid responses still advance to the next cursor.
+      scenarios:
+        - gh-cli-api-graphql-paginate-pageinfo-validation
+      sourcePullRequests: []
+    - id: gh-cli/api-cache-etag-method-host
+      title: API cache keys include request identity
+      topics: ["api/http", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Cached API responses must be isolated by host, method, path, and query
+        string.
+      body: |
+        `gh api --cache` should only reuse ETags and cached bodies for identical
+        request identities. Host, method, path, and query parameters all affect
+        the identity; omitting any of them can let one request incorrectly
+        satisfy another.
+      scenarios:
+        - gh-cli-api-cache-etag-respects-method-and-host
+      sourcePullRequests: []
+    - id: gh-cli/project-field-list-json-options-pagination
+      title: Project field JSON paginates nested single-select options
+      topics: ["commands/project", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Project field JSON should preserve field identity and page through
+        nested option cursors.
+      body: |
+        Project v2 field listing can include fields with nested single-select
+        option collections. JSON output should include stable field IDs, names,
+        types, and complete option lists without changing human table output.
+      scenarios:
+        - gh-cli-project-field-list-json-options-pagination
+      sourcePullRequests: []
+    - id: gh-cli/secret-set-env-file-atomic-errors
+      title: Secret env-file import validates before any write
+      topics: ["commands/secret", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Multi-secret imports should parse and encrypt every entry before
+        sending PUT requests.
+      body: |
+        `gh secret set --env-file` is a bulk mutation surface. Invalid rows,
+        duplicate keys, missing public keys, or encryption failures should
+        abort before any secret endpoint is called so the import does not
+        leave a partially-written set of secrets.
+      scenarios:
+        - gh-cli-secret-set-env-file-atomic-errors
+      sourcePullRequests: []
+    - id: gh-cli/codespace-stop-all-dry-run-json
+      title: Bulk codespace stop separates planning from mutation
+      topics: ["commands/codespace", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Destructive bulk codespace operations need deterministic dry-run JSON
+        plans with stop calls disabled.
+      body: |
+        `gh codespace stop` selectors can target multiple codespaces. Dry-run
+        mode should emit a sorted plan of selected codespaces without calling
+        stop APIs, while apply mode should preserve confirmation and stop only
+        the selected IDs.
+      scenarios:
+        - gh-cli-codespace-stop-all-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/agent-task-create-dry-run-json-plan
+      title: Agent task create dry-run should expose CAPI job plans
+      topics: ["commands/agent-task", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Agent task dry-run needs to resolve the same CAPI job payload while
+        making create calls unexpected.
+      body: |
+        `gh agent-task create` crosses command flags, repository and branch
+        resolution, prompt input, CAPI job payload construction, and output.
+        Dry-run JSON should expose selected plan fields while preventing every
+        job creation request.
+      scenarios:
+        - gh-cli-agent-task-create-dry-run-json-plan
+      sourcePullRequests: []
+    - id: gh-cli/agent-task-view-pr-sessions-json-no-prompt
+      title: Agent task view JSON is noninteractive PR-session lookup
+      topics: ["commands/agent-task", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR-linked agent task viewing should resolve CAPI sessions without
+        opening selection prompts in JSON mode.
+      body: |
+        Agent task view can select sessions interactively, but JSON output is a
+        noninteractive contract. When a positional PR selector is supplied,
+        tests should prove the command resolves sessions directly and never
+        invokes a picker or prompt.
+      scenarios:
+        - gh-cli-agent-task-view-pr-sessions-json-no-prompt
+      sourcePullRequests: []
+    - id: gh-cli/api-input-query-body-separation
+      title: API input bodies do not absorb endpoint query strings
+      topics: ["api/http", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Endpoint query parameters and `--input` request bodies are separate
+        request channels.
+      body: |
+        `gh api --input` should use the file or stdin only for the request
+        body. Endpoint query parameters and request payloads travel through
+        separate request channels.
+      scenarios:
+        - gh-cli-api-input-query-body-separation
+      sourcePullRequests: []
+    - id: gh-cli/config-host-users-preserve-on-set
+      title: Config writes preserve multi-user host authentication state
+      topics: ["commands/config", "commands/auth", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Non-auth config writes should round-trip every host user and token
+        backend reference.
+      body: |
+        GitHub CLI config files can carry multiple users for one host. A
+        `config set` write must update only the requested setting and preserve
+        host user maps, active-user metadata, file tokens, and keyring-backed
+        references.
+      scenarios:
+        - gh-cli-config-host-users-preserve-on-set
+      sourcePullRequests: []
+    - id: gh-cli/project-item-add-url-resolution
+      title: Project item-add URL support resolves content before mutation
+      topics: ["commands/project", "api/http", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Project item-add URL validation should fail locally for non-issue and
+        non-PR routes.
+      body: |
+        `gh project item-add --url` crosses URL parsing, content node lookup,
+        and the addProjectV2ItemById mutation. Invalid routes should fail
+        before server-side resolution or mutation work begins.
+      scenarios:
+        - gh-cli-project-item-add-url-resolution
+      sourcePullRequests: []
+    - id: gh-cli/api-paginate-graphql-edge-cursor-slurp
+      title: GraphQL pagination can fall back to edge cursors
+      topics: ["api/http", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Some GraphQL pagination responses expose edge-level cursors rather than
+        pageInfo cursors.
+      body: |
+        `gh api graphql --paginate` usually relies on pageInfo, but some
+        responses expose only edge cursors. Cursor extraction and `--slurp`
+        aggregation are separate concerns.
+      scenarios:
+        - gh-cli-api-paginate-graphql-edge-cursor-slurp
+      sourcePullRequests: []
+    - id: gh-cli/pr-create-template-resolver-precedence
+      title: PR template lookup has deterministic precedence
+      topics: ["commands/pr-issue", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Explicit PR template names, default template files, template
+        directories, and body overrides need a stable precedence contract.
+      body: |
+        `gh pr create` template lookup should fail before mutation for missing
+        explicit template names, follow documented lookup locations, choose
+        deterministic directory entries, and preserve existing body/body-file
+        validation behavior.
+      scenarios:
+        - gh-cli-pr-create-template-resolver-precedence
+      sourcePullRequests: []
+    - id: gh-cli/run-watch-rerun-failed-attempt-cache-key
+      title: Run watch annotation caches include attempt number
+      topics: ["commands/run", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow job IDs can repeat across rerun attempts, so annotation cache
+        keys need attempt identity.
+      body: |
+        `gh run watch` and `gh run rerun --failed` interact through run
+        attempts. Cached check-run annotations keyed only by job ID can reuse
+        stale annotations after a later attempt; tests should force a refetch
+        for attempt N+1.
+      scenarios:
+        - gh-cli-run-watch-rerun-failed-attempt-cache-key
+      sourcePullRequests: []
+    - id: gh-cli/extension-install-pinned-sha256
+      title: Extension binary installs can be pinned by SHA-256
+      topics: ["commands/extension", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Binary extension installs should verify user-supplied checksums before
+        installing and fail closed on upgrade without a replacement checksum.
+      body: |
+        `gh extension install --checksum` is a supply-chain boundary for binary
+        assets. The verification and persistence boundary should make upgrades
+        explicit rather than silently replacing a pinned binary.
+      scenarios:
+        - gh-cli-extension-install-pinned-sha256
+      sourcePullRequests: []
+    - id: gh-cli/api-retry-after-paginate
+      title: API retry-after handling spans transport and pagination
+      topics: ["api/http", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Retry-After handling should be shared by safe REST, GraphQL query, and
+        paginated requests without changing output contracts or replaying
+        mutation-like requests.
+      body: |
+        `gh api` shares request construction and response handling across REST,
+        GraphQL, pagination, verbose output, and error formatting. Changes to
+        retry or transport behavior need coverage across those existing paths,
+        with explicit safeguards for requests that should not be replayed.
+      scenarios:
+        - gh-cli-api-retry-after-paginate
+      sourcePullRequests: []
+    - id: gh-cli/pr-create-fill-mutex-precedence
+      title: PR create fill modes fail fast before network work
+      topics: ["commands/pr-issue", "flags/cobra", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Autofill, editor, web, title, body, and body-file inputs have a stable
+        conflict-precedence contract.
+      body: |
+        `gh pr create` input modes should reject conflicting fill/editor/web
+        and explicit body sources before fetching metadata or creating a PR.
+        Stable conflict messages should follow the command's existing
+        validation conventions and make the no-network boundary observable.
+      scenarios:
+        - gh-cli-pr-create-fill-mutex-precedence
+      sourcePullRequests: []
+    - id: gh-cli/api-no-cache-bypass
+      title: API no-cache bypass suppresses ETag reads and writes
+      topics: ["api/http", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Invocation-local API cache bypass should skip If-None-Match and avoid
+        cache writes on every request page.
+      body: |
+        API cache controls are transport-level behavior, not global state.
+        Tests should distinguish conditional-header reads, cache writes,
+        pagination, and verbose output so invocation-scoped cache changes do
+        not leak to default behavior.
+      scenarios:
+        - gh-cli-api-no-cache-bypass
+      sourcePullRequests: []
+    - id: gh-cli/codespace-ssh-extra-args-quoting
+      title: Codespace SSH preserves extra args as argv entries
+      topics: ["commands/codespace", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        SSH arguments after `--` should not be joined and re-split before exec.
+      body: |
+        `gh codespace ssh -- <args>` crosses Cobra dash handling, codespace
+        SSH config injection, and the ssh exec wrapper. Forwarding options with
+        colons, equals signs, or spaces need to remain exact argv entries, and
+        codespace copy/scp paths should remain independent.
+      scenarios:
+        - gh-cli-codespace-ssh-extra-args-quoting
+      sourcePullRequests: []
+    - id: gh-cli/attestation-verify-bundle-stream-errors
+      title: Attestation JSONL verify reports per-line outcomes
+      topics: ["commands/attestation", "output/json", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        JSONL bundle verification should continue through malformed and failed
+        lines, then exit non-zero after the full stream.
+      body: |
+        `gh attestation verify` on JSONL bundles should treat each line as an
+        independent verification unit for JSON output. Per-line results need
+        stable line identity and enough failure context while preserving
+        single-bundle and human-output behavior.
+      scenarios:
+        - gh-cli-attestation-verify-bundle-stream-errors
+      sourcePullRequests: []
+    - id: gh-cli/pr-edit-team-reviewer-roundtrip
+      title: PR edit partitions team and user reviewers before mutation
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Reviewer editing should separate team slugs, user logins, and bot
+        aliases before building requestReviews mutations.
+      body: |
+        `gh pr edit` reviewer flags can mix users, teams, and special bot
+        aliases. Reviewer resolution changes should make the team/user/bot
+        boundary observable in tests before request-review mutations are
+        constructed.
+      scenarios:
+        - gh-cli-pr-edit-team-reviewer-roundtrip
+      sourcePullRequests: []
+    - id: gh-cli/issue-pr-edit-label-mutex-share
+      title: Issue and PR edit share label add/remove validation
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Label overlap and dedupe behavior should be shared across issue and PR
+        edit commands.
+      body: |
+        `gh issue edit` and `gh pr edit` both mutate labels. Shared validation
+        helpers are preferable when the commands need the same pre-mutation
+        behavior, but each command package should still have local coverage.
+      scenarios:
+        - gh-cli-issue-pr-edit-label-mutex-share
+      sourcePullRequests: []
+    - id: gh-cli/issue-transfer-cross-repo-state
+      title: Issue transfer resolves source and target state before mutation
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Cross-repository issue mutations need source issue lookup, target repo
+        lookup, confirmation, and mutation-output assertions.
+      body: |
+        Issue commands that move or mutate repository-owned objects should
+        resolve CLI selectors into GraphQL node IDs before mutation. Transfer
+        behavior should keep source and destination repository identity clear
+        in both payloads and user-facing output.
+      scenarios:
+        - gh-cli-issue-transfer-cross-repo-state
+      sourcePullRequests: []
+    - id: gh-cli/pr-checkout-worktree-mode
+      title: PR checkout command sequences are observable git contracts
+      topics: ["commands/pr-issue", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR checkout behavior is defined by an ordered git command sequence,
+        not only by the final checked-out branch.
+      body: |
+        `gh pr checkout` behavior is organized around resolving the PR branch,
+        fetching the right refspec, materializing a local checkout target, and
+        writing branch configuration. New modes should preserve those command
+        boundaries.
+      scenarios:
+        - gh-cli-pr-checkout-worktree-mode
+      sourcePullRequests: []
+    - id: gh-cli/repo-sync-conflict-recover
+      title: Repo sync local recovery stays separate from remote sync
+      topics: ["commands/repo", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repo sync has local git and remote API paths that need separate tests
+        when adding conflict recovery.
+      body: |
+        Repo sync behavior can be local-only or remote-backed. Recovery flows
+        should keep local git state separate from remote synchronization and
+        distinguish sync-owned state from unrelated in-progress repository
+        operations.
+      scenarios:
+        - gh-cli-repo-sync-conflict-recover
+      sourcePullRequests: []
+    - id: gh-cli/api-jq-paginate-stream
+      title: API jq pagination order is visible through output timing
+      topics: ["api/http", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        API pagination, jq filtering, slurp aggregation, and writer flushing
+        share one response-processing path.
+      body: |
+        `gh api` output filters sit between response decoding and stream
+        writing. Pagination, slurp aggregation, jq filters, and verbose header
+        output all interact in that response-processing path.
+      scenarios:
+        - gh-cli-api-jq-paginate-stream
+      sourcePullRequests: []
+    - id: gh-cli/issue-pin-unpin-cap
+      title: Issue pin commands enforce repository state before mutation
+      topics: ["commands/pr-issue", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Issue pinning needs pre-mutation repository state checks and
+        idempotent no-op behavior.
+      body: |
+        Issue state commands should query enough repository state to provide
+        local errors before mutation where possible. Idempotent cases should be
+        covered separately from mutation paths so no-op success does not hide
+        unexpected API calls.
+      scenarios:
+        - gh-cli-issue-pin-unpin-cap
+      sourcePullRequests: []
+    - id: gh-cli/release-generate-notes-config-plan
+      title: Release generated-notes behavior depends on config planning
+      topics: ["commands/release", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release generated-notes work spans config precedence, previous-tag
+        lookup, JSON output, and dry-run network boundaries.
+      body: |
+        Release note generation needs deterministic config discovery and
+        previous-tag resolution before constructing generate-notes requests.
+        Dry-run behavior should validate the resolved plan without performing
+        the endpoint call.
+      scenarios:
+        - gh-cli-release-generate-notes-config-plan
+      sourcePullRequests: []
+    - id: gh-cli/repo-edit-default-branch-rename-endpoint
+      title: Repo edit default-branch changes can switch endpoint families
+      topics: ["commands/repo", "tests/commands", "api/http", "flags/cobra"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repo edit option mapping sometimes needs preflight validation before
+        choosing between PATCH payloads and specialized endpoints.
+      body: |
+        `gh repo edit` has regular PATCH payload mapping and specialized
+        endpoint behavior. Default-branch changes are sensitive because branch
+        existence and rename intent have different preconditions.
+      scenarios:
+        - gh-cli-repo-edit-default-branch-rename-endpoint
+      sourcePullRequests: []
+    - id: gh-cli/pr-review-suggestion-file
+      title: PR review suggestion files compile local hunks into review threads
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR review suggestion input crosses diff parsing, file validation, and
+        GraphQL thread payload construction.
+      body: |
+        PR review inline feedback uses thread-shaped GraphQL payloads. Features
+        that derive review comments from local files should validate file and
+        hunk inputs before mutation and keep body-file behavior separate from
+        structured thread generation.
+      scenarios:
+        - gh-cli-pr-review-suggestion-file
+      sourcePullRequests: []
+    - id: gh-cli/agent-task-cancel-session-json
+      title: Agent task session writes preserve selector and auth boundaries
+      topics: ["commands/agent-task", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Agent task commands separate session selector parsing, Copilot CAPI
+        calls, OAuth-token gating, and JSON export.
+      body: |
+        Agent task subcommands should reuse session selector and hydration
+        helpers where possible. State-changing CAPI operations need the same
+        explicit OAuth-token guard as existing agent-task operations and should
+        keep non-interactive selector requirements separate from output
+        formatting.
+      scenarios:
+        - gh-cli-agent-task-cancel-session-json
+      sourcePullRequests: []
+    - id: gh-cli/workflow-run-typed-input-validation
+      title: Workflow run validation is metadata-driven before dispatch
+      topics: ["commands/workflow", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow dispatch commands can use workflow_dispatch input metadata
+        before constructing the dispatch request.
+      body: |
+        `gh workflow run` already has paths for field flags, file-expanded
+        field flags, JSON input, and interactive values. Validation that depends
+        on workflow metadata should happen after all input modes have been
+        normalized and before the dispatch mutation boundary.
+      scenarios:
+        - gh-cli-workflow-run-typed-input-validation
+      sourcePullRequests: []
+    - id: gh-cli/run-download-manifest-dry-run-json
+      title: Run download planning is separate from artifact writes
+      topics: ["commands/run", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Run download behavior combines artifact filtering, destination
+        planning, safe paths, and filesystem writes.
+      body: |
+        Workflow artifact downloads are easier to test when matching and path
+        planning are separated from platform download and filesystem mutation.
+        Dry-run output should reuse the same artifact selection rules and
+        safepath checks that normal downloads use.
+      scenarios:
+        - gh-cli-run-download-manifest-dry-run-json
+      sourcePullRequests: []
+    - id: gh-cli/project-item-list-field-columns
+      title: Project item field output depends on field metadata joins
+      topics: ["commands/project", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Project item-list detailed output joins item field values to project
+        field metadata before rendering.
+      body: |
+        Project v2 item output crosses paginated item queries, project field
+        metadata, and union-shaped field value exports. Features that select
+        named fields should resolve names through field metadata before table
+        rendering or JSON filtering.
+      scenarios:
+        - gh-cli-project-item-list-field-columns
+      sourcePullRequests: []
+    - id: gh-cli/secret-variable-env-file-plan-shared
+      title: Secret and variable env-file imports share planning but not writes
+      topics:
+        [
+          "commands/secret",
+          "commands/variable",
+          "output/json",
+          "tests/commands",
+          "api/http",
+        ]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Secret and variable dotenv imports share parsing and target planning
+        while differing in encryption and write behavior.
+      body: |
+        `gh secret set -f` and `gh variable set -f` both parse dotenv-style
+        input and resolve repo, org, environment, and selected-repository
+        targets. Secret planning must keep public-key lookup and encryption out
+        of non-mutating paths, while variable planning still needs to model
+        visibility and target scope.
+      scenarios:
+        - gh-cli-secret-variable-env-file-plan-shared
+      sourcePullRequests: []
+    - id: gh-cli/auth-switch-dry-run-json-status
+      title: Auth switch dry-run shares account status without mutating config
+      topics: ["commands/auth", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Auth switching depends on active-user resolution, token source
+        mutability, prompts, and status output.
+      body: |
+        Auth commands should keep account selection, active-user state, and
+        token-source mutability explicit. Environment token sources are
+        read-only for switch operations, and dry-run status should expose that
+        constraint without writing config or secure-storage state.
+      scenarios:
+        - gh-cli-auth-switch-dry-run-json-status
+      sourcePullRequests: []
+    - id: gh-cli/pr-merge-queue-plan-json
+      title: PR merge planning chooses a mutation family before execution
+      topics: ["commands/pr-issue", "output/json", "tests/commands", "api/http"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR merge behavior branches among direct merge, auto-merge, merge queue,
+        already-queued, and admin-bypass paths.
+      body: |
+        `gh pr merge` resolves pull request state, branch requirements,
+        strategy flags, branch deletion, and admin behavior before executing a
+        mutation. Non-mutating output should reflect those existing inputs
+        without changing the merge path.
+      scenarios:
+        - gh-cli-pr-merge-queue-plan-json
+      sourcePullRequests: []
+    - id: gh-cli/codespace-ports-visibility-file-plan
+      title: Codespace port visibility planning precedes tunnel updates
+      topics: ["commands/codespace", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Codespace port visibility changes depend on selection, runtime
+        constraints, and dev-tunnel updater boundaries.
+      body: |
+        Codespace port privacy updates should validate requested settings
+        against runtime constraints before opening the updater used for tunnel
+        mutations. Batch behavior should keep planning, ordered application,
+        and partial-failure reporting distinct.
+      scenarios:
+        - gh-cli-codespace-ports-visibility-file-plan
+      sourcePullRequests: []
+    - id: gh-cli/extension-upgrade-atomic-all
+      title: Extension all-upgrade needs manager-level rollback accounting
+      topics: ["commands/extension", "output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Extension upgrade orchestration separates discovery, pinned policy, git
+        operations, filesystem manager work, and result summaries.
+      body: |
+        Extension upgrade command code coordinates extension discovery and
+        output while the manager layer owns filesystem and git operations.
+        Tests usually assert per-extension results through manager fakes.
+      scenarios:
+        - gh-cli-extension-upgrade-atomic-all
+      sourcePullRequests: []
+    - id: gh-cli/output-redaction-pipeline
+      title: Output writers are the boundary for cross-command redaction
+      topics: ["output/json", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        iostreams composes command output writers before human and JSON output
+        reach stdout or stderr.
+      body: |
+        Most command packages write human and JSON output through `iostreams`
+        rather than directly to process streams. Cross-cutting output behavior
+        belongs in writer composition, while commands that intentionally emit
+        raw token material need explicit output paths that are easy to audit.
+      scenarios:
+        - gh-cli-output-redaction-pipeline
+      sourcePullRequests: []
+    - id: gh-cli/workflow-lint-local
+      title: Offline workflow commands use local YAML structure and fixtures
+      topics: ["commands/workflow", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Workflow command packages are normally API-backed, but local workflow
+        files can be validated without network access.
+      body: |
+        Workflow subcommands live under a shared command group and usually load
+        workflow data through GitHub APIs. Offline validators should use
+        package-local fixtures, preserve YAML source positions for diagnostics,
+        and keep usage errors separate from validation failures.
+      scenarios:
+        - gh-cli-workflow-lint-local
+      sourcePullRequests: []
+    - id: gh-cli/http-read-cache-middleware
+      title: Read-through HTTP caching belongs in the transport chain
+      topics: ["commands/cache", "api/http", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        API clients compose transports before command code receives responses,
+        while the cache command group currently has an Actions-cache scope.
+      body: |
+        HTTP read caching should be inserted in the API transport stack so
+        command packages keep their request logic. Cache management commands
+        need clear namespace separation from Actions cache commands, and cache
+        keys must avoid persisting bearer token material.
+      scenarios:
+        - gh-cli-http-read-cache-middleware
+      sourcePullRequests: []
+    - id: gh-cli/search-query-file-shared
+      title: Search commands share immutable raw query construction
+      topics: ["commands/search", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Search subcommands compose positional keywords, raw syntax, qualifier
+        flags, and web URLs through shared query construction.
+      body: |
+        Search features that accept raw query syntax should preserve that query
+        through the immutable keyword path while still composing with structured
+        qualifier flags. File or stdin input should be normalized before the
+        shared query builder so search issues, PRs, and code stay consistent.
+      scenarios:
+        - gh-cli-search-query-file-shared
+      sourcePullRequests: []
+    - id: gh-cli/pr-review-inline-comments
+      title: PR review inline feedback validates files before mutation
+      topics: ["commands/pr-issue", "tests/commands", "api/http", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        PR review mutations already combine resolved PR context, review event,
+        body text, and GraphQL payload construction.
+      body: |
+        Inline PR review feedback needs PR file-list validation before mutation
+        and should keep reply-thread behavior separate from top-level review
+        event submission. Review tests typically assert GraphQL operation shape
+        through httpmock rather than relying only on output strings.
+      scenarios:
+        - gh-cli-pr-review-inline-comments
+      sourcePullRequests: []
+    - id: gh-cli/variable-ambiguous-remote-scope
+      title: Variable commands should share secret command remote ambiguity policy
+      topics: ["commands/variable", "commands/secret", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Repository-scoped variable commands need the same ambiguous-remote
+        handling as repository-scoped secret commands.
+      body: |
+        Repository-scoped variable commands should use the same local repository
+        disambiguation policy as secret commands: noninteractive runs fail when
+        multiple remotes are plausible, interactive runs can prompt, and
+        explicit repository, organization, and environment scopes bypass local
+        remote ambiguity. Tests should cover constructor wiring and request
+        routing across list, get, set, and delete.
+      scenarios:
+        - gh-cli-variable-ambiguous-remote-scope
+      sourcePullRequests: []
+    - id: gh-cli/api-graphql-paginate-field
+      title: GraphQL pagination needs explicit connection selection
+      topics: ["api/http", "output/json", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        GraphQL pagination can pick the wrong cursor when a response contains
+        multiple pageInfo blocks.
+      body: |
+        `gh api graphql --paginate` should keep the default cursor discovery
+        stable, but complex GraphQL responses need a way to select a specific
+        connection path under `data`. The selected path has to compose with
+        `--slurp`, jq/template output, and existing cursor variable injection,
+        and should fail clearly when the path is absent or not a connection.
+      scenarios:
+        - gh-cli-api-graphql-paginate-field
+      sourcePullRequests: []
+    - id: gh-cli/skills-install-transactional-lockfile
+      title: Skill installs should publish files and lockfile entries atomically
+      topics: ["commands/skills", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Skill install/update should stage remote skill files before final
+        publish and should record lockfile entries only after success.
+      body: |
+        Remote skill installation crosses discovery, download, metadata
+        injection, symlink and traversal guards, and lockfile persistence. To
+        avoid corrupting existing installs, prepare each skill in a temporary
+        location, publish the final directory atomically, and record the
+        lockfile only after the published directory is valid. Multi-skill
+        installs should allow successful siblings to complete without stale
+        lockfile entries for failed siblings.
+      scenarios:
+        - gh-cli-skills-install-transactional-lockfile
+      sourcePullRequests: []
+    - id: gh-cli/pr-status-head-repo-disambiguation
+      title: PR status current-branch matching needs qualified head refs
+      topics: ["commands/pr-issue", "tests/commands", "output/json"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Current-branch PR status should distinguish fork head refs from base
+        repository branches with the same name.
+      body: |
+        `gh pr status` can see multiple pull requests with the same head branch
+        name. Current-branch selection should preserve the qualified head ref or
+        head repository owner until selection is complete, then share that
+        result between human and JSON output. Explicit `--repo` should keep the
+        selected repository's behavior rather than inventing a local branch
+        match from a different fork owner.
+      scenarios:
+        - gh-cli-pr-status-head-repo-disambiguation
+      sourcePullRequests: []
+    - id: gh-cli/release-create-generated-notes-target-rollback
+      title: Release create ordering ties notes, target, verify-tag, and cleanup
+      topics: ["commands/release", "api/http", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Release creation should keep generated-notes payloads, target
+        commitish, verify-tag checks, and draft cleanup in a stable order.
+      body: |
+        Release creation with generated notes and assets crosses multiple REST
+        calls. Verify-tag checks should fail before generated-notes requests,
+        generated-notes and create-release payloads should use the same target
+        commitish and notes start tag, and draft cleanup after asset upload
+        failures should surface cleanup errors without hiding the original
+        failure context.
+      scenarios:
+        - gh-cli-release-create-generated-notes-target-rollback
+      sourcePullRequests: []
+    - id: gh-cli/agent-task-create-wait-exit-status
+      title: Agent task create wait mode should reuse CAPI polling seams
+      topics: ["commands/agent-task", "tests/commands", "cli/ux"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Agent task creation already has injectable CAPI, backoff, sleep, and log
+        rendering seams that can support wait and exit-status behavior.
+      body: |
+        Agent task create flows should keep immediate create behavior separate
+        from wait mode. Wait mode should poll through injected CAPI and
+        sleep/backoff seams, support timeout, render terminal session output,
+        and map failed or cancelled terminal states to non-zero exits only when
+        exit-status behavior is requested.
+      scenarios:
+        - gh-cli-agent-task-create-wait-exit-status
+      sourcePullRequests: []
+    - id: gh-cli/ruleset-check-json-export
+      title: Ruleset check JSON should reuse branch resolution and shared models
+      topics: ["commands/ruleset", "output/json", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        Ruleset check can expose machine-readable fields without changing its
+        branch resolution or REST request boundaries.
+      body: |
+        Ruleset check already resolves current/default branch context and uses
+        shared REST models. JSON output should export the checked ref, matching
+        rulesets, enforcement/bypass data, and rule details from the same data
+        used by human output. Web mode and JSON mode should be mutually
+        exclusive, and tests should keep URL-escaped branch request paths
+        stable.
+      scenarios:
+        - gh-cli-ruleset-check-json-export
+      sourcePullRequests: []
+    - id: gh-cli/attestation-verify-oci-platform-index
+      title: OCI attestation verification should expand indexes by platform
+      topics: ["commands/attestation", "commands/release", "tests/commands"]
+      confidence: medium
+      provenanceKind: generalized
+      synopsis: >-
+        OCI image index verification should select platform manifest digests
+        before applying existing attestation policy.
+      body: |
+        OCI attestation verification should resolve an image index into the
+        platform manifests selected by the command. Without a platform selector,
+        verify every manifest in the index and fail if any selected digest lacks
+        a valid attestation. With a platform selector, verify only the matching
+        digest and report a clear no-match error. Single-manifest and file
+        artifact behavior should remain unchanged.
+      scenarios:
+        - gh-cli-attestation-verify-oci-platform-index
       sourcePullRequests: []
   decisions:
     - id: gh-cli/decision-single-project-vault
@@ -650,7 +2793,7 @@ vault:
     - id: gh-cli/fact-powered-scenario-target
       subject: github-cli-powered-candidate-suite
       predicate: target_scenarios
-      object: "75"
+      object: "202"
       topics: ["tests/commands"]
       source: gh-cli/decision-powered-candidates-need-validation
     - id: gh-cli/fact-skills-hidden-flag

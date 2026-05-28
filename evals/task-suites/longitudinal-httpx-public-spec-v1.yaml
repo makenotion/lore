@@ -1,0 +1,371 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-httpx-public-spec-v1
+description: >-
+  Public-spec HTTPX longitudinal suite. Scenarios are pinned before real
+  upstream protocol fixes and verified through deterministic in-process tests
+  with no networked HTTP requests.
+seededCorpus: ../vault-seeds/httpx-public-spec-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: httpx-cross-boundary-protocol-epic-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: encode/httpx
+      sha: 301b8fb03a81447c5b5ab1ca991202e10826fbda
+    phaseA:
+      promptId: httpx-cross-boundary-protocol-epic-v1-formation
+      prompt: >-
+        We will fix several HTTPX protocol edge cases in a later session.
+        Inspect URL percent encoding, ASGITransport scope construction,
+        DigestAuth retry/header generation, environment proxy parsing, and the
+        related regression tests. Produce a durable implementation plan only;
+        do not edit files.
+    phaseB:
+      promptId: httpx-cross-boundary-protocol-epic-v1-use
+      prompt: >-
+        Fix HTTPX protocol edge cases across URL handling, transports, auth,
+        and environment proxy parsing. `params=` encoding must percent-encode
+        forward slashes and encode spaces as `+`, while raw query strings keep
+        literal `/` and valid percent escapes intact. ASGI
+        `scope["raw_path"]` must exclude the query string. DigestAuth must
+        generate the RFC 2069 no-qop response hash and must carry cookies from
+        a 401 challenge onto the retried request. `NO_PROXY` entries that
+        include a URL scheme must be treated as scheme-specific bypasses
+        instead of wildcard hostnames. Preserve existing public APIs and add
+        focused regressions.
+    expectedContext:
+      description: >-
+        HTTPX has component-specific URL encoding, ASGI raw_path excludes
+        query, DigestAuth no-qop/cookie retry semantics, and scheme-aware
+        NO_PROXY parsing.
+      keywords:
+        - params
+        - ASGITransport
+        - DigestAuth
+        - RFC 2069
+        - NO_PROXY
+    seededContext:
+      renderedContext: |
+        - [memory] httpx/url-component-encoding: `params=` uses form/query-parameter encoding and must percent-encode `/` in values and encode spaces as `+`, while raw URL query strings preserve literal `/` and existing valid percent escapes. Keep these paths separate instead of normalizing all query construction through one quoting rule.
+        - [memory] httpx/asgi-raw-path-without-query: ASGI `scope["raw_path"]` is the percent-encoded path only; `scope["query_string"]` owns the query bytes. `ASGITransport` should split `request.url.raw_path` before `?` when building scope.
+        - [memory] httpx/digest-auth-rfc2069-and-cookies: Digest challenges without `qop` use RFC 2069 response `H(HA1:nonce:HA2)`, while qop auth uses nonce count and client nonce. When a 401 response sets cookies, the retried digest request should include them.
+        - [memory] httpx/no-proxy-scheme-entries: `NO_PROXY` values containing `://` are already URL-pattern style entries and should become scheme-specific mounts such as `http://internal.local`, not wildcard host patterns like `all://*http://internal.local`.
+      contextIds:
+        - httpx/url-component-encoding
+        - httpx/asgi-raw-path-without-query
+        - httpx/digest-auth-rfc2069-and-cookies
+        - httpx/no-proxy-scheme-entries
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_httpx.py b/lore_eval_hidden_httpx.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_httpx.py
+          @@ -0,0 +1,104 @@
+          +import json
+          +import os
+          +
+          +import anyio
+          +import httpx
+          +
+          +
+          +def test_url_params_encode_slash_but_raw_query_preserves_it():
+          +    raw = httpx.URL("https://example.com/path?d=e/f&already=a%2Fb")
+          +    assert str(raw) == "https://example.com/path?d=e/f&already=a%2Fb"
+          +    assert raw.raw_path == b"/path?d=e/f&already=a%2Fb"
+          +
+          +    encoded = httpx.URL("https://example.com/").copy_with(
+          +        params={"d": "e/f", "space": "a b"}
+          +    )
+          +    assert str(encoded) == "https://example.com/?d=e%2Ff&space=a+b"
+          +
+          +
+          +def test_asgi_raw_path_excludes_query_component():
+          +    async def echo_raw_path(scope, receive, send):
+          +        body = json.dumps(
+          +            {
+          +                "raw_path": scope["raw_path"].decode("ascii"),
+          +                "query_string": scope["query_string"].decode("ascii"),
+          +            }
+          +        ).encode("utf-8")
+          +        await send(
+          +            {
+          +                "type": "http.response.start",
+          +                "status": 200,
+          +                "headers": [
+          +                    (b"content-type", b"application/json"),
+          +                    (b"content-length", str(len(body)).encode("ascii")),
+          +                ],
+          +            }
+          +        )
+          +        await send({"type": "http.response.body", "body": body})
+          +
+          +    async def run():
+          +        transport = httpx.ASGITransport(app=echo_raw_path)
+          +        async with httpx.AsyncClient(
+          +            transport=transport, base_url="http://example.org"
+          +        ) as client:
+          +            response = await client.get("/mounted/path?debug=true")
+          +        assert response.json() == {
+          +            "raw_path": "/mounted/path",
+          +            "query_string": "debug=true",
+          +        }
+          +
+          +    anyio.run(run)
+          +
+          +
+          +def test_digest_auth_rfc2069_no_qop_response_hash():
+          +    auth = httpx.DigestAuth(username="Mufasa", password="CircleOfLife")
+          +    request = httpx.Request("GET", "https://www.example.com/dir/index.html")
+          +    flow = auth.sync_auth_flow(request)
+          +    request = next(flow)
+          +    assert "Authorization" not in request.headers
+          +
+          +    response = httpx.Response(
+          +        401,
+          +        headers={
+          +            "WWW-Authenticate": (
+          +                'Digest realm="testrealm@host.com", '
+          +                'nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", '
+          +                'opaque="5ccc069c403ebaf9f0171e9517f40e41"'
+          +            )
+          +        },
+          +        request=request,
+          +    )
+          +    retry = flow.send(response)
+          +    auth_header = retry.headers["Authorization"]
+          +    assert 'uri="/dir/index.html"' in auth_header
+          +    assert 'response="1949323746fe6a43ef61f9606e7febea"' in auth_header
+          +
+          +
+          +def test_digest_auth_retried_request_keeps_401_cookies():
+          +    requests = []
+          +
+          +    def handler(request):
+          +        requests.append(request)
+          +        if len(requests) == 1:
+          +            return httpx.Response(
+          +                401,
+          +                headers={
+          +                    "WWW-Authenticate": (
+          +                        'Digest realm="...", qop="auth", nonce="...", opaque="..."'
+          +                    ),
+          +                    "Set-Cookie": "session=abc; Path=/",
+          +                },
+          +                request=request,
+          +            )
+          +        return httpx.Response(200, request=request)
+          +
+          +    client = httpx.Client(
+          +        transport=httpx.MockTransport(handler),
+          +        auth=httpx.DigestAuth("user", "pass"),
+          +    )
+          +    response = client.get("https://example.com/")
+          +    assert response.status_code == 200
+          +    assert len(requests) == 2
+          +    assert requests[-1].headers["Cookie"] == "session=abc"
+          +
+          +
+          +def test_environment_no_proxy_scheme_entries(monkeypatch):
+          +    for key in list(os.environ):
+          +        if "proxy" in key.lower():
+          +            monkeypatch.delenv(key, raising=False)
+          +    monkeypatch.setenv("http_proxy", "127.0.0.1")
+          +    monkeypatch.setenv("all_proxy", "127.0.0.1")
+          +    monkeypatch.setenv("no_proxy", "http://internal.local,github.com")
+          +
+          +    from httpx._utils import get_environment_proxies
+          +
+          +    proxies = get_environment_proxies()
+          +    assert proxies["http://"] == "http://127.0.0.1"
+          +    assert proxies["all://"] == "http://127.0.0.1"
+          +    assert proxies["http://internal.local"] is None
+          +    assert proxies["all://*github.com"] is None
+          +    assert "all://*http://internal.local" not in proxies
+          +
+          +    client = httpx.Client(trust_env=True)
+          +    try:
+          +        assert client._transport_for_url(httpx.URL("http://internal.local")) is client._transport
+          +        assert client._transport_for_url(httpx.URL("https://internal.local")) is not client._transport
+          +        assert client._transport_for_url(httpx.URL("http://sub.internal.local")) is not client._transport
+          +    finally:
+          +        client.close()
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - --with
+          - anyio==3.7.1
+          - --with
+          - trio==0.22.0
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_httpx.py
+          - -q
+        timeoutMs: 300000
+
+  - id: httpx-event-hooks-redirect-chain-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: encode/httpx
+      sha: 4986743b3d09a13ea1dda72f6cdc5bf0dacb98b1
+    phaseA:
+      promptId: httpx-event-hooks-redirect-chain-v1-formation
+      prompt: >-
+        We will fix redirect event-hook observability in a later session.
+        Inspect sync and async client redirect loops, request/response hook
+        dispatch, response body closing/reading behavior, auth interaction, and
+        redirect regression tests. Produce a durable implementation plan only;
+        do not edit files.
+    phaseB:
+      promptId: httpx-event-hooks-redirect-chain-v1-use
+      prompt: >-
+        Make HTTPX request and response event hooks observe every request and
+        response in a redirect chain for both sync and async clients. Hooks
+        should see the initial redirected request/response and the final
+        request/response, while preserving redirect behavior, response closing
+        semantics, auth behavior, and streaming expectations. Add focused
+        regressions.
+    expectedContext:
+      description: >-
+        Redirect hook dispatch belongs inside both sync and async redirect
+        loops so hooks observe every hop without changing body/closing
+        semantics.
+      keywords:
+        - event_hooks
+        - redirect
+        - request hook
+        - response hook
+        - async
+    seededContext:
+      renderedContext: |
+        - [memory] httpx/event-hooks-redirect-loop: Request and response hooks should be dispatched inside the redirect loop, not only around the outer send call. Sync and async client paths need mirrored placement so hooks observe the 3xx response, the follow-up request, and the final response without forcing response body reads earlier than the redirect machinery expects.
+      contextIds:
+        - httpx/event-hooks-redirect-loop
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_httpx_hooks.py b/lore_eval_hidden_httpx_hooks.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_httpx_hooks.py
+          @@ -0,0 +1,87 @@
+          +import inspect
+          +
+          +import anyio
+          +import httpx
+          +
+          +
+          +def _redirecting_app(request):
+          +    if request.url.path == "/redirect":
+          +        return httpx.Response(
+          +            303,
+          +            headers={"location": "/final", "server": "redirector"},
+          +            request=request,
+          +        )
+          +    return httpx.Response(200, headers={"server": "origin"}, request=request)
+          +
+          +
+          +def _redirect_kwargs(method):
+          +    if "follow_redirects" in inspect.signature(method).parameters:
+          +        return {"follow_redirects": True}
+          +    return {"allow_redirects": True}
+          +
+          +
+          +def test_sync_event_hooks_observe_every_redirect_hop():
+          +    events = []
+          +
+          +    def on_request(request):
+          +        events.append(("request", request.url.path))
+          +
+          +    def on_response(response):
+          +        events.append(
+          +            ("response", response.status_code, response.request.url.path)
+          +        )
+          +
+          +    with httpx.Client(
+          +        transport=httpx.MockTransport(_redirecting_app),
+          +        event_hooks={"request": [on_request], "response": [on_response]},
+          +    ) as client:
+          +        response = client.get(
+          +            "http://example.com/redirect",
+          +            auth=("username", "password"),
+          +            **_redirect_kwargs(client.get),
+          +        )
+          +
+          +    assert response.status_code == 200
+          +    assert events == [
+          +        ("request", "/redirect"),
+          +        ("response", 303, "/redirect"),
+          +        ("request", "/final"),
+          +        ("response", 200, "/final"),
+          +    ]
+          +
+          +
+          +def test_async_event_hooks_observe_every_redirect_hop():
+          +    async def run():
+          +        events = []
+          +
+          +        async def on_request(request):
+          +            events.append(("request", request.url.path))
+          +
+          +        async def on_response(response):
+          +            events.append(
+          +                ("response", response.status_code, response.request.url.path)
+          +            )
+          +
+          +        async with httpx.AsyncClient(
+          +            transport=httpx.MockTransport(_redirecting_app),
+          +            event_hooks={
+          +                "request": [on_request],
+          +                "response": [on_response],
+          +            },
+          +        ) as client:
+          +            response = await client.get(
+          +                "http://example.com/redirect",
+          +                auth=("username", "password"),
+          +                **_redirect_kwargs(client.get),
+          +            )
+          +
+          +        assert response.status_code == 200
+          +        assert events == [
+          +            ("request", "/redirect"),
+          +            ("response", 303, "/redirect"),
+          +            ("request", "/final"),
+          +            ("response", 200, "/final"),
+          +        ]
+          +
+          +    anyio.run(run)
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - --with
+          - anyio==3.7.1
+          - --with
+          - trio==0.22.0
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_httpx_hooks.py
+          - -q
+        timeoutMs: 300000

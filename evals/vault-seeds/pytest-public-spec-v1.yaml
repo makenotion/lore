@@ -1,0 +1,132 @@
+version: 1
+id: pytest-public-spec-v1
+description: >-
+  Focused seed corpus for a pytest longitudinal suite. Entries model durable
+  implementation findings from realistic upstream-style work at pinned pytest
+  revisions.
+repository:
+  repo: pytest-dev/pytest
+  sha: ea98f72badc085bdff17c784cfe9a611af5196a4
+vault:
+  project:
+    name: pytest
+    path: .
+    tags: ["python", "testing", "oss"]
+  topics:
+    - id: config/discovery
+      name: Configuration discovery
+      description: pytest config-file precedence, parsing modes, and rootdir behavior.
+    - id: collection/cache
+      name: Collection and cache
+      description: Test collection, last-failed state, and cache-driven selection behavior.
+    - id: python/parametrize
+      name: Python parametrization
+      description: Parametrization parsing, dynamic generation, node IDs, and collection errors.
+    - id: assertion/rewrite
+      name: Assertion rewriting
+      description: Assertion introspection, rewrite hooks, and reporter-independent failure formatting.
+    - id: tests/pytester
+      name: Pytester regressions
+      description: pytest's own pytester-based regression tests and subprocess assertions.
+  memories:
+    - id: pytest/config-native-toml-precedence
+      title: Native TOML config files should own pytest config precedence
+      topics: ["config/discovery", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `pytest.toml` and `.pytest.toml` are first-class pytest config files
+        that outrank legacy config files, including when empty.
+      body: |
+        Native TOML config support is a config-discovery concern, not a test
+        collection concern. The discovery layer should consider `pytest.toml`
+        and `.pytest.toml` before `pytest.ini`, `tox.ini`, `setup.cfg`, and
+        `pyproject.toml`. Those files use a top-level `[pytest]` table and
+        preserve native TOML types for config values such as lists and booleans.
+
+        Empty `pytest.toml` files still count as config files and should stop
+        discovery from falling through to lower-priority files. `pyproject.toml`
+        remains backwards compatible through `[tool.pytest.ini_options]`, while
+        native `[tool.pytest]` support should not be mixed with the legacy table
+        in the same file.
+      scenarios: ["pytest-native-toml-config-v1"]
+    - id: pytest/lastfailed-package-paths
+      title: Last-failed path skipping must keep package ancestors collectable
+      topics: ["collection/cache", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `--last-failed` file skipping should include ancestor package paths for
+        previously failing tests nested under packages.
+      body: |
+        The last-failed cache stores node IDs, but collection skipping happens
+        against collector paths. For failures inside packages, the cache-derived
+        path set must include the failing file and its parent directories so
+        package collectors remain reachable while unrelated files are skipped.
+
+        The public behavior is stateful across runs: after one nested package
+        test fails, a second `pytest --last-failed` run should collect only the
+        failing nested test file, report that unrelated files were skipped, and
+        should not accidentally skip the package collector needed to reach the
+        failing module.
+      scenarios: ["pytest-lastfailed-nested-package-v1"]
+    - id: pytest/parametrize-single-name-trailing-comma
+      title: String argnames with a trailing comma should act like tuple argnames
+      topics: ["python/parametrize", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `@pytest.mark.parametrize("arg,", values)` is a single-argument tuple
+        form and should unpack one-element tuple values.
+      body: |
+        Parametrize's string argnames parser should preserve the difference
+        between `"arg"` and `"arg,"`. Without a trailing comma, a one-argument
+        parametrization receives each argvalue as-is, so `("a",)` is a tuple
+        value. With a trailing comma, the string form represents a one-item
+        argname tuple and should behave like `("arg",)`, unpacking one-element
+        tuple values into the argument.
+
+        The fix belongs near argname parsing and parameter-set normalization.
+        It should preserve existing multi-argument string behavior, tuple
+        argname behavior, and ordinary single-name string behavior.
+      scenarios: ["pytest-parametrize-trailing-comma-v1"]
+    - id: pytest/parametrize-indirect-directness
+      title: Indirect parametrization lists should only mark named args indirect
+      topics: ["python/parametrize", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `indirect=[...]` should not make unrelated parametrized arguments look
+        indirect when deciding whether direct parametrization overrides fixtures.
+      body: |
+        Parametrization directness is per argument. `indirect=True` marks every
+        arg indirect, `indirect=False` marks every arg direct, and
+        `indirect=["name"]` marks only listed arguments indirect. Code that
+        discovers direct parametrization should reuse the same directness
+        resolution rules rather than treating any truthy `indirect` value as if
+        all arguments were indirect.
+
+        This matters when a direct parametrized argument has the same name as an
+        existing parametrized fixture while another unrelated argument is
+        indirect. The direct argument should still override the fixture instead
+        of producing duplicate fixture parametrization.
+      scenarios: ["pytest-parametrize-indirect-directness-v1"]
+    - id: pytest/assertion-without-terminalreporter
+      title: Assertion rewriting should not require the terminal reporter
+      topics: ["assertion/rewrite", "tests/pytester"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Rewritten assertion failures should format normally when the
+        terminalreporter plugin is disabled.
+      body: |
+        Assertion rewriting injects comparison formatting into assert
+        statements, but formatting should not assume that the terminal reporter
+        plugin is loaded. Runs that disable `terminalreporter` should still
+        raise ordinary `AssertionError` instances with useful assertion text
+        instead of crashing while looking up terminal-writer helpers.
+
+        Keep reporter-dependent color/highlight behavior behind a reporter
+        availability check and leave ordinary assertion introspection intact for
+        default runs.
+      scenarios: ["pytest-assertion-no-terminalreporter-v1"]

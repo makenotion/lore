@@ -1,0 +1,1085 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-capability-edge-v3
+description: >-
+  Capability-edge GitHub CLI longitudinal suite. Scenarios are clustered around
+  durable prior-session plans and scored by hidden behavioral Go tests.
+seededCorpus: ../vault-seeds/github-cli-capability-edge-v3.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: gh-cli-auth-git-credential-requested-user-v3
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: &github_cli_workspace
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-auth-git-credential-requested-user-v3-formation
+      prompt: >-
+        We will implement a follow-up auth credential-helper fix in a later
+        session. Inspect `gh auth git-credential`, multi-account auth config,
+        gist host fallback, environment-token precedence, and the package tests.
+        Produce a durable implementation plan only; do not edit files. The plan
+        should resolve how Git-provided usernames interact with inactive stored
+        accounts without switching the active account.
+    phaseB:
+      promptId: gh-cli-auth-git-credential-requested-user-v3-use
+      prompt: Implement the auth credential-helper follow-up exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        The credential helper should honor requested stored users, preserve
+        active-user behavior when no username is supplied, keep gist host
+        fallback, and preserve env-token semantics.
+      keywords:
+        - git-credential
+        - username
+        - inactive
+        - gist
+        - x-access-token
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/auth-git-credential-requested-user: `gh auth git-credential get` can use the Git credential username as a per-host account selector without switching the active account. Preserve active-user fallback when no username is supplied, keep environment-sourced tokens as `x-access-token`, keep gist host lookup against `github.com` while echoing the requested gist host, and silently miss unknown requested users.
+      contextIds:
+        - gh-cli/auth-git-credential-requested-user
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/auth/gitcredential/helper_hidden_test.go b/pkg/cmd/auth/gitcredential/helper_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/pkg/cmd/auth/gitcredential/helper_hidden_test.go
+          @@ -0,0 +1,105 @@
+          +package login
+          +
+          +import (
+          +	"fmt"
+          +	"sort"
+          +	"testing"
+          +
+          +	"github.com/MakeNowJust/heredoc"
+          +	"github.com/cli/cli/v2/pkg/iostreams"
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +type hiddenMultiUserConfig struct {
+          +	activeUser string
+          +	source     string
+          +	tokens     map[string]string
+          +}
+          +
+          +func hiddenTokenKey(host, user string) string {
+          +	return host + ":" + user
+          +}
+          +
+          +func (c *hiddenMultiUserConfig) ActiveToken(host string) (string, string) {
+          +	return c.tokens[hiddenTokenKey(host, c.activeUser)], c.source
+          +}
+          +
+          +func (c *hiddenMultiUserConfig) ActiveUser(string) (string, error) {
+          +	return c.activeUser, nil
+          +}
+          +
+          +func (c *hiddenMultiUserConfig) TokenForUser(host, user string) (string, string, error) {
+          +	token := c.tokens[hiddenTokenKey(host, user)]
+          +	if token == "" {
+          +		return "", "default", fmt.Errorf("no token found for %s", user)
+          +	}
+          +	return token, c.source, nil
+          +}
+          +
+          +func (c *hiddenMultiUserConfig) UsersForHost(host string) []string {
+          +	var users []string
+          +	prefix := host + ":"
+          +	for key := range c.tokens {
+          +		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+          +			users = append(users, key[len(prefix):])
+          +		}
+          +	}
+          +	sort.Strings(users)
+          +	return users
+          +}
+          +
+          +func runHiddenCredential(t *testing.T, input string, cfg config) (string, error) {
+          +	t.Helper()
+          +	ios, stdin, stdout, _ := iostreams.Test()
+          +	_, _ = stdin.WriteString(input)
+          +	err := helperRun(&CredentialOptions{
+          +		IO:        ios,
+          +		Operation: "get",
+          +		Config: func() (config, error) {
+          +			return cfg, nil
+          +		},
+          +	})
+          +	return stdout.String(), err
+          +}
+          +
+          +func TestHiddenCredentialHelperUsesRequestedInactiveUser(t *testing.T) {
+          +	cfg := &hiddenMultiUserConfig{
+          +		activeUser: "monalisa",
+          +		source:     "/home/monalisa/.config/gh/hosts.yml",
+          +		tokens: map[string]string{
+          +			hiddenTokenKey("github.com", "monalisa"): "MONA_TOKEN",
+          +			hiddenTokenKey("github.com", "hubot"):    "HUBOT_TOKEN",
+          +		},
+          +	}
+          +
+          +	out, err := runHiddenCredential(t, heredoc.Doc(`
+          +		protocol=https
+          +		host=github.com
+          +		username=hubot
+          +	`), cfg)
+          +
+          +	require.NoError(t, err)
+          +	assert.Equal(t, heredoc.Doc(`
+          +		protocol=https
+          +		host=github.com
+          +		username=hubot
+          +		password=HUBOT_TOKEN
+          +	`), out)
+          +	assert.Equal(t, "monalisa", cfg.activeUser)
+          +}
+          +
+          +func TestHiddenCredentialHelperUsesRequestedUserForGistHost(t *testing.T) {
+          +	cfg := &hiddenMultiUserConfig{
+          +		activeUser: "monalisa",
+          +		source:     "/home/monalisa/.config/gh/hosts.yml",
+          +		tokens: map[string]string{
+          +			hiddenTokenKey("github.com", "monalisa"): "MONA_TOKEN",
+          +			hiddenTokenKey("github.com", "hubot"):    "HUBOT_TOKEN",
+          +		},
+          +	}
+          +
+          +	out, err := runHiddenCredential(t, "url=https://hubot@gist.github.com/OWNER/secret\n\n", cfg)
+          +
+          +	require.NoError(t, err)
+          +	assert.Equal(t, heredoc.Doc(`
+          +		protocol=https
+          +		host=gist.github.com
+          +		username=hubot
+          +		password=HUBOT_TOKEN
+          +	`), out)
+          +}
+          +
+          +func TestHiddenCredentialHelperSilentlyMissesUnknownRequestedUser(t *testing.T) {
+          +	cfg := &hiddenMultiUserConfig{
+          +		activeUser: "monalisa",
+          +		source:     "/home/monalisa/.config/gh/hosts.yml",
+          +		tokens: map[string]string{
+          +			hiddenTokenKey("github.com", "monalisa"): "MONA_TOKEN",
+          +		},
+          +	}
+          +
+          +	out, err := runHiddenCredential(t, "protocol=https\nhost=github.com\nusername=hubot\n\n", cfg)
+          +
+          +	require.Error(t, err)
+          +	assert.Empty(t, out)
+          +}
+        command: go
+        args:
+          - test
+          - ./pkg/cmd/auth/gitcredential
+          - -count=1
+        timeoutMs: 300000
+
+  - id: gh-cli-run-download-zip-safe-atomic-v3
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *github_cli_workspace
+    phaseA:
+      promptId: gh-cli-run-download-zip-safe-atomic-v3-formation
+      prompt: >-
+        We will implement a workflow-run artifact download safety follow-up in a
+        later session. Inspect `gh run download`, `apiPlatform.Download`, the
+        shared ZIP extraction helper, safepaths behavior, and tests. Produce a
+        durable implementation plan only; do not edit files. The plan should
+        resolve validation-before-write behavior, path traversal, duplicate
+        entries, symlink/special modes, staging/rollback, and executable-bit
+        preservation.
+    phaseB:
+      promptId: gh-cli-run-download-zip-safe-atomic-v3-use
+      prompt: Implement the workflow-run artifact ZIP safety follow-up exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        Artifact ZIP extraction should validate all entries before writing,
+        reject unsafe entries, use staging for rollback, and preserve valid
+        executable files.
+      keywords:
+        - zip
+        - traversal
+        - duplicate
+        - symlink
+        - staging
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/run-artifact-zip-safe-atomic: `gh run download` should validate the full artifact ZIP entry set before writing any destination files. Reject path traversal, absolute paths, symlink or special file modes, and duplicate destination entries. Extract through a staging directory so a failure leaves the destination unchanged, while preserving executable bits for valid files.
+      contextIds:
+        - gh-cli/run-artifact-zip-safe-atomic
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/internal/zip/zip_hidden_test.go b/internal/zip/zip_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/internal/zip/zip_hidden_test.go
+          @@ -0,0 +1,106 @@
+          +package zip
+          +
+          +import (
+          +	"archive/zip"
+          +	"bytes"
+          +	"os"
+          +	"path/filepath"
+          +	"testing"
+          +
+          +	"github.com/cli/cli/v2/internal/safepaths"
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +type hiddenZipEntry struct {
+          +	name string
+          +	body string
+          +	mode os.FileMode
+          +}
+          +
+          +func hiddenZipReader(t *testing.T, entries ...hiddenZipEntry) *zip.Reader {
+          +	t.Helper()
+          +	var buf bytes.Buffer
+          +	zw := zip.NewWriter(&buf)
+          +	for _, entry := range entries {
+          +		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
+          +		if entry.mode != 0 {
+          +			header.SetMode(entry.mode)
+          +		}
+          +		w, err := zw.CreateHeader(header)
+          +		require.NoError(t, err)
+          +		_, err = w.Write([]byte(entry.body))
+          +		require.NoError(t, err)
+          +	}
+          +	require.NoError(t, zw.Close())
+          +	reader := bytes.NewReader(buf.Bytes())
+          +	zr, err := zip.NewReader(reader, int64(buf.Len()))
+          +	require.NoError(t, err)
+          +	return zr
+          +}
+          +
+          +func hiddenDest(t *testing.T) safepaths.Absolute {
+          +	t.Helper()
+          +	dest, err := safepaths.ParseAbsolute(filepath.Join(t.TempDir(), "artifact"))
+          +	require.NoError(t, err)
+          +	return dest
+          +}
+          +
+          +func TestHiddenExtractZipRejectsTraversalBeforeWriting(t *testing.T) {
+          +	dest := hiddenDest(t)
+          +	err := ExtractZip(hiddenZipReader(t,
+          +		hiddenZipEntry{name: "good.txt", body: "ok"},
+          +		hiddenZipEntry{name: "../escape.txt", body: "bad"},
+          +	), dest)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "../escape.txt")
+          +	assert.NoFileExists(t, filepath.Join(dest.String(), "good.txt"))
+          +	assert.NoFileExists(t, filepath.Join(filepath.Dir(dest.String()), "escape.txt"))
+          +}
+          +
+          +func TestHiddenExtractZipRejectsDuplicateDestinationsAtomically(t *testing.T) {
+          +	dest := hiddenDest(t)
+          +	err := ExtractZip(hiddenZipReader(t,
+          +		hiddenZipEntry{name: "a.txt", body: "first"},
+          +		hiddenZipEntry{name: "a.txt", body: "second"},
+          +	), dest)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "a.txt")
+          +	assert.NoFileExists(t, filepath.Join(dest.String(), "a.txt"))
+          +}
+          +
+          +func TestHiddenExtractZipRejectsSymlinkEntries(t *testing.T) {
+          +	dest := hiddenDest(t)
+          +	err := ExtractZip(hiddenZipReader(t,
+          +		hiddenZipEntry{name: "link", body: "target", mode: os.ModeSymlink | 0777},
+          +	), dest)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "link")
+          +	assert.NoFileExists(t, filepath.Join(dest.String(), "link"))
+          +}
+          +
+          +func TestHiddenExtractZipPreservesExecutableFiles(t *testing.T) {
+          +	dest := hiddenDest(t)
+          +	err := ExtractZip(hiddenZipReader(t,
+          +		hiddenZipEntry{name: "bin/run.sh", body: "#!/bin/sh\n", mode: 0755},
+          +	), dest)
+          +
+          +	require.NoError(t, err)
+          +	info, err := os.Stat(filepath.Join(dest.String(), "bin", "run.sh"))
+          +	require.NoError(t, err)
+          +	assert.NotZero(t, info.Mode()&0111)
+          +}
+        command: go
+        args:
+          - test
+          - ./internal/zip
+          - -count=1
+        timeoutMs: 300000
+
+  - id: gh-cli-pr-close-delete-branch-worktree-guard-v3
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *github_cli_workspace
+    phaseA:
+      promptId: gh-cli-pr-close-delete-branch-worktree-guard-v3-formation
+      prompt: >-
+        We will implement a branch-cleanup guard for `gh pr close
+        --delete-branch` in a later session. Inspect the close command, local
+        branch deletion path, default-branch checkout behavior, same-repo vs
+        fork remote deletion, git client command seams, and tests. Produce a
+        durable implementation plan only; do not edit files. The plan should
+        resolve how to skip deleting a local branch checked out in another git
+        worktree without skipping the PR close or same-repo remote deletion.
+    phaseB:
+      promptId: gh-cli-pr-close-delete-branch-worktree-guard-v3-use
+      prompt: Implement the PR close branch-cleanup guard exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        Local deletion should be skipped when another worktree has the branch
+        checked out, while PR close and same-repo remote branch deletion still
+        happen.
+      keywords:
+        - worktree
+        - delete-branch
+        - local branch
+        - remote branch
+        - warning
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-close-delete-branch-worktree-guard: Before deleting a local branch for `gh pr close --delete-branch`, inspect `git worktree list --porcelain`. If the PR head branch is checked out in another worktree, skip only local branch deletion and print a clear warning; still close the PR and delete the same-repository remote branch. Current-worktree branch deletion keeps the existing default-branch checkout behavior.
+      contextIds:
+        - gh-cli/pr-close-delete-branch-worktree-guard
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/pr/close/close_hidden_test.go b/pkg/cmd/pr/close/close_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/pkg/cmd/pr/close/close_hidden_test.go
+          @@ -0,0 +1,57 @@
+          +package close
+          +
+          +import (
+          +	"testing"
+          +
+          +	"github.com/MakeNowJust/heredoc"
+          +	"github.com/cli/cli/v2/pkg/cmd/pr/shared"
+          +	"github.com/cli/cli/v2/internal/run"
+          +	"github.com/cli/cli/v2/pkg/httpmock"
+          +	"github.com/stretchr/testify/assert"
+          +)
+          +
+          +func TestHiddenPrCloseDeleteBranchSkipsLocalBranchCheckedOutInOtherWorktree(t *testing.T) {
+          +	http := &httpmock.Registry{}
+          +	defer http.Verify(t)
+          +
+          +	baseRepo, pr := stubPR("OWNER/REPO", "OWNER/REPO:blueberries")
+          +	pr.Title = "The title of the PR"
+          +	shared.StubFinderForRunCommandStyleTests(t, "96", pr, baseRepo)
+          +
+          +	http.Register(
+          +		httpmock.GraphQL(`mutation PullRequestClose\b`),
+          +		httpmock.GraphQLMutation(`{"id": "THE-ID"}`,
+          +			func(inputs map[string]interface{}) {
+          +				assert.Equal(t, inputs["pullRequestId"], "THE-ID")
+          +			}),
+          +	)
+          +	http.Register(
+          +		httpmock.REST("DELETE", "repos/OWNER/REPO/git/refs/heads/blueberries"),
+          +		httpmock.StringResponse(`{}`))
+          +
+          +	cs, cmdTeardown := run.Stub()
+          +	defer cmdTeardown(t)
+          +
+          +	cs.Register(`git rev-parse --verify refs/heads/blueberries`, 0, "")
+          +	cs.Register(`git rev-parse --show-toplevel`, 0, "/repo\n")
+          +	cs.Register(`git worktree list --porcelain`, 0, heredoc.Doc(`
+          +		worktree /repo
+          +		HEAD 1111111111111111111111111111111111111111
+          +		branch refs/heads/trunk
+          +
+          +		worktree /tmp/other-worktree
+          +		HEAD 2222222222222222222222222222222222222222
+          +		branch refs/heads/blueberries
+          +	`))
+          +
+          +	output, err := runCommand(http, true, `96 --delete-branch`)
+          +
+          +	assert.NoError(t, err)
+          +	assert.Equal(t, "", output.String())
+          +	assert.Contains(t, output.Stderr(), "Closed pull request OWNER/REPO#96")
+          +	assert.Contains(t, output.Stderr(), "Skipped deleting the local branch")
+          +	assert.Contains(t, output.Stderr(), "blueberries")
+          +	assert.Contains(t, output.Stderr(), "worktree")
+          +	assert.Contains(t, output.Stderr(), "Deleted branch blueberries")
+          +}
+        command: go
+        args:
+          - test
+          - ./pkg/cmd/pr/close
+          - -count=1
+        timeoutMs: 300000
+
+  - id: gh-cli-issue-develop-ref-validation-v3
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *github_cli_workspace
+    phaseA:
+      promptId: gh-cli-issue-develop-ref-validation-v3-formation
+      prompt: >-
+        We will implement a ref-safety follow-up for `gh issue develop` in a
+        later session. Inspect linked-branch creation, branch name/base branch
+        handling, API-returned branch names, local git fetch/config/checkout
+        side effects, and tests. Produce a durable implementation plan only; do
+        not edit files. The plan should resolve how to validate user-provided
+        and API-returned branch names with Git ref rules before side effects
+        while preserving valid slash-containing branches.
+    phaseB:
+      promptId: gh-cli-issue-develop-ref-validation-v3-use
+      prompt: Implement the issue develop ref-safety follow-up exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        `gh issue develop` should reject invalid requested branch/base names
+        before linked-branch mutations or git side effects and preserve valid
+        branch names.
+      keywords:
+        - issue develop
+        - refname
+        - branch
+        - GraphQL
+        - git
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/issue-develop-ref-validation: Branch names accepted by `gh issue develop --name`, `--base`, and linked-branch API responses should be checked with Git refname rules before creating linked branches, setting branch config, fetching, or checking out. Reject colon, `..`, `@{`, leading dash, trailing slash or dot, control characters, and other invalid ref forms. Valid slash-containing names remain supported and should be passed as argv arguments.
+      contextIds:
+        - gh-cli/issue-develop-ref-validation
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/issue/develop/develop_hidden_test.go b/pkg/cmd/issue/develop/develop_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/pkg/cmd/issue/develop/develop_hidden_test.go
+          @@ -0,0 +1,137 @@
+          +package develop
+          +
+          +import (
+          +	"net/http"
+          +	"testing"
+          +
+          +	"github.com/cli/cli/v2/context"
+          +	"github.com/cli/cli/v2/git"
+          +	"github.com/cli/cli/v2/internal/ghrepo"
+          +	"github.com/cli/cli/v2/internal/run"
+          +	"github.com/cli/cli/v2/pkg/httpmock"
+          +	"github.com/cli/cli/v2/pkg/iostreams"
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +func hiddenDevelopOptions(reg *httpmock.Registry) *DevelopOptions {
+          +	ios, _, _, _ := iostreams.Test()
+          +	return &DevelopOptions{
+          +		IssueNumber: 123,
+          +		IO:          ios,
+          +		GitClient: &git.Client{
+          +			GhPath:  "some/path/gh",
+          +			GitPath: "some/path/git",
+          +		},
+          +		HttpClient: func() (*http.Client, error) {
+          +			return &http.Client{Transport: reg}, nil
+          +		},
+          +		BaseRepo: func() (ghrepo.Interface, error) {
+          +			return ghrepo.New("OWNER", "REPO"), nil
+          +		},
+          +		Remotes: func() (context.Remotes, error) {
+          +			return context.Remotes{
+          +				&context.Remote{
+          +					Remote: &git.Remote{Name: "origin"},
+          +					Repo:   ghrepo.New("OWNER", "REPO"),
+          +				},
+          +			}, nil
+          +		},
+          +	}
+          +}
+          +
+          +func hiddenStubIssueAndFeature(reg *httpmock.Registry) {
+          +	reg.Register(
+          +		httpmock.GraphQL(`query IssueByNumber\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"hasIssuesEnabled":true,"issue":{"id":"SOMEID","number":123,"title":"my issue"}}}}`),
+          +	)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query LinkedBranchFeature\b`),
+          +		httpmock.StringResponse(`{"data":{"LinkedBranch":{"fields":[{"name":"id"},{"name":"ref"}]}}}`),
+          +	)
+          +}
+          +
+          +func TestHiddenDevelopRejectsInvalidRequestedNameBeforeCreateMutation(t *testing.T) {
+          +	reg := &httpmock.Registry{}
+          +	hiddenStubIssueAndFeature(reg)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query ListLinkedBranches\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"issue":{"linkedBranches":{"nodes":[]}}}}}`),
+          +	)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query FindRepoBranchID\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"id":"REPOID","defaultBranchRef":{"target":{"oid":"DEFAULTOID"}},"ref":{"target":{"oid":""}}}}}`),
+          +	)
+          +	createMutationCalled := false
+          +	reg.Register(
+          +		httpmock.GraphQL(`mutation CreateLinkedBranch\b`),
+          +		httpmock.GraphQLMutation(`{"data":{"createLinkedBranch":{"linkedBranch":{"id":"2","ref":{"name":"bad:name"}}}}}`, func(map[string]interface{}) {
+          +			createMutationCalled = true
+          +		}),
+          +	)
+          +	_, teardown := run.Stub()
+          +	defer teardown(t)
+          +
+          +	opts := hiddenDevelopOptions(reg)
+          +	opts.Name = "bad:name"
+          +	err := developRun(opts)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "bad:name")
+          +	assert.Contains(t, err.Error(), "branch")
+          +	assert.False(t, createMutationCalled)
+          +}
+          +
+          +func TestHiddenDevelopRejectsInvalidCreatedBranchBeforeGitSideEffects(t *testing.T) {
+          +	reg := &httpmock.Registry{}
+          +	hiddenStubIssueAndFeature(reg)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query ListLinkedBranches\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"issue":{"linkedBranches":{"nodes":[]}}}}}`),
+          +	)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query FindRepoBranchID\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"id":"REPOID","defaultBranchRef":{"target":{"oid":"DEFAULTOID"}},"ref":{"target":{"oid":""}}}}}`),
+          +	)
+          +	reg.Register(
+          +		httpmock.GraphQL(`mutation CreateLinkedBranch\b`),
+          +		httpmock.StringResponse(`{"data":{"createLinkedBranch":{"linkedBranch":{"id":"2","ref":{"name":"bad:name"}}}}}`),
+          +	)
+          +	_, teardown := run.Stub()
+          +	defer teardown(t)
+          +
+          +	opts := hiddenDevelopOptions(reg)
+          +	opts.Name = "feature"
+          +	err := developRun(opts)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "bad:name")
+          +	assert.Contains(t, err.Error(), "branch")
+          +}
+          +
+          +func TestHiddenDevelopRejectsInvalidBaseBeforeBranchLookup(t *testing.T) {
+          +	reg := &httpmock.Registry{}
+          +	hiddenStubIssueAndFeature(reg)
+          +	branchLookupCalled := false
+          +	reg.Register(
+          +		httpmock.GraphQL(`query FindRepoBranchID\b`),
+          +		httpmock.GraphQLQuery(`{"data":{"repository":{"id":"REPOID","ref":{"target":{"oid":"OID"}}}}}`, func(_ string, _ map[string]interface{}) {
+          +			branchLookupCalled = true
+          +		}),
+          +	)
+          +
+          +	opts := hiddenDevelopOptions(reg)
+          +	opts.BaseBranch = "bad:name"
+          +	err := developRun(opts)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "bad:name")
+          +	assert.Contains(t, err.Error(), "branch")
+          +	assert.False(t, branchLookupCalled)
+          +}
+          +
+          +func TestHiddenDevelopAllowsSlashContainingBranchNames(t *testing.T) {
+          +	reg := &httpmock.Registry{}
+          +	hiddenStubIssueAndFeature(reg)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query ListLinkedBranches\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"issue":{"linkedBranches":{"nodes":[]}}}}}`),
+          +	)
+          +	reg.Register(
+          +		httpmock.GraphQL(`query FindRepoBranchID\b`),
+          +		httpmock.StringResponse(`{"data":{"repository":{"id":"REPOID","defaultBranchRef":{"target":{"oid":"DEFAULTOID"}},"ref":{"target":{"oid":""}}}}}`),
+          +	)
+          +	reg.Register(
+          +		httpmock.GraphQL(`mutation CreateLinkedBranch\b`),
+          +		httpmock.StringResponse(`{"data":{"createLinkedBranch":{"linkedBranch":{"id":"2","ref":{"name":"feature/slash"}}}}}`),
+          +	)
+          +
+          +	cmdStubs, teardown := run.Stub()
+          +	defer teardown(t)
+          +	cmdStubs.Register(`git fetch origin \+refs/heads/feature/slash:refs/remotes/origin/feature/slash`, 0, "")
+          +
+          +	opts := hiddenDevelopOptions(reg)
+          +	opts.Name = "feature/slash"
+          +	err := developRun(opts)
+          +
+          +	require.NoError(t, err)
+          +}
+        command: go
+        args:
+          - test
+          - ./pkg/cmd/issue/develop
+          - -count=1
+        timeoutMs: 300000
+
+  - id: gh-cli-auth-refresh-scope-normalization-v3
+    difficulty: medium
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *github_cli_workspace
+    phaseA:
+      promptId: gh-cli-auth-refresh-scope-normalization-v3-formation
+      prompt: >-
+        We will implement an auth refresh scope-normalization follow-up in a
+        later session. Inspect scope collection from existing token headers,
+        `--scopes`, `--remove-scopes`, credential-helper scopes, OAuth flow
+        invocation, and package tests. Produce a durable implementation plan
+        only; do not edit files. The plan should resolve case-insensitive
+        dedupe, lowercase normalization, stable first-seen ordering, and
+        case-insensitive removals before the OAuth flow is called. Treat the
+        OAuth flow argument as additional scopes only, since the flow already
+        adds the default minimum scopes itself.
+    phaseB:
+      promptId: gh-cli-auth-refresh-scope-normalization-v3-use
+      prompt: Implement the auth refresh scope-normalization follow-up exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        `gh auth refresh` should normalize OAuth scopes to lowercase,
+        deduplicate case-insensitively, preserve first-seen order, and remove
+        requested scopes case-insensitively before invoking the OAuth flow.
+        The scopes passed to the OAuth flow should exclude default minimum
+        scopes because the flow adds them itself.
+      keywords:
+        - auth refresh
+        - scopes
+        - lowercase
+        - dedupe
+        - remove-scopes
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/auth-refresh-scope-normalization: `gh auth refresh` gathers scopes from the current token, the HTTPS credential-helper prompt, `--scopes`, and `--remove-scopes` before calling the OAuth flow. Trim whitespace, lowercase scope names, dedupe case-insensitively while preserving first-seen order after normalization, make removals case-insensitive, and pass only additional scopes beyond `repo`, `read:org`, and `gist` because `AuthFlow` adds those defaults itself. Keep this in refresh scope assembly because tests stub `AuthFlow` and assert the scopes passed into it.
+      contextIds:
+        - gh-cli/auth-refresh-scope-normalization
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/auth/refresh/refresh_hidden_test.go b/pkg/cmd/auth/refresh/refresh_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/pkg/cmd/auth/refresh/refresh_hidden_test.go
+          @@ -0,0 +1,129 @@
+          +package refresh
+          +
+          +import (
+          +	"io"
+          +	"net/http"
+          +	"strings"
+          +	"testing"
+          +
+          +	"github.com/cli/cli/v2/internal/config"
+          +	"github.com/cli/cli/v2/internal/gh"
+          +	"github.com/cli/cli/v2/pkg/httpmock"
+          +	"github.com/cli/cli/v2/pkg/iostreams"
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +func hiddenRefreshOptions(
+          +	t *testing.T,
+          +	oldScopes string,
+          +	mutate func(*RefreshOptions),
+          +) (*RefreshOptions, *[]string, *httpmock.Registry) {
+          +	t.Helper()
+          +	cfg, _ := config.NewIsolatedTestConfig(t)
+          +	_, err := cfg.Authentication().Login("github.com", "test-user", "abc123", "https", false)
+          +	require.NoError(t, err)
+          +
+          +	reg := &httpmock.Registry{}
+          +	var gotScopes []string
+          +	opts := &RefreshOptions{
+          +		Hostname: "github.com",
+          +		Config: func() (gh.Config, error) {
+          +			return cfg, nil
+          +		},
+          +		PlainHttpClient: func() (*http.Client, error) {
+          +			reg.Register(
+          +				httpmock.REST("GET", ""),
+          +				func(req *http.Request) (*http.Response, error) {
+          +					return &http.Response{
+          +						Request:    req,
+          +						StatusCode: http.StatusOK,
+          +						Body:       io.NopCloser(strings.NewReader("")),
+          +						Header: http.Header{
+          +							"X-Oauth-Scopes": {oldScopes},
+          +						},
+          +					}, nil
+          +				},
+          +			)
+          +			return &http.Client{Transport: reg}, nil
+          +		},
+          +		AuthFlow: func(_ *http.Client, _ *iostreams.IOStreams, _ string, scopes []string, _ bool, _ bool) (token, username, error) {
+          +			gotScopes = append([]string{}, scopes...)
+          +			return token("xyz456"), username("test-user"), nil
+          +		},
+          +	}
+          +	ios, _, _, _ := iostreams.Test()
+          +	ios.SetStdinTTY(false)
+          +	ios.SetStdoutTTY(false)
+          +	opts.IO = ios
+          +	if mutate != nil {
+          +		mutate(opts)
+          +	}
+          +	return opts, &gotScopes, reg
+          +}
+          +
+          +func TestHiddenRefreshNormalizesAndDeduplicatesScopesBeforeAuthFlow(t *testing.T) {
+          +	opts, gotScopes, reg := hiddenRefreshOptions(
+          +		t,
+          +		" repo, Read:Org, gist, Codespace, Project ",
+          +		func(opts *RefreshOptions) {
+          +			opts.Scopes = []string{"read:org", "WORKFLOW", "workflow", " codespace "}
+          +		},
+          +	)
+          +	defer reg.Verify(t)
+          +
+          +	require.NoError(t, refreshRun(opts))
+          +
+          +	assert.Equal(t, []string{"codespace", "project", "workflow"}, *gotScopes)
+          +}
+          +
+          +func TestHiddenRefreshRemovesScopesCaseInsensitively(t *testing.T) {
+          +	opts, gotScopes, reg := hiddenRefreshOptions(
+          +		t,
+          +		"repo,read:org,workflow,codespace,project",
+          +		func(opts *RefreshOptions) {
+          +			opts.RemoveScopes = []string{"WORKFLOW", "Codespace"}
+          +		},
+          +	)
+          +	defer reg.Verify(t)
+          +
+          +	require.NoError(t, refreshRun(opts))
+          +
+          +	assert.Equal(t, []string{"project"}, *gotScopes)
+          +}
+        command: go
+        args:
+          - test
+          - ./pkg/cmd/auth/refresh
+          - -count=1
+        timeoutMs: 300000
+
+  - id: gh-cli-pr-checkout-ref-validation-v3
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *github_cli_workspace
+    phaseA:
+      promptId: gh-cli-pr-checkout-ref-validation-v3-formation
+      prompt: >-
+        We will implement a branch-ref safety follow-up for `gh pr checkout`
+        in a later session. Inspect `pkg/cmd/pr/checkout`, PR `headRefName`
+        handling, `--branch` handling, existing-remote and missing-remote
+        command construction, branch config writes, submodule follow-up
+        commands, and package tests. Produce a durable implementation plan
+        only; do not edit files. The plan should resolve how to validate
+        API-returned head refs and user-supplied local branch names before git
+        side effects while preserving valid slash-containing branch names and
+        detached checkout behavior.
+    phaseB:
+      promptId: gh-cli-pr-checkout-ref-validation-v3-use
+      prompt: Implement the `gh pr checkout` branch-ref safety follow-up exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        `gh pr checkout` should validate API-returned head refs and
+        user-supplied local branch names before building fetch refspecs,
+        checkout commands, or branch config keys, while preserving valid
+        slash-containing branch names and detach mode.
+      keywords:
+        - pr checkout
+        - headRefName
+        - branch
+        - refspec
+        - config
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-checkout-ref-validation: `gh pr checkout` builds git fetch refspecs, checkout targets, reset/merge refs, and `branch.<name>.*` config keys from PR `headRefName` and `--branch`. Validate every branch name before it is interpolated into git arguments or config keys. Reject leading dash, colon, `..`, `@{`, trailing slash or dot, `.lock`, empty/control-character forms, and other malformed ref names. Keep valid slash-containing names such as `feature/slash` and `local/topic/slash`, and preserve `--detach` behavior where no local branch is created.
+      contextIds:
+        - gh-cli/pr-checkout-ref-validation
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/pr/checkout/checkout_hidden_test.go b/pkg/cmd/pr/checkout/checkout_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/pkg/cmd/pr/checkout/checkout_hidden_test.go
+          @@ -0,0 +1,125 @@
+          +package checkout
+          +
+          +import (
+          +	"errors"
+          +	"net/http"
+          +	"testing"
+          +
+          +	"github.com/cli/cli/v2/context"
+          +	"github.com/cli/cli/v2/git"
+          +	"github.com/cli/cli/v2/internal/config"
+          +	"github.com/cli/cli/v2/internal/gh"
+          +	"github.com/cli/cli/v2/internal/ghrepo"
+          +	"github.com/cli/cli/v2/internal/run"
+          +	"github.com/cli/cli/v2/pkg/httpmock"
+          +	"github.com/cli/cli/v2/pkg/iostreams"
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +func hiddenCheckoutOptions(baseRepo ghrepo.Interface, prHead string, remotes map[string]string) *CheckoutOptions {
+          +	_, pr := stubPR("OWNER/REPO:master", prHead)
+          +	ios, _, _, _ := iostreams.Test()
+          +	reg := &httpmock.Registry{}
+          +	return &CheckoutOptions{
+          +		IO: ios,
+          +		PRResolver: &stubPRResolver{
+          +			pr:       pr,
+          +			baseRepo: baseRepo,
+          +		},
+          +		Config: func() (gh.Config, error) {
+          +			return config.NewBlankConfig(), nil
+          +		},
+          +		HttpClient: func() (*http.Client, error) {
+          +			return &http.Client{Transport: reg}, nil
+          +		},
+          +		Branch: func() (string, error) {
+          +			return "main", nil
+          +		},
+          +		Remotes: func() (context.Remotes, error) {
+          +			if len(remotes) == 0 {
+          +				return nil, errors.New("no remotes")
+          +			}
+          +			var result context.Remotes
+          +			for name, fullName := range remotes {
+          +				repo, err := ghrepo.FromFullName(fullName)
+          +				if err != nil {
+          +					return nil, err
+          +				}
+          +				result = append(result, &context.Remote{
+          +					Remote: &git.Remote{Name: name},
+          +					Repo:   repo,
+          +				})
+          +			}
+          +			return result, nil
+          +		},
+          +		GitClient: &git.Client{
+          +			GhPath:  "some/path/gh",
+          +			GitPath: "some/path/git",
+          +		},
+          +	}
+          +}
+          +
+          +func TestHiddenCheckoutRejectsMalformedHeadRefBeforeGitFetch(t *testing.T) {
+          +	baseRepo, _ := stubPR("OWNER/REPO:master", "OWNER/REPO:feature")
+          +	_, teardown := run.Stub()
+          +	defer teardown(t)
+          +
+          +	opts := hiddenCheckoutOptions(baseRepo, "OWNER/REPO:bad:name", map[string]string{
+          +		"origin": "OWNER/REPO",
+          +	})
+          +	err := checkoutRun(opts)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "bad:name")
+          +	assert.Contains(t, err.Error(), "branch")
+          +}
+          +
+          +func TestHiddenCheckoutRejectsMalformedBranchFlagBeforeGitSideEffects(t *testing.T) {
+          +	for _, branchName := range []string{"bad:name", "-danger", "feature..evil"} {
+          +		t.Run(branchName, func(t *testing.T) {
+          +			baseRepo, _ := stubPR("OWNER/REPO:master", "OWNER/REPO:feature")
+          +			_, teardown := run.Stub()
+          +			defer teardown(t)
+          +			opts := hiddenCheckoutOptions(baseRepo, "OWNER/REPO:feature", map[string]string{
+          +				"origin": "OWNER/REPO",
+          +			})
+          +			opts.BranchName = branchName
+          +
+          +			err := checkoutRun(opts)
+          +
+          +			require.Error(t, err)
+          +			assert.Contains(t, err.Error(), branchName)
+          +			assert.Contains(t, err.Error(), "branch")
+          +		})
+          +	}
+          +}
+          +
+          +func TestHiddenCheckoutRejectsMalformedMissingRemoteLocalBranchBeforeConfig(t *testing.T) {
+          +	baseRepo, _ := stubPR("OWNER/REPO:master", "OWNER/REPO:feature")
+          +	_, teardown := run.Stub()
+          +	defer teardown(t)
+          +	opts := hiddenCheckoutOptions(baseRepo, "hubot/REPO:feature", map[string]string{
+          +		"origin": "OWNER/REPO",
+          +	})
+          +	opts.BranchName = "topic@{upstream}"
+          +
+          +	err := checkoutRun(opts)
+          +
+          +	require.Error(t, err)
+          +	assert.Contains(t, err.Error(), "topic@{upstream}")
+          +	assert.Contains(t, err.Error(), "branch")
+          +}
+          +
+          +func TestHiddenCheckoutAllowsSlashContainingHeadAndLocalBranchNames(t *testing.T) {
+          +	baseRepo, _ := stubPR("OWNER/REPO:master", "OWNER/REPO:feature")
+          +	cmdStubs, teardown := run.Stub()
+          +	defer teardown(t)
+          +	cmdStubs.Register(`git show-ref --verify -- refs/heads/local/topic/slash`, 1, "")
+          +	cmdStubs.Register(`git fetch origin \+refs/heads/feature/slash:refs/remotes/origin/feature/slash --no-tags`, 0, "")
+          +	cmdStubs.Register(`git checkout -b local/topic/slash --track origin/feature/slash`, 0, "")
+          +	opts := hiddenCheckoutOptions(baseRepo, "OWNER/REPO:feature/slash", map[string]string{
+          +		"origin": "OWNER/REPO",
+          +	})
+          +	opts.BranchName = "local/topic/slash"
+          +
+          +	require.NoError(t, checkoutRun(opts))
+          +}
+        command: go
+        args:
+          - test
+          - ./pkg/cmd/pr/checkout
+          - -count=1
+        timeoutMs: 300000
+
+  - id: gh-cli-api-verbose-secret-redaction-v3
+    difficulty: easy
+    agent: codex
+    timeoutMs: 1800000
+    workspace: *github_cli_workspace
+    phaseA:
+      promptId: gh-cli-api-verbose-secret-redaction-v3-formation
+      prompt: >-
+        We will implement an API verbose-log redaction follow-up in a later
+        session. Inspect `gh api --verbose`, API HTTP client construction,
+        auth-header injection, request/response logging, JSON body handling,
+        and existing verbose tests. Produce a durable implementation plan only;
+        do not edit files. The plan should resolve how to redact
+        secret-shaped JSON fields in verbose logs without mutating the real
+        outbound request or response body seen by command code.
+    phaseB:
+      promptId: gh-cli-api-verbose-secret-redaction-v3-use
+      prompt: Implement the API verbose-log secret redaction follow-up exactly as planned in the prior investigation.
+    expectedContext:
+      description: >-
+        Verbose API logs should redact `token`, `access_token`,
+        `client_secret`, and `password` JSON fields in request and response
+        logging while preserving the real outbound request body and auth
+        header.
+      keywords:
+        - verbose
+        - redaction
+        - token
+        - client_secret
+        - Authorization
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/api-verbose-secret-redaction: `gh api --verbose` logging is composed around the API HTTP client. Keep auth header injection and the real request body unchanged, but redact JSON fields named `token`, `access_token`, `client_secret`, or `password` in the verbose logging copy. Non-secret JSON fields should remain visible so verbose output is still useful.
+      contextIds:
+        - gh-cli/api-verbose-secret-redaction
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/api/http_client_hidden_test.go b/api/http_client_hidden_test.go
+          new file mode 100644
+          --- /dev/null
+          +++ b/api/http_client_hidden_test.go
+          @@ -0,0 +1,65 @@
+          +package api
+          +
+          +import (
+          +	"fmt"
+          +	"io"
+          +	"net/http"
+          +	"net/http/httptest"
+          +	"strings"
+          +	"testing"
+          +
+          +	"github.com/cli/cli/v2/pkg/iostreams"
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +func TestHiddenHTTPClientVerboseRedactsSecretJSONBodies(t *testing.T) {
+          +	var gotAuthorization string
+          +	var gotRequestBody string
+          +	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+          +		gotAuthorization = r.Header.Get(authorization)
+          +		body, err := io.ReadAll(r.Body)
+          +		require.NoError(t, err)
+          +		gotRequestBody = string(body)
+          +		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+          +		fmt.Fprint(w, `{"access_token":"gho_RESPONSESECRET","safe":"visible"}`)
+          +	}))
+          +	defer ts.Close()
+          +
+          +	host := strings.TrimPrefix(ts.URL, "http://")
+          +	ios, _, _, stderr := iostreams.Test()
+          +	client, err := NewHTTPClient(HTTPClientOptions{
+          +		AppVersion:     "v1.2.3",
+          +		Config:         tinyConfig{host + ":oauth_token": "AUTH_TOKEN"},
+          +		Log:            ios.ErrOut,
+          +		LogVerboseHTTP: true,
+          +	})
+          +	require.NoError(t, err)
+          +
+          +	requestJSON := `{"token":"ghp_REQUESTSECRET","client_secret":"CLIENTSECRET","safe":"visible"}`
+          +	req, err := http.NewRequest("POST", ts.URL, strings.NewReader(requestJSON))
+          +	require.NoError(t, err)
+          +	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+          +	req.Host = host
+          +
+          +	res, err := client.Do(req)
+          +	require.NoError(t, err)
+          +	defer res.Body.Close()
+          +	body, err := io.ReadAll(res.Body)
+          +	require.NoError(t, err)
+          +
+          +	assert.Equal(t, "token AUTH_TOKEN", gotAuthorization)
+          +	assert.Equal(t, requestJSON, gotRequestBody)
+          +	assert.Contains(t, string(body), "gho_RESPONSESECRET")
+          +
+          +	log := stderr.String()
+          +	assert.NotContains(t, log, "AUTH_TOKEN")
+          +	assert.NotContains(t, log, "ghp_REQUESTSECRET")
+          +	assert.NotContains(t, log, "CLIENTSECRET")
+          +	assert.NotContains(t, log, "gho_RESPONSESECRET")
+          +	assert.Contains(t, log, "Authorization: token")
+          +	assert.Contains(t, log, "token")
+          +	assert.Contains(t, log, "client_secret")
+          +	assert.Contains(t, log, "access_token")
+          +	assert.Contains(t, log, "visible")
+          +}
+        command: go
+        args:
+          - test
+          - ./api
+          - -count=1
+        timeoutMs: 300000

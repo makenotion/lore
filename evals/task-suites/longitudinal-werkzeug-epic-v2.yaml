@@ -1,0 +1,162 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-werkzeug-epic-v2
+description: >-
+  Public-spec Werkzeug routing longitudinal suite. The single scenario is
+  pinned before real upstream routing fixes and verified through deterministic
+  in-process tests with no networked HTTP requests.
+seededCorpus: ../vault-seeds/werkzeug-epic-v2.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: werkzeug-routing-matcher-epic-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/werkzeug
+      sha: b913d68db5898c8f3def3c09a653aaf95abe38e5
+    phaseA:
+      promptId: werkzeug-routing-matcher-epic-v2-formation
+      prompt: >-
+        We will fix several Werkzeug URL routing edge cases in a later session.
+        Inspect how the state-machine matcher collapses consecutive slashes
+        during matching, how a compiled rule normalizes the slashes in its own
+        pattern before build, how trailing-slash and slash-merge cases turn into
+        a RequestRedirect with a new_url, and how the numeric converters render
+        values back into URLs during build. Trace the match/build/redirect path
+        across the matcher, rules, converters, and map modules, and review the
+        routing regression tests. Produce a durable implementation plan only; do
+        not edit files.
+    phaseB:
+      promptId: werkzeug-routing-matcher-epic-v2-use
+      prompt: >-
+        Fix Werkzeug URL routing edge cases across the matcher, rule
+        compilation, and converters. When merge_slashes is enabled, a request
+        path that contains a run of more than two consecutive slashes must
+        collapse the whole run to a single slash in one matching pass and
+        resolve to the same rule (via the canonical redirect) as the doubled
+        case already does, rather than partially collapsing and missing the
+        rule. A rule whose own pattern is written with a run of more than two
+        consecutive slashes must normalize that run when it compiles, so build
+        emits the canonical single-slash URL and the canonical request path
+        matches it. The float converter must render values back into URLs in
+        plain decimal form during build, never in exponential form, while
+        still round-tripping ordinary values. Preserve per-rule merge_slashes
+        opt-out, strict-slash redirect behavior, existing public APIs, and the
+        integer/other converter behavior. Add focused regressions.
+    expectedContext:
+      description: >-
+        Slash-merge normalization must collapse runs of three or more slashes
+        in one pass on both the match path and the compiled rule pattern, and
+        numeric converters must avoid exponential notation when building URLs.
+      keywords:
+        - merge_slashes
+        - StateMachineMatcher
+        - RequestRedirect
+        - FloatConverter
+        - build
+    seededContext:
+      renderedContext: |
+        - [memory] werkzeug/merge-slashes-collapses-runs: The slash-merge step on the match path and the slash normalization a rule applies to its own pattern must collapse an entire run of consecutive slashes to one in a single pass. A normalization that only ever removes one extra slash per run leaves longer runs partially collapsed, so the merged path misses the rule on match and the compiled rule keeps a leftover doubled slash on build. Keep the per-rule merge_slashes=False opt-out untouched.
+        - [memory] werkzeug/slash-merge-redirect-target: When merge_slashes resolves a noisy path, matching raises RequestRedirect whose new_url is the fully canonical single-slash URL on the bound host, mirroring the trailing-slash strict_slashes redirect. The doubled-slash case and the longer-run cases must converge on the same canonical target instead of redirecting to a still-noisy intermediate URL.
+        - [memory] werkzeug/number-converter-build-no-exponent: Converters that accept numbers turn values back into URL text during build. The float converter must format values in plain decimal notation; relying on the default string conversion lets small magnitudes render in exponential form, which then fails to re-match the converter regex. Fix the float path without disturbing the integer converter or fixed-digit padding.
+      contextIds:
+        - werkzeug/merge-slashes-collapses-runs
+        - werkzeug/slash-merge-redirect-target
+        - werkzeug/number-converter-build-no-exponent
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/test_lore_hidden_routing.py b/tests/test_lore_hidden_routing.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/test_lore_hidden_routing.py
+          @@ -0,0 +1,70 @@
+          +import pytest
+          +
+          +from werkzeug.exceptions import NotFound
+          +from werkzeug.routing import Map, RequestRedirect, Rule
+          +
+          +
+          +def _adapter(rules, **bind):
+          +    bind.setdefault("server_name", "localhost")
+          +    bind.setdefault("script_name", "/")
+          +    return Map(rules).bind(**bind)
+          +
+          +
+          +def test_match_merges_three_or_more_slashes():
+          +    adapter = _adapter([Rule("/files/recent/today", endpoint="recent")])
+          +
+          +    # A single doubled slash already redirects to the canonical path.
+          +    with pytest.raises(RequestRedirect) as double:
+          +        adapter.match("/files//recent/today")
+          +    assert double.value.new_url == "http://localhost/files/recent/today"
+          +
+          +    # Three or more consecutive slashes, including several runs in one path,
+          +    # must collapse to a single slash in one matching pass.
+          +    for noisy in (
+          +        "/files///recent/today",
+          +        "/files////recent//today",
+          +        "/files/////recent/////today",
+          +    ):
+          +        with pytest.raises(RequestRedirect) as excinfo:
+          +            adapter.match(noisy)
+          +        assert excinfo.value.new_url == "http://localhost/files/recent/today"
+          +
+          +
+          +def test_match_runs_of_slashes_do_not_404():
+          +    adapter = _adapter([Rule("/alpha/beta/gamma", endpoint="abc")])
+          +
+          +    # Before the fix a run of three slashes only collapsed to two and missed
+          +    # the rule entirely, raising NotFound instead of a redirect.
+          +    with pytest.raises(RequestRedirect):
+          +        adapter.match("/alpha///beta/gamma")
+          +
+          +    with pytest.raises(NotFound):
+          +        adapter.match("/alpha/beta/gamma/extra")
+          +
+          +
+          +def test_rule_pattern_with_runs_of_slashes_builds_and_matches_canonically():
+          +    adapter = _adapter([Rule("/store///items/<name>", endpoint="item")])
+          +
+          +    # The compiled rule must normalize its own pattern to single slashes so
+          +    # build() emits the canonical URL with no leftover doubled slash.
+          +    assert adapter.build("item", {"name": "widget"}) == "/store/items/widget"
+          +
+          +    # And the canonical single-slash request must match the rule directly.
+          +    endpoint, args = adapter.match("/store/items/widget")
+          +    assert endpoint == "item"
+          +    assert args == {"name": "widget"}
+          +
+          +
+          +def test_float_converter_build_never_uses_scientific_notation():
+          +    adapter = _adapter([Rule("/ratio/<float:value>", endpoint="ratio")])
+          +
+          +    tiny = adapter.build("ratio", {"value": 0.00005})
+          +    assert "e" not in tiny
+          +    assert tiny == "/ratio/0.00005"
+          +
+          +    tinier = adapter.build("ratio", {"value": 0.00009})
+          +    assert "e" not in tinier
+          +    assert tinier == "/ratio/0.00009"
+          +
+          +    # Ordinary values still round-trip without spurious trailing zeros.
+          +    assert adapter.build("ratio", {"value": 3.25}) == "/ratio/3.25"
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest==8.3.4
+          - python
+          - -m
+          - pytest
+          - tests/test_lore_hidden_routing.py
+          - -q
+        timeoutMs: 300000

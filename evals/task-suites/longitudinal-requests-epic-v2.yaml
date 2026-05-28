@@ -1,0 +1,236 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-requests-epic-v2
+description: >-
+  Cross-boundary Requests redirect-resolution security epic. The single
+  scenario is pinned before a real upstream credential-leak fix and verified
+  through deterministic in-process redirect chains with no networked HTTP
+  requests.
+seededCorpus: ../vault-seeds/requests-epic-v2.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: requests-cross-host-redirect-security-epic-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: psf/requests
+      sha: 0e322af87745eff34caffe4df68456ebc20d9068
+    phaseA:
+      promptId: requests-cross-host-redirect-security-epic-v2-formation
+      prompt: >-
+        We will harden Requests' redirect-resolution machinery in a later
+        session. Inspect how `SessionRedirectMixin` rebuilds a request between
+        hops: `should_strip_auth`, `rebuild_auth`, `rebuild_method`,
+        `rebuild_proxies`, the netrc credential lookup they rely on, and the
+        existing redirect regression tests. Map which behaviors are decided per
+        hop and where credentials or request entities could cross a boundary
+        they should not. Produce a durable implementation plan only; do not edit
+        files.
+    phaseB:
+      promptId: requests-cross-host-redirect-security-epic-v2-use
+      prompt: >-
+        Harden Requests' redirect-resolution path against credentials and
+        request entities crossing boundaries they should not. Stored
+        credentials must be resolved for the host the request actually reaches,
+        so a redirect target or request URL that embeds extra userinfo before
+        the host cannot cause one host's saved secrets to be selected for a
+        different host. A caller-supplied Authorization header must not survive a
+        hop that changes the security origin, while same-origin hops keep it. A
+        method rewrite that turns a request into a GET must also discard the
+        request entity and its entity headers. Re-resolved proxy authorization
+        must apply to plaintext hops but must not be attached when the next hop
+        is tunneled. Preserve existing public APIs, the established same-origin
+        carve-outs, and method-preserving redirect behavior. Add focused
+        regressions that exercise the redirect machinery in-process without live
+        network services.
+    expectedContext:
+      description: >-
+        Redirect resolution must key netrc lookups on the parsed hostname, keep
+        explicit Authorization host-bound, reset the entity when rewriting to
+        GET, and scope rebuilt proxy auth to plaintext hops.
+      keywords:
+        - rebuild_auth
+        - should_strip_auth
+        - get_netrc_auth
+        - rebuild_method
+        - rebuild_proxies
+    seededContext:
+      renderedContext: |
+        - [memory] requests/netrc-host-from-hostname: Resolve `.netrc` credentials from the parsed URL hostname, not the raw netloc. A netloc can carry `userinfo@host`, so splitting on `:` lets embedded userinfo pick the lookup key and hand one host's stored secrets to a different host. This lookup also runs while following redirects, so a crafted Location can otherwise leak credentials cross-host.
+        - [memory] requests/redirect-auth-host-boundary: Caller-supplied Authorization is scoped to the origin it was sent to. Drop it before a hop that changes the effective origin, and keep it on same-origin hops. Centralize the origin comparison (host, then port/scheme, including the standard-port plain-to-secure upgrade carve-out) rather than reimplementing it inline in the auth rebuild step.
+        - [memory] requests/redirect-method-and-body: A 303 (and the browser-style 302 and POST-to-301 cases) rewrites the method to GET and must also clear the body plus Content-Length, Content-Type, and Transfer-Encoding. Method-preserving redirects (307/308) intentionally keep the body, so this belongs inside the redirect loop, not applied unconditionally.
+        - [memory] requests/redirect-proxy-auth-scope: When rebuilding proxies on a redirect, drop any inherited Proxy-Authorization and re-apply it only for plaintext targets. A tunneled (secure) hop has the transport handle proxy auth, so attaching Proxy-Authorization to the request would leak it past the proxy.
+      contextIds:
+        - requests/netrc-host-from-hostname
+        - requests/redirect-auth-host-boundary
+        - requests/redirect-method-and-body
+        - requests/redirect-proxy-auth-scope
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/test_lore_hidden_redirect_security.py b/tests/test_lore_hidden_redirect_security.py
+          new file mode 100644
+          index 0000000..4a068c0
+          --- /dev/null
+          +++ b/tests/test_lore_hidden_redirect_security.py
+          @@ -0,0 +1,140 @@
+          +import io
+          +import os
+          +import textwrap
+          +
+          +import requests
+          +from requests.adapters import BaseAdapter
+          +from requests.utils import get_netrc_auth
+          +
+          +
+          +class _ScriptedRedirectAdapter(BaseAdapter):
+          +    """Serves a scripted redirect chain entirely in-process. No sockets."""
+          +
+          +    def __init__(self, script):
+          +        super().__init__()
+          +        self._script = list(script)
+          +        self.calls = []
+          +
+          +    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+          +        index = len(self.calls)
+          +        self.calls.append(
+          +            {
+          +                "method": request.method,
+          +                "url": request.url,
+          +                "authorization": request.headers.get("Authorization"),
+          +                "proxy_authorization": request.headers.get("Proxy-Authorization"),
+          +                "content_length": request.headers.get("Content-Length"),
+          +                "content_type": request.headers.get("Content-Type"),
+          +                "body": request.body,
+          +            }
+          +        )
+          +        status, location = self._script[index]
+          +        response = requests.Response()
+          +        response.request = request
+          +        response.url = request.url
+          +        response.status_code = status
+          +        response.raw = io.BytesIO(b"")
+          +        response.raw.release_conn = lambda *a, **k: None
+          +        response._content = b""
+          +        response._content_consumed = True
+          +        if location is not None:
+          +            response.headers["Location"] = location
+          +        return response
+          +
+          +    def close(self):
+          +        pass
+          +
+          +
+          +def _session(script):
+          +    session = requests.Session()
+          +    adapter = _ScriptedRedirectAdapter(script)
+          +    session.mount("http://", adapter)
+          +    session.mount("https://", adapter)
+          +    return session, adapter
+          +
+          +
+          +def _clear_proxy_env(monkeypatch):
+          +    for key in list(os.environ):
+          +        if "proxy" in key.lower():
+          +            monkeypatch.delenv(key, raising=False)
+          +
+          +
+          +def test_netrc_lookup_uses_hostname_not_userinfo(tmp_path, monkeypatch):
+          +    import base64
+          +
+          +    netrc_file = tmp_path / "netrc"
+          +    netrc_file.write_text(
+          +        textwrap.dedent(
+          +            """\
+          +            machine privatecorp.example
+          +            login alice
+          +            password s3cret-token
+          +            """
+          +        )
+          +    )
+          +    monkeypatch.setenv("NETRC", str(netrc_file))
+          +
+          +    leaked = get_netrc_auth("http://privatecorp.example:reset@untrusted.example/data")
+          +    assert leaked is None
+          +
+          +    matched = get_netrc_auth("http://privatecorp.example:8443/data")
+          +    assert matched == ("alice", "s3cret-token")
+          +
+          +    session, adapter = _session([(200, None)])
+          +    session.trust_env = True
+          +    session.get("http://untrusted.example/data")
+          +    assert adapter.calls[0]["authorization"] is None
+          +
+          +    expected = "Basic " + base64.b64encode(b"alice:s3cret-token").decode("ascii")
+          +    session, adapter = _session([(200, None)])
+          +    session.trust_env = True
+          +    session.get("http://privatecorp.example/data")
+          +    assert adapter.calls[0]["authorization"] == expected
+          +
+          +
+          +def test_cross_host_redirect_strips_explicit_authorization():
+          +    session, adapter = _session(
+          +        [(301, "https://cdn.untrusted.example/asset"), (200, None)]
+          +    )
+          +    session.get(
+          +        "https://origin.trusted.example/asset",
+          +        headers={"Authorization": "Bearer trusted-token"},
+          +    )
+          +    assert adapter.calls[0]["authorization"] == "Bearer trusted-token"
+          +    assert adapter.calls[1]["authorization"] is None
+          +
+          +
+          +def test_see_other_redirect_rewrites_method_and_drops_body():
+          +    session, adapter = _session(
+          +        [(303, "https://origin.trusted.example/result"), (200, None)]
+          +    )
+          +    session.post(
+          +        "https://origin.trusted.example/submit",
+          +        data=b"important-bytes",
+          +        headers={"Content-Type": "application/octet-stream"},
+          +    )
+          +    assert adapter.calls[0]["method"] == "POST"
+          +    assert adapter.calls[1]["method"] == "GET"
+          +    assert adapter.calls[1]["body"] is None
+          +    assert adapter.calls[1]["content_length"] is None
+          +    assert adapter.calls[1]["content_type"] is None
+          +
+          +
+          +def test_rebuild_proxies_scopes_proxy_authorization_to_plaintext(monkeypatch):
+          +    _clear_proxy_env(monkeypatch)
+          +    monkeypatch.setenv("HTTP_PROXY", "http://proxyuser:proxypw@gateway.example:3128")
+          +    monkeypatch.setenv("HTTPS_PROXY", "http://proxyuser:proxypw@gateway.example:3128")
+          +
+          +    session, adapter = _session(
+          +        [(302, "http://relay.untrusted.example/next"), (200, None)]
+          +    )
+          +    session.trust_env = True
+          +    session.get("http://entry.untrusted.example/start")
+          +    assert adapter.calls[1]["proxy_authorization"] is not None
+          +
+          +    session, adapter = _session(
+          +        [(302, "https://relay.untrusted.example/next"), (200, None)]
+          +    )
+          +    session.trust_env = True
+          +    session.get("http://entry.untrusted.example/start")
+          +    assert adapter.calls[1]["proxy_authorization"] is None
+
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest==8.3.4
+          - python
+          - -m
+          - pytest
+          - tests/test_lore_hidden_redirect_security.py
+          - -q
+        timeoutMs: 300000

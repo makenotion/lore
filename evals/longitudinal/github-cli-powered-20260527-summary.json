@@ -4,8 +4,23 @@
     "repository": "cli/cli",
     "sha": "9a593ce81b593dee752cc11737d1a3ef768e52b3"
   },
+  "candidatePool": {
+    "total": 202,
+    "byDifficulty": {
+      "easy": 66,
+      "medium": 114,
+      "hard": 22
+    },
+    "notes": "After 2026-05-28 no-memory calibration, 21 previously-hard rows were demoted to medium and 8 new hard candidates were added. The hard pool remains candidate-only until no-memory calibration lands in the 20-45% pass band."
+  },
   "sample": {
     "seed": "2026-05-27-nightly",
+    "status": "historical-checkpoint",
+    "reproducibilityNote": "This sample was selected against the 2026-05-27 suite state and scored from archived local artifacts. It is not a frozen holdout for the current 202-scenario pool.",
+    "missingFromCurrentSuite": [
+      "gh-cli-repo-edit-visibility-warning",
+      "gh-cli-repo-edit-security-validation"
+    ],
     "requested": {
       "easy": 25,
       "medium": 15,
@@ -154,6 +169,98 @@
       "seeded-lore": "6/10",
       "lore-full-loop": "6/10"
     }
+  },
+  "frontierHardCalibration": {
+    "artifact": "evals/results/longitudinal-github-cli-frontier-hard-no-memory-20260527Tcalibration3.json",
+    "condition": "no-memory",
+    "raw": {
+      "passed": 1,
+      "total": 16,
+      "successRate": 0.0625,
+      "failureMode": "15/16 raw failures were verifier failures"
+    },
+    "adjudicated": {
+      "passed": 16,
+      "total": 16,
+      "successRate": 1,
+      "basis": "transcripts show successful feature implementations and focused tests; source verifiers were repaired to avoid implementation-path false negatives"
+    },
+    "interpretation": "These frontier-hard candidates are not calibrated hard for the current no-memory Codex baseline; treat them as large/medium candidates or repair-only validation rows, not as evidence of model-edge difficulty."
+  },
+  "hardCalibration20260528": {
+    "artifact": "evals/results/longitudinal-github-cli-hard-no-memory-20260528T0136Z.json",
+    "condition": "no-memory",
+    "stoppedEarly": true,
+    "stopReason": "15/15 completed rows passed after adjudication, so continuing would spend on a tranche that was not capability-edge hard.",
+    "raw": {
+      "passed": 7,
+      "total": 15,
+      "successRate": 0.4666666667,
+      "failureMode": "8/15 raw failures were verifier false negatives"
+    },
+    "adjudicated": {
+      "passed": 15,
+      "total": 15,
+      "successRate": 1,
+      "basis": "transcripts showed requested behavior implemented with passing package tests; source verifiers were repaired for path, naming, and assertion-prose false negatives"
+    },
+    "demotedScenarioIds": [
+      "gh-cli-pr-review-inline-comments",
+      "gh-cli-skills-install-upstream-tenancy-lockfile",
+      "gh-cli-telemetry-no-raw-enterprise-host",
+      "gh-cli-api-get-nested-query-encoding",
+      "gh-cli-run-view-log-attempt-cache-key",
+      "gh-cli-workflow-run-typed-input-prompts",
+      "gh-cli-release-upload-sanitized-collision",
+      "gh-cli-repo-clone-fork-wiki-upstream",
+      "gh-cli-pr-merge-queue-admin-delete-boundary",
+      "gh-cli-release-download-dry-run-json-plan",
+      "gh-cli-repo-transfer-team-confirmation",
+      "gh-cli-workflow-run-watch-exit-status",
+      "gh-cli-search-raw-query-syntax",
+      "gh-cli-codespace-ports-visibility-dry-run-json",
+      "gh-cli-pr-review-comments-file"
+    ],
+    "newHardScenarioIds": [
+      "gh-cli-variable-ambiguous-remote-scope",
+      "gh-cli-api-graphql-paginate-field",
+      "gh-cli-skills-install-transactional-lockfile",
+      "gh-cli-pr-status-head-repo-disambiguation",
+      "gh-cli-release-create-generated-notes-target-rollback",
+      "gh-cli-agent-task-create-wait-exit-status",
+      "gh-cli-ruleset-check-json-export",
+      "gh-cli-attestation-verify-oci-platform-index"
+    ]
+  },
+  "newHardCalibration20260528": {
+    "artifact": "evals/results/longitudinal-github-cli-new-hard-no-memory-20260528T0146Z.json",
+    "condition": "no-memory",
+    "stoppedEarly": true,
+    "stopReason": "6/6 completed rows passed after adjudication, so the tranche again failed the capability-edge hard calibration target.",
+    "raw": {
+      "passed": 5,
+      "total": 6,
+      "successRate": 0.8333333333,
+      "failureMode": "1/6 raw failures was a verifier false negative"
+    },
+    "adjudicated": {
+      "passed": 6,
+      "total": 6,
+      "successRate": 1,
+      "basis": "completed rows either passed raw verifiers or reported requested behavior with passing package tests while failing an over-narrow assertion-prose verifier"
+    },
+    "demotedScenarioIds": [
+      "gh-cli-variable-ambiguous-remote-scope",
+      "gh-cli-api-graphql-paginate-field",
+      "gh-cli-skills-install-transactional-lockfile",
+      "gh-cli-pr-status-head-repo-disambiguation",
+      "gh-cli-release-create-generated-notes-target-rollback",
+      "gh-cli-agent-task-create-wait-exit-status"
+    ],
+    "pendingHardScenarioIds": [
+      "gh-cli-ruleset-check-json-export",
+      "gh-cli-attestation-verify-oci-platform-index"
+    ]
   },
   "costs": {
     "selectedPrimaryAgentUsd": 449.6756,

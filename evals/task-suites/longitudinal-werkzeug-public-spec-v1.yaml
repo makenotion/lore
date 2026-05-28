@@ -1,0 +1,129 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-werkzeug-public-spec-v1
+description: >-
+  Public-spec Werkzeug longitudinal suite. Scenarios are pinned before real
+  upstream parser fixes and verified through deterministic local tests with no
+  networked HTTP requests.
+seededCorpus: ../vault-seeds/werkzeug-public-spec-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: werkzeug-multipart-boundary-crlf-epic-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/werkzeug
+      sha: 5dceab4c2a39c0a84320ac01a79c005456a0d601
+    phaseA:
+      promptId: werkzeug-multipart-boundary-crlf-epic-v1-formation
+      prompt: >-
+        We will fix multipart parser chunk-boundary bugs in a later session.
+        Inspect the Sans-IO multipart decoder, partial-boundary search,
+        CR/LF handling, form parser chunk iteration, large binary uploads, and
+        related formparser tests. Produce a durable implementation plan only;
+        do not edit files.
+    phaseB:
+      promptId: werkzeug-multipart-boundary-crlf-epic-v1-use
+      prompt: >-
+        Fix Werkzeug multipart parsing for boundary-adjacent CR/LF edge cases.
+        If a parser chunk splits a `\r\n` sequence before a boundary or before
+        more payload data, keep the CRLF sequence intact across data events.
+        Large file uploads ending with one or more real `\r` bytes near the
+        parser buffer boundary must preserve those bytes exactly instead of
+        treating them as possible boundary prefixes. Preserve nonstandard
+        line-ending support, multipart memory limits, file and field parsing,
+        and existing public APIs. Add focused regressions.
+    expectedContext:
+      description: >-
+        Multipart partial-boundary search should retain possible line-break
+        boundary prefixes only near the end of the buffer and must not strip
+        real CR bytes from binary payload data.
+      keywords:
+        - MultipartDecoder
+        - partial boundary
+        - CRLF
+        - trailing CR
+        - formparser
+    seededContext:
+      renderedContext: |
+        - [memory] werkzeug/multipart-partial-boundary-crlf: Multipart boundaries begin after a line break, so the decoder must keep possible `\r\n--boundary` prefixes across chunk boundaries. But a CR byte too far from the end of the buffer is payload, not boundary state; large uploads ending in CR bytes must round-trip exactly.
+      contextIds:
+        - werkzeug/multipart-partial-boundary-crlf
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/tests/test_lore_hidden_multipart.py b/tests/test_lore_hidden_multipart.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/tests/test_lore_hidden_multipart.py
+          @@ -0,0 +1,48 @@
+          +import io
+          +
+          +from werkzeug.wrappers import Request
+          +
+          +
+          +def test_hidden_chunk_split_on_crlf_before_boundary():
+          +    # MultiPartParser reads 64 KiB chunks. This payload places the
+          +    # CRLF before the next data span on a chunk boundary so the
+          +    # decoder must defer the CR instead of emitting a stray `\r`.
+          +    data = b"".join(
+          +        (
+          +            b"--thirteenbytes\r\n",
+          +            b"Content-Disposition: form-data; name=tx3065\r\n\r\n",
+          +            b"\n".join([b"\r" * 31] * 2045 + [b"y" * 31]),
+          +            b"\r\n",
+          +            b"\n".join([b"\r" * 31] * 2047 + [b"x" * 30]),
+          +            b"\r\n--thirteenbytes--",
+          +        )
+          +    )
+          +
+          +    req = Request.from_values(
+          +        input_stream=io.BytesIO(data),
+          +        content_length=len(data),
+          +        content_type="multipart/form-data; boundary=thirteenbytes",
+          +        method="POST",
+          +    )
+          +
+          +    value = req.form["tx3065"]
+          +    expected = (
+          +        "\n".join(["\r" * 31] * 2045 + ["y" * 31])
+          +        + "\r\n"
+          +        + "\n".join(["\r" * 31] * 2047 + ["x" * 30])
+          +    )
+          +    assert value == expected
+          +    assert value[-1] == "x"
+          +    assert value[65470:65473] == "y\r\n"
+          +
+          +
+          +def test_hidden_large_file_payload_preserves_trailing_cr_bytes():
+          +    # CR bytes that are too far from the buffer end to be a partial
+          +    # boundary prefix are payload and must not be held back or dropped.
+          +    for trailing_cr_count in (1, 2):
+          +        sample = b"\0" * 65535 + b"\r" * trailing_cr_count
+          +        req = Request.from_values(
+          +            data={"foo": (io.BytesIO(sample), "test.bin")},
+          +            method="POST",
+          +        )
+          +
+          +        uploaded = req.files["foo"].read()
+          +        assert uploaded == sample
+          +        assert uploaded.endswith(b"\r" * trailing_cr_count)
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest
+          - python
+          - -m
+          - pytest
+          - tests/test_lore_hidden_multipart.py
+          - -q
+        timeoutMs: 180000

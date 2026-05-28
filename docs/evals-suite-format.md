@@ -255,16 +255,24 @@ tasks:
         path: package.json
 ```
 
-Three verifier types ship today:
+Verifier types ship today:
 
 - `file-exists` -- passes if the path exists in the post-run workspace.
 - `file-contents-match` -- reads the file, applies the regex pattern. Mode
   `match` (default) passes when the pattern hits; mode `forbid` passes when the
   pattern does NOT hit. Patterns are validated as JavaScript regexes at schema
   parse time.
+- `any-file-contents-match` -- applies the same regex check across a list of
+  candidate files. Simple `*` / `?` path globs are expanded before matching.
 - `file-unchanged` -- sha256-compares the workspace file to the source fixture;
   passes when they're byte-identical. Use this to pin "the agent must not
   modify this file" contracts the prompt declares.
+- `command` -- runs a command in the post-run workspace and fails if it exits
+  non-zero or times out.
+- `patched-command` -- copies the post-run workspace to a verifier scratch
+  directory, applies a hidden unified-diff patch with `git apply`, then runs a
+  command there. Use this for harness-owned regression tests that should not be
+  visible to the agent and should not pollute patch evidence sidecars.
 
 Run with `lore eval run --runner task evals/task-suites/starter.yaml`. The
 runner copies the workspace, optionally seeds the memory-condition fixture,
@@ -497,7 +505,14 @@ names must contain a word-bounded `sandbox`, `eval`, `test`, `scratch`,
 - **Transcript sidecars.** Task-mode runs write full Codex JSONL event streams
   under a sibling `<artifact-stem>-transcripts/` directory by default. The
   result row stores the sidecar path, while `agentRun.stdout` remains the final
-  assistant message from `--output-last-message`.
+  assistant message from `--output-last-message`. Longitudinal task runs always
+  keep transcript and patch sidecars artifact-adjacent so Phase B can be
+  rematerialized from the clean source workspace without copying Phase A
+  evidence files into the next condition.
+- **Full-loop mining input.** Longitudinal `lore-full-loop` formation mines the
+  Phase A JSONL sidecar when it is available, including assistant messages and
+  command-output evidence. Injected adapters that do not write a sidecar fall
+  back to a minimal prompt/final-answer transcript.
 - **Cost split.** Longitudinal task-mode artifacts count primary Phase A/Phase B
   Codex calls as agent cost. `lore-full-loop` post-session mining uses the
   evaluated agent's background CLI shape and, when cost tracking is enabled in

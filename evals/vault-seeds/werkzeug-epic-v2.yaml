@@ -1,0 +1,90 @@
+version: 1
+id: werkzeug-epic-v2
+description: >-
+  Focused seed corpus for a Werkzeug routing longitudinal suite. Entries model
+  durable implementation findings from realistic upstream-style routing work at
+  a pinned Werkzeug revision.
+repository:
+  repo: pallets/werkzeug
+  sha: b913d68db5898c8f3def3c09a653aaf95abe38e5
+vault:
+  project:
+    name: werkzeug
+    path: .
+    tags: ["python", "wsgi", "http", "routing", "oss"]
+  topics:
+    - id: routing/slash-merging
+      name: Routing slash merging
+      description: Consecutive-slash collapsing on the match path and during rule pattern compilation, and the canonical redirect target.
+    - id: routing/redirects
+      name: Routing redirects
+      description: RequestRedirect new_url construction for strict-slash and slash-merge normalization on a bound host.
+    - id: routing/converters
+      name: Routing converters
+      description: Converter to_url rendering during build, numeric formatting, and converter regex round-tripping.
+  memories:
+    - id: werkzeug/merge-slashes-collapses-runs
+      title: Slash merging must collapse whole runs in one pass
+      topics: ["routing/slash-merging"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Both the match-path slash merge and a rule's own pattern normalization
+        must collapse an entire run of consecutive slashes to one in a single
+        pass, not just remove one extra slash.
+      body: |
+        Werkzeug normalizes consecutive slashes in two places: the matcher
+        retries with slashes merged when the literal path misses, and a rule
+        normalizes the slashes in its own pattern when it compiles. Both paths
+        must collapse a full run of consecutive slashes down to a single slash
+        in one pass.
+
+        A normalization that only removes a single extra slash per run leaves
+        longer runs partially collapsed. On the match path that means a path
+        with three or more slashes never reaches the rule and falls through to
+        NotFound. On the compile path it means the built URL keeps a leftover
+        doubled slash and the canonical single-slash request no longer matches
+        the rule. Preserve the per-rule merge_slashes=False opt-out so rules
+        that intentionally keep doubled slashes are untouched.
+      scenarios: ["werkzeug-routing-matcher-epic-v2"]
+    - id: werkzeug/slash-merge-redirect-target
+      title: Slash-merge redirects target the fully canonical URL
+      topics: ["routing/redirects", "routing/slash-merging"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        When a noisy-slash path resolves via merging, matching raises
+        RequestRedirect whose new_url is the fully canonical single-slash URL on
+        the bound host.
+      body: |
+        Slash-merge resolution surfaces to callers as a RequestRedirect, the
+        same shape used for strict_slashes trailing-slash normalization. The
+        new_url is built on the bound host and script root and should be the
+        fully canonical single-slash URL.
+
+        The already-correct doubled-slash case and the longer-run cases must
+        converge on the same canonical target. A redirect to a still-noisy
+        intermediate URL is a bug: the redirect should not need a second hop to
+        finish collapsing slashes.
+      scenarios: ["werkzeug-routing-matcher-epic-v2"]
+    - id: werkzeug/number-converter-build-no-exponent
+      title: Numeric converter build must avoid exponential notation
+      topics: ["routing/converters"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        The float converter must render values in plain decimal form during
+        build; default string conversion lets small magnitudes use exponential
+        notation that fails to re-match the converter regex.
+      body: |
+        Converters turn argument values back into URL text during build. The
+        numeric converters share a base, but the float path must format values
+        in plain decimal notation. Relying on the default string conversion of
+        a float lets small magnitudes render in exponential form, which then
+        fails to satisfy the converter's own matching regex and breaks the
+        build/match round trip.
+
+        Fix the float rendering without disturbing the integer converter or the
+        fixed-digit zero padding, and keep ordinary values free of spurious
+        trailing zeros.
+      scenarios: ["werkzeug-routing-matcher-epic-v2"]

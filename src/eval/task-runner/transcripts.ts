@@ -31,6 +31,34 @@ export function taskTranscriptPath(input: {
   return join(input.transcriptsDir, `${parts.join("-")}.codex.jsonl`)
 }
 
+export function taskPatchPath(input: {
+  transcriptsDir: string | null
+  index: number
+  taskId: string
+  condition: string | null
+  phase?: "formation" | "use"
+}): string | undefined {
+  if (input.transcriptsDir === null) return undefined
+  const transcriptPath = taskTranscriptPath(input)
+  return transcriptPath?.replace(/\.codex\.jsonl$/u, ".patch")
+}
+
+export function taskVerifierOutputPath(input: {
+  transcriptsDir: string | null
+  index: number
+  taskId: string
+  condition: string | null
+  verifierIndex: number
+  phase?: "formation" | "use"
+}): string | undefined {
+  if (input.transcriptsDir === null) return undefined
+  const transcriptPath = taskTranscriptPath(input)
+  return transcriptPath?.replace(
+    /\.codex\.jsonl$/u,
+    `.verifier-${input.verifierIndex + 1}.json`
+  )
+}
+
 function safeTranscriptSegment(value: string): string {
   return (
     value

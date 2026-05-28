@@ -1,12 +1,22 @@
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { createWriteStream, existsSync, type WriteStream } from "node:fs"
+import {
+  accessSync,
+  constants,
+  createWriteStream,
+  existsSync,
+  type WriteStream,
+} from "node:fs"
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseCodexUsage } from "../bench-cost.js"
 import { appendCappedChunk, joinCappedCapture, makeCappedCapture } from "./capture.js"
+import {
+  killChildProcessGroup,
+  registerDetachedChildProcessGroup,
+} from "./process-groups.js"
 import type {
   AgentAdapter,
   AgentRunInput,
@@ -141,11 +151,53 @@ export function buildCodexChildEnv(
   if (options.codexHome !== undefined) {
     out["CODEX_HOME"] = options.codexHome
     out["HOME"] = options.codexHome
+    if (out["PATH"] !== undefined) {
+      out["PATH"] = stripMiseShimDirs(out["PATH"])
+    }
     out["GOMODCACHE"] =
       parentEnv["GOMODCACHE"] ?? join(tmpdir(), "lore-eval-go-mod-cache")
     out["GOCACHE"] = parentEnv["GOCACHE"] ?? join(tmpdir(), "lore-eval-go-build-cache")
   }
   return out
+}
+
+function stripMiseShimDirs(pathValue: string): string {
+  return pathValue
+    .split(delimiter)
+    .filter((entry) => !/(^|\/)mise\/shims\/?$/u.test(entry))
+    .join(delimiter)
+}
+
+export function resolveExecutableOnPath(
+  command: string,
+  pathValue: string | undefined
+): string | null {
+  if (command.includes("/") || command.includes("\\")) {
+    return isExecutableFile(command) ? command : null
+  }
+  if (!pathValue) return null
+  for (const entry of pathValue.split(delimiter)) {
+    const candidate = join(entry.length > 0 ? entry : ".", command)
+    if (isExecutableFile(candidate)) return candidate
+  }
+  return null
+}
+
+export function resolveCodexExecutable(parentEnv: NodeJS.ProcessEnv): string | null {
+  const pathValue = parentEnv["PATH"]
+  return resolveExecutableOnPath(
+    "codex",
+    pathValue === undefined ? undefined : stripMiseShimDirs(pathValue)
+  )
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -290,6 +342,9 @@ export function buildBenchCodexChildEnv(
   if (options.codexHome !== undefined) {
     out["CODEX_HOME"] = options.codexHome
     out["HOME"] = options.codexHome
+    if (out["PATH"] !== undefined) {
+      out["PATH"] = stripMiseShimDirs(out["PATH"])
+    }
   }
   return out
 }
@@ -483,6 +538,13 @@ export class CodexAgentAdapter implements AgentAdapter {
     supported: boolean
     reason: string | null
   }> {
+    const codexExecutable = resolveCodexExecutable(process.env)
+    if (!codexExecutable) {
+      return {
+        supported: false,
+        reason: "codex executable unavailable on PATH before env isolation",
+      }
+    }
     let codexHome: string
     try {
       codexHome = await createIsolatedCodexHome()
@@ -502,7 +564,7 @@ export class CodexAgentAdapter implements AgentAdapter {
         clearTimeout(timer)
         void removeIsolatedCodexHome(codexHome).finally(() => resolveSupport(result))
       }
-      const child = spawn("codex", ["--version"], {
+      const child = spawn(codexExecutable, ["--version"], {
         stdio: ["ignore", "ignore", "pipe"],
         env: buildBenchCodexChildEnv(process.env, { codexHome }),
       })
@@ -558,10 +620,20 @@ export class CodexAgentAdapter implements AgentAdapter {
         refused: true,
       }
     }
+    const codexExecutable = resolveCodexExecutable(process.env)
+    if (!codexExecutable) {
+      return {
+        exitCode: -1,
+        stdout: "",
+        stderr:
+          "[codex-adapter] codex executable unavailable on PATH before env isolation",
+        timedOut: false,
+      }
+    }
     const codexHome = await createIsolatedCodexHome()
     const args = buildBenchSpawnArgs(input.workspace, input.prompt)
     return new Promise<AgentRunResult>((resolveRun) => {
-      const child = spawn("codex", args, {
+      const child = spawn(codexExecutable, args, {
         stdio: ["ignore", "pipe", "pipe"],
         env: buildBenchCodexChildEnv(process.env, {
           workspace: input.workspace,
@@ -570,22 +642,19 @@ export class CodexAgentAdapter implements AgentAdapter {
         }),
         detached: true,
       })
+      const unregisterChild = registerDetachedChildProcessGroup(child)
       const stdoutCapture = makeCappedCapture()
       const stderrCapture = makeCappedCapture()
       let timedOut = false
       let settled = false
       const timer = setTimeout(() => {
         timedOut = true
-        try {
-          if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL")
-          else child.kill("SIGKILL")
-        } catch {
-          // Process already gone; nothing to do.
-        }
+        killChildProcessGroup(child, "SIGKILL")
       }, input.timeoutMs)
       const finish = (result: AgentRunResult): void => {
         if (settled) return
         settled = true
+        unregisterChild()
         clearTimeout(timer)
         void removeIsolatedCodexHome(codexHome).finally(() => resolveRun(result))
       }
@@ -623,6 +692,16 @@ export class CodexAgentAdapter implements AgentAdapter {
         refused: true,
       }
     }
+    const codexExecutable = resolveCodexExecutable(process.env)
+    if (!codexExecutable) {
+      return {
+        exitCode: -1,
+        stdout: "",
+        stderr:
+          "[codex-adapter] codex executable unavailable on PATH before env isolation",
+        timedOut: false,
+      }
+    }
     const codexHome = await createIsolatedCodexHome()
     const configuredModel = await readConfiguredCodexModel({ CODEX_HOME: codexHome })
     const lastMessagePath = join(codexHome, "last-message.txt")
@@ -650,7 +729,7 @@ export class CodexAgentAdapter implements AgentAdapter {
           prompt: input.prompt,
           workspace: input.workspace,
         })
-        const spawned = spawn("codex", args, {
+        const spawned = spawn(codexExecutable, args, {
           stdio: ["ignore", "pipe", "pipe"],
           env,
           // Detached so we can kill the entire process group on timeout
@@ -659,22 +738,13 @@ export class CodexAgentAdapter implements AgentAdapter {
           detached: true,
         })
         child = spawned
+        registerDetachedChildProcessGroup(spawned)
         childStarted = true
         wireChild(spawned)
       }
       const timer = setTimeout(() => {
         timedOut = true
-        try {
-          if (child && child.pid !== undefined) {
-            // Negative pid kills the process group on POSIX. We hold
-            // detached=true so the group is `child.pid`'s own.
-            process.kill(-child.pid, "SIGKILL")
-          } else if (child) {
-            child.kill("SIGKILL")
-          }
-        } catch {
-          // Process already gone; nothing to do.
-        }
+        if (child) killChildProcessGroup(child, "SIGKILL")
         killGraceTimer = setTimeout(() => {
           void finish({
             exitCode: -1,

@@ -89,6 +89,38 @@ describe("transcript helpers", () => {
     )
   })
 
+  it("parses Codex exec JSONL sidecars with command evidence", () => {
+    const transcript = [
+      JSON.stringify({
+        type: "lore.eval.agent_run.started",
+        prompt: "Inspect the previous implementation.",
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: "I will inspect the files first.",
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: "rg -n boundary src",
+          aggregated_output: "src/service.ts:12:boundary decision\n",
+          exit_code: 0,
+        },
+      }),
+    ].join("\n")
+
+    expect(extractTranscriptSessionContent(transcript)).toContain(
+      "User: Inspect the previous implementation."
+    )
+    expect(extractTranscriptSessionContent(transcript)).toContain(
+      "Assistant: Command: rg -n boundary src\nExit code: 0\nOutput:\nsrc/service.ts:12:boundary decision"
+    )
+  })
+
   it("tracks malformed and ignored transcript lines without dropping valid messages", () => {
     const transcript = [
       '{"type":"user","message":{"content":[{"type":"text","text":"Keep this"}]}}',
