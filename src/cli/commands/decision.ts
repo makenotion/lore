@@ -2,12 +2,7 @@ import { Command } from "commander"
 import { syncDecisionReachability } from "../../core/decision-graph.js"
 import { initServices, type LoreServices } from "../../services.js"
 import { memoryScopeToInput } from "../../types.js"
-import type {
-  CreateDecisionInput,
-  Decision,
-  Fact,
-  MemoryConfidence,
-} from "../../types.js"
+import type { CreateDecisionInput, Decision, Fact } from "../../types.js"
 import { notionPageUrl, terminalLink } from "../output.js"
 import type { CliParseResult } from "../parse.js"
 import {
@@ -17,13 +12,12 @@ import {
   parseTextSource,
   readTextSource,
   resolveProjectIdForCli,
-  validateChoice,
   validateNonBlank,
   validateYmd,
   type TextSource,
 } from "./common.js"
 
-const CONFIDENCES = ["certain", "likely", "speculative"] as const
+const DECISION_FACT_CONFIDENCE = "likely" as const
 
 export interface DecisionCreateCliOptions {
   statement: string
@@ -34,7 +28,6 @@ export interface DecisionCreateCliOptions {
   supersedesIds: string[] | undefined
   alternatives: string | undefined
   consequences: string | undefined
-  confidence: MemoryConfidence | undefined
   reviewBy: string | undefined
   decidedAt: string | undefined
   tags: string[] | undefined
@@ -79,7 +72,6 @@ export function parseDecisionCreateCliOptions(
     supersedes?: string
     alternatives?: string
     consequences?: string
-    confidence?: string
     reviewBy?: string
     decidedAt?: string
     tags?: string
@@ -95,8 +87,6 @@ export function parseDecisionCreateCliOptions(
     { inlineFlag: "--rationale", fileFlag: "--rationale-file" }
   )
   if (!rationaleSource.ok) return rationaleSource
-  const confidence = validateChoice(raw.confidence, "--confidence", CONFIDENCES)
-  if (!confidence.ok) return confidence
   const reviewBy = validateYmd(raw.reviewBy, "--review-by")
   if (!reviewBy.ok) return reviewBy
   const decidedAt = validateYmd(raw.decidedAt, "--decided-at")
@@ -115,7 +105,6 @@ export function parseDecisionCreateCliOptions(
       supersedesIds: parseCsvList(raw.supersedes),
       alternatives: raw.alternatives,
       consequences: raw.consequences,
-      confidence: confidence.value,
       reviewBy: reviewBy.value,
       decidedAt: decidedAt.value,
       tags: tags.value,
@@ -153,7 +142,6 @@ export async function runDecisionCreate(
     rationale: parsedRationale.value,
     projectIds: projectId ? [projectId] : undefined,
     topicId,
-    confidence: opts.confidence,
     reviewBy: opts.reviewBy,
     decidedAt: opts.decidedAt,
     alternatives: opts.alternatives,
@@ -196,7 +184,7 @@ export async function runDecisionCreate(
           object: decision.id,
           projectIds: decision.projectIds.length > 0 ? decision.projectIds : undefined,
           sourceMemoryId: decision.id,
-          confidence: decision.confidence,
+          confidence: DECISION_FACT_CONFIDENCE,
           subjectEntityId,
           scope: memoryScopeToInput(decision.scope),
         })
@@ -240,7 +228,7 @@ export async function runDecisionCreate(
         object: oldId,
         projectIds: decision.projectIds.length > 0 ? decision.projectIds : undefined,
         sourceMemoryId: decision.id,
-        confidence: decision.confidence,
+        confidence: DECISION_FACT_CONFIDENCE,
         scope: memoryScopeToInput(decision.scope),
       })
       supersedesFactIds.push(supersedesFact.id)
@@ -252,15 +240,6 @@ export async function runDecisionCreate(
         created: reachability.created,
       })
       superseded.push({ id: oldId, title: oldDecision.title })
-
-      try {
-        await services.memories.decrementConfidence(oldDecision)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        warnings.push(
-          `Could not decrement confidence for superseded decision "${oldDecision.title}" (${oldId}): ${message}`
-        )
-      }
     } catch (err) {
       const target = oldDecision ? `"${oldDecision.title}" (${oldId})` : oldId
       throw new Error(
@@ -281,7 +260,6 @@ export async function runDecisionCreate(
     `Saved decision: "${decision.title}" (${decision.id})`,
     `URL: ${terminalLink(url, url)}`,
     `Project: ${projectLabel}`,
-    `Confidence: ${decision.confidence}`,
   ]
   if (topicLabel !== null) lines.push(`Topic: ${topicLabel}`)
   if (affected.length > 0) lines.push(`Affects: ${affected.join(", ")}`)
@@ -355,7 +333,6 @@ const createCommand = new Command("create")
   .option("--supersedes <csv>", "Decision page IDs this decision supersedes")
   .option("--alternatives <text>", "Alternatives considered")
   .option("--consequences <text>", "Consequences accepted")
-  .option("--confidence <value>", `Confidence: ${CONFIDENCES.join(" | ")}`)
   .option("--review-by <YYYY-MM-DD>", "Review-by date")
   .option("--decided-at <YYYY-MM-DD>", "Decision date")
   .option("--tags <csv>", "Comma-separated tags from the closed vocabulary")
@@ -374,7 +351,6 @@ const createCommand = new Command("create")
         supersedes?: string
         alternatives?: string
         consequences?: string
-        confidence?: string
         reviewBy?: string
         decidedAt?: string
         tags?: string

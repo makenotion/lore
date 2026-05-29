@@ -534,3 +534,23 @@ describe("lore-query KINDS enum accepts every memory kind", () => {
     ).toBe(true)
   })
 })
+
+describe("lore-query READABLE_SOURCES enum accepts autosave learning rows", () => {
+  it("recall accepts source: 'autosave_learning' at the dispatch boundary", () => {
+    const result = queryDispatchSchema.safeParse({
+      action: "recall",
+      source: "autosave_learning",
+      limit: 5,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("search accepts source: 'autosave_learning' at the dispatch boundary", () => {
+    const result = queryDispatchSchema.safeParse({
+      action: "search",
+      query: "atomic learning",
+      source: "autosave_learning",
+    })
+    expect(result.success).toBe(true)
+  })
+})

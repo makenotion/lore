@@ -62,8 +62,6 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -141,7 +139,6 @@ function setupMocks(opts: {
     knowledgeFacts: [],
     relatedMemories: [],
     taskMemories: [],
-    staleConfidence: [],
     coverage:
       opts.coverage ??
       buildEmptyWakeUpCoverage({
@@ -550,7 +547,6 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       knowledgeFacts: [],
       relatedMemories: [],
       taskMemories: [],
-      staleConfidence: [],
       coverage: null,
     })
 
@@ -914,8 +910,6 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     source: "conversation",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -955,7 +949,7 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
     validUntil: null,
     reviewBy: null,
     sourceMemoryId: null,
-    confidence: "certain",
+    confidence: "likely",
   }
   return { ...base, ...overrides }
 }
@@ -1043,7 +1037,6 @@ describe("hooks/wakeup — trust-boundary framing", () => {
       knowledgeFacts: opts.knowledgeFacts ?? [],
       relatedMemories: opts.relatedMemories ?? [],
       taskMemories: opts.taskMemories ?? [],
-      staleConfidence: [],
       coverage: buildEmptyWakeUpCoverage({}),
     })
   }
@@ -1213,7 +1206,6 @@ describe("hooks/wakeup — trust-boundary framing", () => {
       knowledgeFacts: [],
       relatedMemories: [],
       taskMemories: [],
-      staleConfidence: [],
       coverage: buildEmptyWakeUpCoverage({}),
     })
 
@@ -1289,7 +1281,6 @@ describe("hooks/wakeup — trust-boundary framing", () => {
       knowledgeFacts: [],
       relatedMemories: [],
       taskMemories: [],
-      staleConfidence: [],
       coverage: buildEmptyWakeUpCoverage({}),
     })
 
@@ -1356,7 +1347,6 @@ describe("hooks/wakeup — trust-boundary framing", () => {
       knowledgeFacts: [],
       relatedMemories: [],
       taskMemories: [],
-      staleConfidence: [],
       coverage: buildEmptyWakeUpCoverage({}),
     })
 

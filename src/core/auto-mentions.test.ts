@@ -16,8 +16,6 @@ function memory(overrides: Partial<Memory> = {}): Memory {
     source: "conversation",
     kind: "note",
     status: "informational",
-    confidence: "likely",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,

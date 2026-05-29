@@ -43,8 +43,6 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     source: "manual",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -82,7 +80,6 @@ function makeDecision(overrides: Partial<Decision> = {}): Decision {
       title: "Use PAT auth",
       kind: "decision",
       status: "accepted",
-      confidence: "likely",
       decidedAt: "2026-05-14",
       content: "Because it is per-user.",
     }),
@@ -103,7 +100,6 @@ function makeFact(overrides: Partial<Fact> = {}): Fact {
     reviewBy: null,
     sourceMemoryId: "d-1",
     confidence: "likely",
-    confidenceScore: null,
     lastReferencedAt: null,
     createdAt: "2026-05-14T00:00:00.000Z",
     subjectEntityId: null,
@@ -129,7 +125,6 @@ function makeServices(overrides: Partial<LoreServices> = {}): LoreServices {
       getTitleById: vi.fn(async () => null),
       getManyById: vi.fn(async () => []),
       touchOnRead: vi.fn(async () => undefined),
-      decrementConfidence: vi.fn(async () => undefined),
     },
     decisions: {
       create: vi.fn(async () => makeDecision()),
@@ -183,7 +178,6 @@ describe("memory save CLI", () => {
         topic: "Auth",
         kind: "runbook",
         tags: "backend,testing",
-        confidence: "likely",
         reviewBy: "2026-06-01",
         decidedAt: "2026-05-14",
       },
@@ -357,7 +351,6 @@ describe("decision create CLI", () => {
         project: "Widget",
         topic: "Auth",
         affects: "AuthService",
-        confidence: "likely",
       },
       []
     )
@@ -372,7 +365,6 @@ describe("decision create CLI", () => {
         rationale: "Because",
         projectIds: ["p-widget"],
         topicId: "topic-1",
-        confidence: "likely",
       })
     )
     expect(services.entities.resolveOrCreateEntity).toHaveBeenCalledWith(
@@ -385,6 +377,7 @@ describe("decision create CLI", () => {
         predicate: "decided_by",
         object: "d-1",
         sourceMemoryId: "d-1",
+        confidence: "likely",
         subjectEntityId: "e-AuthService",
       })
     )
@@ -399,7 +392,6 @@ describe("decision create CLI", () => {
         rationale: "Because",
         project: "Widget",
         supersedes: "old-decision",
-        confidence: "likely",
       },
       []
     )
@@ -421,13 +413,13 @@ describe("decision create CLI", () => {
         predicate: "supersedes_decision",
         object: "old-decision",
         sourceMemoryId: "d-1",
+        confidence: "likely",
       })
     )
     expect(services.facts.queryBySourceMemory).toHaveBeenCalledWith(
       "old-decision",
       expect.objectContaining({ predicates: ["decided_by"], includeOutOfScope: true })
     )
-    expect(services.memories.decrementConfidence).toHaveBeenCalled()
     expect(result.data.superseded).toEqual([
       { id: "old-decision", title: "Use PAT auth" },
     ])

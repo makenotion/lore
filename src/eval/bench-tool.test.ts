@@ -34,8 +34,6 @@ function testMemory(overrides: Partial<Memory> = {}): Memory {
     source: "conversation",
     kind: "note",
     status: "informational",
-    confidence: "medium",
-    confidenceScore: null,
     pinned: null,
     synopsis: "The preferred color is blue.",
     content: "I like blue.",

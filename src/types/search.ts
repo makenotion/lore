@@ -173,29 +173,4 @@ export interface SearchExplain {
   /** Populated only on the `"rrf"` branch; null on every other branch. */
   rrfScore: number | null
   branch: "contains-only" | "semantic-only" | "contains-saturated" | "rrf"
-  /**
-   * The confidence-weighting factor applied to this row's per-branch RRF
-   * score. `1.0` for unscored (unmigrated `Confidence Score = null`)
-   * or fully-trusted rows; `CONFIDENCE_FACTOR_MIN` (default `0.5`) for
-   * fully-decayed rows. This is the applied effective factor, including
-   * ranking-time neglect decay from `Last Referenced At`. Multiplied into the score in
-   * `MemoryService.searchByHybridPages` and the single-branch
-   * `searchByContainsPages` / `searchBySemanticPages` paths.
-   *
-   * Older traces may have this field absent; deserialize-aware
-   * consumers tolerate the missing field.
-   */
-  confidenceFactor: number
-  /**
-   * Factor from the stored `Confidence Score`, without ranking-time decay.
-   * Present on live traces so explain output can show when effective decay
-   * changed ordering. Older traces may lack this field.
-   */
-  storedConfidenceFactor?: number
-  /**
-   * Factor after applying ranking-time decay from `Last Referenced At`.
-   * Equal to `confidenceFactor` on live traces; named explicitly for
-   * diagnostics and rollout comparisons. Older traces may lack this field.
-   */
-  effectiveConfidenceFactor?: number
 }

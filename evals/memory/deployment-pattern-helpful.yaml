@@ -6,7 +6,6 @@ memories:
     title: Canary deployments are the standard rollout strategy
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - infrastructure
       - reliability
@@ -19,7 +18,6 @@ memories:
     title: Tail latency tracking dashboard ids
     kind: note
     status: informational
-    confidence: likely
     tags:
       - observability
     keywords: dashboard panel chart

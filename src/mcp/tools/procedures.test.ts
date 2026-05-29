@@ -36,8 +36,6 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     source: "manual",
     kind: "procedure",
     status: "proposed",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,

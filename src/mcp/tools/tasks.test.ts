@@ -23,8 +23,6 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -2770,14 +2768,8 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
   })
 })
 
-describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.0/#09)", () => {
-  // Same shape as the synopsis suite above (DEFERRED-01 from 0.7.0).
-  // The bucket boundaries themselves are exhaustively pinned in
-  // `render.test.ts` via `formatTrustLabel`; here we pin the surface
-  // wiring (the line lands between the title row and the synopsis
-  // line, indented by two spaces, italic-wrapped).
-
-  it("renders the trust line as an indented italic between the title row and the synopsis line", async () => {
+describe("lore-task action='list' memory confidence removal", () => {
+  it("renders synopsis directly under the title row without a trust line", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
@@ -2786,7 +2778,6 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
         makeTask("t-low", {
           title: "Low-trust task",
           synopsis: "Rotate keys for new env.",
-          confidenceScore: 0.3,
           entity: "PR-1",
           reviewBy: "2099-01-01",
         }),
@@ -2803,14 +2794,12 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     const lines = text.split("\n")
     const titleIdx = lines.findIndex((l) => l.includes("**Low-trust task**"))
     expect(titleIdx).toBeGreaterThanOrEqual(0)
-    // Order is load-bearing: title → trust → synopsis → ID. Same
-    // discipline as the wake-up Tasks renderer and `formatMemoryListItem`.
-    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
-    expect(lines[titleIdx + 2]).toBe("  Rotate keys for new env.")
-    expect(lines[titleIdx + 3]).toMatch(/^ {2}ID: t-low/)
+    expect(lines[titleIdx + 1]).toBe("  Rotate keys for new env.")
+    expect(lines[titleIdx + 2]).toMatch(/^ {2}ID: t-low/)
+    expect(text).not.toContain("confidence_")
   })
 
-  it("renders `_very low confidence_` when the stored score is below 0.2", async () => {
+  it("omits trust text on a row with no synopsis", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
@@ -2819,7 +2808,6 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
         makeTask("t-vlow", {
           title: "Heavily-decayed task",
           synopsis: "",
-          confidenceScore: 0.15,
           entity: "PR-1",
           reviewBy: "2099-01-01",
         }),
@@ -2835,14 +2823,11 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
 
     const lines = text.split("\n")
     const titleIdx = lines.findIndex((l) => l.includes("**Heavily-decayed task**"))
-    expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
+    expect(lines[titleIdx + 1]).toMatch(/^ {2}ID: t-vlow/)
+    expect(text).not.toContain("confidence_")
   })
 
-  it("renders `_moderate confidence_` when 0.4 ≤ score < 0.5", async () => {
-    // Symmetry with the decisions-list and wake-up Tasks suites — each
-    // surface pins one positive in-bucket assertion per band so a
-    // future contributor swapping the formatter sees regressions on the
-    // listing surface, not just at the `formatTrustLabel` helper.
+  it("does not render memory trust text for another active row", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
@@ -2851,7 +2836,6 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
         makeTask("t-mod", {
           title: "Borderline task",
           synopsis: "",
-          confidenceScore: 0.45,
           entity: "PR-1",
           reviewBy: "2099-01-01",
         }),
@@ -2867,17 +2851,11 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
 
     const lines = text.split("\n")
     const titleIdx = lines.findIndex((l) => l.includes("**Borderline task**"))
-    expect(lines[titleIdx + 1]).toBe("  _moderate confidence_")
+    expect(lines[titleIdx + 1]).toMatch(/^ {2}ID: t-mod/)
+    expect(text).not.toContain("confidence_")
   })
 
-  it("omits the trust line on a null-score row (pre-migration vault stays byte-identical)", async () => {
-    // Acceptance criterion: rows with `confidenceScore: null` render
-    // identically to pre-DEFERRED-01. `toBe` on the entire response
-    // body so any indentation drift, trailing whitespace, or extra
-    // newline between title and ID would surface here. `2099-01-01` is
-    // far enough in the future that `taskDaysOverdue` returns null on
-    // every wall-clock day this suite runs, keeping the `due
-    // 2099-01-01` line deterministic.
+  it("keeps rows without synopsis byte-identical", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
@@ -2886,7 +2864,6 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
         makeTask("t-null", {
           title: "Pre-migration row",
           synopsis: "",
-          confidenceScore: null,
           entity: "PR-1",
           reviewBy: "2099-01-01",
         }),
@@ -2908,13 +2885,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     )
   })
 
-  it("omits the trust line when the score is at or above the display threshold", async () => {
-    // Strict-less-than gate: a row with score === 0.5 must NOT render
-    // the indicator. A `<=` rewrite would render `_moderate confidence_`
-    // and trip the `_moderate confidence_` negative assertion below;
-    // the looser `confidence_` substring negative is the catch-all.
-    // Positive row-existence assertion pins that the row itself still
-    // renders — the gate suppresses the indicator, not the row.
+  it("does not render trust text on active rows", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
@@ -2923,7 +2894,6 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
         makeTask("t-healthy", {
           title: "Healthy task",
           synopsis: "",
-          confidenceScore: 0.5,
           entity: "PR-1",
           reviewBy: "2099-01-01",
         }),
@@ -2942,11 +2912,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     expect(text).not.toContain("confidence_")
   })
 
-  it("respects `includeSynopsis: false` but still renders the trust line", async () => {
-    // Same independence contract pinned in `render.test.ts` and the
-    // decisions-list suite: trust is system metadata, not synopsis
-    // content. Suppressing the synopsis must not suppress the trust
-    // line.
+  it("respects `includeSynopsis: false` without adding trust text", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Widget", path: "/widget" } },
     })
@@ -2955,7 +2921,6 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
         makeTask("t-no-syn", {
           title: "No-synopsis low-trust",
           synopsis: "This synopsis must not render.",
-          confidenceScore: 0.3,
           entity: "PR-1",
           reviewBy: "2099-01-01",
         }),
@@ -2973,30 +2938,22 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).not.toContain("This synopsis must not render.")
-    expect(text).toContain("  _low confidence_")
+    expect(text).not.toContain("confidence_")
     const lines = text.split("\n")
     const titleIdx = lines.findIndex((l) => l.includes("**No-synopsis low-trust**"))
-    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
-    // Suppressing synopsis collapses to title → trust → ID.
-    expect(lines[titleIdx + 2]).toMatch(/^ {2}ID: t-no-syn/)
+    expect(lines[titleIdx + 1]).toMatch(/^ {2}ID: t-no-syn/)
   })
 
-  it("renders the trust line bucket-agnostically (overdue + active rows alike)", async () => {
-    // The DEFERRED-01 spec lists this as one of the three surfaces; a
-    // bucket-agnostic test pins that the formatter doesn't accidentally
-    // treat one bucket as a special case. Mirrors the wake-up Tasks
-    // assertion in `context.test.ts`.
+  it("omits trust text bucket-agnostically", async () => {
     const overdueTask = makeTask("t-overdue", {
       title: "Overdue low-trust",
       synopsis: "",
-      confidenceScore: 0.3,
       entity: "PR-1",
       reviewBy: "2020-01-01",
     })
     const activeTask = makeTask("t-active", {
       title: "Active low-trust",
       synopsis: "",
-      confidenceScore: 0.15,
       entity: "PR-2",
       reviewBy: "2099-01-01",
     })
@@ -3018,8 +2975,9 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     const activeIdx = lines.findIndex((l) => l.includes("**Active low-trust**"))
     expect(overdueIdx).toBeGreaterThanOrEqual(0)
     expect(activeIdx).toBeGreaterThanOrEqual(0)
-    expect(lines[overdueIdx + 1]).toBe("  _low confidence_")
-    expect(lines[activeIdx + 1]).toBe("  _very low confidence_")
+    expect(lines[overdueIdx + 1]).toMatch(/^ {2}ID: t-overdue/)
+    expect(lines[activeIdx + 1]).toMatch(/^ {2}ID: t-active/)
+    expect(text).not.toContain("confidence_")
   })
 })
 
@@ -3078,8 +3036,6 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
       source: "manual",
       kind: "note",
       status: "informational",
-      confidence: "certain",
-      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,

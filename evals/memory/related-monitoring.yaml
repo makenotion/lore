@@ -6,7 +6,6 @@ memories:
     title: Alerting fires when error budget burns past 50%
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - observability
     keywords: alerting error budget burn rate threshold
@@ -15,7 +14,6 @@ memories:
     title: Structured log field nomenclature
     kind: note
     status: informational
-    confidence: likely
     tags:
       - observability
     keywords: lowercase snake case

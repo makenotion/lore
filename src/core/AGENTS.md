@@ -14,29 +14,28 @@ Use this table to choose the right owner before editing behavior. Keep
 cross-file invariants in this guide or the focused docs below; keep single-file
 ownership notes in top-of-file `ABOUTME` comments or module JSDoc.
 
-| Work area                          | Start with                                                                                                                                  | Routing notes                                                                                                                                           |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vault lifecycle and schema checks  | `vault.ts`                                                                                                                                  | `VaultManager` loads or creates the vault databases, exposes database IDs, counts vault stats, and checks schema drift.                                 |
-| Topology and promotion             | `topology.ts`, `topology-status.ts`, `promote.ts`                                                                                           | Topology describes primary vaults, read-only upstreams, and promotion targets. Normal writes still target only the primary vault.                       |
-| Project and topic scope            | `project.ts`, `topic.ts`, `context.ts`, `project-scope.ts`                                                                                  | Use these for CRUD and explicit or cwd-derived project resolution. Scope misses stay fatal when a caller named a project explicitly.                    |
-| Memory service surface             | `memory.ts`, `memory-*` collaborators                                                                                                       | `MemoryService` is the public facade. Focused collaborators own create, list, map, review, update, compare, confidence, pinned, search, and topic keys. |
-| Fact service surface               | `fact.ts`, `fact-*` collaborators                                                                                                           | `FactService` coordinates triples and delegates create/dedup, query, invalidation, maintenance, confidence, mapping, synthesis, and scope behavior.     |
-| Decisions, tasks, procedures       | `decision.ts`, `decision-graph.ts`, `task.ts`, `task-reconcile.ts`, `procedure.ts`                                                          | These implement governance memory kinds and the shared helpers used by MCP and CLI surfaces.                                                            |
-| Entity registry and migrations     | `entity.ts`, `entity-merge.ts`, `entity-migration.ts`                                                                                       | Entity relations back facts and require migration-safe handling of populated and fallback rows.                                                         |
-| Ask, wake-up, and project framing  | `ask.ts`, `wakeup*.ts`, `project-context.ts`                                                                                                | These aggregate already-owned services into agent-facing context surfaces.                                                                              |
-| Maintenance and migration commands | `*-migration.ts`, `*-encoding.ts`, `agent-normalization.ts`, `synopsis-backfill.ts`, `memory-debt.ts`, `near-duplicate.ts`, `similarity.ts` | Command-specific contracts belong in CLI docs; file-level scan mechanics belong with the owning module.                                                 |
-| Locked prompts                     | `prompts/`                                                                                                                                  | Prompt templates are versioned behavior and should stay deterministic unless their callers and tests change together.                                   |
+| Work area                          | Start with                                                                                                                                  | Routing notes                                                                                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Vault lifecycle and schema checks  | `vault.ts`                                                                                                                                  | `VaultManager` loads or creates the vault databases, exposes database IDs, counts vault stats, and checks schema drift.                                  |
+| Topology and promotion             | `topology.ts`, `topology-status.ts`, `promote.ts`                                                                                           | Topology describes primary vaults, read-only upstreams, and promotion targets. Normal writes still target only the primary vault.                        |
+| Project and topic scope            | `project.ts`, `topic.ts`, `context.ts`, `project-scope.ts`                                                                                  | Use these for CRUD and explicit or cwd-derived project resolution. Scope misses stay fatal when a caller named a project explicitly.                     |
+| Memory service surface             | `memory.ts`, `memory-*` collaborators                                                                                                       | `MemoryService` is the public facade. Focused collaborators own create, list, map, review, update, compare, maintenance, pinned, search, and topic keys. |
+| Fact service surface               | `fact.ts`, `fact-*` collaborators                                                                                                           | `FactService` coordinates triples and delegates create/dedup, query, invalidation, maintenance, confidence, mapping, synthesis, and scope behavior.      |
+| Decisions, tasks, procedures       | `decision.ts`, `decision-graph.ts`, `task.ts`, `task-reconcile.ts`, `procedure.ts`                                                          | These implement governance memory kinds and the shared helpers used by MCP and CLI surfaces.                                                             |
+| Entity registry and migrations     | `entity.ts`, `entity-merge.ts`, `entity-migration.ts`                                                                                       | Entity relations back facts and require migration-safe handling of populated and fallback rows.                                                          |
+| Ask, wake-up, and project framing  | `ask.ts`, `wakeup*.ts`, `project-context.ts`                                                                                                | These aggregate already-owned services into agent-facing context surfaces.                                                                               |
+| Maintenance and migration commands | `*-migration.ts`, `*-encoding.ts`, `agent-normalization.ts`, `synopsis-backfill.ts`, `memory-debt.ts`, `near-duplicate.ts`, `similarity.ts` | Command-specific contracts belong in CLI docs; file-level scan mechanics belong with the owning module.                                                  |
+| Locked prompts                     | `prompts/`                                                                                                                                  | Prompt templates are versioned behavior and should stay deterministic unless their callers and tests change together.                                    |
 
 ## Detailed Contract Docs
 
-| Area                           | Owner                                                                                  | Contract                                                                                                                                                                                              |
-| ------------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Retrieval / memory search      | [`docs/core/retrieval.md`](../../docs/core/retrieval.md)                               | Doc-owned contract for `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes, RRF, intent, explain traces, materialization, confidence-aware ranking, and search kill switches |
-| Topic-key upsert and re-keying | [`memory-topic-key.ts`](memory-topic-key.ts) module JSDoc                              | JSDoc-owned contract for `findByTopicKey`, `MemoryService.upsertByTopicKey`, `validateRekey`, `MemoryService.rekeyTopicKey`, promotion advisories, and re-key audit errors                            |
-| Pinned context blocks          | [`memory-pinned.ts`](memory-pinned.ts) module JSDoc                                    | JSDoc-owned contract for pinned block filtering, audience matching, read-only preflight, count thresholds, migration fallback, and audit recovery                                                     |
-| Confidence dynamics: algebra   | [`decay.ts`](decay.ts) module JSDoc                                                    | JSDoc-owned contract for confidence score clamping, seed/bump/decrement/decay algebra, and retrieval weighting                                                                                        |
-| Confidence dynamics: I/O       | [`memory-confidence.ts`](memory-confidence.ts) module JSDoc                            | JSDoc-owned contract for confidence read/write wrappers, the stale-confidence triage query, backfill/statistics writes, and the Stale Confidence wake-up subsection                                   |
-| Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for stderr line format, RunTool fallback markers, per-surface key divergence, and parser expectations for recoverable partial-result failures                                      |
+| Area                           | Owner                                                                                  | Contract                                                                                                                                                                    |
+| ------------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Retrieval / memory search      | [`docs/core/retrieval.md`](../../docs/core/retrieval.md)                               | Doc-owned contract for `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes, RRF, intent, explain traces, materialization, and search kill switches |
+| Topic-key upsert and re-keying | [`memory-topic-key.ts`](memory-topic-key.ts) module JSDoc                              | JSDoc-owned contract for `findByTopicKey`, `MemoryService.upsertByTopicKey`, `validateRekey`, `MemoryService.rekeyTopicKey`, promotion advisories, and re-key audit errors  |
+| Pinned context blocks          | [`memory-pinned.ts`](memory-pinned.ts) module JSDoc                                    | JSDoc-owned contract for pinned block filtering, audience matching, read-only preflight, count thresholds, migration fallback, and audit recovery                           |
+| Fact confidence dynamics       | [`decay.ts`](decay.ts) module JSDoc                                                    | JSDoc-owned contract for fact confidence score clamping, seed/bump/decrement/decay algebra, and fact retrieval weighting                                                    |
+| Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for stderr line format, RunTool fallback markers, per-surface key divergence, and parser expectations for recoverable partial-result failures            |
 
 ## Service Class Pattern
 
@@ -173,7 +172,7 @@ re-runnable inconsistency rather than a silent half-state.
 
 **Retry-safety is ledgered for actionable verdicts.** A
 `lore-memory action='compare'` call runs three concerns:
-idempotency gate → dispatch (fact emission + confidence decrement for
+idempotency gate → dispatch (fact emission and affected-memory audit ledger for
 actionable verdicts) → audit-marker write. Final audit entries and
 dispatch ledger entries both live in `Compare Notes`, but they are
 different NDJSON shapes:
@@ -181,11 +180,11 @@ different NDJSON shapes:
 - Final audit line fields: `verdict`, `target`, `affected`, `reason`,
   `judgedAt`, and `promptVersion`.
 - Dispatch ledger line fields: `entryType`, `dispatchKey`, `step`,
-  `verdict`, `source`, and `affected`; `step` is `confidence_decrement`.
+  `verdict`, `source`, and `affected`; `step` is `compare_notes`.
 
 `hasMatchingCompareNote` ignores ledger lines, so only final audit
 lines can make the pair "already judged." `hasCompareDispatchLedgerEntry`
-is the proof that the non-idempotent confidence decrement already
+is the proof that the actionable affected-memory audit already
 landed.
 
 `MemoryService.recordCompared` itself is **per-side idempotent**:
@@ -219,20 +218,18 @@ The retry matrix:
 - **Actionable verdict (`conflicts_with` / `supersedes`) —
   dispatch landed, audit-marker failed.** Safely retried by
   re-issuing the same compare call. The affected memory's
-  `compare_dispatch` ledger marker is written in the SAME
-  `pages.update` as the `Confidence Score` decrement. If Notion
-  applied that update but the SDK reported failure, the retry sees
-  the marker and skips a second decrement. If the update never
-  landed, the marker is absent and the retry applies the decrement
-  once. `recordCompared` then catches up whichever final-audit side
-  is missing.
+  `compare_dispatch` ledger marker is written in the same
+  `pages.update` as the compare-notes audit. If Notion applied that
+  update but the SDK reported failure, the retry sees the marker and
+  skips a duplicate compare-notes write. `recordCompared` then catches
+  up whichever final-audit side is missing.
 - **Actionable verdict — legacy one-sided audit from before the
   dispatch ledger existed.** A final audit line on either side is
   treated as proof that the old destructive dispatch already landed,
-  because `recordCompared` runs after fact emission and confidence
-  decrement. If one final audit side exists but the affected memory
+  because `recordCompared` runs after fact emission and affected-memory
+  audit ledger writes. If one final audit side exists but the affected memory
   lacks a `compare_dispatch` ledger, the handler repairs in place by
-  appending the ledger without another decrement, then lets
+  appending the ledger without emitting another fact, then lets
   `recordCompared` catch up the missing final-audit side. If the
   affected side already had the final audit line, `recordCompared`
   uses its force-write path to persist only the ledger on that side
@@ -242,8 +239,8 @@ The retry matrix:
   retry is safe. For `step="supersede"` on a `supersedes` verdict,
   `decisions.supersede` is idempotent on relation-set semantics, so
   the retry completes the missing `supersedes_decision` fact and then
-  the ledgered confidence decrement. For `step="fact"`, the fact
-  create dedupes by triple hash and the confidence decrement is
+  the ledgered affected-memory audit. For `step="fact"`, the fact
+  create dedupes by triple hash and the affected-memory audit is
   protected by the dispatch ledger. The error message still embeds
   `factId`, `affectedMemoryId`, and `dispatchKey` so repeated failures
   remain diagnosable.
@@ -296,7 +293,7 @@ Detailed retrieval and search contracts live in
 section as routing guidance; update the child doc for changes to
 `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes,
 RRF ranking, intent disambiguation, explain traces, materialization,
-confidence-aware reranking, and search kill switches.
+and search kill switches.
 
 High-level routing:
 
@@ -307,17 +304,16 @@ High-level routing:
 - Use `list()` for recent-memory browsing by project / topic / source; it uses
   `dataSources.query()` property filters and has no substring-title filter.
 
-## Confidence dynamics
+## Fact Confidence Dynamics
 
-The authoritative confidence contract is split by implementation boundary:
+The authoritative fact confidence contract is split by implementation boundary:
 
 - [`decay.ts`](decay.ts) owns pure score clamping, seed/bump/decrement/decay
   algebra, and retrieval weighting through `confidenceFactor`.
-- [`memory-confidence.ts`](memory-confidence.ts) owns read/write wrappers,
-  backfill/statistics writes, and the Stale Confidence wake-up subsection.
-- `MemoryService.queryStaleConfidence` follows the stale wake-up contract in
-  `memory-confidence.ts`; keep that behavior documented there rather than in
-  this routing guide.
+- [`fact-maintenance.ts`](fact-maintenance.ts) and [`fact.ts`](fact.ts) own
+  fact read/write wrappers, backfill/statistics writes, and invalidation
+  decrements. Memory-side compatibility columns are retained only at the
+  schema boundary; do not add domain readers or writers for them.
 
 ## Fact Invalidation
 
@@ -881,8 +877,8 @@ Scoping rules:
 - **Autosave atomic-learning path**: project scope when safely available
   (falls back to same-session scope when no project resolves, or when the
   only project is an auto-resolved monorepo catch-all) +
-  `Source = conversation` + `Kind = note` + `Confidence = likely`,
-  body-fetch enabled. Unlike the general probe, this is blocking:
+  `Source = autosave_learning` + `Kind = note`, body-fetch enabled. Unlike
+  the general probe, this is blocking:
   `MemoryService.createWithResult()` returns the existing row and creates
   nothing. `MemoryService.create()` also pays this gate and returns the
   reused row, but callers that need to tell the operator "reused, not
@@ -909,7 +905,7 @@ Scoping rules:
   from a missing duplicate.
   It deliberately does NOT use title-only similarity because two
   durable learnings can share a short title while carrying different
-  facts. The client-side source/kind/confidence recheck duplicates the
+  facts. The client-side source/kind recheck duplicates the
   server filter on purpose so a future `MemoryService.list` regression
   cannot make synopsis rows block atomic-learning rows.
 
@@ -1288,7 +1284,7 @@ get the task id.
 **Ignored-arg disclosure (suggested by principal review).** The
 reuse predicate consumes only `(subject, entity, projectIds)`. Any
 of `description`, `state`, `blockedBy`, `dueDate`, `affectsIds`,
-`topicName`, `forceNewTopic`, `confidence`, `tags`, `keywords`, or
+`topicName`, `forceNewTopic`, `tags`, `keywords`, or
 `synopsis` passed by the caller is structurally dropped on the
 reuse path — `services.tasks.create` was never called, so those
 fields had no observable effect on the existing row. The
@@ -1491,8 +1487,8 @@ lands the next decrement instead of overwriting with the same value.
 This covers explicit `lore-fact action='invalidate'` and
 auto-mentions diff invalidation from `lore-memory action='update'`.
 Compare-dispatch contradiction handling is governed by its own ledger
-and memory-confidence path, not by this fact-id lock. The cost is one
-filesystem lock per invalidate call.
+and compare-notes audit path, not by this fact-id lock. The cost is
+one filesystem lock per invalidate call.
 
 **Out of scope: decision-side emission.** `lore-decision
 action='create'` already emits `decided_by` facts via its `affects`

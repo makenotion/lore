@@ -13,26 +13,24 @@ reviewing the report) decides what to act on.
 ## Why memory debt is a first-class workflow
 
 A shared memory corpus decays without explicit maintenance. Stale,
-duplicate, ownerless, low-confidence, or orphaned rows quietly affect
-every engineer and agent that relies on wake-up / search / ask. Lore
-already has individual hygiene surfaces — wake-up's stale-confidence
-section, `lore conflicts scan`, `lore status`'s proposed-memories line,
-`lore migrate --build-confidence-scores` — but they are scattered across
-several commands. `lore debt scan` collapses them into one operator-pulled
-audit that answers a single question:
+duplicate, ownerless, or orphaned rows quietly affect every engineer and agent
+that relies on wake-up / search / ask. Lore already has individual hygiene
+surfaces — `lore conflicts scan`, `lore status`'s proposed-memories line, and
+scope-expiry checks — but they are scattered across several commands.
+`lore debt scan` collapses them into one operator-pulled audit that answers a
+single question:
 
 > What memory debt is accumulating in this vault, what should I fix
 > first, and what command would remediate it?
 
 ## Debt categories
 
-The scanner currently classifies findings into nine categories. Each
+The scanner currently classifies findings into eight categories. Each
 category reuses an existing service surface — the scanner is an
 orchestrator, not a re-implementation of vault walking.
 
 | Category             | Source                                                                                                   | What it surfaces                                                                                                                                                                    |
 | -------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `low_trust`          | `MemoryService.queryStaleConfidence`                                                                     | Memories below `CONFIDENCE_DISPLAY_THRESHOLD` (0.5) or untouched ≥ `STALE_CONFIDENCE_DAYS`.                                                                                         |
 | `orphan_fact`        | `FactService.queryOrphans` (bounded by `--per-category-limit + 1`)                                       | Active facts whose `Source` relation is empty (no supporting memory).                                                                                                               |
 | `overdue_governance` | `FactService.queryOverdue`, `DecisionService.queryOverdue`, `TaskService.queryOverdue` + `taskDaysStale` | Facts / decisions / tasks past their `Review By` date, plus active tasks untouched ≥ `STALE_TASK_DAYS`.                                                                             |
 | `duplicate_cluster`  | `MemoryService.listForScan` + `findConflictCandidates`                                                   | Memory pairs whose `title + keywords` trigram overlap or tag overlap crosses threshold and that share at least one project, filtering out pairs already judged via `Compared With`. |
@@ -44,12 +42,6 @@ orchestrator, not a re-implementation of vault walking.
 
 ### Prerequisites and category semantics
 
-- **`low_trust` requires `lore migrate --build-confidence-scores`** to
-  have run at least once. The probe filters on the non-empty
-  `Confidence Score` column, so a pre-0.8.0 row whose numeric score
-  column is null never surfaces regardless of how stale
-  `Last Referenced At` is. The migration backfills scores on every
-  existing memory, then read-time decay does the rest.
 - **`scope_anomaly` requires the issue #283 schema columns** (`Scope Kind`,
   `Expires At`, …). On a pre-#283 vault the probe degrades to
   `stats.scopeAnomalies: null` and the rest of the scanner runs regardless.
@@ -95,18 +87,15 @@ formula from issue #288):
 
 ```text
 score = severityWeight + retrievalRisk + stalenessWeight
-      + confidenceRisk + governanceRisk
+      + governanceRisk
 ```
 
 - **`severityWeight`** is a category default. Orphan facts and overdue
   governance start higher than topic sprawl.
 - **`retrievalRisk`** rises when the row is likely to surface often
-  (high confidence, recent edits, broad project scope, decision /
-  policy / runbook kinds).
-- **`stalenessWeight`** scales with `Review By` overdue days and with
-  `Last Referenced At` age past the neglect cutoff.
-- **`confidenceRisk`** rises as numeric confidence drops below the
-  display threshold.
+  (recent edits, broad project scope, decision / policy / runbook kinds).
+- **`stalenessWeight`** scales with `Review By` overdue days and active-task
+  age past the stale-task cutoff.
 - **`governanceRisk`** weights decisions / policies / runbooks / facts
   higher than ordinary notes.
 
@@ -115,7 +104,7 @@ Priority bins:
 | Bucket | Score band        | Meaning                                                                             |
 | ------ | ----------------- | ----------------------------------------------------------------------------------- |
 | P1     | `score ≥ 70`      | Triage now. Orphan facts and overdue decisions land here by default.                |
-| P2     | `40 ≤ score < 70` | Plan into the next maintenance pass. Duplicate clusters and most low-trust signals. |
+| P2     | `40 ≤ score < 70` | Plan into the next maintenance pass. Duplicate clusters and stale task signals.     |
 | P3     | `score < 40`      | Background hygiene. Topic sprawl, ownerless notes, low-impact stale signals.        |
 
 The formula is a prioritization aid, not objective truth. Tune the
@@ -295,7 +284,7 @@ state (the `items` list and `stats` block). On a 10-project /
 - `duplicate_cluster`: one `listForScan` per active project (full
   paginated walk of the project's non-archived memories) plus an
   O(N²) per-project `findConflictCandidates` pass.
-- `low_trust`, `orphan_fact`, `overdue_governance`, `ownerless`,
+- `orphan_fact`, `overdue_governance`, `ownerless`,
   `operational_expiry`, `summary_quality`:
   each issues one or more paginated `dataSources.query` calls,
   bounded by `--per-category-limit` (default 200).

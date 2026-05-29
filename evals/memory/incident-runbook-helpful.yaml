@@ -6,7 +6,6 @@ memories:
     title: Redis failover runbook for stuck primaries
     kind: runbook
     status: accepted
-    confidence: certain
     tags:
       - reliability
       - infrastructure
@@ -19,7 +18,6 @@ memories:
     title: Cache warmup quirks
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: warmup quirks

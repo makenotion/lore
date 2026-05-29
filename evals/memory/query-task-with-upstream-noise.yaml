@@ -6,7 +6,6 @@ memories:
     title: Webhook signature checks use a five minute replay window
     kind: note
     status: informational
-    confidence: certain
     tags:
       - security
     keywords: webhook signature replay window five minutes
@@ -17,7 +16,6 @@ memories:
     title: Mobile theme guidance from another vault
     kind: note
     status: informational
-    confidence: likely
     tags:
       - design
     keywords: mobile theme colors upstream inherited

@@ -92,7 +92,7 @@ type CompareDispatchVerdict = "conflicts_with" | "supersedes"
 export interface CompareDispatchLedgerEntry {
   entryType: "compare_dispatch"
   dispatchKey: string
-  step: "confidence_decrement"
+  step: "compare_notes"
   verdict: CompareDispatchVerdict
   source: string
   affected: string
@@ -127,7 +127,7 @@ export function compareDispatchKey(input: {
     input.verdict,
     input.sourceMemoryId,
     input.affectedMemoryId,
-    "confidence_decrement",
+    "compare_notes",
   ].join("\u001f")
 }
 
@@ -139,7 +139,7 @@ export function buildCompareDispatchLedgerEntry(input: {
   return {
     entryType: "compare_dispatch",
     dispatchKey: compareDispatchKey(input),
-    step: "confidence_decrement",
+    step: "compare_notes",
     verdict: input.verdict,
     source: input.sourceMemoryId,
     affected: input.affectedMemoryId,
@@ -185,7 +185,13 @@ export function hasMatchingCompareNote(
 
 export function hasCompareDispatchLedgerEntry(
   notesNdjson: string,
-  match: { dispatchKey: string; step: "confidence_decrement" }
+  match: {
+    dispatchKey: string
+    step: "compare_notes"
+    verdict?: CompareDispatchVerdict
+    source?: string
+    affected?: string
+  }
 ): boolean {
   if (notesNdjson.length === 0) return false
   for (const line of notesNdjson.split("\n")) {
@@ -195,11 +201,20 @@ export function hasCompareDispatchLedgerEntry(
         entryType?: string
         dispatchKey?: string
         step?: string
+        verdict?: string
+        source?: string
+        affected?: string
       }
       if (
         entry.entryType === "compare_dispatch" &&
-        entry.dispatchKey === match.dispatchKey &&
-        entry.step === match.step
+        ((entry.dispatchKey === match.dispatchKey && entry.step === match.step) ||
+          (match.verdict !== undefined &&
+            match.source !== undefined &&
+            match.affected !== undefined &&
+            entry.step === match.step &&
+            entry.verdict === match.verdict &&
+            entry.source === match.source &&
+            entry.affected === match.affected))
       ) {
         return true
       }
@@ -221,13 +236,7 @@ function factConfidenceFromJudge(
 
 export interface CompareDispatchServices {
   memories: {
-    decrementConfidence(
-      memory: Pick<
-        Memory,
-        "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
-      >,
-      opts?: { today?: string; compareNotes?: string }
-    ): Promise<number>
+    appendCompareNotes(memoryId: string, compareNotes: string): Promise<void>
   }
   facts: {
     createWithDedup(input: {
@@ -434,16 +443,7 @@ export class MemoryCompare {
 export async function recordContradiction(
   services: CompareDispatchServices,
   input: {
-    contradictedMemory: Pick<
-      Memory,
-      | "id"
-      | "title"
-      | "projectIds"
-      | "confidence"
-      | "confidenceScore"
-      | "lastReferencedAt"
-      | "createdAt"
-    > &
+    contradictedMemory: Pick<Memory, "id" | "title" | "projectIds"> &
       Partial<Pick<Memory, "compareNotes" | "scope">>
     sourceMemory: Pick<Memory, "id" | "title" | "projectIds"> &
       Partial<Pick<Memory, "scope">>
@@ -452,7 +452,7 @@ export async function recordContradiction(
 ): Promise<{
   factId: string | null
   affectedCompareNotes: string
-  decremented: boolean
+  affectedNotesWritten: boolean
   factEmissionSkippedReason?: string
 }> {
   const ledgerEntry = buildCompareDispatchLedgerEntry({
@@ -461,11 +461,14 @@ export async function recordContradiction(
     affectedMemoryId: input.contradictedMemory.id,
   })
   const currentCompareNotes = input.contradictedMemory.compareNotes ?? ""
-  const alreadyDecremented = hasCompareDispatchLedgerEntry(currentCompareNotes, {
+  const alreadyRecorded = hasCompareDispatchLedgerEntry(currentCompareNotes, {
     dispatchKey: ledgerEntry.dispatchKey,
-    step: "confidence_decrement",
+    step: "compare_notes",
+    verdict: ledgerEntry.verdict,
+    source: ledgerEntry.source,
+    affected: ledgerEntry.affected,
   })
-  const affectedCompareNotes = alreadyDecremented
+  const affectedCompareNotes = alreadyRecorded
     ? currentCompareNotes
     : appendCompareDispatchLedgerEntry(currentCompareNotes, ledgerEntry)
 
@@ -492,20 +495,19 @@ export async function recordContradiction(
     factId = result.fact.id
   }
 
-  if (!alreadyDecremented) {
+  if (!alreadyRecorded) {
     try {
-      await services.memories.decrementConfidence(input.contradictedMemory, {
-        compareNotes: affectedCompareNotes,
-      })
+      await services.memories.appendCompareNotes(
+        input.contradictedMemory.id,
+        affectedCompareNotes
+      )
     } catch (err) {
       throw new CompareDispatchPartialFailureError({
         message:
-          "conflicts_with dispatch: fact emitted but decrementConfidence " +
+          "conflicts_with dispatch: fact emitted but compare notes update " +
           "failed (inconsistentState: true). Retry the same " +
-          "lore-memory action='compare' after the transient failure is " +
-          "cleared; if the confidence update landed, the compare_dispatch " +
-          "ledger marker on the affected memory will prevent a second " +
-          "decrement. Diagnostic fields:\n" +
+          "lore-memory action='compare' after the transient failure is cleared. " +
+          "Diagnostic fields:\n" +
           `step=fact\n` +
           `affectedMemoryId=${input.contradictedMemory.id}\n` +
           `factId=${factId ?? "(pair-scope-skipped)"}\n` +
@@ -520,7 +522,7 @@ export async function recordContradiction(
   return {
     factId,
     affectedCompareNotes,
-    decremented: !alreadyDecremented,
+    affectedNotesWritten: !alreadyRecorded,
     ...(pairScope.ok ? {} : { factEmissionSkippedReason: pairScope.reason }),
   }
 }
@@ -528,25 +530,16 @@ export async function recordContradiction(
 export async function recordSupersedence(
   services: CompareDispatchServices,
   input: {
-    supersedingMemory: Pick<Memory, "id" | "title" | "projectIds" | "confidence"> &
+    supersedingMemory: Pick<Memory, "id" | "title" | "projectIds"> &
       Partial<Pick<Memory, "scope">>
-    supersededMemory: Pick<
-      Memory,
-      | "id"
-      | "title"
-      | "projectIds"
-      | "confidence"
-      | "confidenceScore"
-      | "lastReferencedAt"
-      | "createdAt"
-    > &
+    supersededMemory: Pick<Memory, "id" | "title" | "projectIds"> &
       Partial<Pick<Memory, "compareNotes" | "scope">>
     judgeConfidence: number | undefined
   }
 ): Promise<{
   factId: string | null
   affectedCompareNotes: string
-  decremented: boolean
+  affectedNotesWritten: boolean
   factEmissionSkippedReason?: string
 }> {
   const ledgerEntry = buildCompareDispatchLedgerEntry({
@@ -555,11 +548,14 @@ export async function recordSupersedence(
     affectedMemoryId: input.supersededMemory.id,
   })
   const currentCompareNotes = input.supersededMemory.compareNotes ?? ""
-  const alreadyDecremented = hasCompareDispatchLedgerEntry(currentCompareNotes, {
+  const alreadyRecorded = hasCompareDispatchLedgerEntry(currentCompareNotes, {
     dispatchKey: ledgerEntry.dispatchKey,
-    step: "confidence_decrement",
+    step: "compare_notes",
+    verdict: ledgerEntry.verdict,
+    source: ledgerEntry.source,
+    affected: ledgerEntry.affected,
   })
-  const affectedCompareNotes = alreadyDecremented
+  const affectedCompareNotes = alreadyRecorded
     ? currentCompareNotes
     : appendCompareDispatchLedgerEntry(currentCompareNotes, ledgerEntry)
 
@@ -600,8 +596,8 @@ export async function recordSupersedence(
           "supersession on the affected entity yet. Retry the same " +
           "lore-memory action='compare' after the transient failure is " +
           "cleared; decisions.supersede is idempotent on relation-set " +
-          "semantics, so the retry can complete the fact and confidence " +
-          "work safely. Diagnostic fields:\n" +
+          "semantics, so the retry can complete the fact work safely. " +
+          "Diagnostic fields:\n" +
           `step=supersede\n` +
           `affectedMemoryId=${input.supersededMemory.id}\n` +
           `supersedingMemoryId=${input.supersedingMemory.id}\n` +
@@ -614,21 +610,20 @@ export async function recordSupersedence(
     }
   }
 
-  if (!alreadyDecremented) {
+  if (!alreadyRecorded) {
     try {
-      await services.memories.decrementConfidence(input.supersededMemory, {
-        compareNotes: affectedCompareNotes,
-      })
+      await services.memories.appendCompareNotes(
+        input.supersededMemory.id,
+        affectedCompareNotes
+      )
     } catch (err) {
       throw new CompareDispatchPartialFailureError({
         message:
           "supersedes dispatch: decisions.supersede and the " +
-          "supersedes_decision fact landed, but decrementConfidence on " +
+          "supersedes_decision fact landed, but compare notes update on " +
           "the superseded memory failed (inconsistentState: true). Retry " +
           "the same lore-memory action='compare' after the transient " +
-          "failure is cleared; if the confidence update landed, the " +
-          "compare_dispatch ledger marker on the affected memory will " +
-          "prevent a second decrement. Diagnostic fields:\n" +
+          "failure is cleared. Diagnostic fields:\n" +
           `step=fact\n` +
           `affectedMemoryId=${input.supersededMemory.id}\n` +
           `factId=${factId ?? "(pair-scope-skipped)"}\n` +
@@ -643,7 +638,7 @@ export async function recordSupersedence(
   return {
     factId,
     affectedCompareNotes,
-    decremented: !alreadyDecremented,
+    affectedNotesWritten: !alreadyRecorded,
     ...(pairScope.ok ? {} : { factEmissionSkippedReason: pairScope.reason }),
   }
 }

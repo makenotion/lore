@@ -237,8 +237,6 @@ function makeServices(opts: StubOpts = {}): unknown {
         vi.fn(async () => ({ memories: [], explain: [] })),
       materializeContent: vi.fn(async (m) => m),
       getTitleById: vi.fn(),
-      decrementConfidence: vi.fn(async () => 0.45),
-      queryStaleConfidence: vi.fn(async () => []),
       countProposed: vi.fn(async () => ({ total: 0, bySource: {}, byAgent: {} })),
       listPinnedBlocks: vi.fn(async () => []),
       countPinnedBlocks: vi.fn(async () => 0),
@@ -1079,7 +1077,6 @@ describe("lore-query polymorphic dispatcher", () => {
           semanticRank: 1,
           rrfScore: 0.0322,
           branch: "rrf",
-          confidenceFactor: 1.0,
         },
       ],
     }))
@@ -1092,9 +1089,7 @@ describe("lore-query polymorphic dispatcher", () => {
     } as never)
     const text = extractText(result)
     expect(text).toContain("## Score trace")
-    expect(text).toContain(
-      "mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200 confidenceFactor=1.000 storedConfidenceFactor=1.000 effectiveConfidenceFactor=1.000"
-    )
+    expect(text).toContain("mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200")
   })
 
   it("omits ## Score trace footer when explain is not set", async () => {

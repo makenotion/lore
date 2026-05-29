@@ -6,7 +6,6 @@ memories:
     title: Adopt vitest as the project's test runner
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - tooling
       - testing
@@ -19,7 +18,6 @@ memories:
     title: YAML snapshot hygiene
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: yaml snapshot prune orphan

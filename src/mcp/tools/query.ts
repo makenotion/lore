@@ -5,44 +5,7 @@ import { formatDispatchError, toolError } from "../helpers.js"
 import { handleRecall, handleSearch } from "./memory.js"
 import { handleAsk, handleAudit } from "./knowledge.js"
 import { ymdDateSchema } from "./date-schema.js"
-
-// The closed set of `MemoryKind` values that `lore-query action='recall'`
-// and `action='search'` accept as the `kind` filter. `task` is excluded
-// because tracked work has its own polymorphic dispatcher
-// (`lore-task action='list'`) and `lore-query` cannot filter against the
-// `Task State` lifecycle. Operational rows stay filterable as an explicit
-// opt-in for audit and debt follow-up; default recall excludes them when
-// `kind` is omitted. Additional durable `MemoryKind` values must be added
-// here for recall/search to filter on it; the polymorphic surface tests pin
-// the drift contract.
-const KINDS = [
-  "note",
-  "decision",
-  "incident",
-  "runbook",
-  "postmortem",
-  "policy",
-  "state",
-  "operational",
-  "procedure",
-] as const
-
-const STATUSES = [
-  "informational",
-  "proposed",
-  "accepted",
-  "superseded",
-  "deprecated",
-  "rejected",
-] as const
-
-const READABLE_SOURCES = [
-  "conversation",
-  "file",
-  "manual",
-  "agent_diary",
-  "digest",
-] as const
+import { KINDS, READABLE_SOURCES, STATUSES } from "./memory/types.js"
 
 /**
  * Agent-facing description for `intent` on the `search` arm. Hoisted out of
@@ -229,7 +192,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .boolean()
           .optional()
           .describe(
-            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, RRF score, and stored/effective confidence factors. Useful for diagnosing why a row sorted where it did."
+            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did."
           ),
         // search only
         intent: z.string().optional().describe(INTENT_DESCRIPTION),

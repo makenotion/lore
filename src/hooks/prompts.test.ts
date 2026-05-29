@@ -444,12 +444,9 @@ describe("buildBackgroundSavePrompt", () => {
   })
 
   it("teaches the lore-memory action='save' field name as `content`, not `body` (matches the tool schema)", () => {
-    // Reviewer caught: `lore-memory action='save'` validates `content`
-    // as required (see `src/mcp/tools/memory.ts` SaveArgs). A prompt
-    // teaching `body:` would lead the sub-agent to emit invalid save
-    // calls, dropping the learning behind a tool error. Pin the field
-    // name explicitly so this regresses loudly if the bullet ever
-    // drifts back to `body`.
+    // `lore-memory action='save'` validates `content` as required. A prompt
+    // teaching `body:` would lead the sub-agent to emit invalid save calls,
+    // dropping the learning behind a tool error.
     const prompt = buildBackgroundSavePrompt([], null, "transcript")
     expect(prompt).toContain("- content: 1-3 sentences with the fact")
     // The example block above the field list legitimately uses the
@@ -458,11 +455,11 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).not.toContain("- body: 1-3 sentences")
   })
 
-  it("requires confidence='likely' for atomic learnings so structural dedup applies", () => {
+  it("requires source='autosave_learning' for atomic learnings so structural dedup applies", () => {
     const prompt = buildBackgroundSavePrompt([], null, "transcript")
-    expect(prompt).toContain('confidence: "likely"')
-    expect(prompt).toContain("required for autosave learning dedup")
-    expect(prompt).toContain('do not omit or bump to "certain"')
+    expect(prompt).toContain('source: "autosave_learning"')
+    expect(prompt).toContain("If you save the same autosave learning twice")
+    expect(prompt).not.toContain('confidence: "likely"')
   })
 
   it("places the learning-extraction block between the extraction filter and the tool guidance", () => {
@@ -668,7 +665,8 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toContain("Preferences, dislikes, communication style")
     expect(prompt).toContain("The user's partner is named Jamie")
     expect(prompt).toContain('status: "proposed"')
-    expect(prompt).toContain("required for autosave recall dedup")
+    expect(prompt).toContain('source: "autosave_learning"')
+    expect(prompt).not.toContain("required for autosave recall dedup")
     expect(prompt).not.toContain("A non-obvious discovery — gotcha")
   })
 

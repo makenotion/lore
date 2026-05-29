@@ -4,10 +4,8 @@ import type { TopicAliasMergePlan } from "../../core/topic-merge.js"
 import { mergeHookDefaults } from "../../hooks/config.js"
 import { releaseMigrationLock, type MigrationLock } from "../migration-lock.js"
 import { runAgentNormalization } from "./migrate/agent-normalization.js"
-import {
-  runBuildConfidenceScores,
-  runBuildFactConfidenceScores,
-} from "./migrate/confidence.js"
+import { runBackfillAutosaveLearningSource } from "./migrate/autosave-learning-source.js"
+import { runBuildFactConfidenceScores } from "./migrate/confidence.js"
 import { runDedupKeysMigration } from "./migrate/dedup-keys.js"
 import { upgradeLegacyDecisionTags } from "./migrate/decision-tags.js"
 import {
@@ -111,6 +109,10 @@ export const migrateCommand = new Command("migrate")
     "Synthesize a 1–2 sentence synopsis for every memory whose Synopsis property is empty (the pre-0.7.0 historical corpus). Plan-only by default — re-run with `--yes` to apply. `--dry-run` suppresses the write regardless of `--yes`. Synthesis goes through a pluggable backend selected by `--synopsis-backend` (default: `claude`)."
   )
   .option(
+    "--backfill-autosave-learning-source",
+    "Re-source legacy autosave learning rows from Source=conversation to Source=autosave_learning when they match the retired autosave marker shape (Kind=note, Confidence=likely, non-empty Session). Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope."
+  )
+  .option(
     "--synopsis-backend <name>",
     "Backend for `--backfill-synopses`. `claude` shells out to `claude -p` per row (requires the claude CLI installed and authenticated; PATH preflight runs only on the apply path). `placeholder` writes the SYNOPSIS_PLACEHOLDER_SENTINEL constant without consulting body content — intended for test infrastructure and for operators flagging legacy rows on a large vault. Defaults to `claude`.",
     "claude"
@@ -121,12 +123,8 @@ export const migrateCommand = new Command("migrate")
     "4"
   )
   .option(
-    "--build-confidence-scores",
-    "Seed every memory's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and write Last Referenced At = created_time, then realize any neglect-decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope to a single project. Idempotent: rows whose Confidence Score is already non-null (touched by a Phase 2 read path or a prior backfill) are skipped."
-  )
-  .option(
     "--build-fact-confidence-scores",
-    "Mirror of `--build-confidence-scores` for the Facts DB (DEFERRED-02). Seeds every fact's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and writes Last Referenced At = created_time, then realizes any decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope. Idempotent: rows already scored are skipped. The Last Referenced At column ships alongside Confidence Score because decay needs a per-fact reference timestamp distinct from Notion's last_edited_time. Last Referenced At = created_time is a fiction (the fact wasn't actually 'referenced' at creation) — operators who want a true read-citation anchor re-run after read traffic naturally bumps the column via touchOnRead."
+    "Seeds every fact's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and writes Last Referenced At = created_time, then realizes any decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope. Idempotent: rows already scored are skipped. The Last Referenced At column ships alongside Confidence Score because decay needs a per-fact reference timestamp distinct from Notion's last_edited_time. Last Referenced At = created_time is a fiction (the fact wasn't actually 'referenced' at creation) — operators who want a true read-citation anchor re-run after read traffic naturally bumps the column via touchOnRead."
   )
   .option(
     "--backfill-fact-observed-at",
@@ -146,7 +144,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, `--build-fact-confidence-scores`, or `--backfill-fact-observed-at`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, `--backfill-autosave-learning-source`, `--build-fact-confidence-scores`, or `--backfill-fact-observed-at`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -168,9 +166,9 @@ export const migrateCommand = new Command("migrate")
       buildEntities?: boolean
       reportOrphanRate?: boolean
       backfillSynopses?: boolean
+      backfillAutosaveLearningSource?: boolean
       synopsisBackend?: string
       synopsisBatchSize?: string
-      buildConfidenceScores?: boolean
       buildFactConfidenceScores?: boolean
       backfillFactObservedAt?: boolean
       project?: string
@@ -197,19 +195,19 @@ export const migrateCommand = new Command("migrate")
           !opts.buildEntities &&
           !opts.mergeSimilarTopics &&
           !opts.backfillSynopses &&
-          !opts.buildConfidenceScores &&
+          !opts.backfillAutosaveLearningSource &&
           !opts.buildFactConfidenceScores &&
           !opts.backfillFactObservedAt
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, --build-confidence-scores, --build-fact-confidence-scores, or --backfill-fact-observed-at."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, --backfill-autosave-learning-source, --build-fact-confidence-scores, or --backfill-fact-observed-at."
           )
           process.exit(1)
         }
         const scopedMigration = isProjectScopedMigrationRequested(opts)
         if (opts.project !== undefined && !scopedMigration) {
           console.error(
-            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --build-confidence-scores, --build-fact-confidence-scores, or --backfill-fact-observed-at."
+            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --backfill-autosave-learning-source, --build-fact-confidence-scores, or --backfill-fact-observed-at."
           )
           process.exit(1)
         }
@@ -408,13 +406,11 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
-        if (opts.buildConfidenceScores) {
-          await runBuildConfidenceScores(services, {
+        if (opts.backfillAutosaveLearningSource) {
+          await runBackfillAutosaveLearningSource(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: Boolean(opts.dryRun),
-            projectName: opts.project,
             projectId: migrationScope.projectId,
-            includeArchived: opts.includeArchived,
           })
         }
 
@@ -494,7 +490,7 @@ export const migrateCommand = new Command("migrate")
             opts.buildEntities ||
             opts.mergeSimilarTopics ||
             opts.backfillSynopses ||
-            opts.buildConfidenceScores ||
+            opts.backfillAutosaveLearningSource ||
             opts.buildFactConfidenceScores ||
             opts.backfillFactObservedAt
           if (flagHints.length > 0) {

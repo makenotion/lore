@@ -68,8 +68,8 @@ function validateAffectedMemoryId(input: CompareArgs): void {
  * - `dispatchedFactId` — the fact that landed on the actionable path
  *   (the operator can `lore-fact action='invalidate'` it during
  *   manual cleanup if needed).
- * - `decrementedMemoryId` — the loser whose Confidence Score was
- *   halved.
+ * - `affectedMemoryId` — the memory that received the actionable
+ *   dispatch marker.
  * - `compareNotesEntryToWriteA/B` — the NDJSON lines that should
  *   have been appended to each side's Compare Notes.
  * - `comparedWithRelationToWrite` — the pair ids that should appear
@@ -79,7 +79,7 @@ function validateAffectedMemoryId(input: CompareArgs): void {
  *
  * The agent surfaces this back to the operator instead of pretending
  * the call succeeded. A same-input retry is safe because the
- * confidence decrement now carries an atomic compare-dispatch ledger;
+ * affected memory update carries an atomic compare-dispatch ledger;
  * the embedded fields remain useful when repeated retries hit the
  * same Notion-side failure and an operator needs to inspect manually.
  */
@@ -88,7 +88,7 @@ function inconsistentCompareStateMessage(args: {
   // as the legacy `undefined` ("not-yet-set"). Both collapse to
   // `"(none)"` in the message.
   dispatchedFactId: string | null | undefined
-  decrementedMemoryId: string
+  affectedMemoryId: string
   compareNotesEntryToWriteA: string
   compareNotesEntryToWriteB: string
   comparedWithRelationToWrite: { memoryIdA: string; memoryIdB: string }
@@ -101,14 +101,14 @@ function inconsistentCompareStateMessage(args: {
     "Possible states: NEITHER side received its updates; OR one side succeeded " +
     "and the other failed. Retrying the same lore-memory action='compare' is " +
     "safe: the affected memory carries a compare_dispatch ledger marker when " +
-    "the confidence update lands, and recordCompared skips any side whose " +
+    "the dispatch marker lands, and recordCompared skips any side whose " +
     "final audit entry is already present. If repeated retries fail, INSPECT " +
     "both sides first, then write only the missing audit pieces (do NOT blindly " +
     "apply four updates — appending an NDJSON line that already landed creates " +
     "a duplicate audit entry; re-adding to Compared With is harmless because " +
     "Notion's relation set is set-semantic).\n" +
     `dispatchedFactId=${args.dispatchedFactId ?? "(none)"}\n` +
-    `decrementedMemoryId=${args.decrementedMemoryId}\n` +
+    `affectedMemoryId=${args.affectedMemoryId}\n` +
     `compareNotesEntryToWriteA=${args.compareNotesEntryToWriteA}\n` +
     `compareNotesEntryToWriteB=${args.compareNotesEntryToWriteB}\n` +
     `comparedWithRelationToWrite=${JSON.stringify(args.comparedWithRelationToWrite)}`
@@ -169,7 +169,7 @@ interface CompareResultInput {
    * though the fact graph wasn't updated.
    */
   factId?: string | null
-  decremented?: boolean
+  affectedNotesWritten?: boolean
   alreadyJudged: boolean
   /**
    * `"A"` or `"B"` when this call was a partial-failure recovery
@@ -199,7 +199,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     memoryA,
     memoryB,
     factId,
-    decremented,
+    affectedNotesWritten,
     alreadyJudged,
     affectedMemoryId,
     recoveredSide,
@@ -233,7 +233,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     const loser = loserId === memoryA.id ? memoryA : memoryB
     lines.push(
       `Verdict: conflicts_with — "${loser.title}" (${loser.id}) ${
-        decremented === false ? "confidence already halved" : "confidence halved"
+        affectedNotesWritten === false ? "already marked" : "marked"
       }.`
     )
   } else if (verdict === "supersedes") {
@@ -241,7 +241,9 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     const loser = loserId === memoryA.id ? memoryA : memoryB
     lines.push(
       `Verdict: supersedes — "${loser.title}" (${loser.id}) marked superseded; ${
-        decremented === false ? "confidence already halved" : "confidence halved"
+        affectedNotesWritten === false
+          ? "dispatch marker already present"
+          : "dispatch marker recorded"
       }.`
     )
   } else {
@@ -333,20 +335,19 @@ export async function handleCompare(
     //    `(A, B, conflicts_with, affected=B)`) MUST re-dispatch. With
     //    direction in the key, the prior entry's `affected=B` does
     //    not match the new query's `affected=A`, the gate clears, and
-    //    A is decremented.
+    //    A is the affected memory.
     //
     //    Same-verdict idempotent re-calls (same direction) still
-    //    short-circuit here with zero side effects: no decrement,
-    //    no fact write, no Compare Notes append. Different-verdict
+    //    short-circuit here with zero side effects: no fact write,
+    //    no Compare Notes append. Different-verdict
     //    re-calls also fall through (a changed verdict is a
     //    deliberate signal — verdict change is allowed).
     //
     //    The destructive actionable branch is retry-safe because the
-    //    affected memory gets a `compare_dispatch` ledger marker in
-    //    the same update as the Confidence Score decrement. That lets
+    //    affected memory gets a `compare_dispatch` ledger marker. That lets
     //    actionable verdicts use the same both-sides audit gate as
     //    symmetric verdicts: a retry after one audit side landed
-    //    catches up the missing side without double-decrementing.
+    //    catches up the missing side without duplicating the dispatch marker.
     const aAlreadyHasEntry = hasMatchingCompareNote(memoryA.compareNotes, {
       target: memoryB.id,
       verdict: args.verdict,
@@ -373,7 +374,7 @@ export async function handleCompare(
     //    that `recordCompared` would actually write. The preflight's
     //    job is to catch overflow BEFORE a destructive
     //    `recordContradiction` / `recordSupersedence` could fire and
-    //    leave a halved memory with no audit marker. But preflight
+    //    leave derived state with no audit marker. But preflight
     //    must mirror `recordCompared`'s per-side idempotent skip:
     //    a side whose loaded snapshot already carries the matching
     //    `(target, verdict, affected)` entry will be SKIPPED by
@@ -417,17 +418,20 @@ export async function handleCompare(
       })
       const loserHasLedger = hasCompareDispatchLedgerEntry(loser!.compareNotes, {
         dispatchKey: ledgerEntry.dispatchKey,
-        step: "confidence_decrement",
+        step: "compare_notes",
+        verdict: ledgerEntry.verdict,
+        source: ledgerEntry.source,
+        affected: ledgerEntry.affected,
       })
       legacyPartialAuditWithoutLedger =
         (aAlreadyHasEntry || bAlreadyHasEntry) && !loserHasLedger
       if (!loserHasLedger) {
         if (loser!.id === memoryA.id) {
           preflightNotesA = appendCompareDispatchLedgerEntry(preflightNotesA, ledgerEntry)
-          forceRecordA = aAlreadyHasEntry
+          forceRecordA = true
         } else {
           preflightNotesB = appendCompareDispatchLedgerEntry(preflightNotesB, ledgerEntry)
-          forceRecordB = bAlreadyHasEntry
+          forceRecordB = true
         }
       }
     }
@@ -435,7 +439,7 @@ export async function handleCompare(
     if (!bAlreadyHasEntry) appendCompareNote(preflightNotesB, entryB)
 
     // 8. Dispatch on actionable verdicts. Only fires after the
-    //    overflow preflight clears, so a destructive decrement + fact
+    //    overflow preflight clears, so an actionable fact
     //    write never lands without a corresponding audit-trail entry
     //    being writable.
     //
@@ -452,7 +456,7 @@ export async function handleCompare(
       factId?: string | null
       affectedMemoryId?: string
       affectedCompareNotes?: string
-      decremented?: boolean
+      affectedNotesWritten?: boolean
       factEmissionSkippedReason?: string
     } = {}
 
@@ -470,7 +474,7 @@ export async function handleCompare(
         affectedMemoryId: loser!.id,
         affectedCompareNotes:
           loser!.id === memoryA.id ? preflightNotesA : preflightNotesB,
-        decremented: false,
+        affectedNotesWritten: false,
       }
     } else if (args.verdict === "conflicts_with") {
       const result = await recordContradiction(services, {
@@ -611,7 +615,7 @@ export async function handleCompare(
             throw new Error(
               inconsistentCompareStateMessage({
                 dispatchedFactId: dispatchResult.factId,
-                decrementedMemoryId: loser!.id,
+                affectedMemoryId: loser!.id,
                 compareNotesEntryToWriteA: JSON.stringify(entryA),
                 compareNotesEntryToWriteB: JSON.stringify(entryB),
                 comparedWithRelationToWrite: {
@@ -628,7 +632,7 @@ export async function handleCompare(
         throw new Error(
           inconsistentCompareStateMessage({
             dispatchedFactId: dispatchResult.factId,
-            decrementedMemoryId: loser!.id,
+            affectedMemoryId: loser!.id,
             compareNotesEntryToWriteA: JSON.stringify(entryA),
             compareNotesEntryToWriteB: JSON.stringify(entryB),
             comparedWithRelationToWrite: {
@@ -653,7 +657,7 @@ export async function handleCompare(
       memoryB,
       affectedMemoryId: args.affectedMemoryId,
       factId: dispatchResult.factId,
-      decremented: dispatchResult.decremented,
+      affectedNotesWritten: dispatchResult.affectedNotesWritten,
       alreadyJudged: false,
       memoriesUpdated: Number(writtenSides.wroteA) + Number(writtenSides.wroteB),
       recoveredSide:

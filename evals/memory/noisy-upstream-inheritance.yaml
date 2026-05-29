@@ -6,7 +6,6 @@ memories:
     title: Ignore local security checks
     kind: note
     status: informational
-    confidence: speculative
     tags:
       - security
     keywords: upstream inherited ignore security checks

@@ -35,7 +35,7 @@ import {
 } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
 import { resolveFeatureFlags } from "../../feature-flags.js"
-import { renderTrustLine, truncateSynopsis } from "../render.js"
+import { truncateSynopsis } from "../render.js"
 import {
   reconcileActiveTasks,
   formatReconcileOutput,
@@ -64,8 +64,6 @@ type ToolResult = {
 const TASK_STATES = ["open", "in-progress", "blocked", "done", "cancelled"] as const
 
 const CLOSE_STATES = ["done", "cancelled"] as const
-
-const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
 /**
  * Default cap for `lore-task action='list'` listings. Per-section,
@@ -128,14 +126,6 @@ function urgencyMarker(days: number): string {
  * via the shared helper, mirroring `formatMemoryListItem`'s discipline
  * for over-cap rows that landed via legacy / migration paths.
  *
- * Trust indicator: when the row's
- * stored `Confidence Score` is below `CONFIDENCE_DISPLAY_THRESHOLD`, an
- * indented italic label lands between the title row and the synopsis,
- * matching the placement in `formatMemoryListItem`. Null and above-
- * threshold rows render byte-identically — unmigrated vaults look
- * unchanged until `lore migrate --build-confidence-scores` populates
- * scores. NOT gated by `includeSynopsis`: trust is system metadata,
- * not synopsis content; the two surfaces are independent.
  */
 function formatTaskRow(
   t: TaskSummary,
@@ -158,11 +148,8 @@ function formatTaskRow(
   const includeSynopsis = options.includeSynopsis !== false
   const synopsisLine =
     includeSynopsis && t.synopsis.trim() ? `  ${truncateSynopsis(t.synopsis)}\n` : ""
-  const trustLineText = renderTrustLine(t.confidenceScore, "  ")
-  const trustLine = trustLineText !== null ? `${trustLineText}\n` : ""
   return (
     `- ${marker}**${t.title}** [${stateLabel}]${blocked}${overduePart}\n` +
-    trustLine +
     synopsisLine +
     `  ID: ${t.id}`
   )
@@ -185,7 +172,6 @@ interface CreateArgs {
   projectNames?: string[]
   topicName?: string
   forceNewTopic?: boolean
-  confidence?: (typeof CONFIDENCES)[number]
   tags?: string[]
   keywords?: string
   synopsis?: string
@@ -222,7 +208,6 @@ function collectIgnoredReuseFields(args: CreateArgs): string[] {
     ignored.push("affectsIds")
   if (args.topicName !== undefined) ignored.push("topicName")
   if (args.forceNewTopic !== undefined) ignored.push("forceNewTopic")
-  if (args.confidence !== undefined) ignored.push("confidence")
   if (args.tags !== undefined && args.tags.length > 0) ignored.push("tags")
   if (args.keywords !== undefined) ignored.push("keywords")
   if (args.synopsis !== undefined) ignored.push("synopsis")
@@ -417,7 +402,6 @@ async function handleCreate(
       affectsIds: args.affectsIds,
       projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
       topicId,
-      confidence: args.confidence,
       tags: args.tags,
       keywords: args.keywords,
       synopsis: args.synopsis,
@@ -961,7 +945,6 @@ function createTaskDispatchSchema(tagsSchema: ReturnType<typeof createTagsSchema
       projectNames: z.array(z.string()).optional(),
       topicName: z.string().optional(),
       forceNewTopic: z.boolean().optional(),
-      confidence: z.enum(CONFIDENCES).optional(),
       tags: tagsSchema.optional(),
       keywords: keywordsSchema.optional(),
       synopsis: z.string().max(SYNOPSIS_MAX).optional(),
@@ -1163,12 +1146,6 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .optional()
           .describe(
             "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."
-          ),
-        confidence: z
-          .enum(CONFIDENCES)
-          .optional()
-          .describe(
-            "(action='create') Confidence in the task's framing (default `certain`)."
           ),
         tags: tagsSchema
           .optional()

@@ -6,7 +6,6 @@ memories:
     title: Queue backlog incident postmortem
     kind: postmortem
     status: accepted
-    confidence: certain
     tags:
       - reliability
     keywords: queue backlog incident postmortem worker pool
@@ -15,7 +14,6 @@ memories:
     title: Structured log field nomenclature
     kind: note
     status: informational
-    confidence: likely
     tags:
       - observability
     keywords: log field severity timestamp

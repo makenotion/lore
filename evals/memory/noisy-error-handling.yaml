@@ -6,7 +6,6 @@ memories:
     title: Log correlation ids stay across spans
     kind: note
     status: informational
-    confidence: likely
     tags:
       - observability
     keywords: log correlation span trace
@@ -15,7 +14,6 @@ memories:
     title: On-call escalation runbook
     kind: runbook
     status: informational
-    confidence: likely
     tags:
       - reliability
     keywords: oncall escalation page rotation

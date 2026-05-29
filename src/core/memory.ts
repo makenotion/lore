@@ -49,7 +49,7 @@ import {
 } from "../notion/extractors.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { MemoryPinned } from "./memory-pinned.js"
-import { MemoryConfidence } from "./memory-confidence.js"
+import { MemoryMaintenance } from "./memory-maintenance.js"
 import {
   cleanupOrphanExclusionFilter,
   withCleanupOrphanExclusion,
@@ -240,7 +240,7 @@ export class MemoryService {
   private scopeCtx: MemoryScopeContext = {}
   private readonly mapper: MemoryMapper
   private readonly pinned: MemoryPinned
-  private readonly confidence: MemoryConfidence
+  private readonly maintenance: MemoryMaintenance
   private readonly topicKey: MemoryTopicKey
   private readonly compare: MemoryCompare
   private readonly searcher: MemorySearch
@@ -278,12 +278,8 @@ export class MemoryService {
       () => this.scopeFilterEnabled,
       (pages, includeContent) => this.materializeMemories(pages, includeContent)
     )
-    this.confidence = new MemoryConfidence(
-      client,
-      db,
-      () => this.scopeCtx,
-      () => this.scopeFilterEnabled,
-      (page, content) => this.pageToMemory(page, content)
+    this.maintenance = new MemoryMaintenance(client, db, (page, content) =>
+      this.pageToMemory(page, content)
     )
     this.topicKey = new MemoryTopicKey(
       client,
@@ -408,12 +404,7 @@ export class MemoryService {
    * Read a memory's properties without fetching its markdown body. Sibling
    * of `getById` that skips the `pages.retrieveMarkdown` round-trip —
    * issued exclusively for callers that need the property-tier shape
-   * (`confidenceScore`, `lastReferencedAt`, `createdAt`, `confidence`,
-   * `id`) and never read the body. The contradiction-decrement path
-   * (`lore-fact action='invalidate'` → `decrementConfidence`) is the
-   * canonical caller: every fact invalidation otherwise pays one extra
-   * `retrieveMarkdown` round-trip for content the decrement algebra
-   * never touches.
+   * (`lastReferencedAt`, ids, metadata) and never read the body.
    *
    * The returned `Memory.content` is `""`. Callers that need the body
    * should use `getById` instead, or hydrate via `materializeContent`
@@ -433,9 +424,8 @@ export class MemoryService {
    * Batched property-only reads. Issues one `pages.retrieve` per
    * **distinct** input ID via `Promise.all` and skips the
    * `pages.retrieveMarkdown` round-trip — `touchOnRead` reads
-   * `confidenceScore` / `lastReferencedAt` / `confidence` / `createdAt`
-   * off the in-memory row, all of which live in the page's properties
-   * bag. The returned `Memory` shapes carry `content: ""`; callers
+   * `lastReferencedAt` off the in-memory row, which lives in the page's
+   * properties bag. The returned `Memory` shapes carry `content: ""`; callers
    * needing the body must use `getById` instead.
    *
    * The properties-only posture matters because the touch-on-read
@@ -748,92 +738,29 @@ export class MemoryService {
   }
 
   /**
-   * Update `Last Referenced At` to today and lazily seed / decay / bump
-   * `Confidence Score` for the given memories. Updates dispatch in
-   * parallel via `Promise.all`. Each update is its own `pages.update`
-   * (Notion has no batch-update primitive); the rate-limit middleware
-   * handles backpressure.
-   *
-   * Short-circuits per-row when `lastReferencedAt === today` AND the
-   * row's `confidenceScore` is already non-null — no Notion call. The
-   * check is structural; concurrent reads in the same session may both
-   * miss the short-circuit and both fire writes (Notion accepts in
-   * arrival order, final state is consistent).
+   * Update `Last Referenced At` to today for the given memories. Updates
+   * dispatch in parallel via `Promise.all`. Each update is its own
+   * `pages.update` (Notion has no batch-update primitive); the rate-limit
+   * middleware handles backpressure.
    *
    * Failure handling: any per-row failure routes through `onError` and
    * degrades to a no-op for that row. The caller's read result is
    * always preserved; `touchOnRead` is advisory, never blocking.
    *
-   * Bump-once-per-day: a memory cited 50 times in one session bumps
-   * exactly once — same gate as the column write.
-   *
-   * Decay-then-bump on stale rows: when `lastReferencedAt` is non-null
-   * and not today, the helper first applies `decayConfidenceScore`
-   * against the staleness accrued since the last touch, THEN applies
-   * `bumpConfidenceScore`. Write-realized lazy decay — every mutation
-   * realizes the time-decay since the last mutation. RRF reads the
-   * stored value as-is via `confidenceFactor`.
-   *
-   * Seed-decay-then-bump on never-scored rows: when
-   * `confidenceScore === null`, the row predates the confidence-score
-   * column (or is otherwise unmigrated). The decay anchor is
-   * `createdAt` — the row's been
-   * "neglected" since creation. Seed → decay against `createdAt` →
-   * bump matches what the bulk migration writes for the same row, so
-   * a read-before-migrate path and a migrate-before-read path
-   * converge to the same stored value.
+   * Once per day: a memory cited 50 times in one session writes at most once.
    */
   async touchOnRead(
-    memories: ReadonlyArray<
-      Pick<
-        Memory,
-        "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
-      >
-    >,
+    memories: ReadonlyArray<Pick<Memory, "id" | "lastReferencedAt">>,
     opts?: {
       today?: string
       onError?: (memoryId: string, error: unknown) => void
     }
   ): Promise<void> {
-    return this.confidence.touchOnRead(memories, opts)
+    return this.maintenance.touchOnRead(memories, opts)
   }
 
-  /**
-   * Apply a contradiction decrement to a single memory. Reads the
-   * current score, lazily seeds from the categorical when null,
-   * realizes any accrued decay, applies `decrementConfidenceScore`,
-   * writes back. Single round-trip. Returns the new score.
-   *
-   * Decay-then-decrement on stale rows parallels touchOnRead's
-   * decay-then-bump: a stale row's stored value reflects the score at
-   * last-touch, not at today, so realizing decay before the
-   * contradiction keeps the negative signal proportional to current
-   * trust. A row at 0.9 with `lastReferencedAt` 200 days before today
-   * has effective `0.9 * 0.99^140 ≈ 0.220` (140 stale days), so the
-   * halving lands at `≈ 0.110` — not 0.45 as it would be without the
-   * realize step.
-   *
-   * Seed-decay-then-decrement on never-scored rows mirrors
-   * `touchOnRead` — same convergence guarantee that a contradiction
-   * landed against an unmigrated row and one landed against a
-   * migrated row reach the same effective current value before
-   * decrementing.
-   *
-   * The `Last Referenced At` write on contradiction is deliberate:
-   * contradiction IS a form of cite (negative cite), and treating it
-   * as neglect would let a heavily-contradicted memory simultaneously
-   * decay, producing double-counted negative signal. Bumping
-   * `Last Referenced At` resets the decay clock; the explicit
-   * decrement provides the negative signal.
-   */
-  async decrementConfidence(
-    memory: Pick<
-      Memory,
-      "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
-    >,
-    opts?: { today?: string; compareNotes?: string }
-  ): Promise<number> {
-    return this.confidence.decrementConfidence(memory, opts)
+  async appendCompareNotes(memoryId: string, compareNotes: string): Promise<void> {
+    return this.maintenance.appendCompareNotes(memoryId, compareNotes)
   }
 
   /**
@@ -925,25 +852,12 @@ export class MemoryService {
    * Paginating async iterator over every non-archived memory in this
    * service's Memories DB, optionally scoped to a single project. Yields
    * `Memory` objects (with empty `content`) in created-time-ascending
-   * order so the migration's plan output is deterministic across runs.
-   *
-   * Two consumers: `runBuildConfidenceScoresMigration` (the baseline
-   * backfill) and `MemoryService.confidenceStats` (the
-   * `lore status` confidence-distribution summary). Both want a
-   * walker over every non-archived memory with no body fetch and the
-   * same optional project scope, so they share one iterator rather
-   * than re-deriving the pagination algebra. Exposing a
-   * `Memory[]`-shaped iterator (rather than raw `PageObjectResponse[]`)
-   * keeps callers off the SDK type surface and lets them consume
-   * `Memory.createdAt` / `Memory.confidence` / `Memory.confidenceScore`
-   * via the same extractor pipeline every other read path uses.
+   * order so inventory-style migrations and evals produce deterministic output.
    *
    * Archived rows are filtered client-side: Notion exposes the archived
    * flag on the returned page object, and the existing read paths
    * (`agent-normalization`, `memory-encoding`) skip via `page.archived`.
-   * Backfilling a score onto a row whose page is archived is wasted
-   * work — it surfaces in no read path and would be silently lost on
-   * the next un-archive's full re-write.
+   * Archived rows surface in no default read path and are skipped.
    *
    * Scoped by `projectId`: when omitted, the iterator walks every memory
    * in the vault (vault-wide migration). When set, scopes via the same
@@ -956,94 +870,7 @@ export class MemoryService {
       projectId?: string
     } = {}
   ): AsyncGenerator<Memory, void, void> {
-    yield* this.confidence.listAllForBackfill(opts)
-  }
-
-  /**
-   * Single `pages.update` writing both `Confidence Score` and
-   * `Last Referenced At`. Distinct from `touchOnRead` because the
-   * migration sets `Last Referenced At` to the memory's `createdAt`
-   * (sliced to YYYY-MM-DD), not today — the migration's contract is
-   * "treat creation as the implicit first reference," so the row's
-   * decay anchor IS its creation date.
-   *
-   * Caller is responsible for clamping `score`. Production callers
-   * (`runBuildConfidenceScoresMigration`) hand off scores produced by
-   * `decayConfidenceScore`, which clamps internally.
-   */
-  async applyBackfillScore(
-    memoryId: string,
-    score: number,
-    lastReferencedAt: string
-  ): Promise<void> {
-    return this.confidence.applyBackfillScore(memoryId, score, lastReferencedAt)
-  }
-
-  /**
-   * Aggregate `Confidence Score` distribution across non-archived
-   * memories — the data the `lore status` confidence-summary line
-   * surfaces (DEFERRED-04). Memory-side parallel of `taskStats`'s
-   * closure-rate aggregation: pure read, no body fetch, optional
-   * project scope.
-   *
-   * Walks via `listAllForBackfill` so we share one paginated iterator
-   * with the `--build-confidence-scores` migration. Aggregates in a
-   * single pass:
-   *
-   * - `totalMemories` — every non-archived row the iterator yields.
-   * - `scoredMemories` — `Memory.confidenceScore !== null`. On a
-   * vault that hasn't run the backfill this stays at zero and the
-   * renderer collapses the `(avg …, … below threshold)` suffix off
-   * the line accordingly.
-   * - `averageScore` — arithmetic mean across scored rows. Returns
-   * `0` when no scored rows exist; the renderer suppresses the avg
-   * surface in that case via the `scoredMemories === 0` guard, so
-   * the placeholder zero never reaches the operator.
-   * - `belowThreshold` — count of scored rows whose stored value is
-   * strictly below `CONFIDENCE_DISPLAY_THRESHOLD` (the same gate
-   * the trust indicator and Stale Confidence wake-up use, so all
-   * three surfaces agree on what "below threshold" means).
-   *
-   * Cost is one paginated walk over the (project-scoped) Memories
-   * data source — the same shape `--build-confidence-scores`
-   * already pays per `lore migrate` invocation. The migration is
-   * operator-pulled and infrequent; `lore status` is on-demand and
-   * now pays this walk on every invocation, so per-status cost
-   * scales linearly in vault size (≈ N/100 round-trips). Acceptable
-   * on the operator-facing status surface but worth a follow-up
-   * (cache, `--confidence` flag, or `lore status` skip) if a vault
-   * grows past the point where the walk feels slow.
-   *
-   * The walk is **internally sequential** — `listAllForBackfill`
-   * is a paginated async iterator that awaits each `dataSources.query`
-   * before issuing the next. The shared rate-limited client
-   * ( default `concurrency = 3`) bounds
-   * total in-flight calls but does not parallelize this iterator;
-   * its pagination is what dominates wall-clock on large vaults.
-   * The CLI fan-out runs `confidenceStats` parallel to `taskStats`
-   * at the top level, but the pagination inside this method stays
-   * serial. Read together with the per-invocation-cost note above:
-   * the `max(taskStats, confidenceStats)` claim at the call site
-   * holds for the orchestration, not for any single round-trip.
-   *
-   * `averageScore` is an arithmetic mean computed in floating-point;
-   * accumulation across long pagination can leave the result off by
-   * one ULP from the "true" mean. The renderer truncates at two
-   * decimals, so this is invisible in practice but worth noting if
-   * a future caller compares two stats reports for exact equality.
-   *
-   * Vaults that haven't migrated to the `Confidence Score` column
-   * work fine: every yielded `Memory.confidenceScore` is `null`, so
-   * `scoredMemories` / `averageScore` / `belowThreshold` all stay
-   * at zero.
-   */
-  async confidenceStats(opts: { projectId?: string } = {}): Promise<{
-    totalMemories: number
-    scoredMemories: number
-    averageScore: number
-    belowThreshold: number
-  }> {
-    return this.confidence.confidenceStats(opts)
+    yield* this.maintenance.listAllForBackfill(opts)
   }
 
   /**
@@ -1255,16 +1082,6 @@ export class MemoryService {
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
     return { total, bySource, byAgent }
-  }
-
-  async queryStaleConfidence(opts: {
-    projectId?: string
-    limit: number
-    today: string
-    includeProposed?: boolean
-    includeExpired?: boolean
-  }): Promise<Memory[]> {
-    return this.confidence.queryStaleConfidence(opts)
   }
 
   async listPinnedBlocks(opts: {

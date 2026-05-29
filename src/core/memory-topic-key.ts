@@ -51,13 +51,9 @@
  * - Preserve silently: Status and Topic relation. State transitions belong on
  *   `lore-memory action='update'`; the upsert path treats these as
  *   forgotten-to-omit envelope fields.
- * - Replace on every save: Title, Synopsis, Keywords, Source. Confidence
- *   (categorical) bumps if input provides one; otherwise the existing
- *   categorical value is written back.
- * - Leave untouched: Confidence Score and Last Referenced At. Confidence Score
- *   is system-managed. Last Referenced At is a read-citation signal; bumping it
- *   on writes would conflate saves with reads and break stale-confidence
- *   analysis.
+ * - Replace on every save: Title, Synopsis, Keywords, Source.
+ * - Leave untouched: Last Referenced At. It is a read-citation signal; bumping
+ *   it on writes would conflate saves with reads.
  *
  * Title-cache write-through is load-bearing. Upsert always bumps Title, so it
  * uses the same delete -> pages.update -> set discipline as general memory
@@ -99,20 +95,20 @@
  * the markdown append but failed before the property update, the body can be
  * ahead of the `Revision Count` column. New revision blocks include a SHA-256
  * fingerprint of effective kind, title/content, synopsis, keywords, source,
- * confidence, and author. A retry repairs row properties only when that
+ * and author. A retry repairs row properties only when that
  * fingerprint matches the incoming effective input. Only fingerprinted
  * revision blocks may advance the append base beyond the stored `Revision
  * Count`; legacy unfingerprinted blocks are parsed at the stored count for
  * no-op compatibility but cannot make the count jump. Otherwise, body-ahead
  * saves append from the markdown revision count, not the stale property count.
- * Body, title, synopsis, keywords, source, confidence, or author changes on a
+ * Body, title, synopsis, keywords, source, or author changes on a
  * complete chain still append a revision and preserve promotion-advisory
  * behavior. Upsert does not throw a structured partial-state error like update
  * and re-key paths do because retry repairs landed markdown state
  * idempotently.
  *
  * The returned memory shape carries post-write title, synopsis, keywords,
- * source, confidence, and author. The MCP auto-mentions emitter reads those
+ * source, and author. The MCP auto-mentions emitter reads those
  * fields from `memory` to extract entities, so the returned shape spreads the
  * existing row's untouched fields and overlays the new metadata before entity
  * extraction runs against the post-upsert content.
@@ -191,7 +187,7 @@
  *    is deliberately kind-agnostic, so a re-key onto a slot held by another
  *    task or decision is rejected. The error names the colliding memory id so
  *    the operator can act directly. Lore does not auto-merge topic chains; the
- *    surviving revision count, title, confidence, and audit policy are
+ *    surviving revision count, title, and audit policy are
  *    operator decisions.
  *
  * A skip-self guard protects the collision check. A memory whose `Topic Key`
@@ -270,7 +266,6 @@ import type {
   CreateMemoryInput,
   DatabaseRef,
   Memory,
-  MemoryConfidence as MemoryConfidenceLevel,
   MemoryKind,
   MemoryScopeInput,
   MemorySource,
@@ -394,7 +389,6 @@ interface TopicUpsertSnapshot {
   synopsis: string
   keywords: string
   source: MemorySource
-  confidence: MemoryConfidenceLevel
   author: string
 }
 
@@ -418,7 +412,6 @@ function topicUpsertFingerprint(input: TopicUpsertSnapshot): string {
         synopsis: input.synopsis,
         keywords: input.keywords,
         source: input.source,
-        confidence: input.confidence,
         author: input.author,
       })
     )
@@ -544,7 +537,7 @@ function extractLatestTopicRevision(
  * load-bearing properties:
  *
  * 1. **Uniqueness.** The fingerprint hashes (kind, title, content,
- * synopsis, keywords, source, confidence, author) — content-derived,
+ * synopsis, keywords, source, author) — content-derived,
  * so two revisions with byte-identical effective inputs would have
  * short-circuited through the no-op branch above instead of
  * appending. A non-unique fingerprint line would therefore be a
@@ -691,7 +684,6 @@ function analyzeLatestTopicUpsert(
     existing.synopsis === input.synopsis &&
     existing.keywords === input.keywords &&
     existing.source === input.source &&
-    existing.confidence === input.confidence &&
     existing.author === input.author
 
   return {
@@ -915,11 +907,9 @@ export class MemoryTopicKey {
    * action='update'`; the upsert path treats these as forgotten-to-
    * omit envelopes.
    * - **REPLACE on every save** (latest write wins): Title, Synopsis,
-   * Keywords, Source. Confidence (categorical) bumps if input
-   * provides one.
-   * - **UNTOUCHED**: Confidence Score (system-managed by the
-   * read-path decay pipeline), Last Referenced At (read-citation
-   * signal owned by `touchOnRead`).
+   * Keywords, Source.
+   * - **UNTOUCHED**: Last Referenced At (read-citation signal owned by
+   * `touchOnRead`).
    *
    * **Empty-project guard.** An upsert with `projectIds: []` is
    * structurally undefined — set-equality on the empty set matches
@@ -946,7 +936,7 @@ export class MemoryTopicKey {
    * fingerprinted revisions can advance that base beyond the stored
    * `Revision Count`; legacy unfingerprinted revisions remain readable
    * at the stored count for no-op compatibility. A body, title,
-   * synopsis, keywords, source, confidence, or author change on a
+   * synopsis, keywords, source, or author change on a
    * complete chain still appends a new revision. Full-match retries
    * return no advisory because the original successful write already
    * surfaced it; repair retries recompute the advisory because the
@@ -960,7 +950,6 @@ export class MemoryTopicKey {
     kind: MemoryKind
     source?: MemorySource
     status?: MemoryStatus
-    confidence?: MemoryConfidenceLevel
     topicId?: string
     synopsis?: string
     expiresAt?: string
@@ -1011,7 +1000,6 @@ export class MemoryTopicKey {
         source: input.source,
         kind: input.kind,
         status: input.status,
-        confidence: input.confidence,
         tags: input.tags,
         keywords: input.keywords,
         synopsis: input.synopsis,
@@ -1095,7 +1083,6 @@ export class MemoryTopicKey {
       synopsis: decodedSynopsis ?? existing.synopsis,
       keywords: decodedKeywords ?? existing.keywords,
       source: input.source ?? existing.source,
-      confidence: input.confidence ?? existing.confidence,
       author: authorForUpdate,
     }
     const upsertAnalysis = analyzeLatestTopicUpsert(
@@ -1122,7 +1109,6 @@ export class MemoryTopicKey {
           synopsis: decodedSynopsis,
           keywords: decodedKeywords,
           source: input.source,
-          confidence: input.confidence ?? existing.confidence,
           author: authorForUpdate,
         }) as CreatePageParameters["properties"],
       })
@@ -1144,7 +1130,6 @@ export class MemoryTopicKey {
           synopsis: decodedSynopsis ?? existing.synopsis,
           keywords: decodedKeywords ?? existing.keywords,
           source: input.source ?? existing.source,
-          confidence: input.confidence ?? existing.confidence,
           author: authorForUpdate,
         },
         revisionCount: repairedRevisionCount,
@@ -1255,9 +1240,8 @@ export class MemoryTopicKey {
     }
 
     // Property update: Title bumps, Revision Count increments,
-    // synopsis / keywords / source replace if provided, confidence
-    // bumps if provided. Kind / Status / topicId / projectIds /
-    // lastReferencedAt / confidenceScore are NOT in this update.
+    // synopsis / keywords / source replace if provided. Kind / Status /
+    // topicId / projectIds / lastReferencedAt are NOT in this update.
     //
     // Author is REPLACE-on-every-save (DEFERRED-ATTRIBUTION) when the
     // input carries one: the engineer making this revision becomes the
@@ -1278,7 +1262,6 @@ export class MemoryTopicKey {
         synopsis: decodedSynopsis,
         keywords: decodedKeywords,
         source: input.source,
-        confidence: input.confidence ?? existing.confidence,
         author: authorForUpdate,
       }) as CreatePageParameters["properties"],
     })
@@ -1333,7 +1316,6 @@ export class MemoryTopicKey {
         synopsis: decodedSynopsis ?? existing.synopsis,
         keywords: decodedKeywords ?? existing.keywords,
         source: input.source ?? existing.source,
-        confidence: input.confidence ?? existing.confidence,
         author: authorForUpdate,
       },
       revisionCount: nextRevision,

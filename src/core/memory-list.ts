@@ -9,7 +9,6 @@ import type {
 import type {
   DatabaseRef,
   Memory,
-  MemoryConfidence as MemoryConfidenceLevel,
   MemoryKind,
   MemoryScopeContext,
   MemorySource,
@@ -119,7 +118,6 @@ export interface ListMemoriesOptions {
    * decisions.
    */
   excludeKinds?: MemoryKind[]
-  confidence?: MemoryConfidenceLevel
   status?: MemoryStatus
   reviewBefore?: string
   tags?: string[]
@@ -368,12 +366,6 @@ export class MemoryList {
       for (const k of opts.excludeKinds) {
         filters.push({ property: MEMORY_PROPS.KIND, select: { does_not_equal: k } })
       }
-    }
-    if (opts?.confidence) {
-      filters.push({
-        property: MEMORY_PROPS.CONFIDENCE,
-        select: { equals: opts.confidence },
-      })
     }
     if (opts?.status) {
       filters.push({

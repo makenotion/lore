@@ -6,7 +6,6 @@ memories:
     title: Payments retry policy decision
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - architecture
     keywords: payments retry policy idempotency
@@ -15,7 +14,6 @@ memories:
     title: Dashboard color palette tokens
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: palette swatch token shade

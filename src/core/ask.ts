@@ -414,7 +414,7 @@ function renderDecidedByLine(fact: Fact, decision: Decision, today: string): str
   const decided = decision.decidedAt ? ` (decided ${decision.decidedAt})` : ""
   const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
   const trustSegment = trustLine !== null ? `\n${trustLine}` : ""
-  return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}${trustSegment}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
+  return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}]${decided}${review}${trustSegment}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
 }
 
 function renderGenericTrailing(

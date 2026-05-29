@@ -62,15 +62,23 @@ Synopsis backfill:
   updates are per-request atomic, so a write that does not land leaves the row in
   the last observed state.
 
-Confidence-score backfill:
+Autosave learning source backfill:
 
-- `--build-confidence-scores` seeds null numeric `Confidence Score` values from
-  categorical `Confidence`, writes `Last Referenced At = created_time`, and
-  applies any decay accrued since creation.
-- Without the migration, older rows with null numeric confidence bypass
-  score-based ordering, trust indicators, and stale-confidence surfacing until a
-  read path touches them.
-- Rows with a non-null numeric score are skipped.
+- `--backfill-autosave-learning-source` targets legacy autosave learning rows
+  that still carry `Source=conversation`, `Kind=note`, `Confidence=likely`, and
+  a non-empty `Session`.
+- Plan mode reports candidates. `--yes` applies. `--dry-run` wins over apply
+  mode.
+- The write changes only `Source` to `autosave_learning`, leaving the legacy
+  confidence columns untouched for schema compatibility.
+
+Fact confidence-score backfill:
+
+- `--build-fact-confidence-scores` seeds null numeric Facts `Confidence Score`
+  values from categorical `Confidence`, writes
+  `Last Referenced At = created_time`, and applies any decay accrued since
+  creation.
+- Rows with a non-null numeric fact score are skipped.
 - `--project <name>` scopes the migration to one active project. Archived
   projects require `--include-archived`. Unknown names abort before planning.
 - Bare `--yes` must not be treated as consent to mutate every null-scored row
@@ -85,11 +93,12 @@ Confidence-score backfill:
   sanity-check before applying. Apply mode prints progress periodically to
   stderr.
 - Pure planning and scoring live in
-  [`src/core/confidence-migration.ts`](../../../src/core/confidence-migration.ts);
-  service-boundary I/O lives on memory-service helpers.
-- The categorical `certain` default can overstate old rows that were never
-  explicitly graded. Operators who care should re-grade targeted rows via
-  `lore-memory action='update'` before or after the migration.
+  [`src/core/fact-confidence-migration.ts`](../../../src/core/fact-confidence-migration.ts);
+  service-boundary I/O lives on fact-service helpers.
+- The categorical `certain` default can overstate old facts that were never
+  explicitly graded. Operators who care should re-grade targeted facts via
+  `lore-fact action='create'` / `invalidate` workflows before or after the
+  migration.
 
 Entity and fact repair flags:
 

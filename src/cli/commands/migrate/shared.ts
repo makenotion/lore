@@ -14,7 +14,7 @@ export interface MigrationScopeIntent {
   buildEntities?: boolean
   backfillFactSources?: boolean
   backfillSynopses?: boolean
-  buildConfidenceScores?: boolean
+  backfillAutosaveLearningSource?: boolean
   buildFactConfidenceScores?: boolean
   backfillFactObservedAt?: boolean
   project?: string
@@ -35,7 +35,7 @@ export function isProjectScopedMigrationRequested(opts: MigrationScopeIntent): b
     opts.buildEntities ||
     opts.backfillFactSources ||
     opts.backfillSynopses ||
-    opts.buildConfidenceScores ||
+    opts.backfillAutosaveLearningSource ||
     opts.buildFactConfidenceScores ||
     opts.backfillFactObservedAt
   )

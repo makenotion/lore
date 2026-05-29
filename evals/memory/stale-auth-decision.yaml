@@ -6,7 +6,6 @@ memories:
     title: Use bearer JWT tokens for browser auth (superseded)
     kind: decision
     status: superseded
-    confidence: certain
     tags:
       - architecture
       - security

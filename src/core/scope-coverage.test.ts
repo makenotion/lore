@@ -906,8 +906,8 @@ describe("compare-dispatch facts — pair-scope rule (round-3)", () => {
     const facts = {
       createWithDedup: vi.fn(),
     }
-    const decrementConfidence = vi.fn(async () => 0.45)
-    const memories = { decrementConfidence }
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
+    const memories = { appendCompareNotes }
     const decisions = { supersede: vi.fn() }
     const services = { facts, memories, decisions }
 
@@ -916,10 +916,6 @@ describe("compare-dispatch facts — pair-scope rule (round-3)", () => {
         id: "mem-loser",
         title: "Loser",
         projectIds: ["p1"],
-        confidence: "certain",
-        confidenceScore: 0.9,
-        lastReferencedAt: "2026-05-01",
-        createdAt: "2026-04-01",
         compareNotes: "",
         scope: {
           kind: "session",
@@ -942,8 +938,7 @@ describe("compare-dispatch facts — pair-scope rule (round-3)", () => {
     expect(result.factId).toBeNull()
     expect(facts.createWithDedup).not.toHaveBeenCalled()
     expect(result.factEmissionSkippedReason).toContain("pair-scope mismatch")
-    // Confidence decrement still landed (the contradiction is real).
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
   })
 
   it("recordContradiction emits the fact when both rows share scope", async () => {
@@ -954,8 +949,8 @@ describe("compare-dispatch facts — pair-scope rule (round-3)", () => {
         deduped: false,
       })),
     }
-    const decrementConfidence = vi.fn(async () => 0.45)
-    const memories = { decrementConfidence }
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
+    const memories = { appendCompareNotes }
     const decisions = { supersede: vi.fn() }
     const services = { facts, memories, decisions }
 
@@ -972,10 +967,6 @@ describe("compare-dispatch facts — pair-scope rule (round-3)", () => {
         id: "mem-loser",
         title: "Loser",
         projectIds: ["p1"],
-        confidence: "certain",
-        confidenceScore: 0.9,
-        lastReferencedAt: "2026-05-01",
-        createdAt: "2026-04-01",
         compareNotes: "",
         scope: sharedScope,
       },

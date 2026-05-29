@@ -8,7 +8,6 @@ import { createTagsSchema, keywordsSchema } from "../tag-schema.js"
 import { nonBlankBody, nonBlankString } from "../text-schema.js"
 import {
   COMPARE_VERDICTS,
-  CONFIDENCES,
   EXPAND_MAX_IDS,
   KINDS,
   SOURCES,
@@ -40,7 +39,6 @@ export function createMemoryDispatchSchema(
       source: z.enum(SOURCES).optional(),
       kind: z.enum(KINDS).optional(),
       status: z.enum(STATUSES).optional(),
-      confidence: z.enum(CONFIDENCES).optional(),
       reviewBy: ymdDateSchema.optional(),
       decidedAt: ymdDateSchema.optional(),
       expiresAt: ymdDateSchema.optional(),
@@ -82,7 +80,6 @@ export function createMemoryDispatchSchema(
       forceNewTopic: z.boolean().optional(),
       kind: z.enum(KINDS).optional(),
       status: z.enum(STATUSES).optional(),
-      confidence: z.enum(CONFIDENCES).optional(),
       reviewBy: clearableYmdDateSchema.optional(),
       decidedAt: clearableYmdDateSchema.optional(),
       expiresAt: clearableYmdDateSchema.optional(),

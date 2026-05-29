@@ -1,6 +1,6 @@
 When a save is warranted, call lore-* tools now. For each one, pick the project based on the user's context when a configured project clearly applies; otherwise leave project scope empty rather than forcing a repo bucket.
 
-• lore-memory action='save' — Save one user-stated recall fact. Pass kind: "note", source: "conversation", confidence: "likely", relevant tags/keywords, and topicName when a durable topic exists. Include status: "proposed" when the prompt asks for review-inbox routing.
+• lore-memory action='save' — Save one user-stated recall fact. Pass kind: "note", source: "autosave_learning", relevant tags/keywords, and topicName when a durable topic exists. Include status: "proposed" when the prompt asks for review-inbox routing.
 • lore-fact action='create' — Use only for durable entity relationships that will help retrieval, and only after saving or finding a source memory. Do not turn every personal preference into a fact edge.
 • lore-decision action='create' — Use only when the user makes an explicit durable decision with rationale and consequences.
 • lore-task action='create' — Use only for explicit future work, reminders, or blocked commitments the user expects Lore to track. Do not invent tasks from casual mentions.

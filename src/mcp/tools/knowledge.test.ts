@@ -3,7 +3,7 @@ import type { Client, PageObjectResponse } from "@notionhq/client"
 import { describe, expect, it, vi } from "vitest"
 import { registerKnowledgeTools } from "./knowledge.js"
 import { registerQueryTools } from "./query.js"
-import type { Decision, Fact, Memory, Project, TaskSummary } from "../../types.js"
+import type { Decision, Fact, Project, TaskSummary } from "../../types.js"
 import { MemoryService } from "../../core/memory.js"
 
 function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
@@ -15,8 +15,6 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     source: "manual",
     kind: "decision",
     status: "accepted",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: "2026-04-20",
@@ -57,6 +55,8 @@ function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
     reviewBy: null,
     sourceMemoryId: "decision-id",
     confidence: "certain",
+    confidenceScore: null,
+    lastReferencedAt: null,
     createdAt: "2026-04-20T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
@@ -73,8 +73,6 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -167,10 +165,12 @@ describe("lore-ask", () => {
         queryByEntity: vi.fn().mockResolvedValue([
           makeFact("fact-old", {
             sourceMemoryId: "old-id",
+            confidence: "likely",
             object: "Old decision",
           }),
           makeFact("fact-new", {
             sourceMemoryId: "new-id",
+            confidence: "likely",
             object: "new-id",
           }),
         ]),
@@ -182,6 +182,7 @@ describe("lore-ask", () => {
                 predicate: "supersedes_decision",
                 object: "Old decision",
                 sourceMemoryId: "new-id",
+                confidence: "likely",
               }),
             ]
           }
@@ -225,10 +226,12 @@ describe("lore-ask — partial decision resolution", () => {
         queryByEntity: vi.fn().mockResolvedValue([
           makeFact("fact-ok", {
             sourceMemoryId: "new-id",
+            confidence: "likely",
             object: "new-id",
           }),
           makeFact("fact-bad", {
             sourceMemoryId: "bad-root",
+            confidence: "likely",
             object: "bad-root",
           }),
         ]),
@@ -447,6 +450,7 @@ describe("lore-ask — parallel decision and title resolution", () => {
           makeFact("fact-decided", {
             predicate: "decided_by",
             sourceMemoryId: "new-id",
+            confidence: "likely",
             object: "new-id",
           }),
           // Drives the title-resolution path: UUID-shaped object on a
@@ -689,13 +693,11 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
         predicate: "uses",
         object: "OlderObj",
         validFrom: "2026-04-01",
-        confidenceScore: null,
       }),
       makeFact("newer", {
         predicate: "uses",
         object: "NewerObj",
         validFrom: "2026-04-25",
-        confidenceScore: null,
       }),
     ]
     const text = await invokeAsk(facts)
@@ -750,7 +752,6 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
       makeFact("decayed", {
         predicate: "uses",
         object: "DecayedObj",
-        confidence: "certain",
         confidenceScore: 0.15,
       }),
     ]
@@ -768,8 +769,6 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
       makeFact("legacy", {
         predicate: "uses",
         object: "LegacyObj",
-        confidence: "certain",
-        confidenceScore: null,
       }),
     ]
     const text = await invokeAsk(facts)
@@ -787,7 +786,6 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
       makeFact("fresh", {
         predicate: "uses",
         object: "FreshObj",
-        confidence: "certain",
         confidenceScore: 0.8,
       }),
     ]
@@ -851,7 +849,6 @@ describe("lore-ask — decided_by trust line (DEFERRED-02)", () => {
     const decision = makeDecision("dec-1", {
       title: "Adopt OIDC",
       status: "accepted",
-      confidence: "certain",
     })
     const fact = makeFact("fact-decayed", {
       subject: "AuthService",
@@ -1322,7 +1319,6 @@ describe("lore-fact action='invalidate' — issue #284 sourceMemoryId threading"
       memories: {
         getById: vi.fn(),
         getPropertiesById: vi.fn().mockResolvedValue(null),
-        decrementConfidence: vi.fn(),
       },
       decisions: { getById: vi.fn() },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
@@ -1588,6 +1584,7 @@ describe("lore-fact date validation", () => {
       predicate: "uses",
       object: "JWT",
       sourceMemoryId: "mem-source",
+      confidence: "likely",
       reviewBy: null,
     } as never)
 
@@ -1608,6 +1605,7 @@ describe("lore-fact date validation", () => {
       predicate: "uses",
       object: "JWT",
       sourceMemoryId: "mem-source",
+      confidence: "likely",
       reviewBy: "",
     } as never)
 
@@ -1677,6 +1675,7 @@ describe("lore-fact action='create' projectName resolution", () => {
       predicate: "depends_on",
       object: "Database",
       sourceMemoryId: "mem-source",
+      confidence: "likely",
       projectName: "Missing",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1714,6 +1713,7 @@ describe("lore-fact action='create' projectName resolution", () => {
       predicate: "depends_on",
       object: "Database",
       sourceMemoryId: "mem-source",
+      confidence: "likely",
       projectNames: ["Widget", "Missing"],
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1777,6 +1777,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
             predicate: input.predicate,
             object: input.object,
             sourceMemoryId: input.sourceMemoryId ?? null,
+            confidence: "likely",
           })
         ),
         createWithDedup: vi.fn().mockImplementation(async (input) => ({
@@ -1785,6 +1786,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
             predicate: input.predicate,
             object: input.object,
             sourceMemoryId: input.sourceMemoryId ?? null,
+            confidence: "likely",
           }),
           deduped: false,
           enriched: [],
@@ -1865,6 +1867,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       predicate: "uses",
       object: "JWT",
       sourceMemoryId: "mem-explicit",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -1895,6 +1898,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       predicate: "uses",
       object: "JWT",
       sourceMemoryId: "mem-typo",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -1925,6 +1929,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       predicate: "uses",
       object: "JWT",
       sourceMemoryId: "fact-page",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -1953,6 +1958,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       predicate: "uses",
       object: "JWT",
       sourceMemoryId: "mem-archived",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -1987,6 +1993,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       object: "RMQ",
       projectName: "server",
       sourceMemoryId: "mem-ios",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -2061,6 +2068,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       session: "session-abc",
       agent: "claude",
       sourceMemoryId: "mem-explicit",
+      confidence: "likely",
     } as never)
 
     expect(services.facts.createWithDedup).toHaveBeenCalledWith(
@@ -2491,6 +2499,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
             predicate: input.predicate,
             object: input.object,
             sourceMemoryId: input.sourceMemoryId ?? null,
+            confidence: "likely",
             subjectEntityId: input.subjectEntityId ?? null,
             objectEntityId: input.objectEntityId ?? null,
           }),
@@ -2548,6 +2557,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
       predicate: "has_a",
       object: "session",
       sourceMemoryId: "mem-1",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -2577,6 +2587,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
       predicate: "uses",
       object: "Else",
       sourceMemoryId: "mem-1",
+      confidence: "likely",
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
@@ -2713,7 +2724,7 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
         validUntil: null,
         reviewBy: null,
         sourceMemoryId: null,
-        confidence: "certain",
+        confidence: "likely",
       },
     ])
     services.facts.queryByObject = vi.fn().mockResolvedValue([])
@@ -2961,7 +2972,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
         validUntil: null,
         reviewBy: null,
         sourceMemoryId: null,
-        confidence: "certain",
+        confidence: "likely",
         subjectEntityId: null,
         objectEntityId: null,
       },
@@ -3119,637 +3130,6 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     expect(text).not.toContain("Siblings:")
   })
 })
-
-describe("lore-fact action='invalidate' — confidence decrement on source memory", () => {
-  // Acceptance criteria from 0.8.0/06: invalidating a fact halves the
-  // source memory's `Confidence Score` (with realize-decay-first on
-  // stale rows), writes `Last Referenced At = today`, skips when the
-  // fact has no source, and degrades gracefully on `pages.update`
-  // failure (advisory write — invalidate response stays clean).
-
-  function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
-    return {
-      id,
-      title: `Memory ${id}`,
-      projectIds: [],
-      topicId: null,
-      source: "manual",
-      kind: "note",
-      status: "informational",
-      confidence: "certain",
-      confidenceScore: null,
-      reviewBy: null,
-      doneAt: null,
-      decidedAt: null,
-      lastReferencedAt: null,
-      supersedesIds: [],
-      affectsIds: [],
-      alternatives: "",
-      consequences: "",
-      author: "",
-      agent: "",
-      tags: [],
-      keywords: "",
-      synopsis: "",
-      session: "",
-      content: "",
-      taskState: null,
-      blockedBy: "",
-      entity: "",
-      topicKey: "",
-      revisionCount: 1,
-      comparedWith: [],
-      compareNotes: "",
-      createdAt: "2026-04-29T00:00:00.000Z",
-      updatedAt: "2026-04-29T00:00:00.000Z",
-      ...overrides,
-    }
-  }
-
-  function makeServices(
-    opts: {
-      fact?: Fact | null
-      sourceMemory?: Memory
-      invalidateImpl?: () => Promise<unknown>
-      decrementImpl?: (memory: Memory) => Promise<number>
-      getPropertiesByIdImpl?: (id: string) => Promise<Memory>
-    } = {}
-  ) {
-    const factsGetById = vi.fn().mockResolvedValue(opts.fact ?? null)
-    const factsInvalidate =
-      opts.invalidateImpl !== undefined
-        ? vi.fn(opts.invalidateImpl)
-        : vi.fn().mockResolvedValue(undefined)
-    const memoriesGetPropertiesById =
-      opts.getPropertiesByIdImpl !== undefined
-        ? vi.fn(opts.getPropertiesByIdImpl)
-        : vi.fn().mockResolvedValue(opts.sourceMemory ?? makeMemory("source-mem"))
-    const memoriesDecrement =
-      opts.decrementImpl !== undefined
-        ? vi.fn(opts.decrementImpl)
-        : vi.fn().mockResolvedValue(0.45)
-    return {
-      services: {
-        projects: { findByName: vi.fn() },
-        facts: {
-          getById: factsGetById,
-          invalidate: factsInvalidate,
-          create: vi.fn(),
-          createWithDedup: vi.fn(),
-          queryByEntity: vi.fn(),
-          queryByObject: vi.fn(),
-        },
-        memories: {
-          getPropertiesById: memoriesGetPropertiesById,
-          decrementConfidence: memoriesDecrement,
-        },
-        decisions: { getById: vi.fn() },
-        context: { project: null },
-        sessionMemories: { record: vi.fn(), get: vi.fn() },
-        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
-      },
-      factsGetById,
-      factsInvalidate,
-      memoriesGetPropertiesById,
-      memoriesDecrement,
-    }
-  }
-
-  it("decrements the source memory after invalidating the fact", async () => {
-    const fact = makeFact("fact-1", { sourceMemoryId: "mem-source" })
-    const sourceMemory = makeMemory("mem-source")
-    const mockServer = createMockServer()
-    const ctx = makeServices({ fact, sourceMemory })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({ factId: "fact-1" } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toBe("Invalidated fact fact-1")
-
-    expect(ctx.factsGetById).toHaveBeenCalledWith("fact-1")
-    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-1")
-    expect(ctx.memoriesGetPropertiesById).toHaveBeenCalledWith("mem-source")
-    // The handler passes the full Memory shape into decrementConfidence
-    // so the service's seed/decay/decrement algebra has access to
-    // confidence, confidenceScore, lastReferencedAt, createdAt.
-    expect(ctx.memoriesDecrement).toHaveBeenCalledWith(sourceMemory)
-  })
-
-  it("ordering: read → invalidate → decrement (read is first so sourceMemoryId is captured pre-invalidate)", async () => {
-    // Reads MUST happen before the invalidate write — `pageToFact`'s
-    // historical-tracking-predicate filter races against `Valid Until`
-    // updates if the read happens after invalidation.
-    const sequence: string[] = []
-    const fact = makeFact("fact-ord", { sourceMemoryId: "mem-ord" })
-    const sourceMemory = makeMemory("mem-ord")
-    const mockServer = createMockServer()
-    const ctx = makeServices({
-      fact,
-      sourceMemory,
-      invalidateImpl: async () => {
-        sequence.push("invalidate")
-      },
-      decrementImpl: async () => {
-        sequence.push("decrement")
-        return 0.45
-      },
-    })
-    ctx.factsGetById.mockImplementation(async (id: string) => {
-      sequence.push("getById")
-      return id === "fact-ord" ? fact : null
-    })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    await invalidate({ factId: "fact-ord" } as never)
-
-    expect(sequence).toEqual(["getById", "invalidate", "decrement"])
-  })
-
-  it("skips decrement when the fact has no source memory (orphaned fact)", async () => {
-    const fact = makeFact("fact-orphan", { sourceMemoryId: null })
-    const mockServer = createMockServer()
-    const ctx = makeServices({ fact })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({ factId: "fact-orphan" } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-orphan")
-    expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
-    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
-  })
-
-  it("skips decrement when getById returns null (historical tracking-predicate row)", async () => {
-    // `pageToFact` returns null for needs_action / waiting_on / blocked_by
-    // rows; the invalidate write still succeeds but there's no live fact
-    // shape to read sourceMemoryId from.
-    const mockServer = createMockServer()
-    const ctx = makeServices({ fact: null })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    await invalidate({ factId: "fact-tracking" } as never)
-    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-tracking")
-    expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
-    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
-  })
-
-  it("archived row: getById returns null, decrement is skipped, response reports the skip", async () => {
-    // `FactService.getById` returns null for archived rows
-    // alongside the partial-page and historical-tracking-predicate
-    // null branches. At the handler boundary the contradiction-
-    // decrement path correctly skips because `sourceMemoryId` is
-    // unavailable. The service-level archived short-circuit returns
-    // a skip status so the handler can avoid claiming a write landed.
-    const mockServer = createMockServer()
-    const ctx = makeServices({
-      fact: null,
-      invalidateImpl: async () => ({ status: "skipped-archived" }),
-    })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({ factId: "fact-archived" } as never)
-    const payload = result as {
-      content: Array<{ text: string }>
-      isError?: boolean
-      noopWrite?: boolean
-      costOutputs?: unknown
-    }
-
-    expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toBe("Skipped fact fact-archived: row is archived")
-    expect(payload.noopWrite).toBe(true)
-    expect(payload.costOutputs).toBeUndefined()
-    expect(ctx.factsGetById).toHaveBeenCalledWith("fact-archived")
-    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-archived")
-    expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
-    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
-  })
-
-  it("metadata read failure does not mask the invalidate write boundary", async () => {
-    const mockServer = createMockServer()
-    const ctx = makeServices({
-      invalidateImpl: async () => {
-        throw new Error("write 404")
-      },
-    })
-    ctx.factsGetById.mockRejectedValue(new Error("retrieve 404"))
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({ factId: "missing-fact" } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-
-    expect(payload.isError).toBe(true)
-    expect(payload.content[0].text).toContain("write 404")
-    expect(payload.content[0].text).not.toContain("retrieve 404")
-    expect(ctx.factsInvalidate).toHaveBeenCalledWith("missing-fact")
-    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
-  })
-
-  it("skips sourceMemoryId precheck when metadata read failure prevents project precheck", async () => {
-    const mockServer = createMockServer()
-    const ctx = makeServices()
-    ctx.factsGetById.mockRejectedValue(new Error("retrieve 503"))
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({
-      factId: "fact-precheck-fail",
-      sourceMemoryId: "mem-source",
-    } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-
-    expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toContain("Invalidated fact fact-precheck-fail")
-    expect(payload.content[0].text).toContain("sourceMemoryId audit link")
-    expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
-    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-precheck-fail")
-    expect(ctx.factsInvalidate).not.toHaveBeenCalledWith("fact-precheck-fail", {
-      sourceMemoryId: "mem-source",
-    })
-    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
-  })
-
-  it("decrement failure is advisory: invalidate response stays clean (no isError)", async () => {
-    // Acceptance criterion: a transient 429 / archived target on the
-    // decrement does NOT fail the surrounding lore-fact call. The
-    // user already got the contradiction write they asked for.
-    const fact = makeFact("fact-fail", { sourceMemoryId: "mem-fail" })
-    const sourceMemory = makeMemory("mem-fail")
-    const mockServer = createMockServer()
-    const ctx = makeServices({
-      fact,
-      sourceMemory,
-      decrementImpl: async () => {
-        throw new Error("notion 429")
-      },
-    })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({ factId: "fact-fail" } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toBe("Invalidated fact fact-fail")
-  })
-
-  it("source-memory read failure is advisory: invalidate response stays clean", async () => {
-    // An archived source memory could throw on `pages.retrieve`. The
-    // contradiction tail must not propagate that failure to the user
-    // — the fact IS invalidated regardless.
-    const fact = makeFact("fact-arc", { sourceMemoryId: "mem-archived" })
-    const mockServer = createMockServer()
-    const ctx = makeServices({
-      fact,
-      getPropertiesByIdImpl: async () => {
-        throw new Error("page archived")
-      },
-    })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const result = await invalidate({ factId: "fact-arc" } as never)
-    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
-  })
-
-  it("logs contradiction failures under LORE_DEBUG=1", async () => {
-    const fact = makeFact("fact-log", { sourceMemoryId: "mem-log" })
-    const sourceMemory = makeMemory("mem-log")
-    const mockServer = createMockServer()
-    const ctx = makeServices({
-      fact,
-      sourceMemory,
-      decrementImpl: async () => {
-        throw new Error("notion 429")
-      },
-    })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    process.env.LORE_DEBUG = "1"
-    try {
-      await invalidate({ factId: "fact-log" } as never)
-      const lines = stderr.mock.calls.map(([line]) => String(line))
-      const failure = lines.find((l) => l.includes("contradiction-failure:"))
-      expect(failure).toBeDefined()
-      expect(failure).toContain("source=invalidate")
-      expect(failure).toContain("memoryId=mem-log")
-      expect(failure).toContain("error=notion 429")
-    } finally {
-      delete process.env.LORE_DEBUG
-      stderr.mockRestore()
-    }
-  })
-})
-
-describe("lore-fact action='invalidate' — end-to-end math through real MemoryService (issue 0.8.0/06)", () => {
-  // Pin the spec's three math acceptance criteria at the
-  // handler-through-service boundary, not just the service layer:
-  //
-  //   1. Stored-and-fresh source: 0.9 / today → 0.45 (no-decay path).
-  //   2. Stored-and-stale source: 0.9 / 200d ago → ≈ 0.110 (decay-then-decrement).
-  //   3. Null-score source (pre-migration): 200d-old `certain` → ≈ 0.110
-  //      (seed-decay-then-decrement, convergence with the bulk migration).
-  //
-  // These are pinned at the algebra layer in `decay.test.ts` and at the
-  // service layer in `memory.test.ts:MemoryService.decrementConfidence`.
-  // Re-pinning here protects the MCP contract against a future refactor
-  // that swaps `decrementConfidence` for a non-decay-aware helper or
-  // moves the math computation into the handler.
-
-  const TODAY = "2026-04-29"
-  const memoriesDb = {
-    databaseId: "memories-db",
-    dataSourceId: "memories-ds",
-  }
-
-  function memoryPage(overrides: {
-    id: string
-    confidence?: "certain" | "likely" | "speculative"
-    confidenceScore?: number | null
-    lastReferencedAt?: string | null
-    createdAt?: string
-  }): PageObjectResponse {
-    const props: Record<string, unknown> = {
-      Title: { type: "title", title: [{ plain_text: "Source memory" }] },
-      Confidence: {
-        type: "select",
-        select: { name: overrides.confidence ?? "certain" },
-      },
-    }
-    if (overrides.confidenceScore !== undefined) {
-      props["Confidence Score"] = {
-        type: "number",
-        number: overrides.confidenceScore,
-      }
-    }
-    if (overrides.lastReferencedAt !== undefined) {
-      props["Last Referenced At"] = {
-        type: "date",
-        date: overrides.lastReferencedAt ? { start: overrides.lastReferencedAt } : null,
-      }
-    }
-    return {
-      object: "page",
-      id: overrides.id,
-      created_time: overrides.createdAt ?? `${TODAY}T00:00:00.000Z`,
-      last_edited_time: `${TODAY}T00:00:00.000Z`,
-      archived: false,
-      parent: { type: "data_source_id", data_source_id: memoriesDb.dataSourceId },
-      url: `https://notion.so/${overrides.id}`,
-      properties: props as PageObjectResponse["properties"],
-    } as PageObjectResponse
-  }
-
-  function makeIntegrationServices(opts: { fact: Fact; sourcePage: PageObjectResponse }) {
-    // Real MemoryService wired against a stubbed Client. The
-    // `pages.update` spy captures the actual `Confidence Score` value
-    // the handler-through-service writes — that's the math contract
-    // the spec acceptance criteria pin.
-    const update = vi.fn(async () => undefined)
-    const retrieve = vi.fn(async () => opts.sourcePage)
-    const client = {
-      pages: { update, retrieve },
-    } as unknown as Client
-    const memories = new MemoryService(client, memoriesDb)
-    // Inject `today` into the decrement so the test is deterministic
-    // independent of the wall clock — wrap `decrementConfidence` to
-    // forward a pinned `today`. The handler today calls without
-    // `opts`, which would default to `todayUtc()`. A future `today`
-    // injection on the handler would make this wrapper unnecessary.
-    const realDecrement = memories.decrementConfidence.bind(memories)
-    memories.decrementConfidence = ((memory, _opts) =>
-      realDecrement(memory, { today: TODAY })) as typeof memories.decrementConfidence
-    return {
-      services: {
-        projects: { findByName: vi.fn() },
-        facts: {
-          getById: vi.fn().mockResolvedValue(opts.fact),
-          invalidate: vi.fn().mockResolvedValue(undefined),
-          create: vi.fn(),
-          createWithDedup: vi.fn(),
-          queryByEntity: vi.fn(),
-          queryByObject: vi.fn(),
-        },
-        memories,
-        decisions: { getById: vi.fn() },
-        context: { project: null },
-        sessionMemories: { record: vi.fn(), get: vi.fn() },
-        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
-      },
-      update,
-      retrieve,
-    }
-  }
-
-  function capturedUpdateProps(
-    update: ReturnType<typeof vi.fn>,
-    pageId: string
-  ): Record<string, unknown> {
-    for (const call of update.mock.calls) {
-      const args = call[0] as
-        | { page_id: string; properties: Record<string, unknown> }
-        | undefined
-      if (args && args.page_id === pageId) return args.properties
-    }
-    throw new Error(`no pages.update call for ${pageId}`)
-  }
-
-  function capturedConfidenceScore(
-    update: ReturnType<typeof vi.fn>,
-    pageId: string
-  ): number {
-    const props = capturedUpdateProps(update, pageId)
-    return (props["Confidence Score"] as { number: number }).number
-  }
-
-  it("stored-and-fresh source: 0.9 / today → 0.45 (no decay)", async () => {
-    const fact = makeFact("fact-1", { sourceMemoryId: "mem-fresh" })
-    const sourcePage = memoryPage({
-      id: "mem-fresh",
-      confidence: "certain",
-      confidenceScore: 0.9,
-      lastReferencedAt: TODAY,
-    })
-    const mockServer = createMockServer()
-    const ctx = makeIntegrationServices({ fact, sourcePage })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    await invalidate({ factId: "fact-1" } as never)
-
-    const score = capturedConfidenceScore(ctx.update, "mem-fresh")
-    expect(score).toBeCloseTo(0.45, 6)
-    // Last Referenced At resets to today: contradiction is a (negative)
-    // cite, so the decay clock restarts — pinned at the service layer
-    // but verified end-to-end here too.
-    const props = capturedUpdateProps(ctx.update, "mem-fresh")
-    expect(props["Last Referenced At"]).toEqual({ date: { start: TODAY } })
-  })
-
-  it("stored-and-stale source: 0.9 / 200d ago → decrementConfidenceScore(decayConfidenceScore(0.9, ref, today)) ≈ 0.110", async () => {
-    // 200 days elapsed → 140 stale days past 60-day grace.
-    // 0.9 * 0.99^140 ≈ 0.220 → halve → ≈ 0.110, NOT 0.45.
-    const fact = makeFact("fact-2", { sourceMemoryId: "mem-stale" })
-    const staleDate = "2025-10-11" // 200 days before 2026-04-29
-    const sourcePage = memoryPage({
-      id: "mem-stale",
-      confidence: "certain",
-      confidenceScore: 0.9,
-      lastReferencedAt: staleDate,
-    })
-    const mockServer = createMockServer()
-    const ctx = makeIntegrationServices({ fact, sourcePage })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    await invalidate({ factId: "fact-2" } as never)
-
-    const score = capturedConfidenceScore(ctx.update, "mem-stale")
-    const expected = 0.9 * Math.pow(0.99, 140) * 0.5
-    expect(score).toBeCloseTo(expected, 6)
-    // Sanity: the stale-path score is well below the 0.45 fresh-path
-    // baseline. A regression that dropped the decay realization would
-    // produce 0.45 here, masking the convergence guarantee.
-    expect(score).toBeLessThan(0.2)
-  })
-
-  it("null-score source (pre-migration): 200d-old `certain` → seed-decay-then-decrement ≈ 0.110", async () => {
-    // Convergence guarantee: a contradiction on a never-scored row
-    // lands at the same effective value the bulk migration would
-    // write, so a read-before-migrate path and a migrate-before-read
-    // path produce identical stored values. seed("certain") = 0.9 →
-    // decay against createdAt (200d) → halve → ≈ 0.110, NOT 0.45.
-    const fact = makeFact("fact-3", { sourceMemoryId: "mem-null" })
-    const sourcePage = memoryPage({
-      id: "mem-null",
-      confidence: "certain",
-      confidenceScore: null,
-      lastReferencedAt: null,
-      createdAt: "2025-10-11T00:00:00.000Z",
-    })
-    const mockServer = createMockServer()
-    const ctx = makeIntegrationServices({ fact, sourcePage })
-    registerKnowledgeTools(mockServer.server, ctx.services as never)
-    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
-
-    await invalidate({ factId: "fact-3" } as never)
-
-    const score = capturedConfidenceScore(ctx.update, "mem-null")
-    const expected = 0.9 * Math.pow(0.99, 140) * 0.5
-    expect(score).toBeCloseTo(expected, 6)
-    // Sanity: NOT 0.45 (which is what a non-converging
-    // "seed-then-halve" would produce). The 0.45 assertion would
-    // silently regress the convergence guarantee with #11's migration.
-    expect(score).toBeLessThan(0.2)
-  })
-})
-
-describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEFERRED-07)", () => {
-  // Pinned at the surface so a future contributor swapping the audit
-  // renderer would see the trust line disappear from the audit's
-  // Overdue Decisions section. Bullet-shaped surface with continuation
-  // lines — the trust line lands between the title row and the Review
-  // By row so the audit reader sees the signal before the staleness
-  // detail.
-
-  function auditServices(decisions: Decision[], capped = false) {
-    return {
-      projects: { findByName: vi.fn() },
-      facts: { queryOverdue: vi.fn().mockResolvedValue([]) },
-      tasks: { queryOverdue: vi.fn().mockResolvedValue([]) },
-      decisions: {
-        queryOverdue: vi.fn().mockResolvedValue(decisions),
-        queryOverdueWindow: vi.fn().mockResolvedValue({ items: decisions, capped }),
-      },
-      context: { project: null },
-    }
-  }
-
-  it("renders the trust line between the title row and the Review by row on a low-confidence decision", async () => {
-    const decision = makeDecision("dec-low", {
-      title: "Low-confidence decision",
-      reviewBy: "2026-01-01",
-      confidenceScore: 0.3,
-    })
-    const mockServer = createMockServer()
-    registerKnowledgeTools(mockServer.server, auditServices([decision]) as never)
-    registerQueryTools(mockServer.server, auditServices([decision]) as never)
-    const handler = mockServer.getActionHandler("lore-query", "audit")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) => l.includes("**Low-confidence decision**"))
-    expect(titleIdx).toBeGreaterThanOrEqual(0)
-    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
-    // Review by row follows the trust line, matching the
-    // title → trust → review-by → ID envelope.
-    expect(lines[titleIdx + 2]).toMatch(/^ {2}Review by:/)
-  })
-
-  it("omits the trust line when confidenceScore is null (pre-migration vault)", async () => {
-    const decision = makeDecision("dec-null", {
-      title: "Pre-migration overdue decision",
-      reviewBy: "2026-01-01",
-      confidenceScore: null,
-    })
-    const mockServer = createMockServer()
-    registerKnowledgeTools(mockServer.server, auditServices([decision]) as never)
-    registerQueryTools(mockServer.server, auditServices([decision]) as never)
-    const handler = mockServer.getActionHandler("lore-query", "audit")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("Pre-migration overdue decision")
-    expect(text).not.toContain("confidence_")
-  })
-
-  it("omits the trust line when the score is at or above the display threshold", async () => {
-    const decision = makeDecision("dec-healthy", {
-      title: "Healthy overdue decision",
-      reviewBy: "2026-01-01",
-      confidenceScore: 0.5,
-    })
-    const mockServer = createMockServer()
-    registerKnowledgeTools(mockServer.server, auditServices([decision]) as never)
-    registerQueryTools(mockServer.server, auditServices([decision]) as never)
-    const handler = mockServer.getActionHandler("lore-query", "audit")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("Healthy overdue decision")
-    expect(text).not.toContain("confidence_")
-  })
-
-  it("surfaces capped overdue decision scans in audit output", async () => {
-    const mockServer = createMockServer()
-    const services = auditServices([], true)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "audit")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("No overdue facts, decisions, or tasks found.")
-    expect(text).toContain("live-row refill cap")
-    expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
-  })
-})
-
 describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRED-02)", () => {
   // Sibling of the Overdue Decisions trust-indicator block above.
   // Pre-DEFERRED-02 the Overdue Facts section carried a TODO placeholder
@@ -3774,9 +3154,8 @@ describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRE
       subject: "DecayedSubject",
       predicate: "uses",
       object: "DecayedObj",
-      confidence: "certain",
-      confidenceScore: 0.3,
       reviewBy: "2026-01-01",
+      confidenceScore: 0.3,
     })
     const mockServer = createMockServer()
     registerKnowledgeTools(mockServer.server, auditServices([fact]) as never)
@@ -3802,8 +3181,6 @@ describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRE
       subject: "PreMigrationSubject",
       predicate: "uses",
       object: "PreMigrationObj",
-      confidence: "certain",
-      confidenceScore: null,
       reviewBy: "2026-01-01",
     })
     const mockServer = createMockServer()
@@ -3823,8 +3200,6 @@ describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRE
       subject: "FreshSubject",
       predicate: "uses",
       object: "FreshObj",
-      confidence: "certain",
-      confidenceScore: 0.7,
       reviewBy: "2026-01-01",
     })
     const mockServer = createMockServer()
@@ -3893,6 +3268,7 @@ describe("lore-fact action='create' — nonblank subject/object (issue #467)", (
   const baseArgs = {
     predicate: "uses",
     sourceMemoryId: "mem-x",
+    confidence: "likely",
   }
 
   it("rejects empty subject", async () => {

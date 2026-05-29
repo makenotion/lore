@@ -187,7 +187,7 @@ describe("DecisionService.create", () => {
     })
     expect(createArgs.properties.Kind).toEqual({ select: { name: "decision" } })
     expect(createArgs.properties.Status).toEqual({ select: { name: "accepted" } })
-    expect(createArgs.properties.Confidence).toEqual({ select: { name: "certain" } })
+    expect(createArgs.properties).not.toHaveProperty("Confidence")
     expect(createArgs.properties["Decided At"].date.start >= before).toBe(true)
   })
 
@@ -384,7 +384,7 @@ describe("DecisionService.create", () => {
     expect(client.pages.retrieveMarkdown).toHaveBeenCalledTimes(2)
   })
 
-  it("passes through explicit status, confidence, reviewBy, supersedesIds", async () => {
+  it("passes through explicit status, reviewBy, supersedesIds, and affectsIds", async () => {
     const client = createMockClient()
     const service = new DecisionService(client, DB)
 
@@ -392,7 +392,6 @@ describe("DecisionService.create", () => {
       decision: "With overrides",
       rationale: "...",
       status: "proposed",
-      confidence: "speculative",
       reviewBy: "2026-12-31",
       supersedesIds: ["old-1", "old-2"],
       affectsIds: ["mem-a", "mem-b"],
@@ -401,7 +400,6 @@ describe("DecisionService.create", () => {
     const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
       .properties
     expect(props.Status).toEqual({ select: { name: "proposed" } })
-    expect(props.Confidence).toEqual({ select: { name: "speculative" } })
     expect(props["Review By"].date.start).toBe("2026-12-31")
     expect(props.Supersedes.relation).toEqual([{ id: "old-1" }, { id: "old-2" }])
     expect(props.Affects.relation).toEqual([{ id: "mem-a" }, { id: "mem-b" }])

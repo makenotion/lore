@@ -1,16 +1,15 @@
 /**
- * Confidence-score algebra for dynamic confidence.
+ * Confidence-score algebra for fact confidence.
  *
  * Pure functions only: no `Client`, no Notion calls, no I/O. The I/O wrappers
- * `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` call
- * these helpers, write the result via a single `pages.update`, and route
- * failures through the caller-defined error posture.
+ * Fact confidence helpers call these functions, write the result via a single
+ * `pages.update`, and route failures through the caller-defined error posture.
  *
  * ## Write-realized lazy decay
  *
- * Every mutation of a stored Confidence Score realizes the time decay accrued
- * since the last touch before applying its own bump or decrement. Retrieval
- * ranking computes an effective score in memory through
+ * Every mutation of a stored fact Confidence Score realizes the time decay
+ * accrued since the last touch before applying its own bump or decrement.
+ * Retrieval ranking can compute an effective score in memory through
  * `effectiveConfidenceFactor`; that calculation is ranking-only and does not
  * write the decayed value back to Notion. Authoritative persistence still
  * happens on touch, decrement, and the confidence backfill migration.
@@ -29,8 +28,8 @@
  * The asymmetry is deliberate: slow recovery, slow neglect decay, and
  * aggressive contradiction reflect different signal quality. A single citation
  * is weaker evidence than a stretch of neglect, and contradiction is a
- * high-quality negative signal. The shared constants keep migration, I/O
- * wrappers, and ranking aligned.
+ * high-quality negative signal. The shared constants keep fact migration, I/O
+ * wrappers, and fact ranking aligned.
  */
 
 import {
@@ -43,7 +42,7 @@ import {
   DECAY_RATE,
   DECREMENT_FACTOR,
   CONFIDENCE_FACTOR_MIN,
-  type MemoryConfidence,
+  type FactConfidence,
 } from "../types.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
@@ -59,13 +58,13 @@ export function clampConfidenceScore(value: number): number {
 }
 
 /**
- * Initial Confidence Score for a memory whose numeric column is still
+ * Initial Confidence Score for a fact whose numeric column is still
  * null. Seeds from the categorical `confidence` column —
  * `certain → 0.9`, `likely → 0.6`, `speculative → 0.3` (see
- * the `CONFIDENCE_SEED` table). Used by `touchOnRead` (lazy
- * initialization on first cite) and by the bulk-backfill migration.
+ * the `CONFIDENCE_SEED` table). Used by fact confidence initialization
+ * and by the bulk-backfill migration.
  */
-export function seedConfidenceScore(confidence: MemoryConfidence): number {
+export function seedConfidenceScore(confidence: FactConfidence): number {
   return CONFIDENCE_SEED[confidence]
 }
 
@@ -75,8 +74,8 @@ export function seedConfidenceScore(confidence: MemoryConfidence): number {
  * realized.
  *
  * Bump algebra: `next = current + (1 - current) * BUMP_RATE`. The
- * exponential-approach shape means a memory at 0.5 bumps to 0.525, a
- * memory at 0.9 bumps to 0.905, a memory at 0.99 bumps to 0.9905 —
+ * exponential-approach shape means a fact at 0.5 bumps to 0.525, a
+ * fact at 0.9 bumps to 0.905, a fact at 0.99 bumps to 0.9905 —
  * high-confidence rows ratchet slowly and stay below 1.0; low-
  * confidence rows recover faster than they decay on a per-event basis.
  * Asymmetric on purpose: a single citation is weaker evidence than a
@@ -112,7 +111,7 @@ export function decrementConfidenceScore(current: number): number {
  * Tune via the `STALE_CONFIDENCE_DAYS` and `DECAY_RATE` constants.
  *
  * Worked examples (against the current constants — `STALE_CONFIDENCE_DAYS
- * = 60`, `DECAY_RATE = 0.99`): a memory at 0.9 untouched for 60 days
+ * = 60`, `DECAY_RATE = 0.99`): a fact at 0.9 untouched for 60 days
  * stays at 0.9 (zero stale days). At 90 days it reads
  * `0.9 * 0.99^30 ≈ 0.665`. At 180 days it reads `0.9 * 0.99^120 ≈
  * 0.270`. The half-life past the 60-day grace is ~69 stale days.
@@ -156,24 +155,22 @@ export function decayConfidenceScore(
  *
  * Pure stored-value mapper. This function does NOT apply decay, does
  * NOT read `lastReferencedAt`, and does NOT touch Notion. It exists so
- * RRF's accumulator can multiply each row's stored Confidence Score
+ * fact ranking can multiply each row's stored Confidence Score
  * into its rank score without I/O or time arithmetic. Decay is
  * realized at write time by `touchOnRead` / `decrementConfidence` /
  * the migration; by the time the score reaches retrieval, it is the
  * truth-as-of-last-touch.
  *
  * The floor preserves the "score is a tiebreaker, not a veto"
- * intuition: a maximally-decayed memory still surfaces at the
- * floor-multiple of the lexical / semantic weight of a fully-trusted
- * one — it doesn't disappear from results.
+ * intuition: a maximally-decayed fact still surfaces at the floor-multiple
+ * of a fully trusted one — it doesn't disappear from results.
  *
  * **Kill switch.** `LORE_DISABLE_CONFIDENCE_FACTOR=1` returns `1.0`
  * unconditionally — a sustained-failure rollback to the unweighted
  * ranking, not a default. Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
  * `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an opt-in defensive lever for an
- * operator whose vault sees pathological ordering under the new signal.
- * The check lives here (not at the RRF call sites) so single-branch
- * paths and the hybrid accumulator share one bypass.
+ * operator whose vault sees pathological ordering under the signal.
+ * The check lives here so every fact-ranking caller shares one bypass.
  */
 export function confidenceFactor(
   score: number | null,

@@ -201,16 +201,6 @@ export class MemoryUpdate {
     if (input.status) {
       props[MEMORY_PROPS.STATUS] = { select: { name: input.status } }
     }
-    if (input.confidence) {
-      props[MEMORY_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
-    }
-    // See `buildMemoryProps` for the three-state rationale.
-    if (input.confidenceScore !== undefined) {
-      props[MEMORY_PROPS.CONFIDENCE_SCORE] =
-        input.confidenceScore === null
-          ? { number: null }
-          : { number: input.confidenceScore }
-    }
     // `null` explicitly clears a date; `undefined` leaves it untouched.
     // Strict `=== null` matches `buildMemoryProps`' shape so update and
     // create use one consistent rule for "is this a clear or a set?"

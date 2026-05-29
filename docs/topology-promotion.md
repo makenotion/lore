@@ -42,7 +42,7 @@ decision / task tools still write only to the primary vault.
 
 The promoted row's body opens with a `## Promoted from <vault>` block
 listing source vault label, source memory id (deep-linked back to the
-source Notion page), source kind / status / confidence / synopsis,
+source Notion page), source kind / status / synopsis,
 target vault label, promoter, ISO-8601 timestamp, and optional
 `--reason`. The remainder of the source body follows verbatim. Cross-
 vault provenance lives in this text/url metadata rather than in Notion

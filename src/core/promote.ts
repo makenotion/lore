@@ -257,7 +257,6 @@ export async function promoteMemory(
     source: "manual",
     kind: preview.source.kind,
     status: preview.status,
-    confidence: preview.source.confidence,
     // Tags do NOT cross the vault boundary either — same rationale
     // as the `projectIds: []` treatment above. The closed `Tag`
     // vocabulary is enforced at the MCP boundary, not in the service
@@ -390,7 +389,6 @@ export async function preparePromotion(
     sourceMemoryUrl: input.sourceMemoryUrl,
     sourceKind: source.kind,
     sourceStatus: source.status,
-    sourceConfidence: source.confidence,
     sourceSynopsis: source.synopsis,
     targetVaultLabel: input.target.label,
     requireReview: input.target.requireReview,
@@ -467,7 +465,6 @@ interface PromotionAuditBlockInput {
   sourceMemoryUrl?: string
   sourceKind: MemoryKind
   sourceStatus: MemoryStatus
-  sourceConfidence: string
   sourceSynopsis: string
   targetVaultLabel: string
   requireReview: boolean
@@ -502,7 +499,6 @@ export function buildPromotionAuditBlock(input: PromotionAuditBlockInput): strin
   lines.push(`- **Source vault:** ${input.sourceVaultLabel}`)
   lines.push(`- **Source kind:** ${input.sourceKind}`)
   lines.push(`- **Source status:** ${input.sourceStatus}`)
-  lines.push(`- **Source confidence:** ${input.sourceConfidence}`)
   if (input.sourceSynopsis.trim().length > 0) {
     lines.push(`- **Source synopsis:** ${input.sourceSynopsis.trim()}`)
   }

@@ -57,8 +57,6 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     source: "manual",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -823,7 +821,7 @@ describe("lore-remember near-duplicate probe", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-1",
         agent: "Codex",
       } as never)
@@ -850,9 +848,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const create = vi.fn()
@@ -879,7 +876,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-1",
         agent: "Codex",
       } as never)
@@ -905,9 +902,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const create = vi.fn()
@@ -920,7 +916,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
@@ -933,7 +929,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
       } as never)
@@ -952,9 +948,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         expect.objectContaining({
           projectId: "proj-a",
           session: undefined,
-          source: "conversation",
+          source: "autosave_learning",
           kind: "note",
-          confidence: "likely",
           includeContent: true,
           includeUnscoped: true,
         })
@@ -971,18 +966,16 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-catchall"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const created = makeMemory("mem-created", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-catchall"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-2",
     })
     const create = vi.fn().mockResolvedValue(created)
@@ -1019,7 +1012,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
       } as never)
@@ -1032,9 +1025,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         expect.objectContaining({
           projectId: "proj-catchall",
           session: "session-2",
-          source: "conversation",
+          source: "autosave_learning",
           kind: "note",
-          confidence: "likely",
           includeContent: true,
         })
       )
@@ -1056,9 +1048,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-specific"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const create = vi.fn()
@@ -1077,7 +1068,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
@@ -1091,7 +1082,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
         projectName: "Specific",
@@ -1111,9 +1102,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         expect.objectContaining({
           projectId: "proj-specific",
           session: undefined,
-          source: "conversation",
+          source: "autosave_learning",
           kind: "note",
-          confidence: "likely",
           includeContent: true,
           includeUnscoped: true,
         })
@@ -1133,15 +1123,14 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
   })
 
-  it("labels reused legacy learnings without a stored session as unknown-session", async () => {
+  it("labels reused learnings without a stored session as unknown-session", async () => {
     const mockServer = createMockServer()
     const existing = makeMemory("mem-existing", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: null,
     })
     const create = vi.fn()
@@ -1154,7 +1143,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
@@ -1167,7 +1156,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
       } as never)
@@ -1187,9 +1176,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const duplicate = {
@@ -1237,7 +1225,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
         projectName: "A",
@@ -1263,9 +1251,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: [],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-2",
     })
     const createWithResult = vi.fn(async () => ({
@@ -1304,7 +1291,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
       } as never)
@@ -1322,16 +1309,15 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
   })
 
-  it("opts foreground likely session saves out of the autosave-learning service gate", async () => {
+  it("opts foreground autosave-learning source saves out of the service gate", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-created", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
       topicId: "topic-auth",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-2",
     })
     const createWithResult = vi.fn(async () => ({
@@ -1365,7 +1351,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       kind: "note",
-      confidence: "likely",
+      source: "autosave_learning",
       session: "session-2",
       agent: "Codex",
       projectName: "A",
@@ -1393,18 +1379,16 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const created = makeMemory("mem-created", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a", "proj-b"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-2",
     })
     const create = vi.fn().mockResolvedValue(created)
@@ -1439,7 +1423,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
+        source: "autosave_learning",
         session: "session-2",
         agent: "Codex",
         projectNames: ["A", "B"],
@@ -1461,9 +1445,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         expect.objectContaining({
           projectId: "proj-a",
           session: undefined,
-          source: "conversation",
+          source: "autosave_learning",
           kind: "note",
-          confidence: "likely",
           includeContent: true,
           includeUnscoped: true,
         })
@@ -1486,7 +1469,6 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       projectIds: ["proj-a"],
       source: "conversation",
       kind: "note",
-      confidence: "likely",
       session: "session-1",
     })
     const create = vi.fn().mockResolvedValue(created)
@@ -1529,7 +1511,6 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      confidence: "likely",
     })
     const existingSynopsis = makeMemory("mem-synopsis", {
       title: "relation filters reject empty arrays",
@@ -1537,7 +1518,6 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       projectIds: ["proj-a"],
       source: "conversation",
       kind: "note",
-      confidence: "certain",
       session: "session-1",
     })
     const create = vi.fn().mockResolvedValue(created)
@@ -1562,7 +1542,6 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         title: "relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         kind: "note",
-        confidence: "likely",
         session: "session-1",
         agent: "Codex",
       } as never)
@@ -2076,134 +2055,6 @@ describe("lore-recall tag rendering", () => {
     expect(searchMeta).toBe(recallMeta)
   })
 })
-
-describe("lore-recall trust indicator (issue 0.8.0/09)", () => {
-  // The trust line surfaces on recall when a memory's `confidenceScore`
-  // sits below the display threshold. Pinned at the surface (not just
-  // the renderer) so a future contributor swapping the recall handler
-  // away from `formatMemoryListItem` would see this fail rather than
-  // silently lose the signal.
-
-  it("renders the trust line on a low-confidence recall row", async () => {
-    const mockServer = createMockServer()
-    const memoriesList = vi.fn().mockResolvedValue({
-      items: [
-        makeMemory("mem-1", {
-          title: "Decayed row",
-          source: "manual",
-          tags: ["auth"],
-          updatedAt: "2026-04-20T00:00:00.000Z",
-          confidenceScore: 0.3,
-        }),
-      ],
-    })
-
-    const services = {
-      topics: { findByName: vi.fn() },
-      memories: { list: memoriesList },
-      projects: { findByName: vi.fn() },
-      context: { project: null },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const recall = mockServer.getActionHandler("lore-query", "recall")
-
-    const result = await recall({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("### Decayed row\n_low confidence_\n")
-  })
-
-  it("omits the trust line on a healthy recall row (byte-identical to pre-0.8.0)", async () => {
-    const mockServer = createMockServer()
-    const memoriesList = vi.fn().mockResolvedValue({
-      items: [
-        makeMemory("mem-1", {
-          title: "Healthy row",
-          source: "manual",
-          tags: ["auth"],
-          updatedAt: "2026-04-20T00:00:00.000Z",
-          confidenceScore: 0.95,
-        }),
-      ],
-    })
-
-    const services = {
-      topics: { findByName: vi.fn() },
-      memories: { list: memoriesList },
-      projects: { findByName: vi.fn() },
-      context: { project: null },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const recall = mockServer.getActionHandler("lore-query", "recall")
-
-    const result = await recall({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).not.toContain("confidence_")
-    expect(text).toContain("### Healthy row")
-  })
-})
-
-describe("lore-search trust indicator (issue 0.8.0/09)", () => {
-  it("renders the trust line on a low-confidence search hit", async () => {
-    const mockServer = createMockServer()
-    const memoriesSearch = vi.fn().mockResolvedValue([
-      makeMemory("mem-1", {
-        title: "Decayed hit",
-        source: "manual",
-        tags: ["auth"],
-        updatedAt: "2026-04-20T00:00:00.000Z",
-        confidenceScore: 0.15,
-      }),
-    ])
-
-    const services = {
-      projects: { findByName: vi.fn() },
-      topics: { findByName: vi.fn() },
-      memories: { search: memoriesSearch, list: vi.fn() },
-      context: { project: null },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const search = mockServer.getActionHandler("lore-query", "search")
-
-    const result = await search({ query: "anything" } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("### Decayed hit\n_very low confidence_\n")
-  })
-
-  it("omits the trust line on a healthy search hit (byte-identical to pre-0.8.0)", async () => {
-    const mockServer = createMockServer()
-    const memoriesSearch = vi
-      .fn()
-      .mockResolvedValue([
-        makeMemory("mem-1", { title: "Healthy hit", confidenceScore: 0.95 }),
-      ])
-
-    const services = {
-      projects: { findByName: vi.fn() },
-      topics: { findByName: vi.fn() },
-      memories: { search: memoriesSearch, list: vi.fn() },
-      context: { project: null },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const search = mockServer.getActionHandler("lore-query", "search")
-
-    const result = await search({ query: "anything" } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).not.toContain("confidence_")
-  })
-})
-
 describe("lore-search content-off default", () => {
   it("passes includeContent: false to the service by default", async () => {
     const mockServer = createMockServer()
@@ -2797,8 +2648,6 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       source: "manual" as const,
       kind: "task" as const,
       status: "informational" as const,
-      confidence: "certain" as const,
-      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,
@@ -3188,7 +3037,6 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
         object: "PR #1234",
         sourceMemoryId: "mem-emit-1",
         projectIds: ["proj-a"],
-        confidence: "speculative",
       })
     )
     // Footer surfaces the count. All creates landed so the "/N
@@ -3740,7 +3588,6 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
         object: "PR #1234",
         sourceMemoryId: "mem-update-1",
         projectIds: ["proj-a"],
-        confidence: "speculative",
       })
     )
     // Footer surfaces the count with the `new` suffix that
@@ -4543,21 +4390,20 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
   it("does NOT fire the pre-query when the update touches no extraction-relevant fields", async () => {
     // Steady-state efficiency gate: an update that only mutates
-    // confidence / status / tags / projectIds / etc. cannot change
+    // status / tags / projectIds / etc. cannot change
     // the extraction surface, so running the pre-query just to
     // discover the existing covered-set is unchanged is pure waste.
     // The branch is gated on `args.title` / `args.keywords` /
     // `args.synopsis` being defined; this test pins that a
-    // confidence-only update on a memory whose RESOLVED title would
+    // metadata-only update on a memory whose RESOLVED title would
     // produce extractable entities does not fire the pre-query.
-    // Without the gate, every confidence-only update on a memory
+    // Without the gate, every metadata-only update on a memory
     // titled `"Investigated PR #1234"` would round-trip to Notion
     // for the `queryBySourceMemory` probe.
     const mockServer = createMockServer()
-    const updated = makeMemory("mem-update-confidence-only", {
+    const updated = makeMemory("mem-update-metadata-only", {
       title: "Investigated PR #1234",
       projectIds: ["proj-a"],
-      confidence: "certain",
     })
     const update = vi.fn().mockResolvedValue(updated)
     const queryBySourceMemory = vi.fn()
@@ -4578,8 +4424,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     const lore = mockServer.getActionHandler("lore-memory", "update")
 
     const result = await lore({
-      memoryId: "mem-update-confidence-only",
-      confidence: "certain",
+      memoryId: "mem-update-metadata-only",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
@@ -4659,9 +4504,8 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // diff would simultaneously classify the same logical entity as
     // BOTH `new` (decoded form not in raw `covered`) AND `stale`
     // (encoded form not in decoded `currentSet`) — a destructive
-    // invalidate-and-replace that decrements the encoded row's
-    // `Confidence Score` for no operator-visible reason on a memory
-    // that still mentions the same entity.
+    // invalidate-and-replace for no operator-visible reason on a memory that
+    // still mentions the same entity.
     //
     // The realistic shape is a URL with an encoded query-string
     // separator: `extractEntityCandidates`'s URL regex
@@ -5512,9 +5356,6 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
           semanticRank: null,
           rrfScore: null,
           branch: "contains-only",
-          confidenceFactor: 0.55,
-          storedConfidenceFactor: 0.95,
-          effectiveConfidenceFactor: 0.55,
         },
       ],
     })
@@ -5541,9 +5382,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     const traceIdx = text.indexOf("## Score trace")
     expect(synopsisIdx).toBeGreaterThan(-1)
     expect(traceIdx).toBeGreaterThan(synopsisIdx)
-    expect(text).toContain(
-      "confidenceFactor=0.550 storedConfidenceFactor=0.950 effectiveConfidenceFactor=0.550"
-    )
+    expect(text).toContain("mem-1 branch=contains-only contains=0 semantic=— rrf=—")
   })
 
   it("surfaces truncated contains-search windows even when no rows were returned", async () => {
@@ -6432,7 +6271,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -6441,7 +6279,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -6767,7 +6604,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -6776,7 +6612,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -6842,7 +6677,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -6851,7 +6685,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -6916,7 +6749,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -6925,7 +6757,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -6992,7 +6823,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -7001,7 +6831,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -7067,7 +6896,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -7076,7 +6904,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -7145,7 +6972,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -7154,7 +6980,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -7216,7 +7041,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       projectIds: ["proj-a"],
       topicId: null,
       source: "manual",
-      confidence: "certain",
       tags: [],
       keywords: "",
       synopsis: "",
@@ -7225,7 +7049,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       session: "",
       createdAt: "2026-05-12T00:00:00.000Z",
       updatedAt: "2026-05-12T00:00:00.000Z",
-      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,
@@ -7263,7 +7086,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -7272,7 +7094,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -7343,7 +7164,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -7352,7 +7172,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -7425,7 +7244,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           projectIds: ["proj-a"],
           topicId: null,
           source: "manual",
-          confidence: "certain",
           tags: [],
           keywords: "",
           synopsis: "",
@@ -7434,7 +7252,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
           session: "",
           createdAt: "2026-05-12T00:00:00.000Z",
           updatedAt: "2026-05-12T00:00:00.000Z",
-          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
@@ -7507,7 +7324,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       projectIds: [] as string[],
       topicId: null,
       source: "manual" as const,
-      confidence: "certain" as const,
       tags: [],
       keywords: "",
       synopsis: "",
@@ -7516,7 +7332,6 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       session: "",
       createdAt: "2026-05-12T00:00:00.000Z",
       updatedAt: "2026-05-12T00:00:00.000Z",
-      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,
@@ -8877,7 +8692,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     a: Memory,
     b: Memory,
     overrides: {
-      decrementConfidence?: ReturnType<typeof vi.fn>
+      appendCompareNotes?: ReturnType<typeof vi.fn>
       recordCompared?: ReturnType<typeof vi.fn>
       createWithDedup?: ReturnType<typeof vi.fn>
       supersede?: ReturnType<typeof vi.fn>
@@ -8888,8 +8703,9 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       if (id === b.id) return b
       throw new Error(`unknown id ${id}`)
     })
-    const decrementConfidence =
-      overrides.decrementConfidence ?? vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes =
+      overrides.appendCompareNotes ??
+      vi.fn(async (_id: string, _notes: string) => undefined)
     const recordCompared =
       overrides.recordCompared ?? vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const createWithDedup =
@@ -8900,7 +8716,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { findByName: vi.fn() },
-      memories: { getById, decrementConfidence, recordCompared },
+      memories: { getById, appendCompareNotes, recordCompared },
       facts: makeFactsMock({ createWithDedup }),
       decisions: { supersede },
       context: { project: null },
@@ -8910,18 +8726,18 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     return {
       services,
       getById,
-      decrementConfidence,
+      appendCompareNotes,
       recordCompared,
       createWithDedup,
       supersede,
     }
   }
 
-  it("happy path conflicts_with: halves the affected memory's confidence and emits a fact", async () => {
+  it("happy path conflicts_with: records compare notes on the affected memory and emits a fact", async () => {
     const mockServer = createMockServer()
     const a = makeMemory("page-a", { title: "Auth model A", projectIds: ["proj-a"] })
     const b = makeMemory("page-b", { title: "Auth model B", projectIds: ["proj-a"] })
-    const { services, decrementConfidence, recordCompared, createWithDedup } =
+    const { services, appendCompareNotes, recordCompared, createWithDedup } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -8937,9 +8753,9 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     } as never)
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
-    // decrementConfidence fires on memory B (the loser).
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "page-b" })
+    // appendCompareNotes fires on memory B (the loser).
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
+    expect(appendCompareNotes.mock.calls[0]![0]).toBe("page-b")
     // Fact subject = winner's title; object = loser's title.
     expect(createWithDedup).toHaveBeenCalledTimes(1)
     expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
@@ -8959,16 +8775,13 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     })
   })
 
-  it("flips the affected side: same pair with affectedMemoryId=memoryIdA halves memoryA, NOT memoryB", async () => {
+  it("flips the affected side: same pair with affectedMemoryId=memoryIdA records memoryA, NOT memoryB", async () => {
     // Pins the directionality contract — order does NOT encode
     // direction; the affectedMemoryId field does.
     const mockServer = createMockServer()
     const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
     const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
-    const { services, decrementConfidence, createWithDedup } = makeServicesForCompare(
-      a,
-      b
-    )
+    const { services, appendCompareNotes, createWithDedup } = makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
     const compare = mockServer.getActionHandler("lore-memory", "compare")
@@ -8981,7 +8794,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       reason: "B wins",
     } as never)
 
-    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "page-a" })
+    expect(appendCompareNotes.mock.calls[0]![0]).toBe("page-a")
     // Subject = winner (B), object = loser (A).
     expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
       subject: "B",
@@ -8993,7 +8806,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const mockServer = createMockServer()
     const a = makeMemory("page-a", { projectIds: ["proj"] })
     const b = makeMemory("page-b", { projectIds: ["proj"] })
-    const { services, getById, decrementConfidence } = makeServicesForCompare(a, b)
+    const { services, getById, appendCompareNotes } = makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
     const compare = mockServer.getActionHandler("lore-memory", "compare")
@@ -9010,7 +8823,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("requires affectedMemoryId")
     // Direction validation fires BEFORE hydration — getById never called.
     expect(getById).not.toHaveBeenCalled()
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
   })
 
   it("rejects asymmetric verdict whose affectedMemoryId names a third memory BEFORE any Notion read", async () => {
@@ -9072,7 +8885,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       kind: "note",
       projectIds: ["proj"],
     })
-    const { services, decrementConfidence, recordCompared, createWithDedup } =
+    const { services, appendCompareNotes, recordCompared, createWithDedup } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -9089,20 +8902,20 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect((result as { isError?: boolean }).isError).toBe(true)
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
     expect(text).toContain("kind='decision'")
-    // Throws AFTER hydration but BEFORE dispatch — no decrement,
+    // Throws AFTER hydration but BEFORE dispatch: no compare-notes write,
     // no fact write, no audit marker.
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
   })
 
-  it("supersedes verdict on a decision-kind affected memory dispatches through decisions.supersede + fact + decrement", async () => {
+  it("supersedes verdict on a decision-kind affected memory dispatches through decisions.supersede + fact + compare notes", async () => {
     // Reviewer #1 P1 #1 pinned: supersedes must route through the
     // existing `lore-decision action='supersede'` semantics. This
     // test asserts decisions.supersede(winner.id, loser.id) fires
     // (otherwise the new decision's Supersedes relation is never
     // updated and the old decision's Status stays at "accepted")
-    // alongside the fact emission and decrement.
+    // alongside the fact emission and compare-notes audit.
     const mockServer = createMockServer()
     const a = makeMemory("page-a", {
       title: "New decision",
@@ -9114,7 +8927,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       kind: "decision",
       projectIds: ["proj"],
     })
-    const { services, decrementConfidence, recordCompared, createWithDedup, supersede } =
+    const { services, appendCompareNotes, recordCompared, createWithDedup, supersede } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -9133,9 +8946,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // text claiming "marked superseded" would be a lie.
     expect(supersede).toHaveBeenCalledTimes(1)
     expect(supersede).toHaveBeenCalledWith("page-a", "page-b")
-    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
-      id: "page-b",
-    })
+    expect(appendCompareNotes.mock.calls[0]![0]).toBe("page-b")
     // Fact uses IDs (canonical decision-graph identifier) matching
     // the existing `lore-decision action='supersede'` shape.
     expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
@@ -9146,12 +8957,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(recordCompared).toHaveBeenCalledTimes(1)
   })
 
-  it("symmetric verdicts (scoped/related/compatible/not_conflict) skip decrement and fact emission", async () => {
+  it("symmetric verdicts (scoped/related/compatible/not_conflict) skip compare-notes write and fact emission", async () => {
     for (const verdict of ["scoped", "related", "compatible", "not_conflict"] as const) {
       const mockServer = createMockServer()
       const a = makeMemory(`a-${verdict}`, { projectIds: ["proj"] })
       const b = makeMemory(`b-${verdict}`, { projectIds: ["proj"] })
-      const { services, decrementConfidence, recordCompared, createWithDedup } =
+      const { services, appendCompareNotes, recordCompared, createWithDedup } =
         makeServicesForCompare(a, b)
 
       registerMemoryTools(mockServer.server, services as never)
@@ -9165,7 +8976,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       } as never)
 
       expect((result as { isError?: boolean }).isError).not.toBe(true)
-      expect(decrementConfidence).not.toHaveBeenCalled()
+      expect(appendCompareNotes).not.toHaveBeenCalled()
       expect(createWithDedup).not.toHaveBeenCalled()
       expect(recordCompared).toHaveBeenCalledTimes(1)
     }
@@ -9197,7 +9008,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const mockServer = createMockServer()
     const a = makeMemory("page-a", { projectIds: ["proj-A"] })
     const b = makeMemory("page-b", { projectIds: ["proj-B"] })
-    const { services, decrementConfidence } = makeServicesForCompare(a, b)
+    const { services, appendCompareNotes } = makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
     const compare = mockServer.getActionHandler("lore-memory", "compare")
@@ -9213,7 +9024,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
       "disjoint project sets"
     )
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
   })
 
   it("idempotent re-compare: same pair + same actionable verdict + same direction short-circuits with zero side effects", async () => {
@@ -9247,7 +9058,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       projectIds: ["proj"],
       compareNotes: priorEntryB,
     })
-    const { services, decrementConfidence, recordCompared, createWithDedup } =
+    const { services, appendCompareNotes, recordCompared, createWithDedup } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -9266,12 +9077,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       "already recorded"
     )
     // Zero side effects on the duplicate call.
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
   })
 
-  it("retry after fact-created/decrement-landed state skips a second decrement and writes final audit", async () => {
+  it("retry after fact-created/compare-notes state skips a second compare-notes write and writes final audit", async () => {
     const ledger = buildCompareDispatchLedgerEntry({
       verdict: "conflicts_with",
       sourceMemoryId: "page-a",
@@ -9284,14 +9095,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       projectIds: ["proj"],
       compareNotes: appendCompareDispatchLedgerEntry("", ledger),
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-existing" },
       deduped: true,
     }))
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const { services } = makeServicesForCompare(a, b, {
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
       recordCompared,
     })
@@ -9304,12 +9115,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       memoryIdB: "page-b",
       verdict: "conflicts_with",
       affectedMemoryId: "page-b",
-      reason: "retry after uncertain decrement response",
+      reason: "retry after uncertain compare-notes write response",
     } as never)
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect(createWithDedup).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(recordCompared).toHaveBeenCalledTimes(1)
     const recordComparedCall = recordCompared.mock.calls[0] as unknown as [
       { memoryB: { compareNotes: string } },
@@ -9319,10 +9130,10 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     }
     expect(recordedLedger.dispatchKey).toBe(ledger.dispatchKey)
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
-    expect(text).toContain("confidence already halved")
+    expect(text).toContain("already marked")
   })
 
-  it("actionable one-sided audit recovery uses the decrement ledger and catches up the missing side", async () => {
+  it("actionable one-sided audit recovery uses the compare-notes write ledger and catches up the missing side", async () => {
     const finalEntryOnWinner = JSON.stringify({
       verdict: "conflicts_with",
       target: "page-b",
@@ -9376,7 +9187,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
           throw new Error(`unknown id ${id}`)
         }),
         recordCompared: realMemories.recordCompared.bind(realMemories),
-        decrementConfidence: vi.fn(),
+        appendCompareNotes: vi.fn(),
       },
       facts: makeFactsMock({
         createWithDedup: vi.fn(async () => ({
@@ -9402,7 +9213,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     } as never)
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
-    expect(services.memories.decrementConfidence).not.toHaveBeenCalled()
+    expect(services.memories.appendCompareNotes).not.toHaveBeenCalled()
     expect(updates).toHaveLength(1)
     expect(updates[0]!.page_id).toBe("page-b")
     const notes = (
@@ -9420,7 +9231,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("only side B")
   })
 
-  it("legacy one-sided actionable audit without ledger repairs missing side without decrementing again", async () => {
+  it("legacy one-sided actionable audit without ledger repairs missing side without recording compare notes again", async () => {
     const finalEntryOnWinner = JSON.stringify({
       verdict: "conflicts_with",
       target: "page-b",
@@ -9442,14 +9253,30 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       compareNotes: finalEntryOnWinner,
     })
     const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-should-not-run" },
       deduped: true,
     }))
-    const recordCompared = vi.fn(async () => ({ wroteA: false, wroteB: true }))
+    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> = []
+    const mockClient = {
+      pages: {
+        update: vi.fn(
+          async (args: { page_id: string; properties: Record<string, unknown> }) => {
+            updates.push(args)
+            return undefined
+          }
+        ),
+      },
+    } as never
+    const { MemoryService } = await import("../../core/memory.js")
+    const realMemories = new MemoryService(mockClient, {
+      databaseId: "memories-db",
+      dataSourceId: "memories-ds",
+    })
+    const recordCompared = vi.fn(realMemories.recordCompared.bind(realMemories))
     const { services } = makeServicesForCompare(a, b, {
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
       recordCompared,
     })
@@ -9467,17 +9294,24 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect(createWithDedup).not.toHaveBeenCalled()
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(recordCompared).toHaveBeenCalledTimes(1)
-    const recordComparedCall = recordCompared.mock.calls[0] as unknown as [
-      { memoryB: { compareNotes: string } },
-    ]
-    const recordedLedger = JSON.parse(recordComparedCall[0].memoryB.compareNotes) as {
-      dispatchKey: string
-    }
-    expect(recordedLedger.dispatchKey).toBe(ledger.dispatchKey)
+    expect(updates).toHaveLength(1)
+    expect(updates[0]!.page_id).toBe("page-b")
+    const notes = (
+      updates[0]!.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
+    const lines = notes
+      .split("\n")
+      .map((line) => JSON.parse(line) as { entryType?: string; dispatchKey?: string })
+    expect(lines.some((line) => line.dispatchKey === ledger.dispatchKey)).toBe(true)
+    expect(notes).toContain('"verdict":"conflicts_with"')
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
-    expect(text).toContain("confidence already halved")
+    expect(text).toContain("already marked")
     expect(text).toContain("Audit recovery")
     expect(text).toContain("only side B")
   })
@@ -9504,14 +9338,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       comparedWith: ["page-a"],
       compareNotes: finalEntryOnAffected,
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-should-not-run" },
       deduped: true,
     }))
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const { services } = makeServicesForCompare(a, b, {
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
       recordCompared,
     })
@@ -9529,7 +9363,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect(createWithDedup).not.toHaveBeenCalled()
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(recordCompared).toHaveBeenCalledTimes(1)
     const recordComparedCall = recordCompared.mock.calls[0] as unknown as [
       { memoryB: { compareNotes: string }; forceWriteB: boolean },
@@ -9541,12 +9375,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(lines).toHaveLength(2)
     expect(lines.some((line) => line.dispatchKey === ledger.dispatchKey)).toBe(true)
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
-    expect(text).toContain("confidence already halved")
+    expect(text).toContain("already marked")
   })
 
   it("flipped-direction re-compare on a same-verdict pair RE-DISPATCHES (does NOT short-circuit)", async () => {
-    // Reviewer #2 finding pinned. Walk-through:
-    //   1. (A, B, conflicts_with, affected=B) — B halved, A.notes
+    // Walk-through:
+    //   1. (A, B, conflicts_with, affected=B) — B gets a dispatch marker, A.notes
     //      gets {target=B, affected=B}, B.notes gets {target=A,
     //      affected=B}.
     //   2. (A, B, conflicts_with, affected=A) — corrected direction.
@@ -9554,7 +9388,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     //      check B.notes for {target=A, verdict=conflicts_with}, find
     //      it, and incorrectly short-circuit. With `affected` in the
     //      key, the gate query asks for affected=A but finds
-    //      affected=B → no match → dispatch fires and A is halved.
+    //      affected=B → no match → dispatch fires and A gets a marker.
     //
     // Pre-plant B.notes with the prior call's mirror entry
     // (target=A, affected=B). The new call queries B.notes (winner
@@ -9578,7 +9412,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       projectIds: ["proj"],
       compareNotes: priorEntry,
     })
-    const { services, decrementConfidence, createWithDedup, recordCompared } =
+    const { services, appendCompareNotes, createWithDedup, recordCompared } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -9593,11 +9427,9 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     } as never)
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
-    // A is halved this time, NOT B.
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
-      id: "page-a",
-    })
+    // A receives the compare-notes dispatch this time, NOT B.
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
+    expect(appendCompareNotes.mock.calls[0]![0]).toBe("page-a")
     expect(createWithDedup).toHaveBeenCalledTimes(1)
     expect(recordCompared).toHaveBeenCalledTimes(1)
   })
@@ -9734,7 +9566,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
         // recordCompared is the REAL implementation, bound to the
         // mock client. Per-side idempotency is what we're testing.
         recordCompared: realMemories.recordCompared.bind(realMemories),
-        decrementConfidence: vi.fn(),
+        appendCompareNotes: vi.fn(),
       },
       facts: makeFactsMock(),
       decisions: { supersede: vi.fn() },
@@ -9869,7 +9701,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       compareNotes: priorEntry,
     })
     const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
-    const { services, decrementConfidence, createWithDedup, recordCompared } =
+    const { services, appendCompareNotes, createWithDedup, recordCompared } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -9884,7 +9716,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     } as never)
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
     expect(createWithDedup).toHaveBeenCalledTimes(1)
     expect(recordCompared).toHaveBeenCalledTimes(1)
   })
@@ -9913,7 +9745,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       projectIds: ["proj"],
       compareNotes: overflowing,
     })
-    const { services, decrementConfidence, recordCompared, createWithDedup } =
+    const { services, appendCompareNotes, recordCompared, createWithDedup } =
       makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
@@ -9932,7 +9764,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       "Compare Notes overflow"
     )
     // NEITHER destructive call fires — the preflight is the gate.
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
   })
@@ -9951,14 +9783,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const recordCompared = vi.fn(async () => {
       throw new Error("notion 429 — Compare Notes write failed")
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-99" },
       deduped: false,
     }))
     const { services } = makeServicesForCompare(a, b, {
       recordCompared,
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
     })
 
@@ -9984,7 +9816,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // Diagnostic fields the operator needs to reconcile — every one
     // pinned by name + value so it can't silently drop.
     expect(text).toContain("dispatchedFactId=fact-99")
-    expect(text).toContain("decrementedMemoryId=page-b")
+    expect(text).toContain("affectedMemoryId=page-b")
     expect(text).toContain("compareNotesEntryToWriteA=")
     expect(text).toContain("compareNotesEntryToWriteB=")
     expect(text).toContain("comparedWithRelationToWrite=")
@@ -9995,16 +9827,13 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain('"target":"page-a"')
     expect(text).toContain('"affected":"page-b"')
     // Destructive side effects DID land.
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
-    const decrementCall = decrementConfidence.mock.calls[0] as unknown as [
-      unknown,
-      { compareNotes: string },
-    ]
-    expect(decrementCall[1].compareNotes).toContain('"entryType":"compare_dispatch"')
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
+    const appendCall = appendCompareNotes.mock.calls[0] as unknown as [string, string]
+    expect(appendCall[1]).toContain('"entryType":"compare_dispatch"')
     expect(createWithDedup).toHaveBeenCalledTimes(1)
   })
 
-  it("dispatch partial-failure (fact lands, decrement throws) surfaces step/factId/affectedMemoryId via tool error message", async () => {
+  it("dispatch partial-failure (fact lands, compare-notes write throws) surfaces step/factId/affectedMemoryId via tool error message", async () => {
     // Latest reviewer P1: `CompareDispatchPartialFailureError` carries
     // typed `step` / `affectedMemoryId` / `factId` properties, but
     // `toolError` only renders `.message`. Pin that the message text
@@ -10014,8 +9843,8 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const mockServer = createMockServer()
     const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
     const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
-    const decrementConfidence = vi.fn(async (_m: unknown) => {
-      throw new Error("notion 429 — decrement failed")
+    const appendCompareNotes = vi.fn(async (_m: unknown) => {
+      throw new Error("notion 429 — compare-notes write failed")
     })
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-mid-dispatch" },
@@ -10023,7 +9852,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     }))
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const { services } = makeServicesForCompare(a, b, {
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
       recordCompared,
     })
@@ -10048,17 +9877,17 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("factId=fact-mid-dispatch")
     expect(text).toContain("dispatchKey=")
     expect(text).toMatch(/Retry the same/)
-    // The fact landed; the decrement did not. Audit marker never got
+    // The fact landed; the compare-notes write did not. Audit marker never got
     // a chance to fire, so recordCompared was NOT called.
     expect(createWithDedup).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
     expect(recordCompared).not.toHaveBeenCalled()
   })
 
   it("supersedes partial-failure (decisions.supersede lands, fact create throws) surfaces step=supersede + supersedingMemoryId", async () => {
     // Mirror of the conflicts_with partial-failure test for the
     // supersede path. `step=supersede` distinguishes "decisions.supersede
-    // landed but fact didn't" from "fact landed but decrement didn't"
+    // landed but fact didn't" from "fact landed but compare-notes write didn't"
     // (`step=fact`); the operator's manual recovery procedure differs.
     const mockServer = createMockServer()
     const a = makeMemory("page-a", {
@@ -10075,12 +9904,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const createWithDedup = vi.fn(async () => {
       throw new Error("notion 429 — fact create failed")
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const { services } = makeServicesForCompare(a, b, {
       supersede,
       createWithDedup,
-      decrementConfidence,
+      appendCompareNotes,
       recordCompared,
     })
 
@@ -10103,15 +9932,15 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("factId=(none)")
     expect(text).toContain("inconsistentState: true")
     expect(text).toMatch(/Retry the same/)
-    // decisions.supersede ran; fact create failed; decrement and
+    // decisions.supersede ran; fact create failed; compare-notes write and
     // audit marker never fired.
     expect(supersede).toHaveBeenCalledTimes(1)
     expect(createWithDedup).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
   })
 
-  it("retry after decision-superseded/fact-create-failed state completes fact and confidence work", async () => {
+  it("retry after decision-superseded/fact-create-failed state completes fact and compare-note work", async () => {
     const mockServer = createMockServer()
     const a = makeMemory("page-a", {
       title: "New",
@@ -10128,12 +9957,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       .fn()
       .mockRejectedValueOnce(new Error("notion 429 — fact create failed"))
       .mockResolvedValueOnce({ fact: { id: "fact-recovered" }, deduped: false })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const { services } = makeServicesForCompare(a, b, {
       supersede,
       createWithDedup,
-      decrementConfidence,
+      appendCompareNotes,
       recordCompared,
     })
 
@@ -10160,13 +9989,13 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect((second as { isError?: boolean }).isError).not.toBe(true)
     expect(supersede).toHaveBeenCalledTimes(2)
     expect(createWithDedup).toHaveBeenCalledTimes(2)
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
     expect(recordCompared).toHaveBeenCalledTimes(1)
     const text = (second as { content: Array<{ text: string }> }).content[0]!.text
     expect(text).toContain("fact-recovered")
   })
 
-  it("supersedes retry with landed decrement ledger skips the second confidence decrement", async () => {
+  it("supersedes retry with landed compare-notes write ledger skips the second compare-notes write", async () => {
     const ledger = buildCompareDispatchLedgerEntry({
       verdict: "supersedes",
       sourceMemoryId: "page-a",
@@ -10189,12 +10018,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       fact: { id: "fact-existing" },
       deduped: true,
     }))
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const { services } = makeServicesForCompare(a, b, {
       supersede,
       createWithDedup,
-      decrementConfidence,
+      appendCompareNotes,
       recordCompared,
     })
 
@@ -10206,16 +10035,16 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       memoryIdB: "page-b",
       verdict: "supersedes",
       affectedMemoryId: "page-b",
-      reason: "retry after uncertain decrement response",
+      reason: "retry after uncertain compare-notes write response",
     } as never)
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect(supersede).toHaveBeenCalledTimes(1)
     expect(createWithDedup).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(recordCompared).toHaveBeenCalledTimes(1)
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
-    expect(text).toContain("confidence already halved")
+    expect(text).toContain("dispatch marker already present")
   })
 
   it("self-heals RecordComparedPartialWriteError on actionable verdict by reloading + retrying recordCompared in the same tool call (issue #471)", async () => {
@@ -10292,7 +10121,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       )
       .mockResolvedValueOnce({ wroteA: false, wroteB: true })
 
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-1" },
       deduped: false,
@@ -10301,7 +10130,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { findByName: vi.fn() },
-      memories: { getById, decrementConfidence, recordCompared },
+      memories: { getById, appendCompareNotes, recordCompared },
       facts: makeFactsMock({ createWithDedup }),
       decisions: { supersede: vi.fn() },
       context: { project: null },
@@ -10325,8 +10154,8 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
     expect(text).not.toContain("inconsistentState: true")
     expect(text).not.toContain("dispatch landed but recordCompared failed")
-    // Dispatch ran once (decrement and fact create are not retried).
-    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    // Dispatch ran once (compare-notes write and fact create are not retried).
+    expect(appendCompareNotes).toHaveBeenCalledTimes(1)
     expect(createWithDedup).toHaveBeenCalledTimes(1)
     // recordCompared ran TWICE — once with the original snapshot,
     // once with the reloaded snapshot.
@@ -10401,7 +10230,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       topics: { findByName: vi.fn() },
       memories: {
         getById,
-        decrementConfidence: vi.fn(),
+        appendCompareNotes: vi.fn(),
         recordCompared,
       },
       facts: makeFactsMock(),
@@ -10447,7 +10276,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       )
       .mockRejectedValueOnce(new Error("notion 500 — retry rejected too"))
 
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-99" },
       deduped: false,
@@ -10455,7 +10284,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     const { services } = makeServicesForCompare(a, b, {
       recordCompared,
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
     })
 
@@ -10515,7 +10344,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       }),
     })
     // Side B's reload reflects the dispatch ledger written atomically
-    // with the score decrement (recordContradiction's compareNotes
+    // with the score compare-notes write (recordContradiction's compareNotes
     // patch). The audit entry for B is NOT yet in the snapshot — that
     // is what the retry will write.
     const bPostDispatch = makeMemory("page-b", {
@@ -10567,7 +10396,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       throw new Error(`unknown id ${id}`)
     })
 
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-1" },
       deduped: false,
@@ -10580,7 +10409,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       memories: {
         getById,
         recordCompared: realMemories.recordCompared.bind(realMemories),
-        decrementConfidence,
+        appendCompareNotes,
       },
       facts: makeFactsMock({ createWithDedup }),
       decisions: { supersede: vi.fn() },
@@ -10648,14 +10477,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const recordCompared = vi.fn(async () => {
       throw new Error("notion 429 — Compare Notes write failed")
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-99" },
       deduped: false,
     }))
     const { services } = makeServicesForCompare(a, b, {
       recordCompared,
-      decrementConfidence,
+      appendCompareNotes,
       createWithDedup,
     })
 
@@ -10678,15 +10507,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).not.toContain("dispatch landed but recordCompared failed")
     // No destructive side effects on a symmetric verdict, so a
     // retry is safe.
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
   })
 
-  it("cross-project title collision is NOT suppressed: distinct pairs decrement independently", async () => {
+  it("cross-project title collision is NOT suppressed: distinct pairs compare-notes write independently", async () => {
     // Two project-scoped pairs with identical titles. The pair-scoped
-    // Compare Notes gate must NOT suppress one decrement based on the
-    // other's existing audit entry. This was the bug in the prior
-    // findLiveByTriple-based design.
+    // Compare Notes gate must NOT suppress one compare-notes write based on the
+    // other's existing audit entry.
     const mockServer = createMockServer()
     const p1 = makeMemory("M_P1", { title: "Auth model", projectIds: ["P"] })
     const p2 = makeMemory("M_P2", { title: "Login flow", projectIds: ["P"] })
@@ -10698,7 +10526,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       if (!all) throw new Error(`unknown ${id}`)
       return all
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async (_id: string, _notes: string) => undefined)
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-x" },
@@ -10708,7 +10536,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { findByName: vi.fn() },
-      memories: { getById, decrementConfidence, recordCompared },
+      memories: { getById, appendCompareNotes, recordCompared },
       facts: makeFactsMock({ createWithDedup }),
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -10736,12 +10564,10 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       reason: "x",
     } as never)
 
-    // Both pairs decrement.
-    expect(decrementConfidence).toHaveBeenCalledTimes(2)
-    const decrementedIds = decrementConfidence.mock.calls.map(
-      (c) => (c[0] as { id: string }).id
-    )
-    expect(decrementedIds.sort()).toEqual(["M_P2", "M_Q2"])
+    // Both pairs write compare notes.
+    expect(appendCompareNotes).toHaveBeenCalledTimes(2)
+    const updatedIds = appendCompareNotes.mock.calls.map((c) => c[0] as string)
+    expect(updatedIds.sort()).toEqual(["M_P2", "M_Q2"])
   })
 
   it("Zod schema rejects an unknown verdict, reason >200 chars, and judgeConfidence outside 0..1", async () => {
@@ -10872,7 +10698,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
           throw new Error(`unknown id ${id}`)
         }),
         recordCompared: realMemories.recordCompared.bind(realMemories),
-        decrementConfidence: vi.fn(),
+        appendCompareNotes: vi.fn(),
       },
       facts: makeFactsMock(),
       decisions: { supersede: vi.fn() },
@@ -10908,7 +10734,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // Companion to the recovery test above — pins that the preflight's
     // safety guarantee is preserved. If the side that would actually
     // be written is near-cap, the overflow throw fires BEFORE any
-    // destructive dispatch (decrement + fact emission) lands.
+    // destructive dispatch (compare-notes write + fact emission) lands.
     //
     // Setup: B has no matching entry but its notes are packed so
     // close to the cap that appending the upcoming entry would push
@@ -10931,14 +10757,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       compareNotes: overCapBNotes,
     })
 
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async () => undefined)
     const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
     const createWithDedup = vi.fn(async () => ({
       fact: { id: "fact-x" },
       deduped: false,
     }))
     const { services } = makeServicesForCompare(a, b, {
-      decrementConfidence,
+      appendCompareNotes,
       recordCompared,
       createWithDedup,
     })
@@ -10960,7 +10786,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       "Compare Notes overflow"
     )
     // No destructive dispatch fired — the preflight stopped it.
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
   })
@@ -11334,8 +11160,6 @@ describe("lore-memory auto-mentions scope inheritance (issue #283 round-4)", () 
       validUntil: null,
       reviewBy: null,
       sourceMemoryId: "mem-rescope",
-      confidence: "speculative" as const,
-      confidenceScore: null,
       lastReferencedAt: null,
       createdAt: "2026-04-20T00:00:00.000Z",
       subjectEntityId: null,

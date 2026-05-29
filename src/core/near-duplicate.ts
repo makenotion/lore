@@ -17,7 +17,6 @@
 
 import type {
   Memory,
-  MemoryConfidence,
   MemoryKind,
   MemorySource,
   MemoryStatus,
@@ -40,8 +39,8 @@ import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
  * read path that surfaces live memories (`findByTopicKey`,
  * `findNearDuplicates`, `findAutosaveLearningDuplicate`,
  * `MemoryService.list`, `fetchContainsPages`, `listForScan`,
- * `listAllForBackfill`, `queryStaleConfidence`, and the
- * `applySemanticPostFilters` post-filter for `client.search`) ignore the
+ * `listAllForBackfill`, and the `applySemanticPostFilters` post-filter for
+ * `client.search`) ignore the
  * resurfaced row instead of surfacing it as a "live duplicate target"
  * with an empty body.
  *
@@ -110,7 +109,6 @@ export interface MemoryLister {
     source?: MemorySource
     tags?: string[]
     kind?: MemoryKind
-    confidence?: MemoryConfidence
     session?: string
     limit?: number
     includeContent?: boolean
@@ -490,11 +488,11 @@ function projectSetsEqual(a: readonly string[], b: readonly string[]): boolean {
  * The regular `findNearDuplicates` probe is advisory; autosave learning
  * extraction needs a stronger contract because the same transcript window can
  * be processed more than once, and the same durable fact can reappear in later
- * sessions. This helper reads only likely conversation-sourced notes and
- * fetches bodies so a duplicate body/combined-text pair returns the existing
- * row instead of letting the write path create another memory. Session scope
- * preserves the historical same-session behavior; project scope is exact-set
- * only and uses one project id as the bounded query anchor.
+ * sessions. This helper reads autosave-sourced notes and fetches bodies so a
+ * duplicate body/combined-text pair returns the existing row instead of letting
+ * the write path create another memory. Session scope preserves same-session
+ * behavior; project scope is exact-set only and uses one project id as the
+ * bounded query anchor.
  */
 export async function findAutosaveLearningDuplicate(
   memories: MemoryLister,
@@ -533,18 +531,23 @@ export async function findAutosaveLearningDuplicate(
   // contract are orthogonal concerns.
   let items: Memory[]
   try {
+    const seen = new Set<string>()
+    items = []
     const result = await memories.list({
       projectId: queryProjectId,
       session: scope === "session" ? session : undefined,
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       limit: opts.limit ?? 50,
       includeContent: true,
       includeUnscoped: scope === "project" ? true : undefined,
       includeProposed: true,
     })
-    items = result.items
+    for (const item of result.items) {
+      if (seen.has(item.id)) continue
+      seen.add(item.id)
+      items.push(item)
+    }
   } catch (err) {
     opts.onError?.(err)
     throw new AutosaveLearningDuplicateProbeError(
@@ -557,13 +560,10 @@ export async function findAutosaveLearningDuplicate(
   const matches: AutosaveLearningDuplicateMatch[] = []
   for (const mem of items) {
     // Defense in depth: the server-side list filter above should already
-    // narrow to this triple. Keeping the client-side guard means a future
-    // list-filter regression cannot turn synopsis rows into blocking matches.
-    if (
-      mem.source !== "conversation" ||
-      mem.kind !== "note" ||
-      mem.confidence !== "likely"
-    ) {
+    // narrow to autosave-shaped notes. Keeping the client-side guard means a
+    // future list-filter regression cannot turn synopsis rows into blocking
+    // matches.
+    if (mem.source !== "autosave_learning" || mem.kind !== "note") {
       continue
     }
     // Exclude resurfaced cleanup-orphans. Even though the

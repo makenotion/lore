@@ -14,14 +14,13 @@ import { decodeTextEntities } from "../../../notion/html-entities.js"
 import type {
   Fact,
   Memory,
-  MemoryConfidence,
   MemoryKind,
   MemoryScopeInput,
   MemoryStatus,
 } from "../../../types.js"
 import { memoryScopeToInput } from "../../../types.js"
 import type { ToolResult } from "./types.js"
-import { CONFIDENCES, KINDS, STATUSES } from "./types.js"
+import { KINDS, STATUSES } from "./types.js"
 
 // Required Markdown section headings on a `kind: 'procedure'` row's
 // body. Mirrors the sections `composeProcedureBody` produces at
@@ -77,7 +76,6 @@ export interface UpdateArgs {
   forceNewTopic?: boolean
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
-  confidence?: (typeof CONFIDENCES)[number]
   reviewBy?: string | null
   decidedAt?: string | null
   expiresAt?: string | null
@@ -503,7 +501,6 @@ export async function handleUpdate(
           topicId,
           kind: args.kind as MemoryKind | undefined,
           status: args.status as MemoryStatus | undefined,
-          confidence: args.confidence as MemoryConfidence | undefined,
           reviewBy: args.reviewBy,
           decidedAt: args.decidedAt,
           expiresAt: args.expiresAt,
@@ -653,7 +650,7 @@ export async function handleUpdate(
     //
     // Gate the whole branch on at least one extraction-relevant arg
     // being defined: title, keywords, or synopsis. An update that
-    // only mutates `confidence` / `status` / `reviewBy` /
+    // only mutates `status` / `reviewBy` /
     // `decidedAt` / `tags` / `projectIds` / `topicId` /
     // `supersedesIds` / `affectsIds` / `alternatives` /
     // `consequences` cannot change the extraction surface, so the
@@ -734,7 +731,7 @@ export async function handleUpdate(
       // be CREATED in decoded form AND INVALIDATED in encoded form
       // — silent invalidate-and-replace churn on a memory that
       // still mentions the same entity, decrementing the encoded
-      // row's `Confidence Score` for no operator-visible reason.
+      // row for no operator-visible reason.
       // Decoding here keeps the diff in one namespace and lets the
       // create-side `createWithDedup` triple-hash absorb the
       // migrated row naturally rather than via destructive

@@ -150,19 +150,12 @@ export const statusCommand = new Command("status")
         for (const line of backgroundFailureLines) console.log(line)
       }
 
-      // Status probes fan out via `Promise.all` — task summary,
-      // memory confidence summary, proposed-memory inbox count, and
-      // wake-up coverage. All probes read the same project scope,
-      // so wall-clock at the orchestration level is `max(probe_i)`
-      // rather than the sum. Adding a future probe extends the
-      // tuple and the destructure; the comment is generic on
-      // purpose so it can't drift on the next addition.
+      // Status probes fan out via `Promise.all`. All probes read the
+      // same project scope, so wall-clock at the orchestration level is
+      // `max(probe_i)` rather than the sum.
       // Vaults missing the `Done At` column silently omit the
-      // closure-rate line — `countClosedSince` returns null on the
-      // missing-property error path. Vaults whose `Confidence Score`
-      // column has not been backfilled render the confidence line
-      // with `0 scored` and no avg/below-threshold suffix; the line
-      // itself never disappears. The proposed-inbox line is
+      // closure-rate line because `countClosedSince` returns null on the
+      // missing-property error path. The proposed-inbox line is
       // suppressed entirely on `total === 0` so an empty inbox
       // doesn't occupy a row of vault state.
       //
@@ -178,32 +171,23 @@ export const statusCommand = new Command("status")
       // `Status failed: ...`. Matches `taskStats`'s pre-DEFERRED-04
       // posture and the `searchByHybridPages` design rule that
       // "fully-broken subsystem doesn't masquerade as no-results".
-      //
-      // `confidenceStats` is internally sequential — its pagination
-      // dominates wall-clock on large vaults. The fan-out gives us
-      // parallel dispatch of the top-level probes; it does not
-      // parallelize the iterator inside `confidenceStats`. The
-      // method's docstring documents the cost gap.
-      const [tasks, confidence, proposedInbox, expiringScoped, wakeUp] =
-        await Promise.all([
-          taskStats(services.tasks, {
-            projectId: project?.id,
-            today: todayUtc(),
-          }),
-          services.memories.confidenceStats({ projectId: project?.id }),
-          loadProposedInboxStatus(services, { projectId: project?.id }),
-          // Surfaces expired/expiring/out-of-context rows for cleanup.
-          // Same fan-out posture as the other probes; wall-clock at the
-          // orchestration level stays `max(...)`.
-          loadExpiringScopedStatus(services, { projectId: project?.id }),
-          loadWakeUpData(services, {
-            projectId: project?.id,
-            includeMemoryContent: false,
-            includeCoverage: true,
-          }),
-        ])
+      const [tasks, proposedInbox, expiringScoped, wakeUp] = await Promise.all([
+        taskStats(services.tasks, {
+          projectId: project?.id,
+          today: todayUtc(),
+        }),
+        loadProposedInboxStatus(services, { projectId: project?.id }),
+        // Surfaces expired/expiring/out-of-context rows for cleanup.
+        // Same fan-out posture as the other probes; wall-clock at the
+        // orchestration level stays `max(...)`.
+        loadExpiringScopedStatus(services, { projectId: project?.id }),
+        loadWakeUpData(services, {
+          projectId: project?.id,
+          includeMemoryContent: false,
+          includeCoverage: true,
+        }),
+      ])
       for (const line of formatTaskSummary(tasks)) console.log(line)
-      for (const line of formatConfidenceSummary(confidence)) console.log(line)
       for (const line of formatProposedInboxStatus(proposedInbox)) console.log(line)
       for (const line of formatExpiringScopedSummary(expiringScoped)) console.log(line)
       if (wakeUp.coverage) {
@@ -868,99 +852,6 @@ export function formatTrackingPreflight(report: TrackingPreflightReport): string
     "  (b) hand-edit the Notion rows to convert them to tasks.",
     "  Until remediated, these rows are invisible to lore.",
   ]
-}
-
-// ---------------------------------------------------------------------------
-// Confidence summary (DEFERRED-04)
-// ---------------------------------------------------------------------------
-
-/**
- * Aggregated `Confidence Score` distribution surfaced as a single line
- * on `lore status` next to the Tasks summary. Memory-side parallel of
- * `TaskStats`'s closure-rate row.
- *
- * `averageScore` is `0` when `scoredMemories === 0`; the renderer
- * suppresses the avg surface in that case rather than rendering
- * `avg 0.00`. The placeholder zero is a typing artifact, not an
- * operator signal.
- */
-export interface ConfidenceStatsReport {
-  totalMemories: number
-  scoredMemories: number
-  averageScore: number
-  belowThreshold: number
-}
-
-/**
- * Render the confidence-summary line from a `ConfidenceStatsReport`.
- *
- * Returns at most one line:
- *
- * - Empty / non-positive `totalMemories` ⇒ `[]` so the caller's single
- *   length check suppresses the line entirely (same contract as
- *   `formatDigestStatus` / `formatDriftStatus` / `formatTrackingPreflight`).
- * - `scoredMemories === 0` ⇒ `Memory confidence: N total, 0 scored`.
- *   Vaults that haven't run `lore migrate --build-confidence-scores`
- *   land here. The `(avg …)`
- *   suffix is suppressed — there is no meaningful average over zero
- *   rows.
- * - `belowThreshold === 0` ⇒
- *   `Memory confidence: N total, M scored (avg X.XX)`. Drops the
- *   trailing `, K below threshold` when nothing is below the
- *   `CONFIDENCE_DISPLAY_THRESHOLD` gate, matching `formatTaskSummary`'s
- *   "only render non-zero substats" posture.
- * - Otherwise ⇒
- *   `Memory confidence: N total, M scored (avg X.XX, K below threshold)`.
- *
- * Average is the arithmetic mean across scored rows, rendered to two
- * decimal places — same precision the Tasks closure rate uses, so
- * the two summary lines read as one visual cluster. Floating-point
- * accumulation can leave the displayed value off by one ULP from the
- * "true" mean on long pagination; the line is signal, not financial,
- * so this is acceptable. The renderer clamps `averageScore` to
- * `[0, 1]` defensively so a ULP drift past 1.0 (or a future caller
- * constructing the report directly with an out-of-band value)
- * cannot render `avg 1.0000…2` or `avg 99.00`.
- *
- * Pure function: deterministic in `report`, no I/O.
- */
-export function formatConfidenceSummary(report: ConfidenceStatsReport): string[] {
-  if (report.totalMemories <= 0) return []
-
-  // Defense-in-depth on the structural invariants `confidenceStats`
-  // upholds — `scoredMemories <= totalMemories`, `belowThreshold <=
-  // scoredMemories`, and `0 <= averageScore <= 1`. The loader cannot
-  // produce inconsistent values, but a future caller constructing a
-  // `ConfidenceStatsReport` directly (a JSON-import test fixture, a
-  // hypothetical MCP parallel surface that reuses this renderer)
-  // could pass `{ totalMemories: 100, scoredMemories: 200 }` or
-  // `{ averageScore: 99 }` and render a structurally impossible line
-  // like `(avg 99.00, …)`. Same posture as the negative-
-  // `totalMemories` short-circuit above and the
-  // `formatTrackingPreflight` non-positive guard. The score clamp
-  // also absorbs the FP-mean's ULP drift past 1.0 noted in
-  // `MemoryService.confidenceStats`'s docstring.
-  const scoredMemories = Math.min(
-    Math.max(0, report.scoredMemories),
-    report.totalMemories
-  )
-  const belowThreshold = Math.min(Math.max(0, report.belowThreshold), scoredMemories)
-  const averageScore = Math.min(1, Math.max(0, report.averageScore))
-
-  // `Memory confidence:` rather than `Memories:` deliberately —
-  // the bare `Memories:` prefix would visually collide with the
-  // `Database counts → Memories: N` line two rows above on
-  // vaults where archive-rate is low. Two summaries reading as
-  // a duplicate count is the failure mode this naming sidesteps.
-  let line = `Memory confidence: ${report.totalMemories} total, ${scoredMemories} scored`
-  if (scoredMemories > 0) {
-    const subStats: string[] = [`avg ${averageScore.toFixed(2)}`]
-    if (belowThreshold > 0) {
-      subStats.push(`${belowThreshold} below threshold`)
-    }
-    line += ` (${subStats.join(", ")})`
-  }
-  return [line]
 }
 
 // Proposed-memory inbox — `loadProposedInboxStatus` and

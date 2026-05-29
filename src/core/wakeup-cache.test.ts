@@ -20,7 +20,6 @@ function makeData(): WakeUpData {
     taskMemories: [],
     proposedMemories: [],
     proposedMemoriesTotal: 0,
-    staleConfidence: [],
     pinnedBlocks: [],
     pinnedBlocksTotal: null,
     coverage: null,
@@ -301,7 +300,6 @@ describe("computeWakeUpCacheKey", () => {
     for (const field of [
       "includeMemoryContent",
       "includeDecisions",
-      "includeStaleConfidence",
       "includeProposedMemories",
       "includeCoverage",
       // Issue #286 — toggling `includeInheritedMemories` swings

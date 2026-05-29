@@ -6,7 +6,6 @@ memories:
     title: Snapshot fixture pruning
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: snapshot fixture prune orphan
@@ -15,7 +14,6 @@ memories:
     title: CI flake triage runbook
     kind: runbook
     status: informational
-    confidence: likely
     tags:
       - reliability
     keywords: ci flake triage rerun

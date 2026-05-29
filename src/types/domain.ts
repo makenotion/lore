@@ -153,10 +153,16 @@ export interface CreateTopicInput {
 
 /**
  * Where a memory originated. `agent_diary` is retained for stored rows and
- * explicit audit reads, but write surfaces accept only `conversation`, `file`,
- * `manual`, and `digest`.
+ * explicit audit reads, but write surfaces accept only `conversation`,
+ * `autosave_learning`, `file`, `manual`, and `digest`.
  */
-export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | "digest"
+export type MemorySource =
+  | "conversation"
+  | "autosave_learning"
+  | "file"
+  | "manual"
+  | "agent_diary"
+  | "digest"
 
 /**
  * What kind of memory this is. Used as a server-side discriminator so
@@ -164,7 +170,7 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
  *
  * `procedure` memories are reviewed, fleet-wide operating knowledge
  * promoted from resolved episodes (closed tasks, resolved incidents,
- * postmortems, high-confidence notes). Adapted from the LangMem
+ * postmortems, durable notes). Adapted from the LangMem
  * episodic / semantic / procedural taxonomy — episodes remain
  * inspectable history; procedures become the "when this situation
  * appears, this sequence worked" surface agents reach for. The page
@@ -238,11 +244,6 @@ export type MemoryStatus =
   | "deprecated"
   | "rejected"
 
-/**
- * Confidence calibration for memories. Parallels `FactConfidence`.
- */
-export type MemoryConfidence = "certain" | "likely" | "speculative"
-
 // ---------------------------------------------------------------------------
 // Pinned context blocks
 // ---------------------------------------------------------------------------
@@ -305,16 +306,6 @@ export interface Memory {
   source: MemorySource
   kind: MemoryKind
   status: MemoryStatus
-  confidence: MemoryConfidence
-  /**
-   * System-managed numeric confidence in [0, 1]. `null` until the memory
-   * has been touched once by a read path (or backfilled by `lore migrate
-   * --build-confidence-scores`). RRF reads this as a weighting factor;
-   * rendering surfaces a trust indicator when below
-   * `CONFIDENCE_DISPLAY_THRESHOLD`. Distinct from the agent-curated
-   * `confidence` categorical above.
-   */
-  confidenceScore: number | null
   reviewBy: string | null
   /**
    * Most recent close timestamp for tasks. YYYY-MM-DD, or `null` for
@@ -330,14 +321,9 @@ export interface Memory {
   decidedAt: string | null
   /**
    * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
-   * memory has been touched once by a read path (or backfilled by
-   * `lore migrate --build-confidence-scores`). Distinct from `updatedAt`
+   * memory has been touched once by a read path. Distinct from `updatedAt`
    * (Notion built-in, edit timestamp) and from `createdAt` (Notion
    * built-in, creation timestamp).
-   *
-   * Decay reads this; the stale-confidence wake-up subsection reads this.
-   * RRF does NOT read this directly — the decay function mediates between
-   * `lastReferencedAt` and the confidence score.
    */
   lastReferencedAt: string | null
   supersedesIds: string[]
@@ -425,7 +411,7 @@ export interface Memory {
    * `{"verdict": ..., "target": ..., "reason": ..., "judgedAt": ...,
    * "promptVersion": ...}`. Actionable verdicts may also append
    * internal `{"entryType":"compare_dispatch", ...}` ledger lines
-   * so retries can prove a Confidence Score decrement already landed.
+   * so retries can prove the compare-notes dispatch already landed.
    * Empty string for legacy rows. Capped via `COMPARE_NOTES_MAX_CHARS`;
    * the append helpers throw on overflow rather than truncating so
    * over-compared memories surface to the operator.
@@ -500,20 +486,11 @@ export interface CreateMemoryInput {
   source?: MemorySource
   kind?: MemoryKind
   status?: MemoryStatus
-  confidence?: MemoryConfidence
-  /**
-   * Optional initial Confidence Score. Production callers leave this
-   * unset — the column is system-managed via `touchOnRead` / decay /
-   * contradiction signals. Test fixtures and migrations may set it
-   * explicitly. `null` clears the column to "never scored".
-   */
-  confidenceScore?: number | null
   reviewBy?: string
   decidedAt?: string
   /**
    * Service-layer-only field. Not exposed on the MCP tool surface — the
-   * column is system-managed by `MemoryService.touchOnRead` and the
-   * `--build-confidence-scores` migration, not by agents.
+   * column is system-managed by `MemoryService.touchOnRead`, not by agents.
    */
   lastReferencedAt?: string
   supersedesIds?: string[]
@@ -641,26 +618,17 @@ export interface UpdateMemoryInput {
   synopsis?: string
   kind?: MemoryKind
   status?: MemoryStatus
-  confidence?: MemoryConfidence
   /** Shorthand update for `scope.expiresAt`; `null` clears the date. */
   expiresAt?: string | null
   /** Event-bound expiry marker. Empty string or `null` clears the column. */
   expiresOn?: string | null
-  /**
-   * Optional Confidence Score update. Production callers leave this unset —
-   * the column is system-managed via `touchOnRead` / decay / contradiction
-   * signals. Test fixtures and migrations may set it explicitly. `null`
-   * clears the column to "never scored".
-   */
-  confidenceScore?: number | null
   reviewBy?: string | null
   decidedAt?: string | null
   /**
    * Service-layer-only field. Pass `null` to clear; `undefined` (the
    * default) leaves the column untouched. Not exposed on the MCP tool
    * surface — `Last Referenced At` is system-managed by
-   * `MemoryService.touchOnRead` and the `--build-confidence-scores`
-   * migration.
+   * `MemoryService.touchOnRead`.
    */
   lastReferencedAt?: string | null
   supersedesIds?: string[]
@@ -756,7 +724,6 @@ export interface CreateDecisionInput {
   projectIds?: string[]
   topicId?: string
   status?: DecisionStatus
-  confidence?: MemoryConfidence
   reviewBy?: string
   decidedAt?: string
   /** Memory IDs this decision supersedes. */
@@ -858,7 +825,6 @@ export interface CreateTaskInput {
   entity?: string
   /** Due date / next review. Maps to the `Review By` column. */
   dueDate?: string
-  confidence?: MemoryConfidence
   /**
    * Source memory IDs that motivated this task. Maps to `Affects` —
    * mirroring how migrated tasks carry the original fact's
@@ -1088,22 +1054,20 @@ export interface Fact {
   /**
    * System-managed numeric confidence in [0, 1]. `null` until the fact has
    * been touched once by a read path (or backfilled by `lore migrate
-   * --build-fact-confidence-scores`). Mirrors the Memories DB column —
-   * lore-ask reads this as a weighting factor over the existing recency
-   * sort (DEFERRED-02). Distinct from the agent-curated `confidence`
-   * categorical above. Optional on the type for the same backward-compat
-   * reason as `subjectEntityId`: pre-DEFERRED-02 `Fact` JSON would
-   * otherwise fail validation. Internal `pageToFact` always populates
-   * (`null` when the column is absent).
+   * --build-fact-confidence-scores`). `lore-ask` reads this as a weighting
+   * factor over the existing recency sort. Distinct from the agent-curated
+   * `confidence` categorical above. Optional on the type for the same
+   * backward-compat reason as `subjectEntityId`: older `Fact` JSON would
+   * otherwise fail validation. Internal `pageToFact` always populates (`null`
+   * when the column is absent).
    */
   confidenceScore?: number | null
   /**
    * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
    * fact has been touched once by a read path (or backfilled by
-   * `lore migrate --build-fact-confidence-scores`). Mirrors the Memories
-   * DB column. Distinct from `validFrom` (relationship-validity start) and
-   * Notion's `last_edited_time` (write timestamp). Optional for backward
-   * compat; `pageToFact` always populates.
+   * `lore migrate --build-fact-confidence-scores`). Distinct from `validFrom`
+   * (relationship-validity start) and Notion's `last_edited_time` (write
+   * timestamp). Optional for backward compat; `pageToFact` always populates.
    */
   lastReferencedAt?: string | null
   /**

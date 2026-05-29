@@ -42,8 +42,6 @@ function buildMemory(overrides: Partial<Memory> & { createdAt: string }): Memory
     source: "manual" satisfies MemorySource,
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -75,7 +73,6 @@ function buildWakeUpSearchPage(
   id: string,
   options: {
     title: string
-    confidenceScore: number
     lastReferencedAt: string
   }
 ): PageObjectResponse {
@@ -109,10 +106,6 @@ function buildWakeUpSearchPage(
       [MEMORY_PROPS.TAGS]: { type: "multi_select", multi_select: [] } as unknown,
       [MEMORY_PROPS.KEYWORDS]: { type: "rich_text", rich_text: [] } as unknown,
       [MEMORY_PROPS.SYNOPSIS]: { type: "rich_text", rich_text: [] } as unknown,
-      [MEMORY_PROPS.CONFIDENCE_SCORE]: {
-        type: "number",
-        number: options.confidenceScore,
-      } as unknown,
       [MEMORY_PROPS.LAST_REFERENCED_AT]: {
         type: "date",
         date: { start: options.lastReferencedAt },
@@ -133,7 +126,7 @@ function buildFact(overrides: Partial<Fact>): Fact {
     validUntil: null,
     reviewBy: null,
     sourceMemoryId: null,
-    confidence: "certain",
+    confidence: "likely",
     createdAt: "2026-01-01T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
@@ -150,8 +143,6 @@ function buildTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummar
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -263,14 +254,6 @@ type PinnedBlocksCall = {
   includeContent?: boolean
   includeExpired?: boolean
 }
-
-type StaleConfidenceCall = {
-  projectId?: string
-  limit: number
-  today: string
-  includeExpired?: boolean
-}
-
 interface StubServices extends WakeUpServices {
   memoriesCalls: ListCall[]
   memoriesSearchCalls: SearchCall[]
@@ -278,7 +261,6 @@ interface StubServices extends WakeUpServices {
   decisionsListCalls: ListDecisionsOpts[]
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
   tasksListCalls: ListTasksOpts[]
-  staleConfidenceCalls: StaleConfidenceCall[]
   pinnedBlocksCalls: PinnedBlocksCall[]
 }
 
@@ -334,7 +316,6 @@ function stubServices(
     proposedDecisions?: DecisionSummary[]
     overdueDecisions?: DecisionSummary[]
     tasks?: TaskSummary[]
-    staleConfidence?: Memory[]
     /**
      * Memories returned for the proposed-memory inbox query (issue #281,
      * AC #2). The wake-up data layer dispatches via
@@ -375,7 +356,6 @@ function stubServices(
   const decisionsListCalls: ListDecisionsOpts[] = []
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const tasksListCalls: ListTasksOpts[] = []
-  const staleConfidenceCalls: StaleConfidenceCall[] = []
   const pinnedBlocksCalls: PinnedBlocksCall[] = []
   const factsResult = opts.facts ?? []
 
@@ -412,13 +392,6 @@ function stubServices(
           return applySearchCallFilters(opts.taskMemories, args)
         }
         return applySearchCallFilters(opts.relatedMemories ?? [], args)
-      }),
-      queryStaleConfidence: vi.fn(async (args: StaleConfidenceCall) => {
-        staleConfidenceCalls.push(args)
-        // Mirror the production `page_size: opts.limit` cap so a
-        // fixture feeding more rows than the limit can authentically
-        // simulate saturation.
-        return (opts.staleConfidence ?? []).slice(0, args.limit)
       }),
       countProposed: vi.fn(async () => ({
         // Default to the slice length so tests that don't override
@@ -476,7 +449,6 @@ function stubServices(
     decisionsListCalls,
     decisionsOverdueCalls,
     tasksListCalls,
-    staleConfidenceCalls,
     pinnedBlocksCalls,
   }
 }
@@ -500,10 +472,6 @@ describe("wake-up coverage counters", () => {
       id: "task-memory",
       createdAt: "2026-04-17T00:00:00Z",
     })
-    const stale = buildMemory({
-      id: "stale-confidence",
-      createdAt: "2026-04-16T00:00:00Z",
-    })
 
     const coverage = computeWakeUpCoverage({
       userQuery: "  Fix retrieval metrics  ",
@@ -517,7 +485,6 @@ describe("wake-up coverage counters", () => {
       knowledgeFacts: [buildFact({ id: "fact" })],
       proposedDecisions: [buildDecision({ id: "proposed", status: "proposed" })],
       overdueDecisions: [buildDecision({ id: "overdue", status: "accepted" })],
-      staleConfidence: [stale],
     })
 
     expect(coverage.mode).toBe("ranked")
@@ -537,7 +504,6 @@ describe("wake-up coverage counters", () => {
       proposedDecisions: 1,
       overdueDecisions: 1,
       proposedMemories: 0,
-      staleConfidence: 1,
     })
   })
 
@@ -559,7 +525,6 @@ describe("wake-up coverage counters", () => {
       knowledgeFacts: [],
       proposedDecisions: [],
       overdueDecisions: [],
-      staleConfidence: [],
     })
 
     expect(coverage.mode).toBe("default")
@@ -587,7 +552,6 @@ describe("wake-up coverage counters", () => {
       knowledgeFacts: [],
       proposedDecisions: [],
       overdueDecisions: [],
-      staleConfidence: [],
     })
 
     expect(coverage.digest).toEqual({
@@ -611,7 +575,6 @@ describe("wake-up coverage counters", () => {
       knowledgeFacts: [],
       proposedDecisions: [],
       overdueDecisions: [],
-      staleConfidence: [],
     })
 
     expect(coverage.mode).toBe("default")
@@ -714,7 +677,6 @@ describe("wake-up coverage counters", () => {
       knowledgeFacts: [],
       proposedDecisions: [],
       overdueDecisions: [],
-      staleConfidence: [],
     })
 
     expect(formatWakeUpCoverageReport(coverage)).toEqual([
@@ -768,7 +730,7 @@ describe("loadWakeUpData", () => {
     expect(data.coverage).not.toBeNull()
   })
 
-  it("threads includeExpiredMemories through stale confidence and pinned wake-up blocks", async () => {
+  it("threads includeExpiredMemories through pinned wake-up blocks", async () => {
     const services = stubServices({
       pinnedBlocks: [
         buildMemory({
@@ -786,12 +748,6 @@ describe("loadWakeUpData", () => {
     })
 
     expect(services.pinnedBlocksCalls).toContainEqual(
-      expect.objectContaining({
-        projectId: "p1",
-        includeExpired: true,
-      })
-    )
-    expect(services.staleConfidenceCalls).toContainEqual(
       expect.objectContaining({
         projectId: "p1",
         includeExpired: true,
@@ -926,7 +882,6 @@ describe("loadWakeUpData", () => {
     expect(taskOnly.tasks).toEqual([])
     expect(taskOnly.proposedDecisions).toEqual([])
     expect(taskOnly.proposedMemories).toEqual([])
-    expect(taskOnly.staleConfidence).toEqual([])
     expect(taskOnly.pinnedBlocks).toEqual([])
     expect(taskOnly.inheritedMemories).toEqual([])
     expect(taskOnly.taskMemories.map((memory) => memory.id)).toEqual([
@@ -947,7 +902,6 @@ describe("loadWakeUpData", () => {
       knowledgeFacts: 0,
       decisions: 0,
       proposedMemories: 0,
-      staleConfidence: 0,
     })
     expect(taskOnlyServices.memoriesCalls).toEqual([
       expect.objectContaining({ source: "digest" }),
@@ -955,7 +909,6 @@ describe("loadWakeUpData", () => {
     expect(taskOnlyServices.factsListRecentCalls).toEqual([])
     expect(taskOnlyServices.decisionsListCalls).toEqual([])
     expect(taskOnlyServices.tasksListCalls).toEqual([])
-    expect(taskOnlyServices.staleConfidenceCalls).toEqual([])
   })
 
   it("reports pinned and inherited rows as separate coverage channels", async () => {
@@ -1355,8 +1308,6 @@ describe("loadWakeUpData", () => {
         source: "manual",
         kind: "decision",
         status: "proposed",
-        confidence: "likely",
-        confidenceScore: null,
         reviewBy: null,
         doneAt: null,
         decidedAt: "2026-04-01",
@@ -1582,8 +1533,8 @@ describe("loadWakeUpData", () => {
   })
 
   it("skips the proposed-memory query when includeProposedMemories is false", async () => {
-    // Hook wake-up renders no inbox section — same posture as
-    // `includeDecisions: false` and `includeStaleConfidence: false`.
+    // Hook wake-up renders no inbox section, matching the opt-out posture for
+    // other omitted wake-up sections.
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
@@ -2054,13 +2005,11 @@ describe("loadWakeUpData", () => {
       const searchSpy = vi.fn(async () => ({
         results: [
           buildWakeUpSearchPage("stale-stored-high", {
-            title: "Auth stale high stored confidence",
-            confidenceScore: 0.9,
+            title: "Auth stale stored context",
             lastReferencedAt: "2000-01-01",
           }),
           buildWakeUpSearchPage("fresh-stored-lower", {
-            title: "Auth fresh lower stored confidence",
-            confidenceScore: 0.8,
+            title: "Auth fresh stored context",
             lastReferencedAt: "2999-01-01",
           }),
         ],
@@ -2879,7 +2828,6 @@ describe("loadWakeUpData with WakeUpCache", () => {
       decisionsList: s.decisionsListCalls.length,
       decisionsOverdue: s.decisionsOverdueCalls.length,
       tasksList: s.tasksListCalls.length,
-      staleConfidence: s.staleConfidenceCalls.length,
     }
   }
 
@@ -2963,7 +2911,6 @@ describe("loadWakeUpData with WakeUpCache", () => {
             pendingMemoryListResolvers.push(resolve)
           }),
         search: async () => [],
-        queryStaleConfidence: async () => [],
         countProposed: async () => ({
           total: 0,
           bySource: {},
@@ -3042,7 +2989,7 @@ describe("loadWakeUpData with WakeUpCache", () => {
     // Baseline: one uncached wake-up — measures the call count for
     // a single fan-out without depending on the exact internal
     // shape (raw memories + digest + proposed memories + facts +
-    // decisions + tasks × 3 buckets + stale confidence).
+    // decisions + tasks × 3 buckets).
     const baseline = stubServices({})
     await loadWakeUpData(baseline, { projectId: "p1", now: NOW })
 

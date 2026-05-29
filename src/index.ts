@@ -17,7 +17,6 @@ export type {
   MemorySource,
   MemoryKind,
   MemoryStatus,
-  MemoryConfidence,
   Decision,
   DecisionSummary,
   DecisionStatus,

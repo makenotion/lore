@@ -250,7 +250,7 @@ function buildConversationalToolGuidance(proposeByDefault: boolean): string {
     : ""
   return `When a save is warranted, call lore-* tools now. For each one, pick the project based on the user's context when a configured project clearly applies; otherwise leave project scope empty rather than forcing a repo bucket.
 
-• lore-memory action='save' — Save one user-stated recall fact. Pass kind: "note", source: "conversation", confidence: "likely", relevant tags/keywords, and topicName when a durable topic exists.${statusClause}
+• lore-memory action='save' — Save one user-stated recall fact. Pass kind: "note", source: "autosave_learning", relevant tags/keywords, and topicName when a durable topic exists.${statusClause}
 • lore-fact action='create' — Use only for durable entity relationships that will help retrieval, and only after saving or finding a source memory. Do not turn every personal preference into a fact edge.
 • lore-decision action='create' — Use only when the user makes an explicit durable decision with rationale and consequences.
 • lore-task action='create' — Use only for explicit future work, reminders, or blocked commitments the user expects Lore to track. Do not invent tasks from casual mentions.
@@ -283,17 +283,15 @@ export const PER_SPAWN_LEARNING_LIMIT = 5
  * via `lore-memory action='save'`, alongside whatever session-level synopsis
  * the existing extraction filter yields.
  *
- * Per `0.9.0/Phase-1/08`: extraction happens *invisibly* in the background
- * sub-agent, not via a foreground `## Key Learnings:` convention. The
- * earlier engram-style draft asked the foreground agent to enumerate
- * learnings inline; the reviewer pushed back because that pollutes
- * user-visible output and makes the memory store contingent on whatever the
- * agent remembered to write down. The block below is the redesigned shape:
- * structural in the background, no agent-compliance risk.
+ * Extraction happens in the background sub-agent, not via a foreground
+ * `## Key Learnings:` convention. Keeping learning extraction out of visible
+ * assistant output prevents user-facing boilerplate and keeps the memory store
+ * tied to the autosave path instead of to whatever the foreground agent
+ * remembers to narrate.
  *
  * Dedup has two layers: the save path structurally reuses repeated
- * likely-note saves in the same project when they restate an existing
- * autosave learning, and the prompt still asks the sub-agent to probe
+ * `autosave_learning` note saves in the same project when they restate an
+ * existing autosave learning, and the prompt still asks the sub-agent to probe
  * `lore-query action='search'` for older-vault near-matches before saving
  * a candidate. `action='ask'` is the
  * wrong probe — it walks the fact / task graph by entity, not the Memories
@@ -321,8 +319,7 @@ For each recall fact, call \`lore-memory action='save'\` with:
   - title: short noun-led phrase <= 80 chars
   - content: 1-3 sentences with the fact + minimal context, written as something future sessions can rely on
   - kind: "note"
-  - source: "conversation"
-  - confidence: "likely" (required for autosave recall dedup; do not bump to "certain" even when the user explicitly says to remember the fact)${statusLine}
+  - source: "autosave_learning"${statusLine}
 
 A recall fact must be:
   1. **Atomic.** One fact, one memory. Split compound statements.
@@ -350,12 +347,12 @@ For each atomic learning, call \`lore-memory action='save'\` with:
   - title: short verb-or-noun-led phrase ≤ 80 chars
   - content: 1-3 sentences with the fact + minimal context
   - kind: "note"
-  - confidence: "likely" (required for autosave learning dedup; do not omit or bump to "certain" on atomic-learning saves, because the default would overstate inference-derived facts and opt the row out of the structural duplicate gate)${statusLine}
+  - source: "autosave_learning"${statusLine}
 
 A learning must be:
   1. **Atomic.** One fact, one memory. Compound observations split into multiple saves.
   2. **Durable.** Useful beyond this specific bug or feature. "Fixed the off-by-one" is NOT durable; "binary-search variant XXXX needs <= comparison, not <" IS durable.
-  3. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly saved the memory via \`lore-memory action='save'\` or created the decision via \`lore-decision action='create'\` in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. If you save the same likely-note learning twice in the same project, \`lore-memory action='save'\` will return the existing learning instead of creating another row. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
+  3. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly saved the memory via \`lore-memory action='save'\` or created the decision via \`lore-decision action='create'\` in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. If you save the same autosave learning twice in the same project, \`lore-memory action='save'\` will return the existing learning instead of creating another row. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
 
 **Per-spawn cap: at most ${PER_SPAWN_LEARNING_LIMIT} atomic learnings per autosave run.** A noisy session that surfaces 30 candidate facts must rank by durability and skip the long tail. Picking the top ${PER_SPAWN_LEARNING_LIMIT} high-signal learnings is better than flooding the vault with 30 marginal rows; the next session's autosave will pick up anything truly important that this run dropped (the transcript context overlaps).
 

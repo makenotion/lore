@@ -18,8 +18,6 @@
  * `kind` is filtered when `=== "note"` (catch-all default); `status` is
  * filtered when `=== "informational"` (catch-all default); `tags` is filtered
  * when empty; `rev N` is filtered when `revisionCount < REVISION_DISPLAY_THRESHOLD`.
- * The trust line (`_{trust}_`) is a SEPARATE line emitted between the heading
- * and the synopsis — it is NOT a meta-line component.
  */
 
 import type {
@@ -194,24 +192,9 @@ export interface MemoryListItem {
   createdAt: string
   updatedAt: string
   /**
-   * System-managed numeric confidence in [0, 1]. `null` until the row has
-   * been touched once by a read path (or backfilled by `lore migrate
-   * --build-confidence-scores`). Drives the trust-indicator line rendered
-   * between heading and synopsis when the score falls below
-   * `CONFIDENCE_DISPLAY_THRESHOLD`; null and above-threshold rows render
-   * byte-identically to the no-trust-indicator baseline.
-   */
-  confidenceScore: number | null
-  /**
    * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
-   * row has been touched once by a read path (or backfilled by
-   * `lore migrate --build-confidence-scores`). Read by the wake-up Stale
-   * Confidence section's per-row meta builder to render
-   * `Last referenced: Nd ago`. Carried on the structural type rather than
-   * cast at the call site so other section-specific meta builders that
-   * want the same neglect signal don't have to re-derive it. `Memory`,
-   * `DecisionSummary`, and `TaskSummary` all carry the field structurally,
-   * so every existing caller satisfies the shape.
+   * row has been touched once by a read path. Carried on the structural type
+   * so section-specific meta builders can render read recency without casts.
    */
   lastReferencedAt: string | null
   /**
@@ -219,8 +202,7 @@ export interface MemoryListItem {
    * Defaults to 1 for fresh rows and for legacy rows.
    * `defaultMemoryMetaBuilder` surfaces a `rev N` marker when the value
    * is at or above `REVISION_DISPLAY_THRESHOLD`. `Memory`, `DecisionSummary`,
-   * and `TaskSummary` all carry the field structurally — same migration
-   * pattern as `confidenceScore`.
+   * and `TaskSummary` all carry the field structurally.
    */
   revisionCount: number
   /**
@@ -288,14 +270,6 @@ export interface FormatMemoryListItemOptions {
  * with no signal. Single source of truth; tuning the threshold is a
  * one-line change.
  *
- * Parallels `CONFIDENCE_DISPLAY_THRESHOLD` in posture — both
- * gate an additive surface signal on a system-managed numeric column —
- * but the comparison polarities INVERT: the trust label fires when
- * `confidenceScore < threshold` (low-confidence rows are the ones that
- * need flagging), while the rev marker fires when
- * `revisionCount >= threshold` (high-revision rows are the ones with
- * evolution depth worth surfacing). Both are still strict comparisons
- * gating a non-default signal; only the direction differs.
  */
 export const REVISION_DISPLAY_THRESHOLD = 2
 
@@ -304,10 +278,9 @@ export const REVISION_DISPLAY_THRESHOLD = 2
  * display threshold; otherwise return `null` so caller-side
  * `.filter((p): p is string => p !== null)` chains drop the slot
  * cleanly. Single helper consumed by every meta builder
- * (`defaultMemoryMetaBuilder`, plus wake-up's
- * `wakeUpMemoryMetaBuilder` and `staleConfidenceMetaBuilder` on the
- * `lore-context` MCP tool) so a future tuning of the threshold or
- * the rendered string lands in one place.
+ * (`defaultMemoryMetaBuilder`, plus wake-up's `wakeUpMemoryMetaBuilder`
+ * on the `lore-context` MCP tool) so a future tuning of the threshold
+ * or the rendered string lands in one place.
  *
  * Returns `null` rather than the empty string so consumers using a
  * type-narrowing predicate filter (`(p): p is string => p !== null`)
@@ -322,30 +295,18 @@ export function renderRevisionMarker(revisionCount: number): string | null {
 }
 
 /**
- * Render the trust-indicator line component for a list-shaped row whose
- * stored `Confidence Score` may be below `CONFIDENCE_DISPLAY_THRESHOLD`.
+ * Render the trust-indicator line component for a fact row whose stored
+ * `Confidence Score` may be below `CONFIDENCE_DISPLAY_THRESHOLD`.
  * Returns the italic-wrapped label (`_{label}_`) prefixed by `indent`
  * when the row is scored AND below the display threshold; returns
  * `null` otherwise (unmigrated / unscored rows AND above-threshold
  * rows render byte-identically to the no-trust-indicator baseline).
  *
- * Single source of truth for the cross-surface trust line shape
- * (0.9.0/DEFERRED-07): `lore-decision action='list' | 'context'`,
- * `lore-task action='list'`, `lore-context action='wake-up'`'s
- * Decisions Requiring Attention + Tasks subsections, and
- * `lore-query action='audit'`'s Overdue Decisions all consume this
- * helper so a future tuning of the threshold, label vocabulary, or
- * italic-wrap shape lands in one place. `formatMemoryListItem` also
- * routes through here for the same reason — extracting the shared
- * piece keeps the recall / search listings byte-aligned with the new
- * surfaces.
+ * Single source of truth for fact trust line shape.
  *
  * `indent` is prefixed before the underscore so callers in
- * heading-shaped surfaces (recall / search / wake-up Recent + Related,
- * `lore-decision action='list' | 'context'`) pass `""`, and
- * bullet-shaped surfaces (`lore-task action='list'`, wake-up Tasks +
- * Decisions Requiring Attention, audit Overdue Decisions) pass `"  "`
- * (two spaces) to align with their continuation columns.
+ * heading-shaped surfaces pass `""`, and bullet-shaped surfaces pass
+ * `"  "` (two spaces) to align with their continuation columns.
  */
 export function renderTrustLine(
   confidenceScore: number | null,
@@ -401,17 +362,9 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
  * Output shape, traversing the four-cell `body` × synopsis matrix:
  *
  *   `### {title}` (heading level configurable)
- *   `[_{trust}_]`  (only when `confidenceScore !== null && confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD`)
  *   `[{synopsis}]`  (only when `includeSynopsis !== false` and present)
  *   `*{meta}*`      (only when meta builder/string yields a non-null value)
  *   `[\n\n{body}]`  (only when `body` is non-empty)
- *
- * The trust line sits ABOVE the synopsis because the trust signal
- * contextualizes how to read the synopsis (a low-confidence memory's
- * synopsis is itself suspect). Italic-wrapped via underscores so
- * markdown viewers render the line as italic system metadata, distinct
- * from the synopsis content; plain-text readers see the underscores
- * literally — still parseable, still readable.
  *
  * The synopsis is defensively truncated at `SYNOPSIS_MAX`. The normal
  * memory authoring path rejects over-budget synopses before writing, but
@@ -427,17 +380,6 @@ export function formatMemoryListItem(
   const headingLevel = options.headingLevel ?? 3
   const heading = "#".repeat(headingLevel)
   const lines: string[] = [`${heading} ${memory.title}`]
-
-  // Trust indicator. Above the synopsis on purpose — a low-confidence
-  // memory's synopsis is itself suspect, so the signal has to land
-  // before the reader parses the content. The threshold gate and the
-  // "unscored row" null-guard both live inside `renderTrustLine` so
-  // this surface stays aligned with the decision-list / task-list /
-  // wake-up surfaces.
-  const trustLine = renderTrustLine(memory.confidenceScore)
-  if (trustLine !== null) {
-    lines.push(trustLine)
-  }
 
   const includeSynopsis = options.includeSynopsis !== false
   // `.trim()` on the truthy check so a whitespace-only synopsis (a hypothetical

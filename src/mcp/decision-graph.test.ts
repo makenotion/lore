@@ -16,8 +16,6 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     source: "manual",
     kind: "decision",
     status: "accepted",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: "2026-04-20",
@@ -749,7 +747,6 @@ describe("syncDecisionReachability", () => {
     const newDecision = makeDecision("new-id", {
       title: "New decision",
       projectIds: [],
-      confidence: "likely",
     })
     const services = createServices({
       decisions: {
@@ -794,7 +791,6 @@ describe("syncDecisionReachability", () => {
       object: "new-id",
       projectIds: ["proj-1"],
       sourceMemoryId: "new-id",
-      confidence: "likely",
       subjectEntityId: undefined,
     })
   })
@@ -803,7 +799,6 @@ describe("syncDecisionReachability", () => {
     const newDecision = makeDecision("new-id", {
       title: "New decision",
       projectIds: ["proj-1"],
-      confidence: "certain",
     })
     const services = createServices({
       decisions: { "new-id": newDecision },
@@ -841,7 +836,6 @@ describe("syncDecisionReachability", () => {
     const newDecision = makeDecision("new-id", {
       title: "New decision",
       projectIds: ["proj-1"],
-      confidence: "certain",
     })
     const services = createServices({
       decisions: { "new-id": newDecision },

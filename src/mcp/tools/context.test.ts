@@ -30,8 +30,6 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     source: "manual",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -71,6 +69,8 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
     reviewBy: null,
     sourceMemoryId: null,
     confidence: "certain",
+    confidenceScore: null,
+    lastReferencedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
@@ -89,8 +89,6 @@ function makeDecisionSummary(
     source: "manual",
     kind: "decision",
     status: "accepted",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: "2026-04-20",
@@ -127,8 +125,6 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -247,14 +243,6 @@ interface WakeServicesOverrides {
   taskMemories?: Memory[]
   facts?: Fact[]
   tasks?: TaskSummary[]
-  /**
-   * Memories returned by the Stale Confidence query (issue 0.8.0/#10).
-   * Sliced to the caller's `limit` to mirror the production
-   * `MemoryService.queryStaleConfidence` contract — the wake-up test
-   * suite simulates saturation by feeding more rows than
-   * `STALE_CONFIDENCE_LIMIT` and asserting the `≥` heading marker.
-   */
-  staleConfidence?: Memory[]
   /**
    * Memories returned by the proposed-memory inbox query (issue #281,
    * AC #2). The wake-up data layer dispatches via
@@ -378,16 +366,6 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     const all = overrides.facts ?? []
     return { items: all.slice(0, opts.limit), hasMore: false }
   })
-  const queryStaleConfidence = vi.fn(
-    async (opts: { projectId?: string; limit: number; today: string }) => {
-      const all = overrides.staleConfidence ?? []
-      // Mirror the production query: it caps at `page_size: opts.limit`
-      // server-side. Slicing here lets the saturation-marker fixture
-      // feed more rows than the limit.
-      return all.slice(0, opts.limit)
-    }
-  )
-
   // Default to the same minimal default project the pre-issue-18 fixture
   // used. Tests that rely on the project framing block override
   // `contextProject` (e.g. to add a description) and `configProjects`
@@ -436,7 +414,6 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       list: memoriesList,
       search: memoriesSearch,
       getTitleById,
-      queryStaleConfidence,
       countProposed,
       listPinnedBlocks,
       countPinnedBlocks,
@@ -540,7 +517,6 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       memoriesSearch,
       factsListRecent,
       findByName,
-      queryStaleConfidence,
     },
   }
 }
@@ -659,155 +635,6 @@ describe("lore-wake-up — Part A: title-only by default", () => {
     )
   })
 })
-
-describe("lore-wake-up — trust indicator (issue 0.8.0/09)", () => {
-  // Pinned at the surface (not just the render helper) so a future
-  // contributor who swaps the wake-up Recent Memories renderer away
-  // from `formatMemoryListItem` would see this test fail. The trust
-  // signal must be visible on the same surfaces RRF (#08) reorders.
-
-  it("renders the trust line on a low-confidence Recent Memories row", async () => {
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      memories: [
-        makeMemory("m1", {
-          title: "Decayed memory",
-          tags: ["auth"],
-          confidenceScore: 0.3,
-        }),
-      ],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("Decayed memory")
-    expect(text).toContain("_low confidence_")
-    // Order: heading line → trust line. The trust signal must precede
-    // the meta line so it reads as system metadata flagging the row,
-    // not as a footnote.
-    const trustIdx = text.indexOf("_low confidence_")
-    const headingIdx = text.indexOf("Decayed memory")
-    expect(headingIdx).toBeGreaterThan(-1)
-    expect(trustIdx).toBeGreaterThan(headingIdx)
-  })
-
-  it("omits the trust line on a healthy wake-up row", async () => {
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      memories: [
-        makeMemory("m1", {
-          title: "Healthy memory",
-          tags: ["auth"],
-          confidenceScore: 0.95,
-        }),
-      ],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("Healthy memory")
-    expect(text).not.toContain("confidence_")
-  })
-
-  it("omits the trust line on a null-score row (pre-migration vault stays byte-identical)", async () => {
-    // Acceptance criterion: rows with `confidenceScore: null` render
-    // identically to pre-0.8.0. A vault that hasn't run
-    // `lore migrate --build-confidence-scores` should look unchanged.
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      memories: [
-        makeMemory("m1", {
-          title: "Pre-migration row",
-          tags: ["auth"],
-          confidenceScore: null,
-        }),
-      ],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("Pre-migration row")
-    expect(text).not.toContain("confidence_")
-  })
-
-  it("renders the trust line on a low-confidence row in `## For Your Current Task`", async () => {
-    // Acceptance criterion explicitly lists the For-Your-Current-Task
-    // section. Pinning at the surface protects against a future
-    // contributor swapping the section's renderer away from
-    // `formatMemoryListItem`. The `userQuery` arg seeds the section.
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      memories: [],
-      taskQuery: "fix outlook auth",
-      taskMemories: [
-        makeMemory("task-1", {
-          title: "Outlook auth investigation",
-          confidenceScore: 0.15,
-        }),
-      ],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({ userQuery: "fix outlook auth" } as never)
-
-    const text = extractText(result)
-    const taskSectionIdx = text.indexOf("## For Your Current Task")
-    const trustLineIdx = text.indexOf("_very low confidence_")
-    const recentSectionIdx = text.indexOf("## Recent Memories")
-    expect(taskSectionIdx).toBeGreaterThan(-1)
-    expect(trustLineIdx).toBeGreaterThan(taskSectionIdx)
-    // The trust line must land WITHIN the task section, not below
-    // Recent Memories. (Recent Memories is empty in this fixture, so
-    // its index is -1; the `>` check above already covers placement.)
-    if (recentSectionIdx > -1) {
-      expect(trustLineIdx).toBeLessThan(recentSectionIdx)
-    }
-  })
-
-  it("renders the trust line on a low-confidence row in `## Related to Active Tasks`", async () => {
-    // Acceptance criterion explicitly lists the Related-to-Active-Tasks
-    // section. Pinning at the surface protects against a future
-    // contributor swapping the section's renderer.
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      memories: [],
-      tasks: [
-        makeTask({
-          id: "t1",
-          title: "Router migration",
-          entity: "Router migration",
-        }),
-      ],
-      relatedMemories: [
-        makeMemory("r1", {
-          title: "Router migration debugging notes",
-          confidenceScore: 0.3,
-        }),
-      ],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const relatedSectionIdx = text.indexOf("## Related to Active Tasks")
-    const trustLineIdx = text.indexOf("_low confidence_")
-    expect(relatedSectionIdx).toBeGreaterThan(-1)
-    expect(trustLineIdx).toBeGreaterThan(relatedSectionIdx)
-  })
-})
-
 describe("lore-wake-up — revision marker (issue 0.9.0/10)", () => {
   // Pinned at the surface so a future contributor swapping the wake-up
   // Recent Memories renderer away from `wakeUpMemoryMetaBuilder` would
@@ -953,7 +780,6 @@ describe("lore-wake-up — Part C: UUID → title resolution", () => {
           subject: "DecayedSubject",
           predicate: "uses",
           object: "DecayedObj",
-          confidence: "certain",
           confidenceScore: 0.15,
         }),
       ],
@@ -981,8 +807,6 @@ describe("lore-wake-up — Part C: UUID → title resolution", () => {
           subject: "LegacySubject",
           predicate: "uses",
           object: "LegacyObj",
-          confidence: "certain",
-          confidenceScore: null,
         }),
       ],
     })
@@ -1440,7 +1264,6 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
       facts: [makeFact({ id: "fact-1", subject: "Payments", predicate: "uses" })],
       tasks: [makeTask({ id: "task-1", title: "Open payment task" })],
       relatedMemories: [makeMemory("related-noise", { title: "Active task related" })],
-      staleConfidence: [makeMemory("stale-1", { title: "Stale confidence row" })],
       proposedMemories: [makeMemory("proposal-1", { title: "Proposed row" })],
       proposedDecisions: [
         makeDecisionSummary({ id: "decision-1", title: "Proposed decision" }),
@@ -1480,7 +1303,6 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     expect(text).not.toContain("Tasks")
     expect(text).not.toContain("Decisions Requiring Attention")
     expect(text).not.toContain("Proposed Memories")
-    expect(text).not.toContain("Stale Confidence")
     expect(text).not.toContain("Pinned Context")
     expect(text).not.toContain("Inherited from")
     expect(services._calls.memoriesList).toHaveBeenCalledTimes(1)
@@ -1488,7 +1310,6 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
       expect.objectContaining({ source: "digest" })
     )
     expect(services._calls.factsListRecent).not.toHaveBeenCalled()
-    expect(services._calls.queryStaleConfidence).not.toHaveBeenCalled()
     expect(services._calls.memoriesSearch).toHaveBeenCalledTimes(1)
   })
 })
@@ -1866,7 +1687,6 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
       facts: [makeFact({ id: "fact-1" })],
       proposedDecisions: [makeDecisionSummary({ id: "proposed-1" })],
       overdueDecisions: [makeDecisionSummary({ id: "overdue-1" })],
-      staleConfidence: [makeMemory("stale-confidence")],
     })
 
     registerContextTools(mockServer.server, services as never)
@@ -1880,7 +1700,6 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(text).toContain("sections.recent=1")
     expect(text).toContain("sections.facts=1")
     expect(text).toContain("sections.decisions=2")
-    expect(text).toContain("sections.staleConfidence=1")
     expect(services._calls.memoriesList).toHaveBeenCalledWith(
       expect.objectContaining({ includeContent: false })
     )
@@ -2009,8 +1828,7 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     // Pin system time so the marker's occurredAt stays inside the 14-day
     // staleness window that `collectBackgroundFailures` enforces against
     // `new Date()`. Without this pin, the test silently rots as the calendar
-    // drifts past the window — same pattern as the Stale Confidence block
-    // below.
+    // drifts past the window.
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-04-25T12:00:00.000Z"))
     try {
@@ -3038,201 +2856,6 @@ describe("lore-wake-up — Part I: Tasks synopsis rendering (DEFERRED-01)", () =
     expect(synopsisLine).not.toContain("…")
   })
 })
-
-describe("lore-wake-up — Tasks trust indicator (DEFERRED-01 follow-up to 0.8.0/#09)", () => {
-  // Pinned at the surface (not just the render helper) so a future
-  // contributor swapping the wake-up Tasks renderer away from
-  // `formatWakeUpTaskRow` would see this test fail. Exhaustive
-  // bucket-band assertions live in `render.test.ts` via
-  // `formatTrustLabel`; here we pin the surface wiring (the line
-  // lands ABOVE the synopsis, indented by two spaces, italic-wrapped)
-  // and the bucket-agnostic posture (overdue / stale / active alike).
-
-  function daysAgo(n: number): string {
-    return new Date(Date.now() - n * 86_400_000).toISOString()
-  }
-  function daysAgoDate(n: number): string {
-    return daysAgo(n).split("T")[0]
-  }
-
-  it("renders the trust line as an indented italic between the title row and the synopsis line", async () => {
-    // Order is load-bearing: title → trust → synopsis → ID. Same
-    // discipline as `formatMemoryListItem` and the `lore-task
-    // action='list'` row formatter.
-    const task = makeTask({
-      id: "low-id",
-      title: "Low-trust row",
-      synopsis: "Triage gist text.",
-      confidenceScore: 0.3,
-      reviewBy: null,
-      updatedAt: daysAgo(2),
-    })
-
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ tasks: [task] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) => l.includes("**Low-trust row**"))
-    expect(titleIdx).toBeGreaterThanOrEqual(0)
-    expect(lines[titleIdx + 1]).toBe(" _low confidence_")
-    expect(lines[titleIdx + 2]).toBe(" Triage gist text.")
-    expect(lines[titleIdx + 3]).toContain("ID: low-id — close if resolved:")
-  })
-
-  it("omits the trust line on a null-score row (pre-migration vault stays byte-identical)", async () => {
-    // Acceptance criterion: rows with `confidenceScore: null` render
-    // identically to pre-DEFERRED-01. The wake-up `## Tasks` section's
-    // full output is too dependent on surrounding sections (digest /
-    // Recent Memories / Active Facts) to assert on the entire response,
-    // so we slice exactly the two-line bullet for the row and match
-    // it as a single string.
-    const task = makeTask({
-      id: "null-id",
-      title: "Pre-migration row",
-      synopsis: "",
-      confidenceScore: null,
-      reviewBy: null,
-      updatedAt: daysAgo(2),
-    })
-
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ tasks: [task] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) => l.includes("**Pre-migration row**"))
-    expect(`${lines[titleIdx]}\n${lines[titleIdx + 1]}`).toBe(
-      "- **Pre-migration row** [open]\n" +
-        " ID: null-id — close if resolved: lore-task({ action: 'close', taskId: 'null-id' })"
-    )
-  })
-
-  it("omits the trust line when the score is at or above the display threshold", async () => {
-    // Strict-less-than gate at exactly 0.5. A `<=` rewrite on the
-    // threshold predicate would render `_moderate confidence_` here
-    // and trip this test, complementing the bucket-boundary tests in
-    // `render.test.ts`.
-    const task = makeTask({
-      id: "healthy-id",
-      title: "Healthy row",
-      synopsis: "",
-      confidenceScore: 0.5,
-      reviewBy: null,
-      updatedAt: daysAgo(2),
-    })
-
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ tasks: [task] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("Healthy row")
-    expect(text).not.toContain("confidence_")
-  })
-
-  it("renders the trust line bucket-agnostically (overdue + stale + active rows alike)", async () => {
-    // Mirror of the wake-up synopsis bucket-agnostic test (Part I).
-    // One row per bucket so the assertion proves trust rendering is
-    // bucket-agnostic — the formatter must not accidentally treat one
-    // bucket as a special case.
-    const overdueTask = makeTask({
-      id: "overdue-id",
-      title: "Overdue low-trust",
-      synopsis: "",
-      confidenceScore: 0.3,
-      reviewBy: daysAgoDate(27),
-      updatedAt: daysAgo(2),
-    })
-    const staleTask = makeTask({
-      id: "stale-id",
-      title: "Stale very-low-trust",
-      synopsis: "",
-      confidenceScore: 0.15,
-      reviewBy: null,
-      updatedAt: daysAgo(45),
-    })
-    const activeTask = makeTask({
-      id: "active-id",
-      title: "Active moderate-trust",
-      synopsis: "",
-      confidenceScore: 0.45,
-      reviewBy: null,
-      updatedAt: daysAgo(2),
-    })
-
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      tasks: [overdueTask, staleTask, activeTask],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const lines = text.split("\n")
-    for (const fixture of [
-      { title: "Overdue low-trust", trust: "_low confidence_" },
-      { title: "Stale very-low-trust", trust: "_very low confidence_" },
-      { title: "Active moderate-trust", trust: "_moderate confidence_" },
-    ]) {
-      const titleIdx = lines.findIndex((l) => l.includes(`**${fixture.title}**`))
-      expect(titleIdx).toBeGreaterThanOrEqual(0)
-      expect(lines[titleIdx + 1]).toBe(` ${fixture.trust}`)
-    }
-  })
-
-  it("composes trust line above the synopsis line on rows that have both", async () => {
-    // Pin the four-row envelope (title → trust → synopsis → ID)
-    // explicitly so a future reordering of the trust insertion point
-    // (e.g. moving it below synopsis) trips this test on wake-up too.
-    const task = makeTask({
-      id: "both-id",
-      title: "Both trust and synopsis",
-      synopsis: "Synopsis text here.",
-      confidenceScore: 0.15,
-      reviewBy: null,
-      updatedAt: daysAgo(2),
-    })
-
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ tasks: [task] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) => l.includes("**Both trust and synopsis**"))
-    expect(titleIdx).toBeGreaterThanOrEqual(0)
-    expect(lines[titleIdx + 1]).toBe(" _very low confidence_")
-    expect(lines[titleIdx + 2]).toBe(" Synopsis text here.")
-    expect(lines[titleIdx + 3]).toContain("ID: both-id — close if resolved:")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// touch-on-read wiring (issue 0.8.0/05)
-//
-// Pins the cross-section dedup contract: a memory rendered in two
-// sections (e.g. Recent + Cross-Ref) is touched exactly once per
-// wake-up call. Failure isolation pins the advisory contract — the
-// wake-up response must never error because of a write failure.
-// ---------------------------------------------------------------------------
-
 describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
   function withTouch(
     overrides: WakeServicesOverrides = {},
@@ -3544,380 +3167,6 @@ describe("lore-wake-up — fact touch-on-read wiring (DEFERRED-02)", () => {
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     const text = extractText(result)
     expect(text).toContain("## Active Facts")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Stale Confidence subsection (issue 0.8.0/#10)
-// ---------------------------------------------------------------------------
-
-describe("lore-wake-up — Stale Confidence subsection (issue 0.8.0/#10)", () => {
-  // Freeze wall-clock time so `todayUtc()` inside `handleWakeUp`
-  // resolves to a known anchor. Without this, the per-row `Nd ago`
-  // assertions below would have to use loose regex ranges (the test
-  // would silently start passing on the wrong day if `today` and the
-  // fixture's `lastReferencedAt` drift apart). Pinning the anchor
-  // also pins the spec's same-anchor invariant — query cutoff and
-  // render age MUST share the exact same day — by exposing any
-  // off-by-one bug as a failed assertion.
-  beforeEach(() => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date("2026-04-29T12:00:00.000Z"))
-  })
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it("omits the heading when no memories match either OR-branch", async () => {
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ staleConfidence: [] })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).not.toContain("### Stale Confidence")
-  })
-
-  it("renders the section with an exact count when below the saturation cap", async () => {
-    const mockServer = createMockServer()
-    const stale = [
-      makeMemory("low-1", {
-        title: "Low score row",
-        confidenceScore: 0.2,
-        lastReferencedAt: "2026-04-25",
-      }),
-      makeMemory("low-2", {
-        title: "Another low row",
-        confidenceScore: 0.3,
-        lastReferencedAt: "2026-04-20",
-      }),
-      makeMemory("low-3", {
-        title: "Third low row",
-        confidenceScore: 0.4,
-        lastReferencedAt: "2026-04-10",
-      }),
-    ]
-    const services = makeWakeServices({ staleConfidence: stale })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).toContain(
-      "### Stale Confidence (3 memories scored < 0.5 or untouched ≥60d)"
-    )
-    expect(text).not.toContain("≥3 memories")
-    // The three rows render in the order returned by the data layer
-    // (sorted by score ascending — most-decayed first per the
-    // queryStaleConfidence contract).
-    expect(text).toContain("### Low score row")
-    expect(text).toContain("### Another low row")
-    expect(text).toContain("### Third low row")
-  })
-
-  it("prefixes the count with `≥` when the section is saturated", async () => {
-    // Five rows hits the STALE_CONFIDENCE_LIMIT (default 5). The
-    // production query caps at `page_size: limit`; the stub mirrors
-    // that. The heading honestly signals "at least this many" rather
-    // than implying the limit IS the total.
-    const mockServer = createMockServer()
-    const stale = Array.from({ length: 5 }, (_, i) =>
-      makeMemory(`low-${i}`, {
-        title: `Decayed row ${i}`,
-        confidenceScore: 0.05 + i * 0.05,
-        lastReferencedAt: "2026-04-20",
-      })
-    )
-    const services = makeWakeServices({ staleConfidence: stale })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).toContain(
-      "### Stale Confidence (≥5 memories scored < 0.5 or untouched ≥60d)"
-    )
-  })
-
-  it("surfaces a high-stored-score row whose Last Referenced At is past the cutoff (neglect-OR branch)", async () => {
-    // The load-bearing case under #03's write-realized lazy decay
-    // model: a memory at stored 0.9 touched 90 days ago keeps a
-    // stored 0.9 (RRF reads it as-is), so without the neglect-OR
-    // branch it would silently rot. The query's neglect-OR clause
-    // surfaces it; the agent reading it via `lore-memory
-    // action='expand'` realizes the accrued decay through
-    // `touchOnRead`. The data layer is responsible for matching the
-    // OR-clause against the row's Notion properties — the renderer
-    // just trusts whatever the query returned.
-    const mockServer = createMockServer()
-    const neglected = makeMemory("neglected-but-trusted", {
-      title: "Trusted but stale",
-      confidenceScore: 0.9,
-      lastReferencedAt: "2026-01-29", // 90 days before 2026-04-29
-    })
-    const services = makeWakeServices({ staleConfidence: [neglected] })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).toContain("### Trusted but stale")
-    // No #09 trust label on a row whose stored score is above
-    // CONFIDENCE_DISPLAY_THRESHOLD (0.5) — the per-row gate inside
-    // `formatTrustLabel` returns null at >= threshold.
-    expect(text).not.toMatch(
-      /Trusted but stale[\s\S]*?_(?:very low|low|moderate) confidence_/
-    )
-    // The `Last referenced: Nd ago` meta-line IS present — the
-    // disambiguating signal that flags the neglect even when no
-    // trust label fires. The frozen `today` anchor (2026-04-29) and
-    // the fixture's `lastReferencedAt` (2026-01-29) are exactly 90
-    // days apart, so the rendered age pins exactly — an off-by-one
-    // between query cutoff and render arithmetic surfaces as a
-    // failed assertion rather than a quietly-loose match.
-    expect(text).toContain("Last referenced: 90d ago")
-  })
-
-  it("renders the trust label on a low-stored-score row alongside the meta-line", async () => {
-    // Both signals together mean "score is low AND we recently
-    // checked" — the system has high-quality negative evidence about
-    // this row.
-    const mockServer = createMockServer()
-    const lowScore = makeMemory("low-recent", {
-      title: "Low and recent",
-      confidenceScore: 0.3,
-      lastReferencedAt: "2026-04-19", // 10 days before 2026-04-29
-    })
-    const services = makeWakeServices({ staleConfidence: [lowScore] })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).toContain("### Low and recent")
-    // formatTrustLabel(0.3) → "low confidence" (per the bucket
-    // function: < 0.4 → "low confidence").
-    expect(text).toMatch(/Low and recent[\s\S]*?_low confidence_/)
-    // Meta-line still renders.
-    expect(text).toMatch(/Last referenced: 10d ago/)
-  })
-
-  it("renders the rev marker on a Stale Confidence row with revisionCount >= 2 (issue 0.9.0/10)", async () => {
-    // The Stale Confidence subsection is its own wake-up listing
-    // surface, distinct from Recent Memories. `staleConfidenceMetaBuilder`
-    // emits `Last referenced: Nd ago | source | tags | rev | date` when
-    // the threshold fires. Pin the full meta line so a future
-    // contributor moving the rev component (e.g. before tags, after
-    // date) silently reorders the field hierarchy here.
-    const mockServer = createMockServer()
-    const upserted = makeMemory("upserted-stale", {
-      title: "Upserted but stale",
-      confidenceScore: 0.3,
-      lastReferencedAt: "2026-04-19", // 10 days before frozen 2026-04-29
-      revisionCount: 3,
-    })
-    const services = makeWakeServices({ staleConfidence: [upserted] })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).toContain("### Upserted but stale")
-    // Full meta-line shape: rev slots between tags and date.
-    // makeMemory defaults source="manual", tags=[]→"no tags",
-    // createdAt="2026-04-20T00:00:00Z"→"2026-04-20".
-    expect(text).toContain(
-      "*Last referenced: 10d ago | manual | no tags | rev 3 | 2026-04-20*"
-    )
-  })
-
-  it("omits the rev marker on a fresh Stale Confidence row (revisionCount: 1) — pre-#10 byte-identical", async () => {
-    // Negative pin: a row that satisfies the Stale Confidence query but
-    // hasn't gone through the upsert path renders byte-identically to
-    // pre-0.9.0/#10 output — `Last referenced: ... | source | tags |
-    // date`, no rev component, no extra pipe.
-    const mockServer = createMockServer()
-    const fresh = makeMemory("fresh-stale", {
-      title: "Stale but unrevised",
-      confidenceScore: 0.3,
-      lastReferencedAt: "2026-04-19",
-      revisionCount: 1,
-    })
-    const services = makeWakeServices({ staleConfidence: [fresh] })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    const text = extractText(await wake({}))
-    expect(text).toContain("### Stale but unrevised")
-    expect(text).toContain("*Last referenced: 10d ago | manual | no tags | 2026-04-20*")
-    // Defensive: ensure the rev token never appears anywhere in this
-    // row's render — catches a future regression that emits `rev 1`
-    // unconditionally.
-    expect(text).not.toMatch(/Stale but unrevised[\s\S]*?rev/)
-  })
-
-  it("excludes Stale Confidence rows from the touchOnRead batch", async () => {
-    // Same posture as Decisions Requiring Attention: rows surfaced in
-    // this section are surfaced BECAUSE they need triage. Bumping
-    // `Confidence Score` and resetting `Last Referenced At` on every
-    // wake-up that lists them would mask the very signal that put
-    // them here. Pin the contract.
-    const touchOnRead = vi.fn().mockResolvedValue(undefined)
-    const mockServer = createMockServer()
-    const recent = [makeMemory("recent-1", { title: "Recent normal row" })]
-    const stale = [
-      makeMemory("stale-1", {
-        title: "Stale low-score row",
-        confidenceScore: 0.2,
-        lastReferencedAt: "2026-04-19",
-      }),
-    ]
-    const baseServices = makeWakeServices({
-      memories: recent,
-      staleConfidence: stale,
-    })
-    const services = {
-      ...baseServices,
-      memories: {
-        ...baseServices.memories,
-        touchOnRead,
-      },
-    }
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    await wake({})
-
-    expect(touchOnRead).toHaveBeenCalledTimes(1)
-    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
-    const ids = new Set(passed.map((m) => m.id))
-    expect(ids).toContain("recent-1")
-    expect(ids).not.toContain("stale-1")
-  })
-
-  it("issues exactly one queryStaleConfidence call per wake-up (no per-row body fetches)", async () => {
-    const mockServer = createMockServer()
-    const stale = [
-      makeMemory("s1", { confidenceScore: 0.2, lastReferencedAt: "2026-04-25" }),
-      makeMemory("s2", { confidenceScore: 0.3, lastReferencedAt: "2026-04-20" }),
-    ]
-    const services = makeWakeServices({ staleConfidence: stale })
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-
-    await wake({})
-
-    expect(services._calls.queryStaleConfidence).toHaveBeenCalledTimes(1)
-    // The query was scoped against the auto-detected project from
-    // services.context.project (proj-1 in the default fixture).
-    expect(services._calls.queryStaleConfidence.mock.calls[0]![0]).toMatchObject({
-      projectId: "proj-1",
-      limit: 5,
-    })
-  })
-})
-
-describe("lore-wake-up — Decisions Requiring Attention trust indicator (0.9.0/DEFERRED-07)", () => {
-  // Pinned at the surface (not just the render helper) so a future
-  // contributor swapping the wake-up "Decisions Requiring Attention"
-  // renderer would see the trust line disappear from listings and
-  // surface here, not just in `render.test.ts`. Bullet-shaped surface,
-  // so the indented italic continuation matches the wake-up Tasks
-  // sub-section's shape.
-
-  it("renders the trust line on a low-confidence Proposed decision row", async () => {
-    const decision = makeDecisionSummary({
-      id: "dec-prop",
-      title: "Speculative governance proposal",
-      status: "proposed",
-      confidenceScore: 0.3,
-    })
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ proposedDecisions: [decision] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) =>
-      l.includes("**Speculative governance proposal**")
-    )
-    expect(titleIdx).toBeGreaterThanOrEqual(0)
-    expect(lines[titleIdx + 1]).toBe(" _low confidence_")
-  })
-
-  it("renders the trust line on a low-confidence Overdue for Review decision row", async () => {
-    const decision = makeDecisionSummary({
-      id: "dec-over",
-      title: "Overdue review decision",
-      status: "accepted",
-      reviewBy: "2026-01-01",
-      confidenceScore: 0.15,
-    })
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ overdueDecisions: [decision] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) => l.includes("**Overdue review decision**"))
-    expect(titleIdx).toBeGreaterThanOrEqual(0)
-    expect(lines[titleIdx + 1]).toBe(" _very low confidence_")
-  })
-
-  it("surfaces a capped overdue-decision scan even when no rows were returned", async () => {
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ overdueDecisionsCapped: true })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("### Overdue for Review (≥0)")
-    expect(text).toContain("live-row refill cap")
-  })
-
-  it("omits the trust line on a null-score decision (pre-migration vault)", async () => {
-    const decision = makeDecisionSummary({
-      id: "dec-null",
-      title: "Pre-migration proposal",
-      status: "proposed",
-      confidenceScore: null,
-    })
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ proposedDecisions: [decision] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("Pre-migration proposal")
-    // Trust label vocabulary `_X confidence_` must not appear when
-    // the row's score is null. Scoped to the trust-label suffix so
-    // unrelated `_..._` italic surfaces (e.g. closure CTAs) don't
-    // false-positive.
-    expect(text).not.toContain("confidence_")
-  })
-
-  it("omits the trust line on an above-threshold proposed decision", async () => {
-    const decision = makeDecisionSummary({
-      id: "dec-healthy",
-      title: "Well-cited proposal",
-      status: "proposed",
-      confidenceScore: 0.8,
-    })
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ proposedDecisions: [decision] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({} as never)
-
-    const text = extractText(result)
-    expect(text).toContain("Well-cited proposal")
-    expect(text).not.toContain("confidence_")
   })
 })
 

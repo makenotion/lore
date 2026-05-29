@@ -5,9 +5,9 @@
   "capturedAt": "2026-05-03T12:00:00.000Z",
   "notes": "Add task-only and query-focused context governance coverage",
   "summary": {
-    "tasks": 24,
-    "totalResults": 80,
-    "passedResults": 80,
+    "tasks": 19,
+    "totalResults": 65,
+    "passedResults": 65,
     "failedResults": 0,
     "retrieval": {
       "averageRecall": 1,
@@ -365,126 +365,6 @@
       "taskId": "returns-result-from-service-boundary",
       "scenario": "stale-memory",
       "surface": "wake-up.taskMemories",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-cache-eviction",
-      "scenario": "empty-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-cache-eviction",
-      "scenario": "helpful-memory",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": 1,
-      "precision": 1
-    },
-    {
-      "taskId": "stale-confidence-cache-eviction",
-      "scenario": "no-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-onboarding-runbook",
-      "scenario": "empty-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-onboarding-runbook",
-      "scenario": "helpful-memory",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": 1,
-      "precision": 1
-    },
-    {
-      "taskId": "stale-confidence-onboarding-runbook",
-      "scenario": "no-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-pricing-policy",
-      "scenario": "empty-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-pricing-policy",
-      "scenario": "helpful-memory",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": 1,
-      "precision": 1
-    },
-    {
-      "taskId": "stale-confidence-pricing-policy",
-      "scenario": "no-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-rate-limits",
-      "scenario": "empty-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-rate-limits",
-      "scenario": "helpful-memory",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": 1,
-      "precision": 1
-    },
-    {
-      "taskId": "stale-confidence-rate-limits",
-      "scenario": "no-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-reporting-format",
-      "scenario": "empty-lore",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": null,
-      "precision": null
-    },
-    {
-      "taskId": "stale-confidence-reporting-format",
-      "scenario": "helpful-memory",
-      "surface": "wake-up.staleConfidence",
-      "success": true,
-      "recall": 1,
-      "precision": 1
-    },
-    {
-      "taskId": "stale-confidence-reporting-format",
-      "scenario": "no-lore",
-      "surface": "wake-up.staleConfidence",
       "success": true,
       "recall": null,
       "precision": null

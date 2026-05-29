@@ -22,8 +22,6 @@ function memShape(overrides: Partial<Memory> & { id: string; title: string }): M
     source: "manual",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -322,8 +320,6 @@ describe("runScan — pipeline shape", () => {
       kind: "decision",
       synopsis: "Decided JWT.",
       keywords: "auth jwt",
-      confidence: "likely",
-      confidenceScore: 0.65,
     })
     const m2 = memShape({
       id: "m2",
@@ -332,8 +328,6 @@ describe("runScan — pipeline shape", () => {
       kind: "decision",
       synopsis: "Switched away.",
       keywords: "auth session",
-      confidence: "certain",
-      confidenceScore: 0.84,
     })
     const services = makeServices({
       projectsByName: { Widget: { id: "p-widget", name: "Widget" } },
@@ -976,8 +970,6 @@ describe("renderScanJson", () => {
                 title: "A",
                 project: "Widget",
                 kind: "decision",
-                confidence: "certain",
-                confidenceScore: 0.9,
                 synopsis: "",
                 keywords: [],
               },
@@ -986,8 +978,6 @@ describe("renderScanJson", () => {
                 title: "B",
                 project: "Widget",
                 kind: "note",
-                confidence: "certain",
-                confidenceScore: null,
                 synopsis: "",
                 keywords: [],
               },
@@ -1063,8 +1053,6 @@ describe("renderScanMarkdown", () => {
             title: "JWT auth model",
             project: "Widget",
             kind: "decision",
-            confidence: "likely",
-            confidenceScore: 0.65,
             synopsis: "Decided JWT.",
             keywords: ["auth", "jwt"],
           },
@@ -1073,8 +1061,6 @@ describe("renderScanMarkdown", () => {
             title: "Switched auth to session cookies",
             project: "Widget",
             kind: "decision",
-            confidence: "certain",
-            confidenceScore: 0.84,
             synopsis: "Replaced JWT.",
             keywords: ["auth", "session"],
           },
@@ -1092,8 +1078,8 @@ describe("renderScanMarkdown", () => {
     expect(md).toContain("Raw candidates retained")
     expect(md).toContain('Memory A: "JWT auth model"')
     expect(md).toContain('Memory B: "Switched auth to session cookies"')
-    expect(md).toContain("score 0.65")
-    expect(md).toContain("score 0.84")
+    expect(md).not.toContain("score 0.65")
+    expect(md).not.toContain("score 0.84")
     // Each signal renders as its own bullet line so a future caller-
     // controlled signal containing a literal `;` can't ambiguate the
     // separator.
@@ -1118,8 +1104,6 @@ describe("renderScanMarkdown", () => {
             title: "Title A",
             project: "Widget",
             kind: "note",
-            confidence: "certain",
-            confidenceScore: null,
             synopsis: "",
             keywords: [],
             body: "Full body of A.",
@@ -1129,8 +1113,6 @@ describe("renderScanMarkdown", () => {
             title: "Title B",
             project: "Widget",
             kind: "note",
-            confidence: "certain",
-            confidenceScore: null,
             synopsis: "",
             keywords: [],
             body: "Full body of B.",
@@ -1171,8 +1153,6 @@ describe("renderScanMarkdown", () => {
             title: "Title A",
             project: "Widget",
             kind: "note",
-            confidence: "certain",
-            confidenceScore: null,
             synopsis: "",
             keywords: [],
             body: bodyWithFencedBlock,
@@ -1182,8 +1162,6 @@ describe("renderScanMarkdown", () => {
             title: "Title B",
             project: "Widget",
             kind: "note",
-            confidence: "certain",
-            confidenceScore: null,
             synopsis: "",
             keywords: [],
             body: "Plain body, no backticks.",

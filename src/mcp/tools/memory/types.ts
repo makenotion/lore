@@ -78,12 +78,17 @@ export const STATUSES = [
   "rejected",
 ] as const
 
-export const CONFIDENCES = ["certain", "likely", "speculative"] as const
-
-export const WRITABLE_SOURCES = ["conversation", "file", "manual", "digest"] as const
+export const WRITABLE_SOURCES = [
+  "conversation",
+  "autosave_learning",
+  "file",
+  "manual",
+  "digest",
+] as const
 
 export const READABLE_SOURCES = [
   "conversation",
+  "autosave_learning",
   "file",
   "manual",
   "agent_diary",

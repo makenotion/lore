@@ -84,10 +84,8 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.title).toBe("Old note")
     expect(memory.source).toBe("manual")
 
-    // Every new field must default gracefully:
     expect(memory.kind).toBe("note")
     expect(memory.status).toBe("informational")
-    expect(memory.confidence).toBe("certain")
     expect(memory.reviewBy).toBeNull()
     expect(memory.doneAt).toBeNull()
     expect(memory.decidedAt).toBeNull()
@@ -98,7 +96,6 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.consequences).toBe("")
     expect(memory.synopsis).toBe("")
     expect(memory.session).toBeNull()
-    expect(memory.confidenceScore).toBeNull()
     expect(memory.lastReferencedAt).toBeNull()
     expect(memory.promotionSourceKey).toBe("")
     expect(memory.content).toBe("body content")
@@ -115,7 +112,6 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.source).toBe("manual")
     expect(memory.kind).toBe("note")
     expect(memory.status).toBe("informational")
-    expect(memory.confidence).toBe("certain")
     expect(memory.content).toBe("")
   })
 })
@@ -132,7 +128,6 @@ describe("pageToMemory — fully populated decision page", () => {
       Source: { type: "select", select: { name: "conversation" } },
       Kind: { type: "select", select: { name: "decision" } },
       Status: { type: "select", select: { name: "accepted" } },
-      Confidence: { type: "select", select: { name: "likely" } },
       "Review By": { type: "date", date: { start: "2026-10-20" } },
       "Done At": { type: "date", date: { start: "2026-04-25" } },
       "Decided At": { type: "date", date: { start: "2026-04-20" } },
@@ -175,7 +170,6 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.source).toBe("conversation")
     expect(memory.kind).toBe("decision")
     expect(memory.status).toBe("accepted")
-    expect(memory.confidence).toBe("likely")
     expect(memory.reviewBy).toBe("2026-10-20")
     expect(memory.doneAt).toBe("2026-04-25")
     expect(memory.decidedAt).toBe("2026-04-20")
@@ -193,138 +187,24 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.content).toBe("Rationale prose.")
   })
 
-  it("extracts Confidence Score and Last Referenced At when present", () => {
+  it("extracts Last Referenced At when present", () => {
     const page = buildPage({
       Title: { type: "title", title: [{ plain_text: "Touched memory" }] },
-      "Confidence Score": { type: "number", number: 0.72 },
       "Last Referenced At": { type: "date", date: { start: "2026-04-29" } },
     })
 
     const memory = pageToMemory(page)
-    expect(memory.confidenceScore).toBe(0.72)
     expect(memory.lastReferencedAt).toBe("2026-04-29")
   })
 
-  it("preserves null when Confidence Score is present-but-empty", () => {
+  it("preserves null when Last Referenced At is present-but-empty", () => {
     const page = buildPage({
       Title: { type: "title", title: [{ plain_text: "Cleared" }] },
-      "Confidence Score": { type: "number", number: null },
       "Last Referenced At": { type: "date", date: null },
     })
 
     const memory = pageToMemory(page)
-    expect(memory.confidenceScore).toBeNull()
     expect(memory.lastReferencedAt).toBeNull()
-  })
-})
-
-describe("Confidence Score property round-trip (#01)", () => {
-  it("returns null on a pre-migration page with no Confidence Score column", () => {
-    // A vault upgraded from <0.8.0 has no `Confidence Score` column on
-    // its Memories DB pages. `pageToMemory` must surface this as `null`
-    // so #08's RRF integration can branch on "never scored" without an
-    // extra schema check.
-    const page = buildPage({
-      Title: { type: "title", title: [{ plain_text: "Pre-migration" }] },
-    })
-    expect(pageToMemory(page).confidenceScore).toBeNull()
-  })
-
-  it("extracts a populated Confidence Score number", () => {
-    const page = buildPage({
-      Title: { type: "title", title: [{ plain_text: "Scored" }] },
-      "Confidence Score": { type: "number", number: 0.85 },
-    })
-    expect(pageToMemory(page).confidenceScore).toBe(0.85)
-  })
-
-  it("returns null when the column exists but is empty on Notion's side", () => {
-    // A row whose Confidence Score was explicitly cleared (e.g. by an
-    // operator or the #11 migration) round-trips as `null`. Distinct
-    // from "scored to zero" — the floor of the range, which must remain
-    // a number through pageToMemory.
-    const page = buildPage({
-      Title: { type: "title", title: [{ plain_text: "Cleared" }] },
-      "Confidence Score": { type: "number", number: null },
-    })
-    expect(pageToMemory(page).confidenceScore).toBeNull()
-  })
-
-  it("preserves zero as a populated value (not collapsed to null)", () => {
-    const page = buildPage({
-      Title: { type: "title", title: [{ plain_text: "Floor" }] },
-      "Confidence Score": { type: "number", number: 0 },
-    })
-    expect(pageToMemory(page).confidenceScore).toBe(0)
-  })
-
-  it("round-trips a Confidence Score through buildMemoryProps + pageToMemory", () => {
-    const built = buildMemoryProps({ title: "x", confidenceScore: 0.42 }) as Record<
-      string,
-      { number: number | null }
-    >
-    expect(built["Confidence Score"]).toEqual({ number: 0.42 })
-
-    const page = buildPage({
-      Title: { type: "title", title: [{ plain_text: "x" }] },
-      "Confidence Score": { type: "number", number: built["Confidence Score"].number },
-    })
-    expect(pageToMemory(page).confidenceScore).toBe(0.42)
-  })
-})
-
-describe("MemoryService.create — Confidence Score write semantics (#01)", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function makeCreateClient() {
-    const createSpy = vi.fn(
-      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
-        object: "page",
-        id: "mem-1",
-        created_time: "2026-04-20T00:00:00.000Z",
-        last_edited_time: "2026-04-20T00:00:00.000Z",
-        archived: false,
-        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
-        parent: { type: "database_id", database_id: db.databaseId },
-        url: "",
-      })
-    )
-    const updateMarkdownSpy = vi.fn(async () => ({}))
-    const querySpy = vi.fn(async () => ({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
-      dataSources: { query: querySpy },
-    } as unknown as Client
-    return { client, createSpy }
-  }
-
-  it("writes `{ number: <value> }` when confidenceScore is a number", async () => {
-    const { client, createSpy } = makeCreateClient()
-    const service = new MemoryService(client, db)
-
-    await service.create({ title: "x", content: "", confidenceScore: 0.85 })
-
-    expect(createSpy).toHaveBeenCalledTimes(1)
-    const props = createSpy.mock.calls[0]![0].properties
-    expect(props["Confidence Score"]).toEqual({ number: 0.85 })
-  })
-
-  it("omits Confidence Score when the input does not include it", async () => {
-    // Production callers leave confidenceScore unset — the column is
-    // system-managed via #03/#06. Omission must produce a create payload
-    // with no `Confidence Score` key so Notion stores `null` (the
-    // "never scored" sentinel) rather than a default value.
-    const { client, createSpy } = makeCreateClient()
-    const service = new MemoryService(client, db)
-
-    await service.create({ title: "x", content: "" })
-
-    const props = createSpy.mock.calls[0]![0].properties
-    expect("Confidence Score" in props).toBe(false)
   })
 })
 
@@ -600,16 +480,15 @@ describe("MemoryService.create — autosave-learning duplicate gate", () => {
           title: [{ plain_text: "Relation filters reject empty arrays" }],
         },
         Project: { type: "relation", relation: [{ id: "proj-a" }] },
-        Source: { type: "select", select: { name: "conversation" } },
+        Source: { type: "select", select: { name: "autosave_learning" } },
         Kind: { type: "select", select: { name: "note" } },
-        Confidence: { type: "select", select: { name: "likely" } },
         Session: { type: "rich_text", rich_text: [{ plain_text: "session-1" }] },
       },
       { id }
     )
   }
 
-  it("reuses an existing likely conversation note before creating a duplicate", async () => {
+  it("reuses an existing autosave learning note before creating a duplicate", async () => {
     const querySpy = vi.fn(async () => ({
       results: [buildAutosaveLearningPage("mem-existing")],
       has_more: false,
@@ -633,9 +512,8 @@ describe("MemoryService.create — autosave-learning duplicate gate", () => {
       title: "Relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       session: "session-2",
     })
 
@@ -671,9 +549,8 @@ describe("MemoryService.create — autosave-learning duplicate gate", () => {
         title: "Relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         projectIds: ["proj-a"],
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
         session: "session-2",
       })
     ).rejects.toBeInstanceOf(AutosaveLearningDuplicateProbeError)
@@ -724,9 +601,8 @@ describe("MemoryService.create — autosave-learning duplicate gate", () => {
         title: "Relation filters reject empty arrays",
         content: "Notion dataSources.query rejects relation filters with empty arrays.",
         projectIds: ["proj-a"],
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
         session: "session-2",
       })
 
@@ -1355,83 +1231,6 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
   })
 })
 
-describe("MemoryService.update — Confidence Score write semantics (#01)", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function makeUpdateClient() {
-    const updateSpy = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
-    )
-    const retrieveSpy = vi.fn(async () => ({
-      object: "page",
-      id: "mem-1",
-      created_time: "2026-04-20T00:00:00.000Z",
-      last_edited_time: "2026-04-20T00:00:00.000Z",
-      archived: false,
-      properties: {
-        Title: { type: "title", title: [{ plain_text: "x" }] },
-      },
-      parent: { type: "database_id", database_id: db.databaseId },
-      url: "",
-    }))
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
-    const client = {
-      pages: {
-        update: updateSpy,
-        retrieve: retrieveSpy,
-        retrieveMarkdown: retrieveMarkdownSpy,
-      },
-    } as unknown as Client
-    return { client, updateSpy, retrieveSpy }
-  }
-
-  it("writes `{ number: <value> }` when confidenceScore is a number", async () => {
-    const { client, updateSpy } = makeUpdateClient()
-    const service = new MemoryService(client, db)
-
-    await service.update("mem-1", { confidenceScore: 0.85 })
-
-    expect(updateSpy).toHaveBeenCalledTimes(1)
-    const props = updateSpy.mock.calls[0]![0].properties
-    expect(props["Confidence Score"]).toEqual({ number: 0.85 })
-  })
-
-  it("writes `{ number: null }` when confidenceScore is explicitly null (clear)", async () => {
-    const { client, updateSpy } = makeUpdateClient()
-    const service = new MemoryService(client, db)
-
-    await service.update("mem-1", { confidenceScore: null })
-
-    const props = updateSpy.mock.calls[0]![0].properties
-    expect(props["Confidence Score"]).toEqual({ number: null })
-  })
-
-  it("does NOT touch the column when confidenceScore is omitted (undefined leaves it untouched)", async () => {
-    // A `Title`-only update must leave the Confidence Score column
-    // entirely alone — both the touch-on-read helper (#03) and the
-    // contradiction-decrement path (#06) rely on this distinction so
-    // they can co-exist with title/body edits without clobbering the
-    // system-managed signal.
-    const { client, updateSpy } = makeUpdateClient()
-    const service = new MemoryService(client, db)
-
-    await service.update("mem-1", { title: "new title" })
-
-    const props = updateSpy.mock.calls[0]![0].properties
-    expect("Confidence Score" in props).toBe(false)
-  })
-
-  it("preserves zero as a valid write target", async () => {
-    const { client, updateSpy } = makeUpdateClient()
-    const service = new MemoryService(client, db)
-
-    await service.update("mem-1", { confidenceScore: 0 })
-
-    const props = updateSpy.mock.calls[0]![0].properties
-    expect(props["Confidence Score"]).toEqual({ number: 0 })
-  })
-})
-
 describe("MemoryService.update — rich_text metadata cap", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
   type RichTextFieldCase = readonly [string, (value: string) => UpdateMemoryInput, string]
@@ -1799,36 +1598,6 @@ describe("Synopsis property round-trip", () => {
   })
 })
 
-describe("Confidence Score / Last Referenced At — buildMemoryProps three-state semantics", () => {
-  it("omits both properties when the inputs are undefined (untouched)", () => {
-    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
-    expect("Confidence Score" in built).toBe(false)
-    expect("Last Referenced At" in built).toBe(false)
-  })
-
-  it("emits null clears when explicitly set to null", () => {
-    const built = buildMemoryProps({
-      title: "x",
-      confidenceScore: null,
-      lastReferencedAt: null,
-    }) as Record<string, unknown>
-    expect(built["Confidence Score"]).toEqual({ number: null })
-    expect(built["Last Referenced At"]).toEqual({ date: null })
-  })
-
-  it("emits the value when set to a number / ISO date", () => {
-    const built = buildMemoryProps({
-      title: "x",
-      confidenceScore: 0.85,
-      lastReferencedAt: "2026-04-29",
-    }) as Record<string, unknown>
-    expect(built["Confidence Score"]).toEqual({ number: 0.85 })
-    expect(built["Last Referenced At"]).toEqual({
-      date: { start: "2026-04-29" },
-    })
-  })
-})
-
 describe("Keywords property round-trip", () => {
   // The schema builder emits a `rich_text` property with a single text
   // segment. The live Notion response fills that in with `plain_text`; we
@@ -2019,9 +1788,8 @@ describe("Topic Key + Revision Count property round-trip (0.9.0/01)", () => {
   })
 
   it("returns 1 when Revision Count column is present-but-empty (null on Notion's side)", () => {
-    // Distinct from confidenceScore which preserves null — Revision
-    // Count carries no "uninitialized" semantic; the row exists, so
-    // it has been saved at least once.
+    // Revision Count carries no "uninitialized" semantic; the row exists,
+    // so it has been saved at least once.
     const page = buildPage({
       Title: { type: "title", title: [{ plain_text: "Cleared" }] },
       "Revision Count": { type: "number", number: null },
@@ -2550,7 +2318,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       kind?: string
       title?: string
       source?: string
-      confidence?: string
       synopsis?: string
       keywords?: string
       author?: string
@@ -2577,12 +2344,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     }
     if (opts.source !== undefined) {
       properties.Source = { type: "select", select: { name: opts.source } }
-    }
-    if (opts.confidence !== undefined) {
-      properties.Confidence = {
-        type: "select",
-        select: { name: opts.confidence },
-      }
     }
     if (opts.synopsis !== undefined) {
       properties.Synopsis = {
@@ -2688,7 +2449,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     synopsis: string
     keywords: string
     source: string
-    confidence: string
     author: string
   }): string {
     return createHash("sha256")
@@ -2700,7 +2460,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
           synopsis: input.synopsis,
           keywords: input.keywords,
           source: input.source,
-          confidence: input.confidence,
           author: input.author,
         })
       )
@@ -2888,7 +2647,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "JWT decision.",
       keywords: "jwt,auth",
       source: "manual",
-      confidence: "certain",
       author: "Test User",
     })
     const { client, retrieveMarkdownSpy, updateMarkdownSpy, updateSpy } =
@@ -2907,7 +2665,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "JWT decision.",
       keywords: "jwt,auth",
       source: "manual",
-      confidence: "certain",
       author: "Test User",
     })
 
@@ -2960,7 +2717,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted.",
       keywords: "jwt,refresh",
       source: "manual",
-      confidence: "likely",
       author: "Test User",
     })
     const existingBody = [
@@ -2976,7 +2732,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: "Refresh rotation adopted.",
         keywords: "jwt,refresh",
         source: "manual",
-        confidence: "likely",
         author: "Test User",
       })} -->`,
       "",
@@ -2999,7 +2754,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted.",
       keywords: "jwt,refresh",
       source: "manual",
-      confidence: "likely",
       author: "Test User",
     })
 
@@ -3024,7 +2778,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Old synopsis.",
       keywords: "old,keywords",
       source: "manual",
-      confidence: "certain",
       author: "Engineer A",
     })
     const existingBody = [
@@ -3040,7 +2793,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: "Refresh rotation adopted.",
         keywords: "jwt,refresh",
         source: "manual",
-        confidence: "likely",
         author: "Engineer B",
       })} -->`,
       "",
@@ -3063,7 +2815,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted.",
       keywords: "jwt,refresh",
       source: "manual",
-      confidence: "likely",
       author: "Engineer B",
     })
 
@@ -3071,7 +2822,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.memory.title).toBe("JWT auth model with refresh rotation")
     expect(result.memory.synopsis).toBe("Refresh rotation adopted.")
     expect(result.memory.keywords).toBe("jwt,refresh")
-    expect(result.memory.confidence).toBe("likely")
     expect(result.memory.author).toBe("Engineer B")
     expect(updateMarkdownSpy).not.toHaveBeenCalled()
     expect(updateSpy).toHaveBeenCalledTimes(1)
@@ -3088,9 +2838,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(updateArgs.properties["Keywords"]).toEqual({
       rich_text: [{ text: { content: "jwt,refresh" } }],
     })
-    expect(updateArgs.properties["Confidence"]).toEqual({
-      select: { name: "likely" },
-    })
     expect(updateArgs.properties["Author"]).toEqual({
       rich_text: [{ text: { content: "Engineer B" } }],
     })
@@ -3106,7 +2853,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Old synopsis.",
       keywords: "old,keywords",
       source: "manual",
-      confidence: "certain",
       author: "Engineer A",
     })
     const clientOpts = {
@@ -3125,7 +2871,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted.",
       keywords: "jwt,refresh",
       source: "manual" as const,
-      confidence: "likely" as const,
       author: "Engineer B",
       today: "2026-04-30",
     }
@@ -3173,7 +2918,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Old synopsis.",
       keywords: "old,keywords",
       source: "manual",
-      confidence: "certain",
       author: "Engineer A",
     })
     const existingBody = [
@@ -3189,7 +2933,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: "Refresh rotation adopted.",
         keywords: "jwt,refresh",
         source: "manual",
-        confidence: "likely",
         author: "Engineer B",
       })} -->`,
       "",
@@ -3212,7 +2955,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted with a caveat.",
       keywords: "jwt,refresh,caveat",
       source: "manual",
-      confidence: "likely",
       author: "Engineer B",
       today: "2026-05-01",
     })
@@ -3241,7 +2983,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted.",
       keywords: "jwt,refresh",
       source: "manual",
-      confidence: "likely",
       author: "Engineer B",
     })
     const existingBody = [
@@ -3257,7 +2998,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: "Refresh rotation adopted.",
         keywords: "different,fingerprint",
         source: "manual",
-        confidence: "likely",
         author: "Engineer B",
       })} -->`,
       "",
@@ -3280,7 +3020,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis: "Refresh rotation adopted.",
       keywords: "jwt,refresh",
       source: "manual",
-      confidence: "likely",
       author: "Engineer B",
       today: "2026-05-01",
     })
@@ -3332,7 +3071,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: "Migration runbook.",
         keywords: "db,migration",
         source: "manual",
-        confidence: "certain",
         author: "",
       })} -->`,
       "",
@@ -3412,7 +3150,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: "Migration runbook.",
         keywords: "db,migration",
         source: "manual",
-        confidence: "certain",
         author: "",
       })} -->`,
       "",
@@ -4170,7 +3907,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis?: string
       keywords?: string
       source?: string
-      confidence?: string
       author?: string
       preface?: string
     }): { body: string; fingerprint: string } {
@@ -4181,7 +3917,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         synopsis: opts.synopsis ?? "",
         keywords: opts.keywords ?? "",
         source: opts.source ?? "manual",
-        confidence: opts.confidence ?? "likely",
         author: opts.author ?? "",
       })
       // The revision block's prefix must start with `\n---\n` for
@@ -4240,7 +3975,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         kind: "decision",
         title: "JWT auth",
         source: "manual",
-        confidence: "likely",
       })
       const { body } = fingerprintedRevisionBody({
         title: "JWT auth",
@@ -4324,7 +4058,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         kind: "decision",
         title: "JWT auth",
         source: "manual",
-        confidence: "likely",
       })
       const { body } = fingerprintedRevisionBody({
         title: "JWT auth",
@@ -4374,7 +4107,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         kind: "decision",
         title: "JWT auth",
         source: "manual",
-        confidence: "likely",
       })
       const { body } = fingerprintedRevisionBody({
         title: "JWT auth",
@@ -4457,7 +4189,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
             kind: "decision",
             title: "JWT auth",
             source: "manual",
-            confidence: "likely",
           })
           const { body } = fingerprintedRevisionBody({
             title: "JWT auth",
@@ -4515,7 +4246,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         kind: "decision",
         title: "JWT auth",
         source: "manual",
-        confidence: "likely",
       })
       const { body } = fingerprintedRevisionBody({
         title: "JWT auth",
@@ -4560,7 +4290,6 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         kind: "decision",
         title: "JWT auth",
         source: "manual",
-        confidence: "likely",
       })
       const { body } = fingerprintedRevisionBody({
         title: "JWT auth",
@@ -7490,486 +7219,6 @@ describe("MemoryService.search — RRF fusion under saturation threshold", () =>
   })
 })
 
-describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildScoredPage(
-    id: string,
-    title: string,
-    confidenceScore: number | null
-  ): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-        "Confidence Score": { type: "number", number: confidenceScore },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("hybrid mode: rows with identical ranks but different Confidence Scores sort by confidence", async () => {
-    // Both rows: contains-only at rank 0 and rank 1. Without confidence
-    // weighting, contains rank 0 wins. With confidence weighting, the
-    // 0.9-scored row at rank 1 (score 1/62 * (0.5+0.5*0.9) = 1/62 * 0.95)
-    // sorts above the 0.1-scored row at rank 0 (score 1/61 * 0.55) ONLY
-    // when the confidence delta is large enough. With these constants:
-    // row-low: (1/61) * 0.55 ≈ 0.00902
-    // row-high: (1/62) * 0.95 ≈ 0.01532
-    // So the higher-confidence rank-1 row beats the lower-confidence
-    // rank-0 row. Pin this end-to-end through hybrid's RRF accumulator.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("row-low", "rank 0 in contains, decayed", 0.1),
-        buildScoredPage("row-high", "rank 1 in contains, fresh", 0.9),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // High-confidence row at rank 1 beats low-confidence row at rank 0
-    // because the confidence-factor delta (0.95 vs 0.55) outweighs the
-    // single-rank gap.
-    expect(results.map((m) => m.id)).toEqual(["row-high", "row-low"])
-  })
-
-  it("contains mode: a fresh-rank-3 row sorts above a decayed-rank-1 row", async () => {
-    // The acceptance-criteria worked example:
-    // rank 3 with confidence=0.95: (1/64) * (0.5+0.5*0.95) = (1/64) * 0.975 ≈ 0.01523
-    // rank 1 with confidence=0.0: (1/62) * 0.5 ≈ 0.00806
-    // Fresh-rank-3 wins.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
-        buildScoredPage("decay-rank-1", "rank 1, decayed", 0.0),
-        buildScoredPage("decay-rank-2", "rank 2, decayed", 0.0),
-        buildScoredPage("fresh-rank-3", "rank 3, fresh", 0.95),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(results[0].id).toBe("fresh-rank-3")
-  })
-
-  it("unscored rows (Confidence Score = null) yield byte-identical pre-0.8.0 ordering", async () => {
-    // Pre-migration vault: every row has `Confidence Score = null`.
-    // `confidenceFactor(null) = 1.0` and the all-unscored short-circuit in
-    // `rerankByConfidence` returns Notion's input order verbatim. Pinning
-    // this preserves the soft-dep contract from the spec: 0.8.0 ships
-    // visibly inert until #11's backfill / Phase 2 read-touches populate
-    // scores.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("first", "first by recency", null),
-        buildScoredPage("second", "second by recency", null),
-        buildScoredPage("third", "third by recency", null),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["first", "second", "third"])
-  })
-
-  it("hybrid mode: scored row at Confidence Score=0.0 has effective weight 0.5*baseWeight, NOT 0.25 (no double application)", async () => {
-    // The spec's flagship double-application regression test. In hybrid
-    // mode, a row at Confidence Score=0.0 with contains-rank=0 and absent
-    // from semantic should score `(1/61) * 1 * 0.5`, not
-    // `(1/61) * 1 * 0.5 * 0.5`. If hybrid composed the public single-
-    // branch wrappers (which apply the factor in their sort), the factor
-    // would be applied here AND in the RRF accumulator — collapsing the
-    // documented [0.5, 1.0] floor to [0.25, 1.0]. The fetch/sort split
-    // pins this.
-    const querySpy = vi.fn(async () => ({
-      results: [buildScoredPage("decayed", "decayed row", 0.0)],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    // Single-application: (1/61) * 0.5
-    expect(explain[0].rrfScore).toBeCloseTo((1 / 61) * 0.5, 10)
-    // Sanity: NOT the double-applied value
-    expect(explain[0].rrfScore).not.toBeCloseTo((1 / 61) * 0.5 * 0.5, 10)
-    expect(explain[0].confidenceFactor).toBeCloseTo(0.5, 10)
-  })
-
-  it("confidenceFactor=false reverts ordering to pre-0.8.0", async () => {
-    // Operator escape hatch. With the resolved feature gate off,
-    // every row's factor is forced to 1.0 and ordering matches
-    // pre-0.8.0 — even on a vault with populated scores. Verified
-    // end-to-end on the same contains-mode fixture as the
-    // "fresh-rank-3 wins" test above.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
-        buildScoredPage("decay-rank-1", "rank 1, decayed", 0.0),
-        buildScoredPage("decay-rank-2", "rank 2, decayed", 0.0),
-        buildScoredPage("fresh-rank-3", "rank 3, fresh", 0.95),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db, undefined, {
-      features: { ...defaultFeatureFlags(), confidenceFactor: false },
-    })
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-    // Without the factor, Notion's recency order is preserved.
-    expect(results.map((m) => m.id)).toEqual([
-      "decay-rank-0",
-      "decay-rank-1",
-      "decay-rank-2",
-      "fresh-rank-3",
-    ])
-  })
-
-  it("saturation cutoff is unchanged — vault with 3+ high-confidence contains hits skips the RRF merge", async () => {
-    // Pin that 0.8.0 does NOT modify the saturation cutoff. The spec
-    // explicitly defers any "saturated-but-low-confidence" bypass to
-    // a follow-up; the RRF merge runs only when contains under-shoots.
-    // Even when contains saturates with low-confidence rows, the
-    // semantic branch's output is discarded as before. (The trace's
-    // confidenceFactor field still surfaces per-row factors so #09's
-    // rendering can still highlight stale rows.)
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("c-0", "decayed first", 0.0),
-        buildScoredPage("c-1", "decayed second", 0.0),
-        buildScoredPage("c-2", "decayed third", 0.0),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildScoredPage("would-float-in", "fresh semantic hit", 0.95)],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // Cutoff fires; semantic-only row is discarded.
-    expect(results.map((m) => m.id)).toEqual(["c-0", "c-1", "c-2"])
-  })
-
-  it("searchWithExplain populates confidenceFactor on every row across every branch", async () => {
-    // Pin the SearchExplain shape contract: confidenceFactor is now
-    // a required field, populated for every row regardless of branch.
-    // The single-branch contains case maps each row to its
-    // confidenceFactor; the hybrid RRF case carries it via the trace;
-    // the contains-saturated case carries it via the saturation trace.
-    const containsRows = [
-      buildScoredPage("scored", "fresh row", 0.8),
-      buildScoredPage("unscored", "pre-migration row", null),
-    ]
-    const querySpy = vi.fn(async () => ({
-      results: containsRows,
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(2)
-    for (const e of explain) {
-      expect(typeof e.confidenceFactor).toBe("number")
-      expect(e.confidenceFactor).toBeGreaterThanOrEqual(0.5)
-      expect(e.confidenceFactor).toBeLessThanOrEqual(1.0)
-    }
-    // Specifically: scored row at 0.8 → factor 0.5 + 0.5*0.8 = 0.9.
-    const scored = explain.find((e) => e.memoryId === "scored")!
-    expect(scored.confidenceFactor).toBeCloseTo(0.9, 10)
-    // Unscored row → factor 1.0 (neutral).
-    const unscored = explain.find((e) => e.memoryId === "unscored")!
-    expect(unscored.confidenceFactor).toBe(1.0)
-  })
-
-  it("score (level 1) dominates page-id (level 4) tie-break — comparator runs on factor-weighted scores", async () => {
-    // Pin that the comparator runs on the factor-weighted score (level
-    // 1), not on raw `1/(RRF_K + rank + 1)`. Two rows have factor 1.0
-    // each (so no factor delta) and the higher rank's higher score
-    // dominates the alphabetic page-id fall-through (level 4). If a
-    // future refactor wired the comparator to read raw scores from
-    // some pre-factor field, the tie-break levels would still trigger
-    // but on the wrong values; this test would catch a level-1
-    // collision on factor-weighted scores even when none should exist.
-    //
-    // The factor-driven ordering flip is covered by the companion test
-    // below ("decayed rank-0 sorts below fresh rank-1") — that one
-    // proves the factor is what changes the ordering. This test pins
-    // the comparator's read-side: it operates on the same scored
-    // values that come out of the accumulator.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        // Both rows scored at 1.0 → both factors 1.0 → score is purely
-        // rank-driven. Use scored rows (not unscored) so the
-        // all-unscored short-circuit doesn't fire.
-        buildScoredPage("z-id-rank-0", "fresh, alphabetically late", 1.0),
-        buildScoredPage("a-id-rank-1", "fresh, alphabetically early", 1.0),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    // (1/61) > (1/62), so z-id-rank-0 wins on level 1 score even
-    // though page-id ascending (level 4) would put a-id first. Score
-    // dominates because the comparator decides at the first level
-    // that produces a non-zero result.
-    expect(results.map((m) => m.id)).toEqual(["z-id-rank-0", "a-id-rank-1"])
-  })
-
-  it("decayed rank-0 sorts below fresh rank-1 in contains mode — factor flips ordering at level 1", async () => {
-    // Companion to the fresh-rank-3 worked example, scoped to the
-    // adjacent-rank case the spec calls out: pin that the factor
-    // multiplies in BEFORE the score comparison. A row at contains-
-    // rank 0 with `Confidence Score = 0.0` (factor = 0.5) scores
-    // (1/61) * 0.5 ≈ 0.00820. A row at contains-rank 1 with
-    // `Confidence Score = 1.0` (factor = 1.0) scores (1/62) * 1.0
-    // ≈ 0.01613. Fresh-rank-1 wins on level 1. If a future refactor
-    // accidentally applied the factor AFTER the comparator (or
-    // skipped it on the single-branch path), the comparator would
-    // see the unweighted scores and rank 0 would win — flipping this
-    // assertion.
-    //
-    // This case is distinct from the fresh-rank-3 test in that it
-    // pins the closest possible adjacent-rank flip — the smallest
-    // ordering change the factor can produce in a single-branch
-    // path — so a future tightening of `CONFIDENCE_FACTOR_MIN` toward
-    // 1.0 (which would shrink the factor's effective range and
-    // potentially un-flip this case) is caught here at the boundary.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("rank-0-decayed", "rank 0, fully decayed", 0.0),
-        buildScoredPage("rank-1-fresh", "rank 1, fully trusted", 1.0),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["rank-1-fresh", "rank-0-decayed"])
-  })
-})
-
-describe("MemoryService.searchByHybridPages — structural pipeline split (issue 0.8.0/08)", () => {
-  // Pin that hybrid composes the **raw** fetch helpers, not the public
-  // confidence-aware sort wrappers. Going through the public wrappers
-  // would double-apply the confidence factor and collapse the
-  // documented [0.5, 1.0] floor to [0.25, 1.0] in hybrid mode.
-  //
-  // We can't spy on private methods directly without exposing them, so
-  // the structural test goes through the observable Notion calls: the
-  // raw fetch helpers each issue exactly one Notion call (the
-  // dataSources.query and client.search respectively). If hybrid called
-  // the public sort wrappers, the wrappers would still issue one Notion
-  // call each (they pass through to the raw helpers), so the round-trip
-  // count is identical. The double-application detection lives in the
-  // `confidenceFactor` numerical pin in the test above.
-
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildScoredPage(
-    id: string,
-    confidenceScore: number | null
-  ): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: id }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-        "Confidence Score": { type: "number", number: confidenceScore },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("hybrid issues exactly one dataSources.query and one client.search — same shape as pre-0.8.0", async () => {
-    // Round-trip pinning: hybrid calls the raw fetchContains/fetchSemantic
-    // helpers exactly once each. If a future refactor wired hybrid to call
-    // the public confidence-aware searchByContainsPages /
-    // searchBySemanticPages instead, the raw helpers would still be called
-    // exactly once each (transitively, via the public wrappers), so this
-    // test alone wouldn't catch the regression. The double-application
-    // numerical pin above is the load-bearing test; this one ensures the
-    // round-trip cost contract didn't drift.
-    const querySpy = vi.fn(async () => ({
-      results: [buildScoredPage("c-only", 0.5)],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildScoredPage("s-only", 0.7)],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("the documented [0.5, 1.0] confidence-factor floor holds in hybrid mode (no factor² collapse)", async () => {
-    // The cleanest cross-check that hybrid does NOT call the public
-    // wrappers. If it did, the score for a Confidence Score=0.0 row
-    // would be `(1/61) * 0.5 * 0.5 = ~0.00410`. With the correct fetch/
-    // sort split, the score is `(1/61) * 0.5 = ~0.00820`. The 2x gap
-    // is wide enough that floating-point noise can't mask the
-    // regression.
-    const querySpy = vi.fn(async () => ({
-      results: [buildScoredPage("decayed", 0.0)],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    const single = (1 / 61) * 0.5
-    const doubled = single * 0.5
-    expect(explain[0].rrfScore).toBeCloseTo(single, 10)
-    // Belt-and-braces: explicitly assert NOT the doubled value.
-    expect(Math.abs((explain[0].rrfScore ?? 0) - doubled)).toBeGreaterThan(1e-6)
-  })
-})
-
 describe("MemoryService.search — RRF tie-break determinism", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
@@ -8133,15 +7382,13 @@ describe("tieBreakingRrfCompare — direct unit tests, one per tie-break level",
     id: string,
     score: number,
     containsRank: number | null,
-    semanticRank: number | null,
-    confidenceFactor: number = 1.0
+    semanticRank: number | null
   ): RrfEntry {
     return {
       page: { id } as unknown as PageObjectResponse,
       score,
       containsRank,
       semanticRank,
-      confidenceFactor,
     }
   }
 
@@ -8931,13 +8178,10 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
     const entry = explain[0]
     expect(Object.keys(entry).sort()).toEqual([
       "branch",
-      "confidenceFactor",
       "containsRank",
-      "effectiveConfidenceFactor",
       "memoryId",
       "rrfScore",
       "semanticRank",
-      "storedConfidenceFactor",
     ])
   })
 })
@@ -9825,7 +9069,6 @@ describe("pageToMemory — partial migration (mixed defaults + real values)", ()
     const memory = pageToMemory(page)
     expect(memory.kind).toBe("runbook")
     expect(memory.status).toBe("informational") // default kicks in
-    expect(memory.confidence).toBe("certain")
   })
 
   it("handles a page with Status: null select (column exists, no value chosen)", () => {
@@ -9954,25 +9197,6 @@ describe("MemoryService.list — pagination", () => {
       and: [
         ...defaultKnowledgeRecallFilterClauses,
         { property: "Session", rich_text: { equals: "session-1" } },
-        cleanupOrphanFilterClause,
-      ],
-    })
-  })
-
-  it("adds a Confidence select filter when confidence is provided", async () => {
-    const { client, querySpy } = createClient({ results: [] })
-    const service = new MemoryService(client, db)
-
-    await service.list({
-      confidence: "likely",
-      includeContent: false,
-      includeProposed: true,
-    })
-
-    expect(querySpy.mock.calls[0][0].filter).toEqual({
-      and: [
-        ...defaultKnowledgeRecallFilterClauses,
-        { property: "Confidence", select: { equals: "likely" } },
         cleanupOrphanFilterClause,
       ],
     })
@@ -10175,45 +9399,6 @@ describe("MemoryService.search — default-excludes Status = proposed (contains)
         select: { does_not_equal: "rejected" },
       })
     )
-  })
-})
-
-describe("MemoryService.queryStaleConfidence — default-excludes Status = proposed", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  it("includes the does_not_equal proposed clause by default", async () => {
-    const query = vi
-      .fn()
-      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({ limit: 5, today: "2026-05-03" })
-
-    const filter = query.mock.calls[0]![0].filter as { and: Array<unknown> }
-    expect(filter.and).toEqual(
-      expect.arrayContaining([
-        { property: "Status", select: { does_not_equal: "proposed" } },
-      ])
-    )
-  })
-
-  it("suppresses the exclusion under includeProposed: true", async () => {
-    const query = vi
-      .fn()
-      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({
-      limit: 5,
-      today: "2026-05-03",
-      includeProposed: true,
-    })
-
-    const filter = query.mock.calls[0]![0].filter as { and: Array<unknown> }
-    const serialized = JSON.stringify(filter)
-    expect(serialized).not.toContain("does_not_equal")
   })
 })
 
@@ -11593,8 +10778,6 @@ describe("MemoryService.materializeContent", () => {
       source: "manual" as const,
       kind: "note" as const,
       status: "informational" as const,
-      confidence: "certain" as const,
-      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,
@@ -11916,7 +11099,7 @@ describe("MemoryService.getManyById", () => {
 })
 
 // ---------------------------------------------------------------------------
-// touchOnRead + decrementConfidence — confidence dynamics I/O
+// touchOnRead — Last Referenced At maintenance
 // ---------------------------------------------------------------------------
 
 describe("MemoryService.touchOnRead", () => {
@@ -11926,186 +11109,51 @@ describe("MemoryService.touchOnRead", () => {
   function makeMemoryShape(
     overrides: {
       id?: string
-      confidence?: "certain" | "likely" | "speculative"
-      confidenceScore?: number | null
       lastReferencedAt?: string | null
-      createdAt?: string
     } = {}
-  ) {
+  ): Pick<Memory, "id" | "lastReferencedAt"> {
     return {
       id: overrides.id ?? "m1",
-      confidence: overrides.confidence ?? ("certain" as const),
-      confidenceScore: overrides.confidenceScore ?? null,
       lastReferencedAt: overrides.lastReferencedAt ?? null,
-      createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
     }
   }
 
-  it("short-circuits when lastReferencedAt is today AND confidenceScore is non-null", async () => {
+  it("short-circuits when lastReferencedAt is already today", async () => {
     const update = vi.fn(
       async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
     )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          id: "m1",
-          confidenceScore: 0.85,
-          lastReferencedAt: TODAY,
-        }),
-      ],
-      { today: TODAY }
-    )
+    await service.touchOnRead([makeMemoryShape({ id: "m1", lastReferencedAt: TODAY })], {
+      today: TODAY,
+    })
 
     expect(update).not.toHaveBeenCalled()
   })
 
-  it("does not short-circuit when lastReferencedAt is today but confidenceScore is null", async () => {
-    // Realistic concurrent-read scenario: another touch wrote
-    // `Last Referenced At` but the score column is still empty (the
-    // companion column write would only diverge under a partial Notion
-    // failure, but the helper must not skip on the in-memory snapshot).
+  it("writes Last Referenced At and mutates the input row after a successful update", async () => {
     const update = vi.fn(
       async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
     )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
+    const row = makeMemoryShape({ id: "m1" })
 
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          id: "m1",
-          confidenceScore: null,
-          lastReferencedAt: TODAY,
-        }),
-      ],
-      { today: TODAY }
-    )
+    await service.touchOnRead([row], { today: TODAY })
 
     expect(update).toHaveBeenCalledTimes(1)
-  })
-
-  it("seed-decay-then-bumps a never-scored row whose createdAt is recent", async () => {
-    // createdAt is today → zero stale days → decay no-ops, only the
-    // bump applies. seed("certain") = 0.9; bump(0.9) = 0.9 + 0.1*0.05
-    // = 0.905.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          confidence: "certain",
-          confidenceScore: null,
-          lastReferencedAt: null,
-          createdAt: `${TODAY}T00:00:00.000Z`,
-        }),
-      ],
-      { today: TODAY }
-    )
-
-    expect(update).toHaveBeenCalledTimes(1)
-    const writtenScore = (
-      update.mock.calls[0]![0] as unknown as {
-        properties: { "Confidence Score": { number: number } }
-      }
-    ).properties["Confidence Score"].number
-    expect(writtenScore).toBeCloseTo(0.905, 6)
-  })
-
-  it("seed-decay-then-bumps a never-scored 200-day-old row (pre-migration convergence)", async () => {
-    // 2026-04-29 minus 200 days = 2025-10-11 → 200 days elapsed →
-    // 140 stale days past the 60-day grace.
-    // seed("certain") = 0.9 → decay = 0.9 * 0.99^140 → bump.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          confidence: "certain",
-          confidenceScore: null,
-          lastReferencedAt: null,
-          createdAt: "2025-10-11T00:00:00.000Z",
-        }),
-      ],
-      { today: TODAY }
-    )
-
-    const writtenScore = (
-      update.mock.calls[0]![0] as unknown as {
-        properties: { "Confidence Score": { number: number } }
-      }
-    ).properties["Confidence Score"].number
-    const decayed = 0.9 * Math.pow(0.99, 140)
-    const expected = decayed + (1 - decayed) * 0.05
-    expect(writtenScore).toBeCloseTo(expected, 6)
-    // Sanity: should land far below the no-decay baseline (~0.905).
-    expect(writtenScore).toBeLessThan(0.3)
-  })
-
-  it("decays-then-bumps a stale row instead of bumping the stored score directly", async () => {
-    // 2026-04-29 minus 100 days = 2026-01-19 → 100 days elapsed →
-    // 40 stale days past the 60-day grace. Stored 0.9 → decay
-    // 0.9 * 0.99^40 ≈ 0.602 → bump → ≈ 0.622. NOT bump(0.9) ≈ 0.905.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          confidenceScore: 0.9,
-          lastReferencedAt: "2026-01-19",
-        }),
-      ],
-      { today: TODAY }
-    )
-
-    const writtenScore = (
-      update.mock.calls[0]![0] as unknown as {
-        properties: { "Confidence Score": { number: number } }
-      }
-    ).properties["Confidence Score"].number
-    const decayed = 0.9 * Math.pow(0.99, 40)
-    const expected = decayed + (1 - decayed) * 0.05
-    expect(writtenScore).toBeCloseTo(expected, 6)
-    // Sanity: should not be the no-decay bump value (~0.905).
-    expect(writtenScore).toBeLessThan(0.7)
-  })
-
-  it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.touchOnRead([makeMemoryShape()], { today: TODAY })
-
-    expect(update).toHaveBeenCalledTimes(1)
-    const args = update.mock.calls[0]![0] as {
-      properties: Record<string, unknown>
-    }
-    expect(args.properties["Last Referenced At"]).toEqual({
-      date: { start: TODAY },
+    expect(update.mock.calls[0]![0]).toMatchObject({
+      page_id: "m1",
+      properties: { "Last Referenced At": { date: { start: TODAY } } },
     })
-    expect(args.properties["Confidence Score"]).toMatchObject({
-      number: expect.any(Number),
-    })
+    expect(row.lastReferencedAt).toBe(TODAY)
+
+    await service.touchOnRead([row], { today: TODAY })
+    expect(update).toHaveBeenCalledTimes(1)
   })
 
-  it("isolates per-row failures and continues processing the rest of the batch", async () => {
+  it("isolates per-row failures and leaves failed rows unchanged", async () => {
     const update = vi.fn(async (args: { page_id: string }) => {
       if (args.page_id === "m-bad") throw new Error("notion 503")
       return undefined
@@ -12113,56 +11161,24 @@ describe("MemoryService.touchOnRead", () => {
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
     const errors: Array<{ id: string; message: string }> = []
+    const bad = makeMemoryShape({ id: "m-bad" })
 
-    await service.touchOnRead(
-      [
-        makeMemoryShape({ id: "m-good-1" }),
-        makeMemoryShape({ id: "m-bad" }),
-        makeMemoryShape({ id: "m-good-2" }),
-      ],
-      {
-        today: TODAY,
-        onError: (id, error) => {
-          errors.push({
-            id,
-            message: error instanceof Error ? error.message : String(error),
-          })
-        },
-      }
-    )
+    await service.touchOnRead([makeMemoryShape({ id: "m-good" }), bad], {
+      today: TODAY,
+      onError: (id, error) => {
+        errors.push({
+          id,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      },
+    })
 
-    expect(update).toHaveBeenCalledTimes(3)
+    expect(update).toHaveBeenCalledTimes(2)
     expect(errors).toEqual([{ id: "m-bad", message: "notion 503" }])
+    expect(bad.lastReferencedAt).toBeNull()
   })
 
-  it("does not throw when a row fails and onError is omitted (the callback is optional)", async () => {
-    // Sibling to the `onError` failure-isolation test above: the
-    // helper's signature marks `onError` as optional, so a caller that
-    // doesn't pass one must still get advisory non-throwing semantics
-    // — the read result is preserved regardless of write outcome.
-    const update = vi.fn(
-      async (args: { page_id: string; properties: Record<string, unknown> }) => {
-        if (args.page_id === "m-bad") throw new Error("notion 503")
-        return undefined
-      }
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await expect(
-      service.touchOnRead(
-        [
-          makeMemoryShape({ id: "m-good-1" }),
-          makeMemoryShape({ id: "m-bad" }),
-          makeMemoryShape({ id: "m-good-2" }),
-        ],
-        { today: TODAY }
-      )
-    ).resolves.toBeUndefined()
-    expect(update).toHaveBeenCalledTimes(3)
-  })
-
-  it("is a no-op (and issues no Notion calls) for an empty memory list", async () => {
+  it("is a no-op for an empty memory list", async () => {
     const update = vi.fn(
       async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
     )
@@ -12173,274 +11189,7 @@ describe("MemoryService.touchOnRead", () => {
 
     expect(update).not.toHaveBeenCalled()
   })
-
-  it("treats `confidenceScore non-null + lastReferencedAt null` as no-op decay (corner-case safety net)", async () => {
-    // Production callers always write both columns together via
-    // `touchOnRead` / `decrementConfidence`, so a row with a stored
-    // score but no last-reference date shouldn't exist. The type
-    // system permits the shape, though, and the implementation leans
-    // on `decayConfidenceScore`'s null-tolerant pass-through for this
-    // case — pin it so a future "narrow lastReferencedAt to non-null
-    // here" refactor surfaces this corner case.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          confidenceScore: 0.7,
-          lastReferencedAt: null, // pathological — production never produces this
-        }),
-      ],
-      { today: TODAY }
-    )
-
-    const writtenScore = (
-      update.mock.calls[0]![0] as unknown as {
-        properties: { "Confidence Score": { number: number } }
-      }
-    ).properties["Confidence Score"].number
-    // No decay applies (lastReferencedAt is null) → bump 0.7 directly:
-    // 0.7 + (1 − 0.7) * 0.05 = 0.715.
-    expect(writtenScore).toBeCloseTo(0.715, 6)
-  })
-
-  it("converges with the bulk-migration baseline on the never-scored branch", async () => {
-    // Pre-migration / post-migration convergence test. The migration
-    // would compute decay(seed, createdAt, today) — no bump. touchOnRead
-    // computes bump(decay(seed, createdAt, today)). Modulo the single
-    // bump step (representing the cite the touchOnRead path embodies),
-    // the two paths land on the same intermediate decayed value.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.touchOnRead(
-      [
-        makeMemoryShape({
-          confidence: "likely",
-          confidenceScore: null,
-          lastReferencedAt: null,
-          createdAt: "2025-10-11T00:00:00.000Z",
-        }),
-      ],
-      { today: TODAY }
-    )
-
-    const writtenScore = (
-      update.mock.calls[0]![0] as unknown as {
-        properties: { "Confidence Score": { number: number } }
-      }
-    ).properties["Confidence Score"].number
-    // seed("likely") = 0.6 → decay over 140 stale days → bump.
-    const migrationValue = 0.6 * Math.pow(0.99, 140)
-    const touchValue = migrationValue + (1 - migrationValue) * 0.05
-    expect(writtenScore).toBeCloseTo(touchValue, 6)
-  })
-
-  it("mutates the input row's lastReferencedAt and confidenceScore in place after a successful update (issue #495)", async () => {
-    // The wake-up cache (issue #495) hands the same `Memory[]`
-    // reference back on subsequent hits within TTL. Without this
-    // mutation, the once-per-day gate at the top of touchOnRead
-    // would key on the cached row's pre-touch `lastReferencedAt`
-    // and re-fire `pages.update` for every row on every cache hit.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const row = makeMemoryShape({
-      id: "m1",
-      confidence: "certain",
-      confidenceScore: null,
-      lastReferencedAt: null,
-      createdAt: `${TODAY}T00:00:00.000Z`,
-    })
-
-    await service.touchOnRead([row], { today: TODAY })
-    expect(update).toHaveBeenCalledTimes(1)
-    expect(row.lastReferencedAt).toBe(TODAY)
-    expect(row.confidenceScore).toBeCloseTo(0.905, 6)
-
-    // A second call with the SAME reference must hit the
-    // once-per-day short-circuit (zero new updates).
-    await service.touchOnRead([row], { today: TODAY })
-    expect(update).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not mutate the input row when the update throws", async () => {
-    const update = vi.fn(async () => {
-      throw new Error("notion 429")
-    })
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const row = makeMemoryShape({
-      id: "m1",
-      confidence: "certain",
-      confidenceScore: null,
-      lastReferencedAt: null,
-      createdAt: `${TODAY}T00:00:00.000Z`,
-    })
-
-    await service.touchOnRead([row], { today: TODAY })
-    expect(row.lastReferencedAt).toBeNull()
-    expect(row.confidenceScore).toBeNull()
-  })
 })
-
-describe("MemoryService.decrementConfidence", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-  const TODAY = "2026-04-29"
-
-  function makeMemoryShape(
-    overrides: {
-      id?: string
-      confidence?: "certain" | "likely" | "speculative"
-      confidenceScore?: number | null
-      lastReferencedAt?: string | null
-      createdAt?: string
-    } = {}
-  ) {
-    return {
-      id: overrides.id ?? "m1",
-      confidence: overrides.confidence ?? ("certain" as const),
-      confidenceScore: overrides.confidenceScore ?? null,
-      lastReferencedAt: overrides.lastReferencedAt ?? null,
-      createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
-    }
-  }
-
-  it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.decrementConfidence(
-      makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
-      { today: TODAY }
-    )
-
-    expect(update).toHaveBeenCalledTimes(1)
-    const args = update.mock.calls[0]![0] as {
-      properties: Record<string, unknown>
-    }
-    expect(args.properties["Last Referenced At"]).toEqual({
-      date: { start: TODAY },
-    })
-    expect(args.properties["Confidence Score"]).toMatchObject({
-      number: expect.any(Number),
-    })
-  })
-
-  it("halves a fresh, non-stale, non-null score (no decay applied)", async () => {
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const next = await service.decrementConfidence(
-      makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
-      { today: TODAY }
-    )
-
-    expect(next).toBeCloseTo(0.45, 6)
-  })
-
-  it("decays-then-decrements on a stale row (200 days neglected)", async () => {
-    // 200 days elapsed → 140 stale days past 60-day grace.
-    // 0.9 * 0.99^140 ≈ 0.220 → halve → ≈ 0.110.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const next = await service.decrementConfidence(
-      makeMemoryShape({
-        confidenceScore: 0.9,
-        lastReferencedAt: "2025-10-11",
-      }),
-      { today: TODAY }
-    )
-
-    const decayed = 0.9 * Math.pow(0.99, 140)
-    const expected = decayed * 0.5
-    expect(next).toBeCloseTo(expected, 6)
-    // Sanity: well below the no-decay baseline (0.45).
-    expect(next).toBeLessThan(0.2)
-  })
-
-  it("seed-decay-then-decrements a never-scored row", async () => {
-    // Pre-migration row contradicted directly. seed("certain") = 0.9 →
-    // decay against createdAt → halve. Same convergence guarantee as
-    // touchOnRead's null-score branch.
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const next = await service.decrementConfidence(
-      makeMemoryShape({
-        confidence: "certain",
-        confidenceScore: null,
-        lastReferencedAt: null,
-        createdAt: "2025-10-11T00:00:00.000Z",
-      }),
-      { today: TODAY }
-    )
-
-    const decayed = 0.9 * Math.pow(0.99, 140)
-    const expected = decayed * 0.5
-    expect(next).toBeCloseTo(expected, 6)
-  })
-
-  it("returns the new score from the call", async () => {
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const next = await service.decrementConfidence(
-      makeMemoryShape({ confidenceScore: 0.5, lastReferencedAt: TODAY }),
-      { today: TODAY }
-    )
-
-    expect(next).toBeCloseTo(0.25, 6)
-  })
-
-  it("propagates errors from the underlying pages.update (no onError swallow)", async () => {
-    const update = vi.fn(async () => {
-      throw new Error("notion 429")
-    })
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await expect(
-      service.decrementConfidence(
-        makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
-        { today: TODAY }
-      )
-    ).rejects.toThrow("notion 429")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// listAllForBackfill + applyBackfillScore — confidence-score migration helpers
-// (issue 0.8.0/11). Pinned here so a future refactor does not silently break
-// the migration's contract.
-// ---------------------------------------------------------------------------
 
 describe("MemoryService.listAllForBackfill", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
@@ -12541,8 +11290,8 @@ describe("MemoryService.listAllForBackfill", () => {
   it("issues only the cleanup-orphan exclusion filter when projectId is omitted (vault-wide scope, issue #477)", async () => {
     // Pre-issue-477 this was `filter: undefined` — vault-wide scope
     // meant zero filtering. The cleanup-orphan exclusion is now the
-    // only filter on the unscoped path so the backfill doesn't seed a
-    // confidence score onto a resurfaced empty-body shell.
+    // only filter on the unscoped path so maintenance scans ignore
+    // resurfaced empty-body shells.
     const query = vi.fn().mockResolvedValueOnce({
       results: [],
       has_more: false,
@@ -12561,227 +11310,6 @@ describe("MemoryService.listAllForBackfill", () => {
     })
   })
 })
-
-describe("MemoryService.applyBackfillScore", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
-    const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
-    )
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.applyBackfillScore("memory-1", 0.42, "2025-10-11")
-
-    expect(update).toHaveBeenCalledTimes(1)
-    expect(update.mock.calls[0]![0]).toEqual({
-      page_id: "memory-1",
-      properties: {
-        "Confidence Score": { number: 0.42 },
-        "Last Referenced At": { date: { start: "2025-10-11" } },
-      },
-    })
-  })
-
-  it("propagates errors from the underlying pages.update", async () => {
-    const update = vi.fn(async () => {
-      throw new Error("notion 429")
-    })
-    const client = { pages: { update } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await expect(
-      service.applyBackfillScore("memory-1", 0.5, "2025-10-11")
-    ).rejects.toThrow("notion 429")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// confidenceStats — `lore status` confidence-summary line (DEFERRED-04)
-// ---------------------------------------------------------------------------
-
-describe("MemoryService.confidenceStats", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function makePage(
-    id: string,
-    confidenceScore: number | null,
-    overrides: Partial<PageObjectResponse> = {}
-  ): PageObjectResponse {
-    const props: Record<string, unknown> = {
-      Title: { type: "title", title: [{ plain_text: id, text: { content: id } }] },
-    }
-    if (confidenceScore !== null) {
-      props["Confidence Score"] = { type: "number", number: confidenceScore }
-    }
-    return {
-      object: "page",
-      id,
-      created_time: "2026-01-01T00:00:00.000Z",
-      last_edited_time: "2026-02-01T00:00:00.000Z",
-      archived: false,
-      properties: props as unknown as PageObjectResponse["properties"],
-      parent: { type: "database_id", database_id: "db-id" },
-      url: `https://notion.so/${id}`,
-      ...overrides,
-    } as PageObjectResponse
-  }
-
-  it("returns all-zero stats on an empty vault", async () => {
-    const query = vi.fn().mockResolvedValueOnce({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stats = await service.confidenceStats()
-    expect(stats).toEqual({
-      totalMemories: 0,
-      scoredMemories: 0,
-      averageScore: 0,
-      belowThreshold: 0,
-    })
-  })
-
-  it("counts every non-archived row as totalMemories regardless of score", async () => {
-    // Pre-#11 vault shape: every page has a null `Confidence Score`.
-    // The total count must still include them so the operator sees
-    // "N total, 0 scored" rather than "0 total".
-    const query = vi.fn().mockResolvedValueOnce({
-      results: [makePage("m1", null), makePage("m2", null), makePage("m3", null)],
-      has_more: false,
-      next_cursor: null,
-    })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stats = await service.confidenceStats()
-    expect(stats.totalMemories).toBe(3)
-    expect(stats.scoredMemories).toBe(0)
-    expect(stats.averageScore).toBe(0)
-    expect(stats.belowThreshold).toBe(0)
-  })
-
-  it("computes the arithmetic mean across only scored rows", async () => {
-    // Mixed vault: scored 0.9 + 0.6 + 0.3 = 1.8 / 3 = 0.6 average.
-    // Unscored rows must NOT pull the average toward zero — the
-    // divisor is `scoredMemories`, not `totalMemories`.
-    const query = vi.fn().mockResolvedValueOnce({
-      results: [
-        makePage("scored-high", 0.9),
-        makePage("unscored", null),
-        makePage("scored-mid", 0.6),
-        makePage("scored-low", 0.3),
-      ],
-      has_more: false,
-      next_cursor: null,
-    })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stats = await service.confidenceStats()
-    expect(stats.totalMemories).toBe(4)
-    expect(stats.scoredMemories).toBe(3)
-    expect(stats.averageScore).toBeCloseTo(0.6, 5)
-  })
-
-  it("counts only scored rows strictly below CONFIDENCE_DISPLAY_THRESHOLD", async () => {
-    // Threshold gate matches the trust indicator + Stale Confidence
-    // wake-up. A row exactly at the threshold (0.5) does NOT count as
-    // below — same `<` semantics `getTrustLabel` uses.
-    const query = vi.fn().mockResolvedValueOnce({
-      results: [
-        makePage("at-threshold", 0.5),
-        makePage("below-1", 0.49),
-        makePage("below-2", 0.2),
-        makePage("above", 0.8),
-      ],
-      has_more: false,
-      next_cursor: null,
-    })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stats = await service.confidenceStats()
-    expect(stats.belowThreshold).toBe(2)
-  })
-
-  it("paginates through every result page and aggregates across them", async () => {
-    // Two response pages — confirms the iterator follows `next_cursor`
-    // and the aggregator accumulates across pages rather than resetting.
-    const query = vi
-      .fn()
-      .mockResolvedValueOnce({
-        results: [makePage("m1", 0.9), makePage("m2", 0.4)],
-        has_more: true,
-        next_cursor: "cursor-1",
-      })
-      .mockResolvedValueOnce({
-        results: [makePage("m3", null)],
-        has_more: false,
-        next_cursor: null,
-      })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stats = await service.confidenceStats()
-    expect(query).toHaveBeenCalledTimes(2)
-    expect(stats).toEqual({
-      totalMemories: 3,
-      scoredMemories: 2,
-      averageScore: 0.65,
-      belowThreshold: 1,
-    })
-  })
-
-  it("excludes archived rows from every count", async () => {
-    // Archived rows are filtered client-side by `listAllForBackfill`;
-    // confidenceStats inherits that behavior. A backfilled-then-
-    // archived row should NOT pull the live-vault stats around.
-    const query = vi.fn().mockResolvedValueOnce({
-      results: [
-        makePage("live-scored", 0.9),
-        makePage("archived-scored", 0.1, { archived: true }),
-        makePage("live-unscored", null),
-      ],
-      has_more: false,
-      next_cursor: null,
-    })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stats = await service.confidenceStats()
-    expect(stats.totalMemories).toBe(2)
-    expect(stats.scoredMemories).toBe(1)
-    expect(stats.belowThreshold).toBe(0)
-  })
-
-  it("scopes to a project via projectOrUnscopedFilter when projectId is set", async () => {
-    // Pin the project-scoping seam: `confidenceStats({ projectId })`
-    // forwards through to `listAllForBackfill`, so the operator running
-    // `lore status` inside a sub-project sees the per-project number,
-    // not vault-wide.
-    const query = vi.fn().mockResolvedValueOnce({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    })
-    const client = { dataSources: { query } } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.confidenceStats({ projectId: "project-123" })
-    expect(query).toHaveBeenCalledTimes(1)
-    const args = query.mock.calls[0]![0] as { filter: unknown }
-    expect(JSON.stringify(args.filter)).toContain("project-123")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// countProposed — `lore status` proposed-memory inbox primitive (issue #281)
-// ---------------------------------------------------------------------------
 
 describe("MemoryService.countProposed", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
@@ -13162,485 +11690,6 @@ describe("MemoryService.countProposed", () => {
     for (const clause of args.filter.and!) {
       expect(clause).not.toHaveProperty("and")
     }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// queryStaleConfidence — wake-up Stale Confidence subsection (issue 0.8.0/#10)
-// ---------------------------------------------------------------------------
-
-describe("MemoryService.queryStaleConfidence", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-  const TODAY = "2026-04-29"
-
-  function buildStalePage(
-    id: string,
-    extras: {
-      confidenceScore?: number | null
-      lastReferencedAt?: string | null
-      expiresAt?: string | null
-      scopeKind?: string | null
-      scopeKey?: string
-      archived?: boolean
-    } = {}
-  ): PageObjectResponse {
-    const props: Record<string, unknown> = {
-      Title: { type: "title", title: [{ plain_text: id }] },
-      Project: { type: "relation", relation: [] },
-      Topic: { type: "relation", relation: [] },
-      Source: { type: "select", select: { name: "manual" } },
-      Author: { type: "rich_text", rich_text: [] },
-      Agent: { type: "rich_text", rich_text: [] },
-      Tags: { type: "multi_select", multi_select: [] },
-      Session: { type: "rich_text", rich_text: [] },
-    }
-    if (extras.confidenceScore !== undefined) {
-      props["Confidence Score"] = { type: "number", number: extras.confidenceScore }
-    }
-    if (extras.lastReferencedAt !== undefined) {
-      props["Last Referenced At"] = {
-        type: "date",
-        date: extras.lastReferencedAt ? { start: extras.lastReferencedAt } : null,
-      }
-    }
-    if (extras.expiresAt !== undefined) {
-      props["Expires At"] = {
-        type: "date",
-        date: extras.expiresAt ? { start: extras.expiresAt } : null,
-      }
-    }
-    if (extras.scopeKind !== undefined) {
-      props["Scope Kind"] = {
-        type: "select",
-        select: extras.scopeKind ? { name: extras.scopeKind } : null,
-      }
-    }
-    if (extras.scopeKey !== undefined) {
-      props["Scope Key"] = {
-        type: "rich_text",
-        rich_text: [{ plain_text: extras.scopeKey }],
-      }
-    }
-    return buildPage(props, { id, archived: extras.archived ?? false })
-  }
-
-  function makeQueryClient(pages: PageObjectResponse[]) {
-    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
-      object: "list" as const,
-      results: pages,
-      has_more: false,
-      next_cursor: null,
-      type: "page_or_database" as const,
-      page_or_database: {},
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-    } as unknown as Client
-    return { client, querySpy }
-  }
-
-  it("composes the projectOrUnscopedFilter when projectId is supplied", async () => {
-    const { client, querySpy } = makeQueryClient([])
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({
-      projectId: "proj-1",
-      limit: 5,
-      today: TODAY,
-    })
-
-    const filter = querySpy.mock.calls[0][0]["filter"] as {
-      and: Array<Record<string, unknown>>
-    }
-    expect(filter.and).toEqual(
-      expect.arrayContaining([
-        {
-          or: [
-            { property: "Project", relation: { contains: "proj-1" } },
-            { property: "Project", relation: { is_empty: true } },
-          ],
-        },
-      ])
-    )
-  })
-
-  it("omits the project clause for vault-wide wake-up (projectId undefined)", async () => {
-    // Vault-wide wake-up: handleWakeUp running without a resolved
-    // project (cwd outside any configured project). Without this
-    // branch, an unconditional `projectOrUnscopedFilter(undefined)`
-    // would either produce a Notion filter error or silently filter
-    // to memories whose Project relation contains the literal
-    // `undefined` (zero rows).
-    const { client, querySpy } = makeQueryClient([])
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    const filter = querySpy.mock.calls[0][0]["filter"] as {
-      and: Array<Record<string, unknown>>
-    }
-    // No `Project` clause ANYWHERE in the filter — checked via a deep
-    // serialized scan rather than per-clause shape assertions because
-    // a future refactor that nests the filter in additional and/or
-    // envelopes would let a leaked Project clause pass per-clause
-    // checks while still being structurally present. The serialized
-    // form catches both the current top-level shape and any future
-    // nested form.
-    expect(JSON.stringify(filter)).not.toContain('"property":"Project"')
-    // Surviving clauses (`is_not_empty` + the score-or-neglect OR)
-    // are pinned positively below so a refactor that DROPS them is
-    // also caught.
-    expect(filter.and).toEqual(
-      expect.arrayContaining([
-        { property: "Confidence Score", number: { is_not_empty: true } },
-      ])
-    )
-  })
-
-  it("includes the is_not_empty guard so pre-migration rows are excluded", async () => {
-    const { client, querySpy } = makeQueryClient([])
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    const filter = querySpy.mock.calls[0][0]["filter"] as {
-      and: Array<Record<string, unknown>>
-    }
-    expect(filter.and).toEqual(
-      expect.arrayContaining([
-        { property: "Confidence Score", number: { is_not_empty: true } },
-      ])
-    )
-  })
-
-  it("composes the load-bearing OR clause: low-score OR neglected", async () => {
-    // The neglect-OR clause is what surfaces a memory at stored 0.9
-    // touched 6 months ago — RRF reads stored values verbatim, so
-    // without this branch a never-disturbed high-score row never
-    // gets triaged. `today - STALE_CONFIDENCE_DAYS` (60) =
-    // 2026-02-28 (60 days before 2026-04-29).
-    const { client, querySpy } = makeQueryClient([])
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    const filter = querySpy.mock.calls[0][0]["filter"] as {
-      and: Array<Record<string, unknown>>
-    }
-    expect(filter.and).toEqual(
-      expect.arrayContaining([
-        {
-          or: [
-            { property: "Confidence Score", number: { less_than: 0.5 } },
-            { property: "Last Referenced At", date: { on_or_before: "2026-02-28" } },
-          ],
-        },
-      ])
-    )
-  })
-
-  it("sorts by Confidence Score ascending — most-decayed first", async () => {
-    const { client, querySpy } = makeQueryClient([])
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    const args = querySpy.mock.calls[0][0]
-    expect(args["sorts"]).toEqual([
-      { property: "Confidence Score", direction: "ascending" },
-    ])
-  })
-
-  it("requests a full page for refill efficiency", async () => {
-    const { client, querySpy } = makeQueryClient([])
-    const service = new MemoryService(client, db)
-
-    await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    expect(querySpy.mock.calls[0][0]["page_size"]).toBe(100)
-  })
-
-  it("filters out archived rows client-side", async () => {
-    // Notion's `dataSources.query` returns archived rows by default;
-    // every Memories DS read in this codebase post-filters them out
-    // (see `MemoryService.list`). Pin the same posture for the stale
-    // section so a row archived after a heavy decrement doesn't
-    // re-surface.
-    const { client } = makeQueryClient([
-      buildStalePage("live-1", {
-        confidenceScore: 0.3,
-        lastReferencedAt: "2026-04-25",
-        archived: false,
-      }),
-      buildStalePage("archived-1", {
-        confidenceScore: 0.1,
-        lastReferencedAt: "2026-04-25",
-        archived: true,
-      }),
-    ])
-    const service = new MemoryService(client, db)
-
-    const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    expect(memories.map((m) => m.id)).toEqual(["live-1"])
-  })
-
-  it("excludes expired stale-confidence rows by default and includes them when requested", async () => {
-    const { client, querySpy } = makeQueryClient([
-      buildStalePage("expired-1", {
-        confidenceScore: 0.2,
-        lastReferencedAt: "2026-04-25",
-        expiresAt: "2026-04-28",
-      }),
-      buildStalePage("active-1", {
-        confidenceScore: 0.3,
-        lastReferencedAt: "2026-04-25",
-      }),
-    ])
-    const service = new MemoryService(client, db, {})
-
-    const filtered = await service.queryStaleConfidence({ limit: 5, today: TODAY })
-    expect(filtered.map((m) => m.id)).toEqual(["active-1"])
-    expect(JSON.stringify(querySpy.mock.calls[0][0].filter)).toContain('"Expires At"')
-
-    const withExpired = await service.queryStaleConfidence({
-      limit: 5,
-      today: TODAY,
-      includeExpired: true,
-    })
-    expect(withExpired.map((m) => m.id)).toEqual(["expired-1", "active-1"])
-    expect(JSON.stringify(querySpy.mock.calls[1][0].filter)).not.toContain('"Expires At"')
-  })
-
-  it("keeps narrow scope-key filtering active when expired stale-confidence rows are included", async () => {
-    const { client } = makeQueryClient([
-      buildStalePage("matching-expired", {
-        confidenceScore: 0.2,
-        expiresAt: "2026-04-28",
-        scopeKind: "session",
-        scopeKey: "sess-1",
-      }),
-      buildStalePage("other-session", {
-        confidenceScore: 0.1,
-        scopeKind: "session",
-        scopeKey: "sess-2",
-      }),
-      buildStalePage("broadcast", {
-        confidenceScore: 0.4,
-        scopeKind: "team",
-      }),
-    ])
-    const service = new MemoryService(client, db, { session: "sess-1" })
-
-    const memories = await service.queryStaleConfidence({
-      limit: 5,
-      today: TODAY,
-      includeExpired: true,
-    })
-
-    expect(memories.map((m) => m.id)).toEqual(["matching-expired", "broadcast"])
-  })
-
-  it("refills stale-confidence results past expired and out-of-scope rows across pages", async () => {
-    const querySpy = vi
-      .fn()
-      .mockResolvedValueOnce({
-        object: "list" as const,
-        results: [
-          buildStalePage("expired-before", {
-            confidenceScore: 0.1,
-            expiresAt: "2026-04-28",
-          }),
-          buildStalePage("other-session", {
-            confidenceScore: 0.2,
-            scopeKind: "session",
-            scopeKey: "sess-2",
-          }),
-        ],
-        has_more: true,
-        next_cursor: "cursor-1",
-        type: "page_or_database" as const,
-        page_or_database: {},
-      })
-      .mockResolvedValueOnce({
-        object: "list" as const,
-        results: [
-          buildStalePage("matching-session", {
-            confidenceScore: 0.3,
-            scopeKind: "session",
-            scopeKey: "sess-1",
-          }),
-          buildStalePage("broadcast", {
-            confidenceScore: 0.4,
-            scopeKind: "team",
-          }),
-        ],
-        has_more: false,
-        next_cursor: null,
-        type: "page_or_database" as const,
-        page_or_database: {},
-      })
-    const client = {
-      dataSources: { query: querySpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db, { session: "sess-1" })
-
-    const memories = await service.queryStaleConfidence({
-      limit: 2,
-      today: TODAY,
-    })
-
-    expect(memories.map((m) => m.id)).toEqual(["matching-session", "broadcast"])
-    expect(querySpy).toHaveBeenCalledTimes(2)
-    expect(querySpy.mock.calls[1][0].start_cursor).toBe("cursor-1")
-  })
-
-  it("refills stale-confidence results past archived rows across pages", async () => {
-    const querySpy = vi
-      .fn()
-      .mockResolvedValueOnce({
-        object: "list" as const,
-        results: [
-          buildStalePage("archived-before", {
-            confidenceScore: 0.1,
-            archived: true,
-          }),
-          buildStalePage("live-1", { confidenceScore: 0.2 }),
-          buildStalePage("archived-between", {
-            confidenceScore: 0.1,
-            archived: true,
-          }),
-        ],
-        has_more: true,
-        next_cursor: "cursor-1",
-        type: "page_or_database" as const,
-        page_or_database: {},
-      })
-      .mockResolvedValueOnce({
-        object: "list" as const,
-        results: [
-          buildStalePage("live-2", { confidenceScore: 0.3 }),
-          buildStalePage("archived-after", {
-            confidenceScore: 0.4,
-            archived: true,
-          }),
-        ],
-        has_more: true,
-        next_cursor: "cursor-2",
-        type: "page_or_database" as const,
-        page_or_database: {},
-      })
-      .mockResolvedValueOnce({
-        object: "list" as const,
-        results: [buildStalePage("live-3", { confidenceScore: 0.45 })],
-        has_more: false,
-        next_cursor: null,
-        type: "page_or_database" as const,
-        page_or_database: {},
-      })
-    const client = {
-      dataSources: { query: querySpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const memories = await service.queryStaleConfidence({
-      limit: 3,
-      today: TODAY,
-    })
-
-    expect(memories.map((m) => m.id)).toEqual(["live-1", "live-2", "live-3"])
-    expect(querySpy).toHaveBeenCalledTimes(3)
-    expect(querySpy.mock.calls[1][0].start_cursor).toBe("cursor-1")
-    expect(querySpy.mock.calls[2][0].start_cursor).toBe("cursor-2")
-    expect(querySpy.mock.calls[0][0].page_size).toBe(100)
-    expect(querySpy.mock.calls[1][0].page_size).toBe(100)
-    expect(querySpy.mock.calls[2][0].page_size).toBe(100)
-  })
-
-  it("degrades to [] on `validation_error` from a pre-migration vault missing the Confidence Score column", async () => {
-    // Production smoke test against an internal vault (vault hadn't run
-    // `lore migrate` against the 0.8.0 schema yet) caught this:
-    // Notion responds with `code: 'validation_error'`, message
-    // "Could not find sort property with name or id: Confidence Score"
-    // when the column doesn't exist on the DS. Without this guard the
-    // failure propagates up through `loadWakeUpData`'s `Promise.all`
-    // and fails the entire wake-up. Degrading to [] matches the
-    // posture of `FactService.queryByEntityTextOnUnmigrated` and
-    // `TaskService.countClosedSince`, both of which silently suppress
-    // their 0.7.0/PF3-01 feature on pre-column vaults. The schema-
-    // drift detector is the canonical "run lore migrate" nudge.
-    const querySpy = vi.fn(async () => {
-      const err = Object.assign(
-        new Error("Could not find sort property with name or id: Confidence Score"),
-        {
-          code: "validation_error",
-        }
-      )
-      throw err
-    })
-    const client = {
-      dataSources: { query: querySpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    expect(memories).toEqual([])
-    expect(querySpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("propagates non-schema errors (transient 5xx / rate-limit / network) instead of masking them", async () => {
-    // A 429 / 503 / network error MUST propagate so a real outage
-    // surfaces to the operator rather than rendering as a silently-
-    // empty section that's indistinguishable from a healthy empty
-    // vault. `isMissingPropertyError` only matches `validation_error`
-    // with a missing-property message; everything else throws.
-    const querySpy = vi.fn(async () => {
-      const err = Object.assign(new Error("rate_limited"), {
-        code: "rate_limited",
-        status: 429,
-      })
-      throw err
-    })
-    const client = {
-      dataSources: { query: querySpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await expect(
-      service.queryStaleConfidence({ limit: 5, today: TODAY })
-    ).rejects.toThrow("rate_limited")
-  })
-
-  it("returns Memory shapes with empty bodies — no markdown round-trip", async () => {
-    // The wake-up subsection renders title + synopsis + trust label
-    // + meta — never the body. Skipping `retrieveMarkdown` keeps the
-    // section's per-row cost at exactly zero extra Notion calls.
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "should not be called" }))
-    const querySpy = vi.fn(async () => ({
-      object: "list" as const,
-      results: [
-        buildStalePage("m-1", {
-          confidenceScore: 0.2,
-          lastReferencedAt: "2026-04-25",
-        }),
-      ],
-      has_more: false,
-      next_cursor: null,
-      type: "page_or_database" as const,
-      page_or_database: {},
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      pages: { retrieveMarkdown: retrieveMarkdownSpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
-
-    expect(memories).toHaveLength(1)
-    expect(memories[0].content).toBe("")
-    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -14072,7 +12121,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
     // `{target: A, affected: A}` — and B's notes also have
     // `{target: A, affected: B}` (the same prior verdict mirrored on
     // B's side). The mismatch on `affected` MUST surface as no-match
-    // so the dispatch fires and A's confidence finally halves.
+    // so the dispatch fires and A's compare notes are finally written.
     const notes = JSON.stringify({
       verdict: "conflicts_with",
       target: "page-a",
@@ -14224,7 +12273,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
     expect(
       hasCompareDispatchLedgerEntry(notes, {
         dispatchKey: ledger.dispatchKey,
-        step: "confidence_decrement",
+        step: "compare_notes",
       })
     ).toBe(true)
   })
@@ -14242,7 +12291,7 @@ describe("compare dispatch ledger (issue #239)", () => {
     expect(
       hasCompareDispatchLedgerEntry(notes, {
         dispatchKey: ledger.dispatchKey,
-        step: "confidence_decrement",
+        step: "compare_notes",
       })
     ).toBe(true)
     expect(
@@ -14252,7 +12301,7 @@ describe("compare dispatch ledger (issue #239)", () => {
           sourceMemoryId: "other-decision",
           affectedMemoryId: "old-decision",
         }).dispatchKey,
-        step: "confidence_decrement",
+        step: "compare_notes",
       })
     ).toBe(false)
   })
@@ -14921,8 +12970,6 @@ describe("recordContradiction (0.9.0/05)", () => {
       id?: string
       title?: string
       projectIds?: string[]
-      confidence?: "certain" | "likely" | "speculative"
-      confidenceScore?: number | null
       lastReferencedAt?: string | null
       createdAt?: string
     } = {}
@@ -14931,8 +12978,6 @@ describe("recordContradiction (0.9.0/05)", () => {
       id: overrides.id ?? "m1",
       title: overrides.title ?? "Memory",
       projectIds: overrides.projectIds ?? ["proj-a"],
-      confidence: overrides.confidence ?? ("certain" as const),
-      confidenceScore: overrides.confidenceScore ?? 0.9,
       lastReferencedAt: overrides.lastReferencedAt ?? "2026-04-30",
       createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
     }
@@ -14940,15 +12985,16 @@ describe("recordContradiction (0.9.0/05)", () => {
 
   function makeMockServices(
     opts: {
-      decrementConfidence?: ReturnType<typeof vi.fn>
+      appendCompareNotes?: ReturnType<typeof vi.fn>
       createWithDedup?: ReturnType<typeof vi.fn>
       supersede?: ReturnType<typeof vi.fn>
     } = {}
   ) {
     return {
       memories: {
-        decrementConfidence:
-          opts.decrementConfidence ?? vi.fn(async (_m: unknown) => 0.45),
+        appendCompareNotes:
+          opts.appendCompareNotes ??
+          vi.fn(async (_memoryId: string, _notes: string) => {}),
       },
       facts: {
         createWithDedup:
@@ -14962,21 +13008,16 @@ describe("recordContradiction (0.9.0/05)", () => {
     }
   }
 
-  it("emits a conflicts_with fact FIRST, then decrements the contradicted memory's confidence", async () => {
-    // Reorder is load-bearing for retry safety: the idempotent
-    // createWithDedup runs first; the non-idempotent decrement runs
-    // last so a fact-create failure leaves nothing destructive landed.
-    // Verified by recording call order via a shared timeline counter.
+  it("emits a conflicts_with fact FIRST, then writes compare notes on the contradicted memory", async () => {
     const calls: string[] = []
-    const decrementConfidence = vi.fn(async (_m: unknown) => {
-      calls.push("decrement")
-      return 0.45
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {
+      calls.push("compare_notes")
     })
     const createWithDedup = vi.fn(async (_input: unknown) => {
       calls.push("fact")
       return { fact: { id: "fact-1" }, deduped: false }
     })
-    const services = makeMockServices({ decrementConfidence, createWithDedup })
+    const services = makeMockServices({ appendCompareNotes, createWithDedup })
 
     const result = await recordContradiction(services, {
       contradictedMemory: memShape({ id: "loser", title: "Loser" }),
@@ -14984,32 +13025,27 @@ describe("recordContradiction (0.9.0/05)", () => {
       judgeConfidence: 0.9,
     })
 
-    expect(calls).toEqual(["fact", "decrement"])
-    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "loser" })
-    const decrementCall = decrementConfidence.mock.calls[0] as unknown as [
-      unknown,
-      { compareNotes: string },
-    ]
-    const decrementOpts = decrementCall[1]
-    expect(decrementOpts.compareNotes).toContain('"entryType":"compare_dispatch"')
-    expect(decrementOpts.compareNotes).toContain('"affected":"loser"')
+    expect(calls).toEqual(["fact", "compare_notes"])
+    expect(appendCompareNotes.mock.calls[0]![0]).toBe("loser")
+    const compareNotes = appendCompareNotes.mock.calls[0]![1] as string
+    expect(compareNotes).toContain('"entryType":"compare_dispatch"')
+    expect(compareNotes).toContain('"affected":"loser"')
     expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
       subject: "Winner",
       predicate: "conflicts_with",
       object: "Loser",
       sourceMemoryId: "winner",
-      confidence: "certain", // judgeConfidence 0.9 → certain (>= 0.85)
     })
     expect(result.factId).toBe("fact-1")
-    expect(result.decremented).toBe(true)
+    expect(result.affectedNotesWritten).toBe(true)
   })
 
-  it("does NOT decrement when the fact create fails (retry-safe — nothing destructive landed)", async () => {
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+  it("does NOT write compare notes when the fact create fails", async () => {
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
     const createWithDedup = vi.fn(async (_input: unknown) => {
       throw new Error("notion 500 — fact create failed")
     })
-    const services = makeMockServices({ decrementConfidence, createWithDedup })
+    const services = makeMockServices({ appendCompareNotes, createWithDedup })
 
     await expect(
       recordContradiction(services, {
@@ -15018,20 +13054,18 @@ describe("recordContradiction (0.9.0/05)", () => {
         judgeConfidence: 0.9,
       })
     ).rejects.toThrow("notion 500")
-    // Decrement never fires — retry is safe because no destructive
-    // write landed.
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
   })
 
-  it("throws CompareDispatchPartialFailureError when fact lands but decrement fails (partial-state)", async () => {
-    const decrementConfidence = vi.fn(async (_m: unknown) => {
-      throw new Error("notion 429 — decrement failed")
+  it("throws CompareDispatchPartialFailureError when fact lands but compare notes fail", async () => {
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {
+      throw new Error("notion 429 - compare notes failed")
     })
     const createWithDedup = vi.fn(async (_input: unknown) => ({
       fact: { id: "fact-99" },
       deduped: false,
     }))
-    const services = makeMockServices({ decrementConfidence, createWithDedup })
+    const services = makeMockServices({ appendCompareNotes, createWithDedup })
 
     const promise = recordContradiction(services, {
       contradictedMemory: memShape({ id: "loser", title: "L" }),
@@ -15080,18 +13114,18 @@ describe("recordContradiction (0.9.0/05)", () => {
     ).rejects.toThrow(/inconsistentState: true/)
   })
 
-  it("retry after a landed decrement marker skips decrement and still returns the deduped fact", async () => {
+  it("retry after a landed compare-notes marker skips compare_notes and still returns the deduped fact", async () => {
     const ledger = buildCompareDispatchLedgerEntry({
       verdict: "conflicts_with",
       sourceMemoryId: "winner",
       affectedMemoryId: "loser",
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
     const createWithDedup = vi.fn(async (_input: unknown) => ({
       fact: { id: "fact-existing" },
       deduped: true,
     }))
-    const services = makeMockServices({ decrementConfidence, createWithDedup })
+    const services = makeMockServices({ appendCompareNotes, createWithDedup })
 
     const result = await recordContradiction(services, {
       contradictedMemory: {
@@ -15103,10 +13137,10 @@ describe("recordContradiction (0.9.0/05)", () => {
     })
 
     expect(createWithDedup).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(result).toMatchObject({
       factId: "fact-existing",
-      decremented: false,
+      affectedNotesWritten: false,
     })
     const recordedLedger = JSON.parse(result.affectedCompareNotes) as {
       dispatchKey: string
@@ -15172,8 +13206,6 @@ describe("recordSupersedence (0.9.0/05)", () => {
       id?: string
       title?: string
       projectIds?: string[]
-      confidence?: "certain" | "likely" | "speculative"
-      confidenceScore?: number | null
       lastReferencedAt?: string | null
       createdAt?: string
     } = {}
@@ -15182,8 +13214,6 @@ describe("recordSupersedence (0.9.0/05)", () => {
       id: overrides.id ?? "m1",
       title: overrides.title ?? "Memory",
       projectIds: overrides.projectIds ?? ["proj-a"],
-      confidence: overrides.confidence ?? ("certain" as const),
-      confidenceScore: overrides.confidenceScore ?? 0.9,
       lastReferencedAt: overrides.lastReferencedAt ?? "2026-04-30",
       createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
     }
@@ -15191,15 +13221,16 @@ describe("recordSupersedence (0.9.0/05)", () => {
 
   function makeMockServices(
     opts: {
-      decrementConfidence?: ReturnType<typeof vi.fn>
+      appendCompareNotes?: ReturnType<typeof vi.fn>
       createWithDedup?: ReturnType<typeof vi.fn>
       supersede?: ReturnType<typeof vi.fn>
     } = {}
   ) {
     return {
       memories: {
-        decrementConfidence:
-          opts.decrementConfidence ?? vi.fn(async (_m: unknown) => 0.45),
+        appendCompareNotes:
+          opts.appendCompareNotes ??
+          vi.fn(async (_memoryId: string, _notes: string) => {}),
       },
       facts: {
         createWithDedup:
@@ -15213,11 +13244,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
     }
   }
 
-  it("calls decisions.supersede(winner.id, loser.id) before fact emission and decrement", async () => {
-    // The reviewer's #1 finding: prior implementation skipped this
-    // step, so the new decision's Supersedes relation was never
-    // updated and the old decision's Status stayed at "accepted." Pin
-    // the call order: supersede → fact → decrement.
+  it("calls decisions.supersede(winner.id, loser.id) before fact emission and compare notes", async () => {
     const calls: string[] = []
     const supersede = vi.fn(async () => {
       calls.push("supersede")
@@ -15226,11 +13253,10 @@ describe("recordSupersedence (0.9.0/05)", () => {
       calls.push("fact")
       return { fact: { id: "fact-9" }, deduped: false }
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => {
-      calls.push("decrement")
-      return 0.45
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {
+      calls.push("compare_notes")
     })
-    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+    const services = makeMockServices({ supersede, createWithDedup, appendCompareNotes })
 
     const result = await recordSupersedence(services, {
       supersedingMemory: memShape({ id: "new-decision", title: "Use JWT" }),
@@ -15238,18 +13264,12 @@ describe("recordSupersedence (0.9.0/05)", () => {
       judgeConfidence: 0.95,
     })
 
-    expect(calls).toEqual(["supersede", "fact", "decrement"])
+    expect(calls).toEqual(["supersede", "fact", "compare_notes"])
     expect(supersede).toHaveBeenCalledWith("new-decision", "old-decision")
-    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
-      id: "old-decision",
-    })
-    const decrementCall = decrementConfidence.mock.calls[0] as unknown as [
-      unknown,
-      { compareNotes: string },
-    ]
-    const decrementOpts = decrementCall[1]
-    expect(decrementOpts.compareNotes).toContain('"entryType":"compare_dispatch"')
-    expect(decrementOpts.compareNotes).toContain('"affected":"old-decision"')
+    expect(appendCompareNotes.mock.calls[0]![0]).toBe("old-decision")
+    const compareNotes = appendCompareNotes.mock.calls[0]![1] as string
+    expect(compareNotes).toContain('"entryType":"compare_dispatch"')
+    expect(compareNotes).toContain('"affected":"old-decision"')
     // Fact uses IDs (matching `lore-decision action='supersede'`'s
     // existing shape) so the supersession edge in the decision graph
     // is canonically identified by id, not title.
@@ -15258,10 +13278,9 @@ describe("recordSupersedence (0.9.0/05)", () => {
       predicate: "supersedes_decision",
       object: "old-decision",
       sourceMemoryId: "new-decision",
-      confidence: "certain",
     })
     expect(result.factId).toBe("fact-9")
-    expect(result.decremented).toBe(true)
+    expect(result.affectedNotesWritten).toBe(true)
   })
 
   it("throws CompareDispatchPartialFailureError(step: 'supersede') when fact create fails after decisions.supersede landed — diagnostic fields embedded in message", async () => {
@@ -15269,8 +13288,8 @@ describe("recordSupersedence (0.9.0/05)", () => {
     const createWithDedup = vi.fn(async (_input: unknown) => {
       throw new Error("notion 429 — fact create failed")
     })
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
-    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
+    const services = makeMockServices({ supersede, createWithDedup, appendCompareNotes })
 
     await expect(
       recordSupersedence(services, {
@@ -15307,19 +13326,19 @@ describe("recordSupersedence (0.9.0/05)", () => {
         judgeConfidence: 0.9,
       })
     ).rejects.toThrow(/supersedingMemoryId=new/)
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
   })
 
-  it("throws CompareDispatchPartialFailureError(step: 'fact') when decrement fails after supersede + fact landed", async () => {
+  it("throws CompareDispatchPartialFailureError(step: 'fact') when compare notes fail after supersede + fact landed", async () => {
     const supersede = vi.fn(async () => undefined)
     const createWithDedup = vi.fn(async (_input: unknown) => ({
       fact: { id: "fact-99" },
       deduped: false,
     }))
-    const decrementConfidence = vi.fn(async (_m: unknown) => {
-      throw new Error("notion 429 — decrement failed")
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {
+      throw new Error("notion 429 - compare notes failed")
     })
-    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+    const services = makeMockServices({ supersede, createWithDedup, appendCompareNotes })
 
     await expect(
       recordSupersedence(services, {
@@ -15335,7 +13354,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
     })
   })
 
-  it("retry after a landed supersedes decrement marker completes without double-decrementing", async () => {
+  it("retry after a landed supersedes compare-notes marker completes without double-rewriting compare notes", async () => {
     const ledger = buildCompareDispatchLedgerEntry({
       verdict: "supersedes",
       sourceMemoryId: "new",
@@ -15346,8 +13365,8 @@ describe("recordSupersedence (0.9.0/05)", () => {
       fact: { id: "fact-existing" },
       deduped: true,
     }))
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
-    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
+    const services = makeMockServices({ supersede, createWithDedup, appendCompareNotes })
 
     const result = await recordSupersedence(services, {
       supersedingMemory: memShape({ id: "new", title: "N" }),
@@ -15360,14 +13379,14 @@ describe("recordSupersedence (0.9.0/05)", () => {
 
     expect(supersede).toHaveBeenCalledWith("new", "old")
     expect(createWithDedup).toHaveBeenCalledTimes(1)
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
     expect(result).toMatchObject({
       factId: "fact-existing",
-      decremented: false,
+      affectedNotesWritten: false,
     })
   })
 
-  it("does NOT call fact create or decrement when decisions.supersede itself fails", async () => {
+  it("does NOT call fact create or compare notes when decisions.supersede itself fails", async () => {
     const supersede = vi.fn(async () => {
       throw new Error("notion 500 — supersede failed")
     })
@@ -15375,8 +13394,8 @@ describe("recordSupersedence (0.9.0/05)", () => {
       fact: { id: "fact-99" },
       deduped: false,
     }))
-    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
-    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+    const appendCompareNotes = vi.fn(async (_memoryId: string, _notes: string) => {})
+    const services = makeMockServices({ supersede, createWithDedup, appendCompareNotes })
 
     await expect(
       recordSupersedence(services, {
@@ -15386,7 +13405,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
       })
     ).rejects.toThrow("notion 500")
     expect(createWithDedup).not.toHaveBeenCalled()
-    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(appendCompareNotes).not.toHaveBeenCalled()
   })
 })
 

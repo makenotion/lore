@@ -356,17 +356,15 @@ System-managed predicates are `decided_by`, `supersedes_decision`, `informs`
 `waiting_on`, `blocked_by`) are legacy row values only; use
 `lore-task action='create'` for tracked work.
 
-**Confidence (categorical)**: `certain`, `likely`, `speculative`. This is the
-agent-writable categorical stance. The separate numeric `Confidence Score`
-column is system-managed: read citations raise it, contradiction/supersession
-signals lower it, and neglect decay reduces untouched memories over time. Do
-not try to write the numeric score through MCP inputs; see
-[`docs/memory-workflows.md`](docs/memory-workflows.md#confidence) for the full
-contract.
+**Fact confidence (categorical)**: `certain`, `likely`, `speculative`. This is
+the agent-writable stance on Facts. The separate numeric Facts `Confidence
+Score` column is system-managed: read citations raise it,
+contradiction/supersession signals lower it, and neglect decay reduces untouched
+facts over time. Do not try to write the numeric score through MCP inputs.
 
-**Memory sources**: new writes accept `conversation`, `file`, `manual`, and
-`digest`. `agent_diary` is retained for historical rows and explicit audit
-recall only.
+**Memory sources**: new writes accept `conversation`, `autosave_learning`,
+`file`, `manual`, and `digest`. `agent_diary` is retained for historical rows
+and explicit audit recall only.
 
 **Memory kinds**: `note`, `decision`, `incident`, `runbook`, `postmortem`,
 `policy`, `task`, `procedure`. Procedures are reviewed governance memory:

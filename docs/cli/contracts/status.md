@@ -3,9 +3,9 @@
 [Back to CLI command contracts](../../cli-command-contracts.md).
 
 `lore status` prints vault metadata, active profile, database counts, active
-projects, task and confidence summaries, proposed-memory review counts, wake-up
-coverage, digest/drift watermarks, topology health, and recent background
-failures where configured.
+projects, task summaries, proposed-memory review counts, wake-up coverage,
+digest/drift watermarks, topology health, and recent background failures where
+configured.
 
 Task summary:
 
@@ -17,19 +17,6 @@ Task summary:
   Zero buckets collapse off; `active === 0` still renders `Tasks: 0 active`.
 - Vaults with `Done At` also render a closed-last-30-days line. Vaults without
   that column silently omit it.
-
-Memory confidence:
-
-- `MemoryService.confidenceStats` walks non-archived memories in the selected
-  project scope and aggregates total, scored, average score, and below-threshold
-  counts.
-- The CLI fans confidence stats out alongside tasks and wake-up coverage so
-  orchestration wall-clock is bounded by the slowest probe, not their sum.
-- `formatConfidenceSummary` suppresses the line when there are no memories,
-  drops parentheses when no rows are scored, and omits `0 below threshold`.
-- The prefix is `Memory confidence:` to avoid collision with the database-count
-  `Memories:` line. Database counts include archived rows; confidence stats
-  exclude them and may legitimately differ.
 
 Proposed-memory inbox count:
 

@@ -3,7 +3,6 @@ import { initServices, type LoreServices } from "../../services.js"
 import type {
   CreateMemoryInput,
   Memory,
-  MemoryConfidence,
   MemoryKind,
   UpdateMemoryInput,
 } from "../../types.js"
@@ -32,7 +31,6 @@ const MEMORY_KINDS = [
   "policy",
   "operational",
 ] as const satisfies readonly MemoryKind[]
-const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
 export interface MemorySaveCliOptions {
   title: string
@@ -42,7 +40,6 @@ export interface MemorySaveCliOptions {
   kind: MemoryKind | undefined
   tags: string[] | undefined
   keywords: string | undefined
-  confidence: MemoryConfidence | undefined
   reviewBy: string | undefined
   decidedAt: string | undefined
   synopsis: string | undefined
@@ -135,7 +132,6 @@ export function parseMemorySaveCliOptions(
     kind?: string
     tags?: string
     keywords?: string
-    confidence?: string
     reviewBy?: string
     decidedAt?: string
     synopsis?: string
@@ -155,8 +151,6 @@ export function parseMemorySaveCliOptions(
   if (!kind.ok) return kind
   const tags = parseTagsList(raw.tags, "--tags", tagVocabulary)
   if (!tags.ok) return tags
-  const confidence = validateChoice(raw.confidence, "--confidence", CONFIDENCES)
-  if (!confidence.ok) return confidence
   const reviewBy = validateYmd(raw.reviewBy, "--review-by")
   if (!reviewBy.ok) return reviewBy
   const decidedAt = validateYmd(raw.decidedAt, "--decided-at")
@@ -176,7 +170,6 @@ export function parseMemorySaveCliOptions(
       kind: kind.value,
       tags: tags.value,
       keywords: raw.keywords,
-      confidence: confidence.value,
       reviewBy: reviewBy.value,
       decidedAt: decidedAt.value,
       synopsis: raw.synopsis,
@@ -256,7 +249,6 @@ export async function runMemorySave(
     kind: opts.kind,
     tags: opts.tags,
     keywords: opts.keywords,
-    confidence: opts.confidence,
     reviewBy: opts.reviewBy,
     decidedAt: opts.decidedAt,
     synopsis: opts.synopsis,
@@ -338,7 +330,6 @@ const saveCommand = new Command("save")
   .option("--kind <kind>", `Memory kind: ${MEMORY_KINDS.join(" | ")}`)
   .option("--tags <csv>", "Comma-separated tags from the closed vocabulary")
   .option("--keywords <text>", "Free-form keywords")
-  .option("--confidence <value>", `Confidence: ${CONFIDENCES.join(" | ")}`)
   .option("--review-by <YYYY-MM-DD>", "Review-by date")
   .option("--decided-at <YYYY-MM-DD>", "Canonical decision date")
   .option("--synopsis <text>", "1-2 sentence synopsis")
@@ -356,7 +347,6 @@ const saveCommand = new Command("save")
         kind?: string
         tags?: string
         keywords?: string
-        confidence?: string
         reviewBy?: string
         decidedAt?: string
         synopsis?: string

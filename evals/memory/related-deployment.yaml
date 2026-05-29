@@ -6,7 +6,6 @@ memories:
     title: Canary deployment strategy decision
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - infrastructure
     keywords: canary deployment strategy traffic
@@ -15,7 +14,6 @@ memories:
     title: Coverage checklist for new tests
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: assertion edge case

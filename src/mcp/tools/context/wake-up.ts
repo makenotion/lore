@@ -21,15 +21,7 @@ import {
   renderProjectContextLines,
 } from "../../../core/project-context.js"
 import { taskDaysOverdue, taskDaysStale, todayUtc } from "../../../core/task.js"
-import {
-  CONFIDENCE_DISPLAY_THRESHOLD,
-  MS_PER_DAY,
-  STALE_CONFIDENCE_DAYS,
-  STALE_CONFIDENCE_LIMIT,
-  STALE_TASK_DAYS,
-  type Memory,
-  type TaskSummary,
-} from "../../../types.js"
+import { STALE_TASK_DAYS, type Memory, type TaskSummary } from "../../../types.js"
 import {
   type CollapsedMemoryGroup,
   type MemoryListItem,
@@ -207,8 +199,8 @@ function renderMemoryEntry(
   })
   // The splice below assumes `formatMemoryListItem` returns lines joined
   // by a single `\n` with no internal blank lines (heading, optional
-  // `_{trust}_` line, optional synopsis, optional `*meta*` — that's it;
-  // body lives off the structural type and we never pass it here). If a
+  // synopsis, optional `*meta*` — that's it; body lives off the structural
+  // type and we never pass it here). If a
   // future helper change introduces an internal `\n\n` (e.g. spec
   // extension wrapping synopsis as a blockquote with surrounding
   // blanks), the `(related:)` trailer would land in the wrong slot.
@@ -249,26 +241,6 @@ function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
     .join(" | ")
 }
 
-/**
- * Meta builder for the Stale Confidence subsection.
- * Diverges from `wakeUpMemoryMetaBuilder` by leading with `Last
- * referenced: Nd ago` — the load-bearing signal for rows surfaced via
- * the neglect-only OR-branch. A row whose stored score is above
- * `CONFIDENCE_DISPLAY_THRESHOLD` skips the trust label, so the
- * `Nd ago` line is the only thing that flags the neglect to the
- * agent. `today` is threaded from `handleWakeUp` so the query's
- * neglect cutoff and this builder's `Nd ago` arithmetic share the
- * exact same anchor (a wake-up that crosses UTC midnight between
- * fetch and render must not produce off-by-one rendered ages).
- *
- * Native `Date` math + `MS_PER_DAY` — no `date-fns` dependency, matching
- * the convention in `taskDaysOverdue` / `taskDaysStale`.
- *
- * `lastReferencedAt` lives on `MemoryListItem` directly so the
- * builder reads it without a cast — every existing caller
- * (`Memory`, `DecisionSummary`, `TaskSummary`) carries the field
- * structurally.
- */
 /**
  * Render one pinned context block for the wake-up
  * `Pinned Context` section. Title-tier by default — heading +
@@ -336,35 +308,6 @@ export function neutralizeLeadingBlockquote(value: string): string {
   return value.replace(/(^|\n)(>+)/g, (_match, prefix, gts) => `${prefix}\\${gts}`)
 }
 
-function staleConfidenceMetaBuilder(today: string) {
-  return (mem: MemoryListItem): string => {
-    const fields: string[] = []
-    if (mem.lastReferencedAt) {
-      const days = Math.floor(
-        (new Date(today).getTime() - new Date(mem.lastReferencedAt).getTime()) /
-          MS_PER_DAY
-      )
-      fields.push(`Last referenced: ${days}d ago`)
-    } else {
-      // Defensive — the query's `is_not_empty` guard on `Confidence
-      // Score` excludes unmigrated rows from BOTH OR-branches (a
-      // null-score row can't satisfy `< threshold` AND the `and`-
-      // wrapped `is_not_empty` rules out the neglect-only branch
-      // too), so a null `lastReferencedAt` should not surface here in
-      // practice. Render `never` rather than crashing on the date
-      // math if a future schema change loosens the guard.
-      fields.push("Last referenced: never")
-    }
-    const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
-    fields.push(mem.source)
-    fields.push(tagPart)
-    const rev = renderRevisionMarker(mem.revisionCount)
-    if (rev !== null) fields.push(rev)
-    fields.push(mem.createdAt.split("T")[0])
-    return fields.join(" | ")
-  }
-}
-
 /**
  * Render one task row for the wake-up Tasks section. The row carries
  * the urgency marker, state, blocker, due-date phrasing, and an inline
@@ -383,16 +326,6 @@ function staleConfidenceMetaBuilder(today: string) {
  * the section is the agent's primary triage view, and the synopsis
  * line materially improves the matching surface for the closure-nudge
  * mechanisms that frame the rest of 0.7.0.
- *
- * Trust indicator: a row whose stored `Confidence Score` is below
- * `CONFIDENCE_DISPLAY_THRESHOLD`
- * gains an indented italic label between the title row and the
- * synopsis line, matching the placement in `formatMemoryListItem` and
- * `formatTaskRow`. Wake-up's posture is "always render what helps
- * triage" — there is no toggle. Pre-migration / unscored rows
- * (`confidenceScore === null`) and above-threshold rows render
- * byte-identically.
- *
  * `overdueDays` is threaded in from the bucketing pass in `handleWakeUp`
  * rather than recomputed here — `taskDaysOverdue(task, today)` is the
  * load-bearing signal for both bucketing precedence and row-format
@@ -417,12 +350,9 @@ function formatWakeUpTaskRow(
         : ""
   const prefix = overdueDays !== null ? "⚠ " : ""
   const closeCta = `lore-task({ action: 'close', taskId: '${task.id}' })`
-  const trustLineText = renderTrustLine(task.confidenceScore, " ")
-  const trustLine = trustLineText !== null ? `${trustLineText}\n` : ""
   const synopsisLine = task.synopsis.trim() ? ` ${truncateSynopsis(task.synopsis)}\n` : ""
   return (
     `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due}\n` +
-    trustLine +
     synopsisLine +
     ` ID: ${task.id} — close if resolved: ${closeCta}`
   )
@@ -514,10 +444,9 @@ export async function handleWakeUp(
     // resolving it once just makes it visible to the post-fetch
     // renderer below.
     const bucketedTaskLimit = args.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
-    // Hoist `today` once so the Stale Confidence query's neglect cutoff
-    // and every per-row `Nd ago` builder (Stale Confidence meta, the
-    // Decisions Requiring Attention "N days overdue" line, the Tasks
-    // section's bucketing) all anchor against the exact same day. A
+    // Hoist `today` once so every per-row date calculation (Decisions
+    // Requiring Attention and the Tasks section's bucketing) anchors
+    // against the exact same day. A
     // wake-up that crosses UTC midnight between fetches and renders
     // would otherwise compute one cutoff against one day and the
     // rendered ages against the next, producing `-1d ago` / off-by-one
@@ -536,7 +465,6 @@ export async function handleWakeUp(
       taskMemories,
       proposedMemories,
       proposedMemoriesTotal,
-      staleConfidence,
       pinnedBlocks,
       pinnedBlocksTotal,
       coverage,
@@ -593,7 +521,6 @@ export async function handleWakeUp(
       // not 20. The rendered slice is a triage budget; coverage is
       // a depth signal.
       proposedMemories: taskOnly ? 0 : proposedMemoriesTotal,
-      staleConfidence: taskOnly ? 0 : staleConfidence.length,
     }
 
     const projectContext = composeProjectContext(
@@ -690,19 +617,6 @@ export async function handleWakeUp(
     }
 
     if (!taskOnly && digest) {
-      // The digest section bypasses `formatMemoryListItem` and therefore
-      // does NOT render a trust indicator. Intentional: the digest
-      // is a synthesis surface (one bold-title row + a body paragraph),
-      // not a triage row in a list. A trust indicator would imply per-row
-      // ranking — which Recent / For-Your-Current-Task / Related need
-      // because they're scrollable lists of competing memories — but the
-      // digest is a single block summarizing recent activity. The
-      // synthesizer's own `Confidence Score` is system-managed like any
-      // other memory's, and a heavily-decayed digest IS a real signal
-      // worth flagging, but the canonical surface for that is
-      // `lore-context action='wake-up'` Recent Memories / For Your
-      // Current Task picking the digest up as just another memory if
-      // the agent's context warrants it.
       sections.push(`## Latest Digest — ${digest.createdAt.split("T")[0]}\n`)
       sections.push(`**${digest.title}**\n`)
       if (digest.content) {
@@ -782,51 +696,10 @@ export async function handleWakeUp(
       sections.push("No task-relevant memories found for this context.\n")
     }
 
-    // Stale Confidence subsection. Triage view for memories whose
-    // stored Confidence Score is below the display threshold OR
-    // whose `Last Referenced At` is past the `STALE_CONFIDENCE_DAYS`
-    // cutoff. Suppression-when-empty matches the Stale Tasks
-    // posture — a healthy vault doesn't pay prompt-budget for
-    // header-then-blank.
-    //
-    // Memories surfaced via this section are deliberately NOT touched
-    // (`recordSurfaced` is intentionally not called below). The
-    // section flags rows BECAUSE they need triage; bumping
-    // `Confidence Score` and resetting `Last Referenced At` on every
-    // wake-up that lists them would mask the very signal that put
-    // them here. Same posture as Decisions Requiring Attention. When
-    // the agent acts — `lore-memory action='expand'`, `lore-fact
-    // action='invalidate'`, `lore-decision action='supersede'` — the
-    // touch / decrement happens through the appropriate read-/write-
-    // path wrapper and is the right time for the score to move.
-    if (!taskOnly && staleConfidence.length > 0) {
-      // Heading explicitly names BOTH OR-branch criteria so the agent
-      // can disambiguate which branch fired per row. A high-stored-
-      // score row in this section was surfaced via the neglect-only
-      // branch (the per-row trust label gate skips it because the
-      // score is above `CONFIDENCE_DISPLAY_THRESHOLD`); the
-      // `Last referenced: Nd ago` meta-line below is the
-      // disambiguating signal. A low-stored-score row renders the
-      // trust label automatically.
-      const isSaturated = staleConfidence.length === STALE_CONFIDENCE_LIMIT
-      const countLabel = isSaturated
-        ? `≥${staleConfidence.length}`
-        : `${staleConfidence.length}`
-      sections.push(
-        `### Stale Confidence (${countLabel} memories scored < ${CONFIDENCE_DISPLAY_THRESHOLD} or untouched ≥${STALE_CONFIDENCE_DAYS}d)\n`
-      )
-      const buildMeta = staleConfidenceMetaBuilder(today)
-      for (const mem of staleConfidence) {
-        sections.push(formatMemoryListItem(mem, { meta: buildMeta }))
-        sections.push("")
-      }
-    }
-
     // Proposed Memories review inbox subsection.
-    // Mirrors the Stale Confidence + Decisions Requiring Attention
-    // posture: dedicated section so the agent can triage proposed
-    // memories explicitly without seeing them blended into Recent
-    // Memories or Related to Active Tasks. Memories surfaced here are
+    // Dedicated section so the agent can triage proposed memories
+    // explicitly without seeing them blended into Recent Memories or
+    // Related to Active Tasks. Memories surfaced here are
     // deliberately NOT touched (`recordSurfaced` is intentionally not
     // called) — touching would bump `Last Referenced At` and signal
     // engagement that hasn't actually happened. The agent
@@ -893,20 +766,12 @@ export async function handleWakeUp(
         overdueDecisionsCapped)
     ) {
       sections.push("## Decisions Requiring Attention\n")
-      // Trust indicator. Bullet-shaped surface,
-      // so the indented italic continuation matches the wake-up Tasks
-      // sub-section's shape — the agent triages both sections side by
-      // side and the visual rhythm shouldn't diverge by surface.
       if (proposedDecisions.length > 0) {
         sections.push(`### Proposed (${proposedDecisions.length})\n`)
         for (const d of proposedDecisions) {
           sections.push(
             `- **${d.title}** — proposed${d.decidedAt ? ` ${d.decidedAt}` : ""} | ID: ${d.id}`
           )
-          const trustLine = renderTrustLine(d.confidenceScore, " ")
-          if (trustLine !== null) {
-            sections.push(trustLine)
-          }
         }
         sections.push("")
       }
@@ -924,10 +789,6 @@ export async function handleWakeUp(
           sections.push(
             `- **${d.title}** [${d.status}] — review by ${d.reviewBy ?? "?"} (${days} day${days === 1 ? "" : "s"} overdue) | ID: ${d.id}`
           )
-          const trustLine = renderTrustLine(d.confidenceScore, " ")
-          if (trustLine !== null) {
-            sections.push(trustLine)
-          }
         }
         if (overdueDecisionsCapped) {
           sections.push(
@@ -1070,16 +931,6 @@ export async function handleWakeUp(
             trailing: `(${fact.confidence})`,
           })
         )
-        // DEFERRED-02 — surface the numeric trust label as a separate
-        // indented italic line below the bullet when the fact's
-        // `confidenceScore` has decayed below
-        // `CONFIDENCE_DISPLAY_THRESHOLD`. Same shape as the
-        // decision/task surfaces (DEFERRED-07) so the visual rhythm
-        // stays consistent across wake-up sub-sections. Pre-migration
-        // / above-threshold rows: `renderTrustLine` returns null
-        // (null score short-circuits, above-threshold returns null
-        // via `formatTrustLabel`), so output is byte-identical to
-        // pre-DEFERRED-02.
         const trustLine = renderTrustLine(fact.confidenceScore ?? null, " ")
         if (trustLine !== null) {
           sections.push(trustLine)
@@ -1199,7 +1050,6 @@ export async function handleWakeUp(
       renderedCoverageCounts.recentMemories +
       renderedCoverageCounts.relatedMemories +
       (taskOnly ? 0 : proposedMemories.length) +
-      renderedCoverageCounts.staleConfidence +
       (taskOnly ? 0 : pinnedBlocks.length) +
       (taskOnly ? 0 : inheritedMemoryRows)
 

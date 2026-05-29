@@ -107,8 +107,7 @@ export async function runOrphanRateReport(
 
   const pct = (report.orphanRate * 100).toFixed(1)
   // Scope label: prefer the resolved project name when present so the
-  // operator sees the same label they passed via `--project`. Mirrors
-  // `--build-confidence-scores`'s plan-output posture.
+  // operator sees the same label they passed via `--project`.
   const scopeLabel = options.projectName
     ? `project ${JSON.stringify(options.projectName)}`
     : options.projectId

@@ -537,9 +537,8 @@ export class FactService {
    * **Archived-row guarantee.** This gate prevents archived
    * fact rows from deserializing as live `Fact` objects. The downstream
    * effect is that `handleInvalidate` reads `sourceMemoryId` as `null`
-   * and skips the contradiction-decrement branch — no
-   * `decrementConfidence` call lands against the archived row's source
-   * memory. The mirror live-row gate in `MemoryService.requireLiveMemoryPage`
+   * and skips fact invalidation work against archived rows. The mirror
+   * live-row gate in `MemoryService.requireLiveMemoryPage`
    * and `DecisionService.getById` throws; this gate returns `null` to
    * keep callers symmetric across the "row missing" and "row archived"
    * cases without forcing every caller to grow a `try/catch`.
@@ -608,11 +607,11 @@ export class FactService {
 
   /**
    * Invalidate a fact (set `Valid Until = today`) and decrement its
-   * `Confidence Score` (DEFERRED-02).
+   * `Confidence Score`.
    *
-   * Mirrors `MemoryService.decrementConfidence`'s decay-then-decrement
-   * algebra: the helper reads the fact first, lazily seeds from the
-   * categorical `Confidence` when `confidenceScore === null`, realizes
+   * Uses the fact confidence decay-then-decrement algebra: the helper reads
+   * the fact first, lazily seeds from the categorical `Confidence` when
+   * `confidenceScore === null`, realizes
    * any decay accrued since `lastReferencedAt` (or `createdAt` for
    * never-touched rows), then halves the result via
    * `decrementConfidenceScore`. The decremented score, refreshed

@@ -54,20 +54,13 @@
  * `noopWrite: true`.
  *
  * **Touch-on-read does not bump.** `MemoryService.touchOnRead` and
- * `FactService.touchOnRead` are side-effecting reads — they bump
- * `Confidence Score` + `Last Referenced At` on visible citations.
- * They do NOT route through `withWakeUpCacheBump` because invalidating
- * the wake-up cache on every render would defeat the whole cache.
- * The trade-off: a cached wake-up may render a `Confidence Score`
- * trust label that is up to 30 seconds stale relative to
- * Notion. Within the TTL window this is acceptable — the cache is
- * triage signal, not the authoritative source for trust labels. The
- * hot once-per-day-gate failure (touch re-firing on every cache hit
- * within TTL) is closed separately by `MemoryService.touchOnRead`
- * AND `FactService.touchOnRead` mutating their input rows in place
- * after a successful write, so the cached `Memory.lastReferencedAt`
- * and `Fact.lastReferencedAt` reflect the post-touch state on the
- * next render.
+ * `FactService.touchOnRead` are side-effecting reads. They do NOT route
+ * through `withWakeUpCacheBump` because invalidating the wake-up cache on
+ * every render would defeat the whole cache. The hot once-per-day-gate
+ * failure (touch re-firing on every cache hit within TTL) is closed
+ * separately by the touch-on-read helpers mutating their input rows in place
+ * after a successful write, so cached `lastReferencedAt` values reflect the
+ * post-touch state on the next render.
  *
  * **Epoch invalidation is global, not per-key.** A write against
  * project A invalidates a project-B cache hit too. With
@@ -308,9 +301,9 @@ export class WakeUpCache {
  * should clear the cache between invocations or pass distinct
  * `userQuery` values.
  *
- * `todayDate` IS included because it drives the Stale Confidence
- * cutoff and the rendered `Nd ago` arithmetic; a wake-up that
- * crosses UTC midnight should re-fetch. The caller is responsible
+ * `todayDate` IS included because it drives task and decision date
+ * arithmetic; a wake-up that crosses UTC midnight should re-fetch.
+ * The caller is responsible
  * for passing the EFFECTIVE `todayDate` (defaulted from `now` when
  * absent on `WakeUpOptions`) into the key — `loadWakeUpData` does
  * this defaulting before computing the key so callers that omit
@@ -329,7 +322,6 @@ const KEY_OPTION_FIELDS = [
   "taskMemoryLimit",
   "includeMemoryContent",
   "includeDecisions",
-  "includeStaleConfidence",
   "includeProposedMemories",
   "proposedMemoryLimit",
   // Expired memories are excluded from default wake-up priming but

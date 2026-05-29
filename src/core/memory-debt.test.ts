@@ -57,8 +57,6 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     source: "manual",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -97,8 +95,7 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
     validUntil: null,
     reviewBy: null,
     sourceMemoryId: null,
-    confidence: "certain",
-    confidenceScore: null,
+    confidence: "likely",
     lastReferencedAt: null,
     createdAt: "2026-04-01T00:00:00.000Z",
     subjectEntityId: null,
@@ -109,7 +106,6 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
 }
 
 interface StubOpts {
-  staleConfidence?: Memory[]
   orphanFacts?: Fact[]
   /**
    * Total orphan count (or sentinel-bumped count) the stubbed
@@ -180,7 +176,6 @@ interface StubOpts {
 function makeStubServices(opts: StubOpts = {}): LoreServices {
   const projects = opts.projects ?? [{ id: "proj-a", name: "Mail" }]
   const memoriesStub = {
-    queryStaleConfidence: vi.fn(async () => opts.staleConfidence ?? []),
     listForScan: vi.fn(async () => opts.scanMemoriesByProject ?? projects.map(() => [])),
     list: vi.fn(
       async (listOpts?: {
@@ -411,21 +406,6 @@ describe("scanDebt — empty vault", () => {
 })
 
 describe("scanDebt — category detection", () => {
-  it("detects low-trust memories from queryStaleConfidence", async () => {
-    const stale = makeMemory({
-      id: "m1",
-      title: "stale memory",
-      confidenceScore: 0.2,
-      lastReferencedAt: "2026-01-01",
-    })
-    const services = makeStubServices({ staleConfidence: [stale] })
-    const report = await scanDebt(services, { today: TODAY })
-    const items = report.items.filter((i) => i.category === "low_trust")
-    expect(items.length).toBe(1)
-    expect(items[0]!.entityId).toBe("m1")
-    expect(items[0]!.reasons.some((r) => r.includes("Confidence Score"))).toBe(true)
-  })
-
   it("detects orphan facts and marks them P1", async () => {
     const orphan = makeFact({ id: "f1" })
     const services = makeStubServices({ orphanFacts: [orphan] })
@@ -874,7 +854,6 @@ describe("scanDebt — sort and priority ordering", () => {
   it("sorts P1 above P2 above P3, then by score descending", async () => {
     const orphan = makeFact({
       id: "f1",
-      confidence: "certain",
       projectIds: ["proj-a", "proj-b"],
     })
     const ownerless = makeMemory({
@@ -890,11 +869,10 @@ describe("scanDebt — sort and priority ordering", () => {
       ownerlessMemories: [ownerless],
     })
     const report = await scanDebt(services, { today: TODAY })
-    // Orphan fact has severityWeight 55 + governanceRisk 12 (policy) +
-    // retrievalRisk and confidence; it should outrank the ownerless
-    // memory (severityWeight 15). The 55 is the post-review value bumped
-    // up so orphan facts land in P1 by default — keep this comment in
-    // sync with `SEVERITY_WEIGHT.orphan_fact` in `memory-debt.ts`.
+    // Orphan fact has severityWeight 55 + governanceRisk 12 (policy) plus
+    // retrieval risk, so it should outrank the ownerless memory
+    // (severityWeight 15). Keep this comment in sync with
+    // `SEVERITY_WEIGHT.orphan_fact` in `memory-debt.ts`.
     expect(report.items[0]!.category).toBe("orphan_fact")
     const ownerlessIndex = report.items.findIndex((i) => i.category === "ownerless")
     expect(ownerlessIndex).toBeGreaterThan(0)
@@ -933,9 +911,6 @@ describe("scanDebt — project scoping", () => {
       projectLabel: "Mail",
       today: TODAY,
     })
-    expect(services.memories.queryStaleConfidence).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "proj-a" })
-    )
     expect(services.facts.queryOrphans).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "proj-a" })
     )
@@ -970,14 +945,8 @@ describe("scanDebt — project scoping", () => {
 describe("scanDebt — category filter", () => {
   it("restricts detection to the named categories", async () => {
     const orphan = makeFact({ id: "f1" })
-    const stale = makeMemory({
-      id: "m1",
-      title: "stale",
-      confidenceScore: 0.1,
-    })
     const services = makeStubServices({
       orphanFacts: [orphan],
-      staleConfidence: [stale],
     })
     const report = await scanDebt(services, {
       categories: ["orphan_fact"],
@@ -985,9 +954,6 @@ describe("scanDebt — category filter", () => {
     })
     expect(report.items.length).toBe(1)
     expect(report.items[0]!.category).toBe("orphan_fact")
-    // queryStaleConfidence should not have been invoked when its
-    // category was excluded.
-    expect(services.memories.queryStaleConfidence).not.toHaveBeenCalled()
   })
 
   it("rejects unknown category names is the CLI's job — the core function trusts its inputs", async () => {
@@ -1288,7 +1254,6 @@ describe("scanDebt — JSON contract", () => {
       "scopeAnomalies",
       "scopeAnomalyProbeSkipped",
       "similarTopicGroups",
-      "staleConfidenceCandidates",
       "staleTasks",
       "staleTasksScanCapped",
       "summaryQualityCandidates",

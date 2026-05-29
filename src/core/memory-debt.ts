@@ -3,7 +3,7 @@
  *
  * Read-only inventory of maintainability problems across a Lore vault.
  * Walks the same services the conflict scan / wake-up / overdue surfaces
- * already use — `queryStaleConfidence`, `queryOrphans`, `queryOverdue`,
+ * already use — `queryOrphans`, `queryOverdue`,
  * `expiringScopedStats`, `findSimilarTopicGroups`, `findConflictCandidates` —
  * and turns the union of their results into prioritized `DebtItem`s with
  * category-specific reasons and suggested remediation commands.
@@ -15,8 +15,7 @@
  *
  * Scoring formula (per issue):
  *
- *   score = severityWeight + retrievalRisk + stalenessWeight
- *         + confidenceRisk + governanceRisk
+ *   score = severityWeight + retrievalRisk + stalenessWeight + governanceRisk
  *
  * The weights are pragmatic starting points; the load-bearing contract is
  * *stable, testable ordering* — a P1 item ranks above every P2, ties
@@ -34,12 +33,7 @@ import type {
   MemoryWithoutContent,
   TaskSummary,
 } from "../types.js"
-import {
-  CONFIDENCE_DISPLAY_THRESHOLD,
-  MS_PER_DAY,
-  STALE_CONFIDENCE_DAYS,
-  STALE_TASK_DAYS,
-} from "../types.js"
+import { MS_PER_DAY, STALE_TASK_DAYS } from "../types.js"
 import { findConflictCandidates } from "./conflict.js"
 import { findSimilarTopicGroups, type SimilarTopicGroup } from "./topic-merge.js"
 import { loadExpiringScopedStatus } from "./expiring-scoped.js"
@@ -56,7 +50,6 @@ import {
  * a stable contract for future UI/automation.
  */
 export type DebtCategory =
-  | "low_trust"
   | "orphan_fact"
   | "ownerless"
   | "duplicate_cluster"
@@ -93,7 +86,6 @@ export function debtTaskMarker(debtId: string): string {
 }
 
 export const DEBT_CATEGORIES: DebtCategory[] = [
-  "low_trust",
   "orphan_fact",
   "ownerless",
   "duplicate_cluster",
@@ -109,7 +101,7 @@ export const DEBT_CATEGORIES: DebtCategory[] = [
  * truth for the renderer, the create-tasks gate (`P1`/`P2` by default),
  * and any future automation. Thresholds are starting points: P1 ≥ 70
  * captures orphan facts and overdue decisions; P2 ≥ 40 captures
- * duplicates and most low-trust signals; the rest fall to P3.
+ * duplicates and broad hygiene issues; the rest fall to P3.
  */
 export function priorityForScore(score: number): DebtPriority {
   if (score >= 70) return "P1"
@@ -186,7 +178,6 @@ export interface DebtReport {
 }
 
 export interface DebtStats {
-  staleConfidenceCandidates: number
   orphanFacts: number
   /**
    * `true` when the orphan-fact fetch hit `perCategoryLimit` before
@@ -272,8 +263,7 @@ export interface ScanDebtOpts {
    */
   today?: string
   /**
-   * Soft cap on the per-category raw fetch (e.g. number of stale-
-   * confidence rows to inspect). Defaults to 200.
+   * Soft cap on the per-category raw fetch. Defaults to 200.
    */
   perCategoryLimit?: number
   /**
@@ -302,7 +292,6 @@ const SEVERITY_WEIGHT: Record<DebtCategory, number> = {
   scope_anomaly: 25,
   duplicate_cluster: 25,
   operational_expiry: 25,
-  low_trust: 20,
   ownerless: 15,
   topic_sprawl: 15,
 }
@@ -328,7 +317,6 @@ export async function scanDebt(
 
   const items: DebtItem[] = []
   const stats: DebtStats = {
-    staleConfidenceCandidates: 0,
     orphanFacts: 0,
     orphanFactsCapped: false,
     overdueDecisions: 0,
@@ -355,25 +343,7 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 1. Low-trust / neglected memories
-  //    Reuse MemoryService.queryStaleConfidence, which already encodes
-  //    the "score below threshold OR last referenced > STALE_CONFIDENCE_DAYS
-  //    ago" predicate that wake-up's Stale Confidence surface uses.
-  // ---------------------------------------------------------------
-  if (wantCategory("low_trust")) {
-    const stale = await services.memories.queryStaleConfidence({
-      ...(opts.projectId ? { projectId: opts.projectId } : {}),
-      limit: perCategoryLimit,
-      today,
-    })
-    stats.staleConfidenceCandidates = stale.length
-    for (const m of stale) {
-      items.push(buildLowTrustItem(m, today))
-    }
-  }
-
-  // ---------------------------------------------------------------
-  // 2. Orphan / weak-provenance facts
+  // 1. Orphan / weak-provenance facts
   //    queryOrphans returns facts with empty Source AND empty Valid
   //    Until (still active). Excludes auto-sourced decision-graph
   //    predicates by construction.
@@ -822,7 +792,6 @@ export async function scanDebt(
 
 function emptyByCategory(): Record<DebtCategory, number> {
   return {
-    low_trust: 0,
     orphan_fact: 0,
     ownerless: 0,
     duplicate_cluster: 0,
@@ -847,56 +816,6 @@ function compareDebtItems(a: DebtItem, b: DebtItem): number {
 // ---------------------------------------------------------------------------
 // Per-category builders
 // ---------------------------------------------------------------------------
-
-function buildLowTrustItem(memory: Memory, today: string): DebtItem {
-  const reasons: string[] = []
-  const confidenceScore = memory.confidenceScore ?? null
-  if (confidenceScore !== null && confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD) {
-    reasons.push(
-      `Confidence Score ${confidenceScore.toFixed(2)} below display threshold ${CONFIDENCE_DISPLAY_THRESHOLD}`
-    )
-  }
-  const daysNeglected = daysSinceLastReferenced(memory, today)
-  if (daysNeglected !== null && daysNeglected >= STALE_CONFIDENCE_DAYS) {
-    reasons.push(
-      `Last referenced ${daysNeglected}d ago (≥ ${STALE_CONFIDENCE_DAYS}d neglect cutoff)`
-    )
-  }
-  if (memory.confidence === "speculative") {
-    reasons.push('Categorical confidence is "speculative"')
-  }
-
-  const blended =
-    SEVERITY_WEIGHT.low_trust +
-    retrievalRiskFromMemory(memory, today) +
-    stalenessFromNeglect(daysNeglected) +
-    confidenceRiskFromScore(confidenceScore) +
-    governanceRiskFromKind(memory.kind)
-
-  return {
-    id: `low_trust::${memory.id}`,
-    priority: priorityForScore(blended),
-    category: "low_trust",
-    entityType:
-      memory.kind === "decision"
-        ? "decision"
-        : memory.kind === "task"
-          ? "task"
-          : "memory",
-    entityId: memory.id,
-    title: memory.title,
-    score: Math.round(blended),
-    reasons: reasons.length > 0 ? reasons : ["Surfaced by stale-confidence probe"],
-    suggestedActions: [
-      "review_and_refresh",
-      "archive",
-      "supersede_with_decision",
-      "compare_with_conflicting",
-    ],
-    safeToAutoFix: false,
-    projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
-  }
-}
 
 function buildOrphanFactItem(fact: Fact): DebtItem {
   const reasons: string[] = [
@@ -964,7 +883,6 @@ function buildOverdueDecisionItem(decision: DecisionSummary, today: string): Deb
     SEVERITY_WEIGHT.overdue_governance +
     retrievalRiskFromMemory(decision, today) +
     (days !== null ? Math.min(20, days / 3) : 0) +
-    confidenceRiskFromScore(decision.confidenceScore) +
     governanceRiskFromKind("decision")
   return {
     id: `overdue_decision::${decision.id}`,
@@ -1388,24 +1306,17 @@ async function fetchGitHubPullRequestClosure(
 // ---------------------------------------------------------------------------
 
 /**
- * Five Memory fields this helper actually reads. Both `DecisionSummary`
+ * Memory fields this helper actually reads. Both `DecisionSummary`
  * and `TaskSummary` already satisfy this shape (they are
  * `Omit<Memory, "content">` projections), so widening the parameter
  * from `Memory` to this structural subset removes the
  * `as unknown as Memory` double-cast at the decision / task call
  * sites without compromising type safety.
  */
-type RetrievalRiskInput = Pick<
-  Memory,
-  "confidence" | "confidenceScore" | "kind" | "projectIds" | "updatedAt"
->
+type RetrievalRiskInput = Pick<Memory, "kind" | "projectIds" | "updatedAt">
 
 function retrievalRiskFromMemory(memory: RetrievalRiskInput, today: string): number {
   let risk = 0
-  if (memory.confidence === "certain") risk += 5
-  if (memory.confidenceScore !== null && memory.confidenceScore >= 0.7) {
-    risk += 5
-  }
   if (HIGH_RETRIEVAL_KINDS.has(memory.kind)) risk += 5
   if (memory.projectIds.length >= 2) risk += 5
   // Recent edits → more likely to be surfaced; widen window to 30 days.
@@ -1420,19 +1331,6 @@ function retrievalRiskFromFact(fact: Fact): number {
   if (fact.confidenceScore !== null && (fact.confidenceScore ?? 0) >= 0.7) risk += 5
   if (fact.projectIds.length >= 2) risk += 5
   return risk
-}
-
-function stalenessFromNeglect(daysNeglected: number | null): number {
-  if (daysNeglected === null) return 0
-  if (daysNeglected < STALE_CONFIDENCE_DAYS) return 0
-  return Math.min(15, Math.floor((daysNeglected - STALE_CONFIDENCE_DAYS) / 4))
-}
-
-function confidenceRiskFromScore(score: number | null | undefined): number {
-  if (score === null || score === undefined) return 0
-  if (score >= CONFIDENCE_DISPLAY_THRESHOLD) return 0
-  // 0.5 → 0, 0 → 15. Linear within [0, threshold).
-  return Math.round((CONFIDENCE_DISPLAY_THRESHOLD - score) * 30)
 }
 
 function confidenceRiskFromFactConfidence(confidence: Fact["confidence"]): number {
@@ -1463,13 +1361,6 @@ function governanceRiskFromKind(kind: MemoryKind): number {
 function daysOverdue(reviewBy: string | null, today: string): number | null {
   if (!reviewBy) return null
   const diff = new Date(today).getTime() - new Date(reviewBy).getTime()
-  if (!Number.isFinite(diff)) return null
-  return Math.max(0, Math.floor(diff / MS_PER_DAY))
-}
-
-function daysSinceLastReferenced(memory: Memory, today: string): number | null {
-  if (!memory.lastReferencedAt) return null
-  const diff = new Date(today).getTime() - new Date(memory.lastReferencedAt).getTime()
   if (!Number.isFinite(diff)) return null
   return Math.max(0, Math.floor(diff / MS_PER_DAY))
 }

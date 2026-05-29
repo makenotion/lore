@@ -140,23 +140,21 @@ knowledge=10 taskMemories=3 digestAvailable=true digestFresh=true
 digestAgeDays=1 sections.digest=1 sections.currentTask=3 sections.recent=3
 sections.related=0 sections.tasks=0 sections.facts=10 sections.decisions=0
 sections.proposedDecisions=0 sections.overdueDecisions=0
-sections.proposedMemories=0 sections.staleConfidence=0
-sections.pinnedContext=0 sections.inheritedMemories=0
+sections.proposedMemories=0 sections.pinnedContext=0
+sections.inheritedMemories=0
 
 [lore] wakeup: mode=default shape=full ranked=false reason=no-ranked-search
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
 sections.currentTask=0 sections.recent=10 sections.related=0 sections.tasks=0
 sections.facts=25 sections.decisions=0 sections.proposedDecisions=0
-sections.overdueDecisions=0 sections.proposedMemories=0
-sections.staleConfidence=0 sections.pinnedContext=0
+sections.overdueDecisions=0 sections.proposedMemories=0 sections.pinnedContext=0
 sections.inheritedMemories=0
 
 [lore] wakeup: mode=default shape=full ranked=false reason=already-ranked-for-session
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
 sections.currentTask=0 sections.recent=0 sections.related=0 sections.tasks=0
 sections.facts=0 sections.decisions=0 sections.proposedDecisions=0
-sections.overdueDecisions=0 sections.proposedMemories=0
-sections.staleConfidence=0 sections.pinnedContext=0
+sections.overdueDecisions=0 sections.proposedMemories=0 sections.pinnedContext=0
 sections.inheritedMemories=0
 
 [lore] wakeup: mode=error shape=full ranked=false reason=load-failed digestAvailable=false
@@ -164,7 +162,7 @@ digestFresh=false digestAgeDays=none sections.digest=0 sections.currentTask=0
 sections.recent=0 sections.related=0 sections.pinnedContext=0
 sections.inheritedMemories=0 sections.tasks=0 sections.facts=0
 sections.decisions=0 sections.proposedDecisions=0 sections.overdueDecisions=0
-sections.proposedMemories=0 sections.staleConfidence=0
+sections.proposedMemories=0
 ```
 
 The ranked variant reports the per-section caps applied so operators can confirm
@@ -177,8 +175,8 @@ before any Notion calls. The error variant records failed loads as
 
 `sections.*` values are wake-up coverage counters. Use them to compare signal
 density across digest, current-task, recent, related, pinned-context,
-inherited-memory, task, fact, decision, and stale-confidence sections while
-tuning caps and ranking. They are per-firing counters rather than
+inherited-memory, task, fact, and decision sections while tuning caps and
+ranking. They are per-firing counters rather than
 relevance-quality scores, so aggregate multiple lines before tuning. Precision,
 recall, and memory-lift quality measurement belong to the eval harness.
 

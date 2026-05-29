@@ -1319,9 +1319,8 @@ describe("migrateVaultSchema parallel retrieves", () => {
     //
     // Fixture is a 0.8.x-shaped Memories DS: every column documented
     // through 0.8.0 is present, the four 0.9.0 columns are not. This
-    // matches what `dataSources.retrieve` returns on a vault that ran
-    // `lore migrate --build-confidence-scores` but has not yet seen
-    // 0.9.0.
+    // matches what `dataSources.retrieve` returns on a vault that has the
+    // retained confidence columns but has not yet seen 0.9.0.
     const memoriesLive_0_8_x: Record<string, Record<string, unknown>> = {
       // Pre-0.7.0
       "Review By": { type: "date", date: {} },

@@ -19,8 +19,6 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     source: "manual",
     kind: "note",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -245,15 +243,9 @@ describe("findNearDuplicates", () => {
   })
 
   it("forwards includeProposed: true when statuses includes 'proposed' (decision-probe write-safety opt-in)", async () => {
-    // Issue #281 Phase 2 added `Status != proposed` as the
-    // default-recall filter on `MemoryService.list`. Without
-    // an opt-in, the decision near-duplicate probe — which
-    // contracts to scan `accepted | proposed` candidates —
-    // would silently lose every proposed decision from the
-    // candidate pool, breaking warning/supersession suggestions
-    // on `lore-decision action='create'`. Pin that
-    // `findNearDuplicates` forwards `includeProposed: true`
-    // through to the lister whenever its post-fetch `statuses`
+    // The default recall filter excludes proposed rows. The decision
+    // near-duplicate probe contracts to scan `accepted | proposed` candidates,
+    // so it must opt in to proposed rows whenever its post-fetch `statuses`
     // whitelist includes `proposed`.
     const listSpy = vi.fn().mockResolvedValue({ items: [] })
     await findNearDuplicates(
@@ -610,7 +602,7 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(lister.listSpy).not.toHaveBeenCalled()
   })
 
-  it("queries conversation notes in the same session and fetches bodies", async () => {
+  it("queries autosave-learning notes in the same session and fetches bodies", async () => {
     const lister = makeLister([])
 
     await findAutosaveLearningDuplicate(lister, {
@@ -623,25 +615,19 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(lister.listSpy).toHaveBeenCalledWith({
       projectId: "proj-a",
       session: "session-1",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       limit: 50,
       includeContent: true,
       includeUnscoped: undefined,
-      // `includeProposed: true` is load-bearing: issue #281 Phase 2
-      // added `Status != proposed` as the default-recall filter on
-      // `MemoryService.list`, and Phase 3 may write atomic learnings
-      // as proposed when `hooks.proposeAutosaveLearnings` is set.
-      // Without the opt-in, the dedup gate would silently miss the
-      // very rows the previous autosave run just wrote — repeated
-      // sessions would duplicate proposed learnings instead of
-      // reusing them.
+      // The dedup gate must include proposed learnings because shared-vault
+      // autosave can route learnings through the review inbox before they enter
+      // default recall.
       includeProposed: true,
     })
   })
 
-  it("queries likely conversation notes across the project when project scope is requested", async () => {
+  it("queries autosave-learning notes across the project when project scope is requested", async () => {
     const lister = makeLister([])
 
     await findAutosaveLearningDuplicate(lister, {
@@ -656,15 +642,12 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(lister.listSpy).toHaveBeenCalledWith({
       projectId: "proj-a",
       session: undefined,
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
       limit: 50,
       includeContent: true,
       includeUnscoped: true,
-      // See companion comment on the session-scope test above —
-      // both scopes are write-safety gates and must opt out of
-      // the Phase 2 default-recall filter.
+      // Both scopes are write-safety gates and must include proposed rows.
       includeProposed: true,
     })
   })
@@ -675,9 +658,8 @@ describe("findAutosaveLearningDuplicate", () => {
       title: "Relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       session: "session-1",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
     })
     const lister = makeLister([existing])
 
@@ -702,9 +684,8 @@ describe("findAutosaveLearningDuplicate", () => {
       title: "Relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       session: "session-1",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
     })
     const lister = makeLister([existing])
 
@@ -728,9 +709,8 @@ describe("findAutosaveLearningDuplicate", () => {
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-a"],
       session: "session-1",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
     })
     const lister = makeLister([existing])
 
@@ -753,9 +733,8 @@ describe("findAutosaveLearningDuplicate", () => {
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: ["proj-b", "proj-a"],
       session: "session-1",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
     })
     const lister = makeLister([existing])
 
@@ -776,16 +755,15 @@ describe("findAutosaveLearningDuplicate", () => {
     )
   })
 
-  it("can reuse an unscoped legacy learning from a later scoped project save", async () => {
+  it("can reuse a source-marked unscoped learning from a later scoped project save", async () => {
     const existing = makeMemory({
       id: "mem-unscoped",
       title: "Relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
       projectIds: [],
       session: null,
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
     })
     const lister = makeLister([existing])
 
@@ -809,9 +787,8 @@ describe("findAutosaveLearningDuplicate", () => {
       title: "dataSources.query rejects empty relation filters",
       content: "Notion's dataSources.query rejects relation filters with empty arrays.",
       session: "session-1",
-      source: "conversation",
+      source: "autosave_learning",
       kind: "note",
-      confidence: "likely",
     })
     const lister = makeLister([existing])
 
@@ -833,9 +810,8 @@ describe("findAutosaveLearningDuplicate", () => {
         title: "Digest prompts use source digest",
         content: "Background digests save memories with source digest.",
         session: "session-1",
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
       }),
     ])
 
@@ -857,9 +833,8 @@ describe("findAutosaveLearningDuplicate", () => {
         content:
           "Notion dataSources.query relation filters must include at least one relation id before update.",
         session: "session-1",
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
       }),
     ])
 
@@ -881,9 +856,8 @@ describe("findAutosaveLearningDuplicate", () => {
         title: "Relation filter gotcha",
         content: "Relation filters must include at least one relation id.",
         session: "session-1",
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
       }),
     ])
 
@@ -897,7 +871,7 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(result).toBeNull()
   })
 
-  it("does not let a synopsis-style certain note suppress an atomic learning", async () => {
+  it("does not let a synopsis-style conversation note suppress an atomic learning", async () => {
     const lister = makeLister([
       makeMemory({
         id: "mem-synopsis",
@@ -906,7 +880,6 @@ describe("findAutosaveLearningDuplicate", () => {
         session: "session-1",
         source: "conversation",
         kind: "note",
-        confidence: "certain",
       }),
     ])
 
@@ -944,8 +917,7 @@ describe("findAutosaveLearningDuplicate", () => {
   it("excludes resurfaced cleanup-orphans tagged with the sentinel keyword (issue #477)", async () => {
     // The autosave-learning probe is BLOCKING — when it returns a hit,
     // the caller reuses that row instead of creating a new one. A
-    // resurfaced cleanup-orphan has the right shape (source=conversation,
-    // kind=note, confidence=likely once restored) AND an empty body, so
+    // resurfaced cleanup-orphan can have the right source/kind shape and an empty body, so
     // a body-trigram comparison against an incoming learning would
     // produce a misleading similarity score. The sentinel keyword
     // exclusion ensures the orphan can never be returned as a reuse
@@ -956,9 +928,8 @@ describe("findAutosaveLearningDuplicate", () => {
         id: "mem-orphan-resurfaced",
         title: "Notion relation filters reject empty arrays",
         content: "",
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
         session: "session-1",
         keywords: "__lore-cleanup-orphan",
       }),
@@ -966,9 +937,8 @@ describe("findAutosaveLearningDuplicate", () => {
         id: "mem-real",
         title: "Notion relation filters reject empty arrays",
         content: "Notion relation filters reject empty arrays.",
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
         session: "session-1",
         keywords: "notion, dedup",
       }),
@@ -994,9 +964,8 @@ describe("findAutosaveLearningDuplicate", () => {
         id: "mem-orphan-resurfaced",
         title: "Notion relation filters reject empty arrays",
         content: "",
-        source: "conversation",
+        source: "autosave_learning",
         kind: "note",
-        confidence: "likely",
         session: "session-1",
         keywords: "__lore-cleanup-orphan",
       }),
@@ -1022,8 +991,6 @@ function makeTaskSummary(
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,

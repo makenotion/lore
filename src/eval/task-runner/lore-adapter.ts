@@ -607,7 +607,6 @@ function wakeUpDataToContextItems(data: WakeUpData): ProjectContextItem[] {
   for (const memory of data.memories) add(memoryToContextItem(memory))
   for (const memory of data.relatedMemories) add(memoryToContextItem(memory))
   for (const memory of data.proposedMemories) add(memoryToContextItem(memory))
-  for (const memory of data.staleConfidence) add(memoryToContextItem(memory))
   for (const memory of data.pinnedBlocks) add(memoryToContextItem(memory))
   for (const section of data.inheritedMemories) {
     for (const memory of section.memories) add(memoryToContextItem(memory))

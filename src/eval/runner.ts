@@ -123,7 +123,7 @@ const EVAL_PROJECT_ID = "eval-project"
 /**
  * Deterministic clock used when the caller does not supply `options.now`.
  * The retrieval runner is contractually deterministic; without a pinned
- * clock the relatedMemories and staleConfidence surfaces drift with
+ * clock the related-memory and task-bucketing surfaces drift with
  * wall-clock time. Pinned to a stable date that's far enough forward
  * that fixture `createdAt` values (FIXTURE_BASE_DATE-indexed, see
  * `fixtureMemoryToMemory`) are in the past relative to it. The notion
@@ -169,12 +169,9 @@ export async function runEvalSuite(
   const executedTrials = 1
 
   // Retrieval mode pins a deterministic clock when the caller did not
-  // supply one (wake-up.relatedMemories and wake-up.staleConfidence both
-  // call into time-sensitive task-bucketing helpers, so without a fixed
-  // `now` the eval results would drift with wall-clock time on a
-  // calendar boundary). Notion mode is targeting the live vault and
-  // uses real wall-clock time so the rate limiter and stale-confidence
-  // queries see the same `now` an operator would.
+  // supply one because wake-up surfaces call into time-sensitive task-
+  // bucketing helpers. Notion mode targets the live vault and uses real
+  // wall-clock time.
   const now = options.now ?? (runner === "retrieval" ? DEFAULT_RETRIEVAL_NOW : new Date())
   const startedAt = now.toISOString()
   const surfacesExercised = new Set<EvalSurface>()
@@ -287,9 +284,8 @@ interface SurfaceConfig {
   configureOptions: (limit: number, prompt: string) => Partial<WakeUpOptions>
   /**
    * Extract the section's surfaced memory ids from the loadWakeUpData result.
-   * The runner passes the task's `retrieval.limit` through so surfaces whose
-   * underlying wake-up call ignores the cap (notably `staleConfidence`, which
-   * production hard-codes to STALE_CONFIDENCE_LIMIT) can still honor it.
+   * The runner passes the task's `retrieval.limit` through so section
+   * extractors can honor the suite cap consistently.
    */
   extract: (data: WakeUpData, limit: number) => string[]
 }
@@ -302,7 +298,6 @@ const ZEROED_SECTION_OPTIONS: Partial<WakeUpOptions> = {
   knowledgeFactLimit: 0,
   taskLimit: 0,
   includeDecisions: false,
-  includeStaleConfidence: false,
   includeProposedMemories: false,
   includePinnedBlocks: false,
   includeInheritedMemories: false,
@@ -323,7 +318,6 @@ function extractTaskOnlyMemoryIds(data: WakeUpData): string[] {
   for (const memory of data.memories) ids.push(memory.id)
   for (const memory of data.relatedMemories) ids.push(memory.id)
   for (const memory of data.proposedMemories) ids.push(memory.id)
-  for (const memory of data.staleConfidence) ids.push(memory.id)
   for (const memory of data.pinnedBlocks) ids.push(memory.id)
   for (const section of data.inheritedMemories) {
     if (section.error !== null) continue
@@ -366,27 +360,6 @@ const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
       relatedMemoryLimit: limit,
     }),
     extract: (data, _limit) => data.relatedMemories.map((m) => m.id),
-  },
-  "wake-up.staleConfidence": {
-    configureOptions: () => ({
-      ...ZEROED_SECTION_OPTIONS,
-      includeStaleConfidence: true,
-    }),
-    // Production wake-up hard-codes STALE_CONFIDENCE_LIMIT for the
-    // queryStaleConfidence call, so the eval can't tune the section
-    // cap via task.retrieval.limit. Apply the limit at extraction
-    // time instead so the artifact's `retrieval.limit` field stays
-    // honest about how many ids could surface.
-    //
-    // Fixture-mode caveat: production `queryStaleConfidence` orders
-    // results explicitly (by stored confidence score / staleness
-    // signal), but the fixture stub just returns rows in the order
-    // they appear in YAML — the stub lives on `fixtureWakeUpServices`.
-    // The post-fetch slice here therefore reflects YAML declaration
-    // order, NOT production ranking. A regression test that asserts a
-    // specific top-1 id is implicitly testing fixture-load order, not
-    // the production ranking algorithm.
-    extract: (data, limit) => data.staleConfidence.slice(0, limit).map((m) => m.id),
   },
   "wake-up.context": {
     configureOptions: (limit, prompt) => {
@@ -594,10 +567,6 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
   )
   const memories = allMemories.filter((memory) => !inheritedIds.has(memory.id))
   const memoriesById = new Map(allMemories.map((memory) => [memory.id, memory]))
-  const staleConfidenceMemories = scenario.memories
-    .filter((memory) => memory.isStaleConfidence)
-    .map((memory) => memoriesById.get(memory.id))
-    .filter((memory): memory is Memory => memory !== undefined)
   const pinnedContextMemories = scenario.memories
     .filter((memory) => memory.isPinnedContext)
     .map((memory) => memoriesById.get(memory.id))
@@ -633,7 +602,6 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
           : memories
         return searchFixtureMemories(input.query, pinnedFiltered).slice(0, input.limit)
       },
-      queryStaleConfidence: async (opts) => staleConfidenceMemories.slice(0, opts.limit),
       countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
       listPinnedBlocks: async (opts) =>
         pinnedContextMemories.slice(0, opts.limit ?? Number.MAX_SAFE_INTEGER),
@@ -694,8 +662,6 @@ function fixtureTaskToSummary(task: EvalMemoryScenario["tasks"][number]): TaskSu
     source: "manual" satisfies MemorySource,
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -745,8 +711,6 @@ function fixtureMemoryToMemory(memory: EvalFixtureMemory, index: number): Memory
     source: "manual" satisfies MemorySource,
     kind: memory.kind,
     status: memory.status,
-    confidence: memory.confidence,
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,

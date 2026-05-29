@@ -6,7 +6,6 @@ memories:
     title: Billing cycle moved to monthly anchored to signup date
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - architecture
     keywords: billing cycle monthly anchored signup date
@@ -15,7 +14,6 @@ memories:
     title: Dashboard color palette tokens
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: palette swatch token shade

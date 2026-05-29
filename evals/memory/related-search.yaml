@@ -6,7 +6,6 @@ memories:
     title: Search ranks via RRF merge across contains and semantic
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - architecture
     keywords: search rrf merge contains semantic relevance
@@ -15,7 +14,6 @@ memories:
     title: YAML snapshot hygiene
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: yaml snapshot prune orphan

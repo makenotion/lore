@@ -36,7 +36,7 @@ import type {
   MemoryStatus,
   TaskSummary,
 } from "../types.js"
-import { DEFAULT_PINNED_BLOCK_LIMIT, STALE_CONFIDENCE_LIMIT } from "../types.js"
+import { DEFAULT_PINNED_BLOCK_LIMIT } from "../types.js"
 import { computeWakeUpCacheKey, WakeUpCache } from "./wakeup-cache.js"
 import type { UpstreamVaultBundle } from "./topology-readers.js"
 import {
@@ -96,27 +96,11 @@ export interface WakeUpServices {
       excludePinned?: boolean
     }): Promise<Memory[]>
     /**
-     * Surfaces low-score-or-long-neglected memories for the Stale
-     * Confidence wake-up subsection. Required on the
-     * structural type so the type system catches "I forgot to wire
-     * the new method" at compile time rather than letting it
-     * silently degrade to an empty section at runtime. Hook callers
-     * skip the query via `includeStaleConfidence: false`, NOT by
-     * omitting the method — every consumer of `WakeUpServices` must
-     * implement it.
-     */
-    queryStaleConfidence(opts: {
-      projectId?: string
-      limit: number
-      today: string
-      includeExpired?: boolean
-    }): Promise<Memory[]>
-    /**
      * True proposed-memory inbox depth. Required on the
      * structural type so the type system catches a forgotten wiring
-     * — same posture as `queryStaleConfidence`. Hook callers skip
-     * the query via `includeProposedMemories: false` /
-     * `proposedMemoryLimit: 0`, NOT by omitting the method.
+     * at compile time. Hook callers skip the query via
+     * `includeProposedMemories: false` / `proposedMemoryLimit: 0`,
+     * NOT by omitting the method.
      */
     countProposed(opts: {
       projectId?: string
@@ -129,8 +113,7 @@ export interface WakeUpServices {
     }>
     /**
      * Pinned context blocks. Required on the structural
-     * type so the type system catches a forgotten wiring — same
-     * posture as `queryStaleConfidence` / `countProposed`. Hook
+     * type so the type system catches a forgotten wiring. Hook
      * callers skip the query via `includePinnedBlocks: false` /
      * `pinnedBlockLimit: 0`, NOT by omitting the method.
      */
@@ -256,20 +239,11 @@ export interface WakeUpOptions {
    */
   includeDecisions?: boolean
   /**
-   * When false, skip the Stale Confidence query. The shell
-   * hook never renders the section, so it has no reason to pay the
-   * extra Notion round-trip on every session start. Defaults to true
-   * so MCP callers (which DO render the section) keep working. Same
-   * posture as `includeDecisions`.
-   */
-  includeStaleConfidence?: boolean
-  /**
    * When false, skip the proposed-memory inbox query. The shell
    * hook never renders the section, so it has no
    * reason to pay the extra Notion round-trip on every session
    * start. Defaults to true so MCP callers (which DO render the
-   * section) keep working. Same posture as `includeDecisions` /
-   * `includeStaleConfidence`.
+   * section) keep working. Same posture as `includeDecisions`.
    */
   includeProposedMemories?: boolean
   /**
@@ -284,7 +258,7 @@ export interface WakeUpOptions {
    * to pay the extra Notion round-trip on every session start.
    * Defaults to true so MCP callers (which DO render the section)
    * keep working. Same posture as `includeDecisions` /
-   * `includeStaleConfidence` / `includeProposedMemories`.
+   * `includeProposedMemories`.
    */
   includePinnedBlocks?: boolean
   /**
@@ -310,12 +284,9 @@ export interface WakeUpOptions {
    */
   includeCoverage?: boolean
   /**
-   * Anchor date (`YYYY-MM-DD`) for the Stale Confidence query's
-   * neglect cutoff and the renderer's `Nd ago` arithmetic. Threaded
-   * from the caller so the query and the render see the exact same
-   * day — without this, a wake-up that crosses UTC midnight between
-   * fetch and render would compute the cutoff against one day and the
-   * rendered age against the next. Optional; defaults to
+   * Anchor date (`YYYY-MM-DD`) for task and decision date arithmetic.
+   * Threaded from the caller so data loading and rendering see the
+   * same day across UTC-midnight boundaries. Optional; defaults to
    * `new Date(now).toISOString().slice(0, 10)`.
    */
   todayDate?: string
@@ -340,7 +311,7 @@ export interface WakeUpOptions {
   /**
    * When false, skip the upstream-vault fan-out entirely.
    * Same posture as `includeDecisions` /
-   * `includeStaleConfidence` / `includeProposedMemories`: the shell
+   * `includeProposedMemories`: the shell
    * hook currently renders no inherited section, so it has no reason
    * to pay per-upstream Notion round-trips. Defaults to true so MCP
    * callers (which DO render the section) keep working. Vaults
@@ -431,18 +402,6 @@ export interface WakeUpData {
    */
   proposedMemoriesTotal: number
   /**
-   * Memories scored below `CONFIDENCE_DISPLAY_THRESHOLD` OR with
-   * `Last Referenced At` past the `STALE_CONFIDENCE_DAYS` cutoff.
-   * Sorted by score ascending, capped at
-   * `STALE_CONFIDENCE_LIMIT`. Empty when the option
-   * `includeStaleConfidence` is false (hook path) or the underlying
-   * service does not implement the optional `queryStaleConfidence`
-   * method. NOT deduped against the other memory sections — a row
-   * surfacing in Recent and in Stale Confidence is meaningful: it
-   * tells the agent the row is recent AND triage-worthy.
-   */
-  staleConfidence: Memory[]
-  /**
    * Pinned context blocks for the wake-up Pinned Context section.
    * Sorted by `Pinned Priority` descending, then by `created_time`
    * descending. Capped at `pinnedBlockLimit` (default
@@ -504,8 +463,8 @@ export async function loadWakeUpData(
     // `todayDate` must be defaulted into the cache key so a wake-up
     // cached just before UTC midnight cannot serve a snapshot just
     // after midnight under the same key — the data layer's effective
-    // `todayDate` would have advanced (driving stale-confidence
-    // cutoffs and `Nd ago` arithmetic) but a key built from raw
+    // `todayDate` would have advanced (driving `Nd ago` arithmetic)
+    // but a key built from raw
     // `opts` would collide. `lore-context action='status'` and the
     // hook wake-up path both omit `todayDate` and rely on this
     // defaulting. Mirrors the same `now → todayDate` derivation
@@ -555,7 +514,6 @@ async function runWakeUpFanOut(
   const includeContent = opts.includeMemoryContent ?? true
   const includeExpired = opts.includeExpiredMemories === true
   const includeDecisions = taskOnly ? false : (opts.includeDecisions ?? true)
-  const includeStaleConfidence = taskOnly ? false : (opts.includeStaleConfidence ?? true)
   const includeProposedMemories = taskOnly
     ? false
     : (opts.includeProposedMemories ?? true)
@@ -620,25 +578,6 @@ async function runWakeUpFanOut(
   // rather than by a `{ items, ... }` envelope. The annotation makes the
   // contract obvious for the next reader and pins the resolution shape if
   // `MemoryService.search`'s return type ever changes.
-  // Stale Confidence: single-page query, runs in parallel
-  // with the rest of the fan-out so the section costs no extra wall-
-  // clock. Hook callers turn it off via `includeStaleConfidence:
-  // false` (the hook never renders the section); the method itself is
-  // required on `WakeUpServices` so the type system catches "I forgot
-  // to wire the new method" at compile time rather than letting a
-  // missing implementation silently surface as an empty section.
-  // Vault-wide wake-up (`projectId === undefined`) also fires the
-  // query — `queryStaleConfidence` skips the project filter in that
-  // branch.
-  const staleConfidenceQuery = includeStaleConfidence
-    ? services.memories.queryStaleConfidence({
-        projectId,
-        limit: STALE_CONFIDENCE_LIMIT,
-        today: todayDate,
-        includeExpired,
-      })
-    : Promise.resolve([] as Memory[])
-
   // Proposed-memory inbox surface. Two parallel
   // queries: a slice (rendered as the section body, sorted oldest-
   // first so stale review debt surfaces ahead of recent additions)
@@ -654,8 +593,7 @@ async function runWakeUpFanOut(
   // boolean. Vault-wide wake-up (`projectId === undefined`) also
   // fires the queries — `MemoryService.list` /
   // `MemoryService.countProposed` skip the project filter in that
-  // branch, matching the `MemoryService.confidenceStats` /
-  // `queryStaleConfidence` posture.
+  // branch.
   // Pinned context blocks. Wake-up always runs the
   // query unless the caller explicitly disables it; defaults to
   // `DEFAULT_PINNED_BLOCK_LIMIT` (10). Single round-trip,
@@ -707,7 +645,7 @@ async function runWakeUpFanOut(
         limit: proposedMemoryLimit,
         // Hardcoded `false`: the proposed-memories renderer
         // (`formatMemoryListItem`) reads title / synopsis /
-        // confidenceScore / meta and never `memory.content`.
+        // metadata and never `memory.content`.
         // Threading the caller's `includeContent` here paid an
         // N-way `retrieveMarkdown` fan-out per `expand: true`
         // wake-up for bodies that were fetched, deserialized, and
@@ -739,7 +677,6 @@ async function runWakeUpFanOut(
     overdueDecisionWindow,
     taskWindow,
     taskCandidates,
-    staleConfidence,
     { items: proposedMemories },
     { total: proposedMemoriesTotal },
     pinnedBlocks,
@@ -751,7 +688,6 @@ async function runWakeUpFanOut(
     { items: DecisionSummary[] },
     { items: DecisionSummary[]; capped: boolean },
     { tasks: TaskSummary[]; coverage: WakeUpTaskBucketCoverage },
-    Memory[],
     Memory[],
     { items: Memory[] },
     {
@@ -823,7 +759,6 @@ async function runWakeUpFanOut(
           excludePinned: excludePinnedFromMemorySections,
         })
       : Promise.resolve([] as Memory[]),
-    staleConfidenceQuery,
     proposedMemoriesQuery,
     proposedMemoriesTotalQuery,
     pinnedBlocksQuery,
@@ -968,7 +903,6 @@ async function runWakeUpFanOut(
         overdueDecisions,
         proposedMemories,
         proposedMemoriesTotal,
-        staleConfidence,
       })
     : null
 
@@ -985,7 +919,6 @@ async function runWakeUpFanOut(
     taskMemories,
     proposedMemories,
     proposedMemoriesTotal,
-    staleConfidence,
     pinnedBlocks,
     pinnedBlocksTotal,
     coverage,

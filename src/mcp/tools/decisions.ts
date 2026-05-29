@@ -5,7 +5,6 @@ import {
   formatDispatchError,
   paginationFooter,
   toolError,
-  debugLogContradictionFailure,
   withWakeUpCacheBump,
 } from "../helpers.js"
 import { debugLogPartialFailures } from "../../observability/partial-failure.js"
@@ -14,7 +13,7 @@ import {
   resolveCanonicalDecisionLinks,
   syncDecisionReachability,
 } from "../decision-graph.js"
-import { displayId, renderTrustLine, resolveTitles, truncateSynopsis } from "../render.js"
+import { displayId, resolveTitles, truncateSynopsis } from "../render.js"
 import {
   ACTIVE_DECISION_STATUSES,
   SYNOPSIS_MAX,
@@ -58,6 +57,8 @@ const DECISION_POOL_LIMIT = 50
 
 /** Max candidates to surface in the response. */
 const DECISION_SURFACE_LIMIT = 3
+
+const DECISION_FACT_CONFIDENCE = "likely" as const
 
 class DecisionCreateFactPartialFailureError extends LoreError<"decision-create-fact-partial"> {
   readonly decisionId: string
@@ -258,8 +259,6 @@ const DECISION_STATUSES = [
   "rejected",
 ] as const
 
-const CONFIDENCES = ["certain", "likely", "speculative"] as const
-
 function todayISO(): string {
   return new Date().toISOString().split("T")[0]
 }
@@ -300,7 +299,6 @@ interface CreateArgs {
   topicName?: string
   forceNewTopic?: boolean
   status?: (typeof DECISION_STATUSES)[number]
-  confidence?: (typeof CONFIDENCES)[number]
   reviewBy?: string
   decidedAt?: string
   supersedesIds?: string[]
@@ -373,7 +371,6 @@ async function handleCreate(
         projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
         topicId,
         status: (args.status ?? "accepted") as DecisionStatus,
-        confidence: args.confidence,
         reviewBy: args.reviewBy,
         decidedAt: args.decidedAt,
         alternatives: args.alternatives,
@@ -445,7 +442,7 @@ async function handleCreate(
           object: created.id,
           projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
           sourceMemoryId: created.id,
-          confidence: created.confidence,
+          confidence: DECISION_FACT_CONFIDENCE,
           subjectEntityId,
           // System-managed `decided_by` facts must inherit the
           // decision's scope so a session-scoped
@@ -475,7 +472,6 @@ async function handleCreate(
     const markedSupersedes: SupersedeRef[] = []
     const createdSupersedeFacts: SupersedeRef[] = []
     const reachabilityUpdates: string[] = []
-    const supersededDecisions: Decision[] = []
     for (const [index, oldId] of supersedesIds.entries()) {
       let oldDecision: Decision
       try {
@@ -523,7 +519,7 @@ async function handleCreate(
           object: oldId,
           projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
           sourceMemoryId: created.id,
-          confidence: created.confidence,
+          confidence: DECISION_FACT_CONFIDENCE,
           // `supersedes_decision` facts inherit the new decision's
           // scope; the new decision is the
           // governing identity slot, so its scope determines who
@@ -564,32 +560,12 @@ async function handleCreate(
         })
       }
       supersededEntries.push({ id: oldId, title: oldDecision.title })
-      supersededDecisions.push(oldDecision)
       if (reachability.invalidated > 0) {
         reachabilityUpdates.push(
           `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`
         )
       }
     }
-    // Contradiction decrement on each superseded decision, fired in
-    // parallel — `lore-decision action='create'` with N supersedesIds
-    // pays one decrement per superseded decision and they share no
-    // state, so a serial loop would gate the response on N round-trips.
-    // Each decrement is advisory; failures route through
-    // `debugLogContradictionFailure` and degrade to no-ops without
-    // failing the create response.
-    if (supersededDecisions.length > 0) {
-      await Promise.all(
-        supersededDecisions.map((oldDecision) =>
-          services.memories
-            .decrementConfidence(oldDecision)
-            .catch((err) =>
-              debugLogContradictionFailure("decide-supersede", oldDecision.id, err)
-            )
-        )
-      )
-    }
-
     const projectLabel = args.projectNames?.length
       ? args.projectNames.join(", ")
       : (args.projectName ?? services.context.project?.name ?? "none (vault-wide)")
@@ -598,7 +574,6 @@ async function handleCreate(
       `Saved decision: "${created.title}" (${created.id})`,
       `Status: ${created.status} | Decided at: ${created.decidedAt ?? "today"}${created.reviewBy ? ` | Review by: ${created.reviewBy}` : ""}`,
       `Project: ${projectLabel} | Topic: ${topicLabel}`,
-      `Confidence: ${created.confidence}`,
     ]
     if (created.alternatives) lines.push(`Alternatives: ${created.alternatives}`)
     if (created.consequences) lines.push(`Consequences: ${created.consequences}`)
@@ -684,16 +659,6 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
     ]
     for (const d of decisions) {
       lines.push(`### ${d.title}`)
-      // Trust indicator. Sits ABOVE the synopsis for the same reason
-      // `formatMemoryListItem` places it there: a low-confidence
-      // decision's synopsis is itself suspect, so the signal has to
-      // land before the reader parses the rule. Threshold + unscored
-      // null-guard live inside `renderTrustLine`; un-backfilled vaults
-      // stay byte-identical.
-      const trustLine = renderTrustLine(d.confidenceScore)
-      if (trustLine !== null) {
-        lines.push(trustLine)
-      }
       if (includeSynopsis && d.synopsis.trim()) {
         lines.push(truncateSynopsis(d.synopsis))
       }
@@ -729,7 +694,6 @@ async function handleGet(
       `**Status:** ${decision.status}  `,
       `**Decided:** ${decision.decidedAt ?? "unknown"}  `,
       decision.reviewBy ? `**Review by:** ${decision.reviewBy}  ` : null,
-      `**Confidence:** ${decision.confidence}  `,
       `**ID:** ${decision.id}`,
     ].filter((l): l is string => l !== null)
 
@@ -879,14 +843,6 @@ async function handleContext(
 
     for (const d of shown) {
       lines.push(`### ${d.title}`)
-      // Trust indicator (0.9.0/DEFERRED-07). Same shape as
-      // `lore-decision action='list'` — heading-shaped, no indent —
-      // so an entity's governing decisions render with the same
-      // signal as a project's decision list. Reading is the same act.
-      const trustLine = renderTrustLine(d.confidenceScore)
-      if (trustLine !== null) {
-        lines.push(trustLine)
-      }
       lines.push(
         `**[${d.status}]${d.decidedAt ? ` | decided ${d.decidedAt}` : ""} | ID: ${d.id}**`
       )
@@ -921,10 +877,9 @@ async function handleSupersede(
   args: { newDecisionId: string; oldDecisionId: string }
 ): Promise<ToolResult> {
   try {
-    // Both decision reads are non-advisory by design — the response text
-    // and the `supersedes_decision` fact write both need the resolved
-    // shapes (titles for the response, ids/projectIds/confidence for the
-    // fact). A read failure here is a real error and propagates to
+    // Both decision reads are non-advisory by design; the response text
+    // and the `supersedes_decision` fact write both need resolved
+    // titles and project ids. A read failure here is a real error and propagates to
     // `toolError`. `lore-fact action='invalidate'` wraps its source-memory
     // read in the contradiction-failure path because the response there
     // is `Invalidated fact <id>` — independent of the source — so the
@@ -942,20 +897,12 @@ async function handleSupersede(
       object: oldDecision.id,
       projectIds: newDecision.projectIds.length > 0 ? newDecision.projectIds : undefined,
       sourceMemoryId: newDecision.id,
-      confidence: newDecision.confidence,
+      confidence: DECISION_FACT_CONFIDENCE,
       // Same posture as the create-time `supersedes_decision` write:
       // the new decision's scope determines visibility of the
       // supersession edge.
       scope: memoryScopeToInput(newDecision.scope),
     })
-    // Contradiction decrement is advisory: a transient 429 / archived
-    // target on the old decision's `Confidence Score` write must not
-    // fail the supersede response. Decisions are memories with
-    // `Kind = decision`, so `MemoryService.decrementConfidence`
-    // accepts the decision shape directly.
-    await services.memories
-      .decrementConfidence(oldDecision)
-      .catch((err) => debugLogContradictionFailure("supersede", oldDecision.id, err))
     const reachability = await syncDecisionReachability(
       services,
       args.oldDecisionId,
@@ -1026,7 +973,6 @@ function createDecisionDispatchSchema(tagsSchema: ReturnType<typeof createTagsSc
       topicName: z.string().optional(),
       forceNewTopic: z.boolean().optional(),
       status: z.enum(DECISION_STATUSES).optional(),
-      confidence: z.enum(CONFIDENCES).optional(),
       reviewBy: ymdDateSchema.optional(),
       decidedAt: ymdDateSchema.optional(),
       supersedesIds: z.array(z.string()).optional(),
@@ -1150,11 +1096,6 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .describe(
             "(action='create') Lifecycle state (default: accepted). (action='list') Filter."
           ),
-        // create
-        confidence: z
-          .enum(CONFIDENCES)
-          .optional()
-          .describe("(action='create') Confidence (default: certain)."),
         // create | list | review
         reviewBy: clearableYmdDateSchema
           .optional()

@@ -6,7 +6,6 @@ memories:
     title: Sprint catering menu
     kind: note
     status: informational
-    confidence: likely
     tags:
       - operations
     keywords: catering lunch snacks office
@@ -18,7 +17,6 @@ memories:
     title: Payment retry backoff decision
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - payments
       - reliability

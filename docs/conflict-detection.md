@@ -10,9 +10,9 @@ any LLM and does not call the compare tool.
 ## Compare Verdicts
 
 Compare verdicts are a closed vocabulary. `conflicts_with` and `supersedes` are
-asymmetric and require `affectedMemoryId` naming the memory whose confidence
-score should be reduced. `scoped`, `related`, `compatible`, and `not_conflict`
-are symmetric and must omit `affectedMemoryId`. The `--json` output includes a
+asymmetric and require `affectedMemoryId` naming the contradicted or superseded
+memory. `scoped`, `related`, `compatible`, and `not_conflict` are symmetric and
+must omit `affectedMemoryId`. The `--json` output includes a
 `compareContract` block. [`docs/memory-workflows.md`](memory-workflows.md)
 has the canonical verdict definitions.
 

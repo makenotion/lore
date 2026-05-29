@@ -55,8 +55,6 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     source: "manual",
     kind: "policy",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,

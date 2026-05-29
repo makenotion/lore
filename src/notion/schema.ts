@@ -230,6 +230,7 @@ export function memoriesProperties(
       select: {
         options: [
           { name: "conversation", color: "blue" },
+          { name: "autosave_learning", color: "pink" },
           { name: "file", color: "yellow" },
           { name: "manual", color: "green" },
           { name: "agent_diary", color: "purple" },
@@ -278,6 +279,8 @@ export function memoriesProperties(
         ],
       },
     },
+    // Retained for schema compatibility with existing vaults. Memory write and
+    // read paths do not use this column.
     [MEMORY_PROPS.CONFIDENCE]: {
       select: {
         options: [
@@ -287,12 +290,8 @@ export function memoriesProperties(
         ],
       },
     },
-    // System-managed numeric confidence in [0, 1]. Distinct from the
-    // categorical `Confidence` select (agent-curated semantic stance).
-    // Bumped on read-citation via `touchOnRead`; decremented on
-    // contradiction; decays on neglect. Empty until first touch —
-    // `pageToMemory` returns `null` when missing so the RRF integration
-    // can distinguish "never scored" from "scored zero."
+    // Retained for schema compatibility with existing vaults. Memory write and
+    // read paths do not use this column.
     [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
     // 0.9.0+ scalar cluster between `Confidence Score` and `Review By`:
     //   Confidence Score → Topic Key → Revision Count → Compare Notes →
@@ -343,8 +342,7 @@ export function memoriesProperties(
     [MEMORY_PROPS.DECIDED_AT]: { date: {} },
     // System-managed read-citation timestamp; distinct from
     // `last_edited_time` which tracks writes. Written by
-    // `MemoryService.touchOnRead`, read by the decay function and the
-    // stale-confidence wake-up subsection.
+    // `MemoryService.touchOnRead` for citation-recency surfaces.
     [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: {} },
     [MEMORY_PROPS.ALTERNATIVES]: { rich_text: {} },
     [MEMORY_PROPS.CONSEQUENCES]: { rich_text: {} },
@@ -713,20 +711,18 @@ export function factsProperties(
           ],
         },
       },
-      // System-managed numeric confidence in [0, 1] mirroring the Memories
-      // DB column. Distinct from the categorical `Confidence`
-      // select above (agent-curated semantic stance). Bumped on read-citation
-      // via `FactService.touchOnRead`; decremented inside `FactService.invalidate`
-      // alongside the `Valid Until` flip so the same atomic write closes the
-      // contradiction signal. Empty until first touch — `pageToFact` returns
-      // `null` when missing so the RRF integration in `lore-ask` distinguishes
-      // "never scored" from "scored zero." (DEFERRED-02.)
+      // System-managed numeric fact confidence in [0, 1]. Distinct from the
+      // categorical `Confidence` select above (agent-curated semantic stance).
+      // Bumped on read-citation via `FactService.touchOnRead`; decremented
+      // inside `FactService.invalidate` alongside the `Valid Until` flip so the
+      // same atomic write closes the contradiction signal. Empty until first
+      // touch — `pageToFact` returns `null` when missing so `lore-ask`
+      // distinguishes "never scored" from "scored zero."
       [FACT_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
       // System-managed read-citation timestamp; distinct from
       // `last_edited_time` which tracks writes. Written by
       // `FactService.touchOnRead` and `FactService.invalidate` (via
-      // `decrementConfidence`), read by the decay function. Mirrors the
-      // Memories DB column. (DEFERRED-02.)
+      // `decrementConfidence`), read by the decay function.
       [FACT_PROPS.LAST_REFERENCED_AT]: { date: {} },
       // Normalized `subject␟predicate␟object` key used by `FactService.create`
       // to coalesce cosmetic duplicates (case, whitespace, trailing punctuation)
@@ -1024,8 +1020,6 @@ export function buildMemoryProps(input: {
   source?: string
   kind?: string
   status?: string
-  confidence?: string
-  confidenceScore?: number | null
   reviewBy?: string | null
   doneAt?: string | null
   decidedAt?: string | null
@@ -1091,19 +1085,6 @@ export function buildMemoryProps(input: {
   }
   if (input.status) {
     props[MEMORY_PROPS.STATUS] = { select: { name: input.status } }
-  }
-  if (input.confidence) {
-    props[MEMORY_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
-  }
-  // Three-state semantics: `undefined` leaves the column untouched,
-  // `null` clears the column to "never scored", a number writes the
-  // value verbatim. Production read/write helpers only emit numbers;
-  // the `null` clear path is the test-fixture / migration path.
-  if (input.confidenceScore !== undefined) {
-    props[MEMORY_PROPS.CONFIDENCE_SCORE] =
-      input.confidenceScore === null
-        ? { number: null }
-        : { number: input.confidenceScore }
   }
   // `null` explicitly clears a date; `undefined` leaves it untouched.
   // Strict `=== null` (rather than bare-truthy) so the contract is exact:
@@ -1352,12 +1333,10 @@ export function buildFactProps(input: {
   invalidatedBySourceMemoryId?: string
   confidence?: string
   /**
-   * System-managed numeric confidence. Three-state semantics
-   * mirror the Memories DB `confidenceScore` field: `undefined` leaves the
-   * column untouched, `null` clears the column ("never scored"), a number
-   * writes the value verbatim. Production callers in `FactService` only
-   * emit numbers; the `null` clear path is the test-fixture / migration
-   * path.
+   * System-managed numeric confidence. `undefined` leaves the column
+   * untouched, `null` clears the column ("never scored"), a number writes the
+   * value verbatim. Production callers in `FactService` only emit numbers; the
+   * `null` clear path is the test-fixture / migration path.
    */
   confidenceScore?: number | null
   /**
@@ -1419,7 +1398,6 @@ export function buildFactProps(input: {
   if (input.confidence) {
     props[FACT_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
   }
-  // Mirror Memories `confidenceScore` semantics (DEFERRED-02):
   // `undefined` leaves the column untouched; `null` clears; a number writes.
   if (input.confidenceScore !== undefined) {
     props[FACT_PROPS.CONFIDENCE_SCORE] =

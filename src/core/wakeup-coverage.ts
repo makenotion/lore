@@ -22,7 +22,6 @@ export interface WakeUpSectionCounts {
   proposedDecisions: number
   overdueDecisions: number
   proposedMemories: number
-  staleConfidence: number
 }
 
 export interface WakeUpDigestCoverage {
@@ -91,7 +90,6 @@ export interface WakeUpCoverageInput {
    * back-compat reason as `proposedMemories`.
    */
   proposedMemoriesTotal?: number
-  staleConfidence: readonly Memory[]
 }
 
 export interface WakeUpCoverageCaps {
@@ -115,7 +113,6 @@ function emptyWakeUpSectionCounts(): WakeUpSectionCounts {
     proposedDecisions: 0,
     overdueDecisions: 0,
     proposedMemories: 0,
-    staleConfidence: 0,
   }
 }
 
@@ -214,7 +211,6 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       // large inboxes.
       proposedMemories:
         input.proposedMemoriesTotal ?? input.proposedMemories?.length ?? 0,
-      staleConfidence: input.staleConfidence.length,
     },
   }
 }
@@ -263,8 +259,7 @@ export function formatWakeUpCoverage(
     `sections.decisions=${counts.decisions}`,
     `sections.proposedDecisions=${counts.proposedDecisions}`,
     `sections.overdueDecisions=${counts.overdueDecisions}`,
-    `sections.proposedMemories=${counts.proposedMemories}`,
-    `sections.staleConfidence=${counts.staleConfidence}`
+    `sections.proposedMemories=${counts.proposedMemories}`
   )
 
   return parts.join(" ")

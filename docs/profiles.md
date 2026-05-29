@@ -36,8 +36,8 @@ The active profile owns:
   atomic-learning extraction, digest synthesis, conflict judging, and
   LongMemEval simulated autosave
 
-Core enums remain code-owned. Memory kind/status/confidence, task state,
-review state, scope/lifetime values, and internal fact predicates are not
+Core enums remain code-owned. Memory kind/status, task state, review state,
+scope/lifetime values, fact confidence, and internal fact predicates are not
 profile-extensible.
 
 Read filters for tags intentionally accept arbitrary non-empty strings so
@@ -150,7 +150,7 @@ need a non-default taxonomy, schema, or prompt fixture.
 | Writable fact predicates | `affects`, `caused_by`, `mitigated_by`, `owned_by`, `reported_by`, `reproduced_by`, plus the core generic predicates.                                                                                                              |
 | Prompt keys to override  | Autosave extraction filter, autosave tool guidance, and simulated-autosave eval extraction. Atomic learning, digest, and conflict judge use default prompt fallback.                                                               |
 | Retrieval/wake-up stance | Default core behavior. No support-specific ranking, section suppression, or cap changes.                                                                                                                                           |
-| Debt/procedure stance    | Default core policy. Procedure review gates, proposal/deprecation flow, conflict detection, stale-confidence handling, temporal facts, auto-mentions, and cross-vault trust markers remain unchanged.                              |
+| Debt/procedure stance    | Default core policy. Procedure review gates, proposal/deprecation flow, conflict detection, temporal facts, auto-mentions, and cross-vault trust markers remain unchanged.                                                        |
 | Eval runner              | `lore eval run evals/profile-suites/support.yaml` for deterministic CI-safe scorer checks; `lore eval run --runner bench evals/bench-suites/support-simulated-autosave.yaml` for operator-dispatched model-backed extraction runs. |
 | Eval metric              | Entity-kind recall, predicate precision, hallucinated-fact rate, required-field completeness, and invalid-taxonomy rate.                                                                                                           |
 | Minimum threshold        | Entity-kind recall >= 0.80, predicate precision >= 0.85, hallucinated-fact rate <= 0.05, required-field completeness >= 0.90, invalid-taxonomy rate = 0.                                                                           |

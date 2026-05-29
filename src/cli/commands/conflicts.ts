@@ -125,8 +125,6 @@ export interface ScanPairMemory {
   title: string
   project: string
   kind: string
-  confidence: string
-  confidenceScore: number | null
   synopsis: string
   keywords: string[]
   /** Present only when --include-bodies. */
@@ -412,8 +410,6 @@ function toScanPairMemory(
     title: m.title,
     project: projectLabel,
     kind: m.kind,
-    confidence: m.confidence,
-    confidenceScore: m.confidenceScore,
     synopsis: m.synopsis,
     keywords: m.keywords ? m.keywords.split(/\s+/).filter(Boolean) : [],
   }
@@ -448,7 +444,7 @@ export function renderScanMarkdown(report: ScanReport): string {
   )
   lines.push("")
   lines.push(
-    "**Direction:** for `conflicts_with` and `supersedes`, pass `affectedMemoryId` naming the loser memory whose Confidence Score should halve. For symmetric verdicts (`scoped`, `related`, `compatible`, `not_conflict`), omit `affectedMemoryId`. The A/B labels below are unordered — order does NOT encode direction."
+    "**Direction:** for `conflicts_with` and `supersedes`, pass `affectedMemoryId` naming the memory that should receive compare notes. For symmetric verdicts (`scoped`, `related`, `compatible`, `not_conflict`), omit `affectedMemoryId`. The A/B labels below are unordered — order does NOT encode direction."
   )
   lines.push("")
   lines.push(...renderScanStatsMarkdown(report.stats))
@@ -537,9 +533,6 @@ function renderPairMemoryMarkdown(label: "A" | "B", m: ScanPairMemory): string[]
   lines.push(`- **ID:** \`${m.id}\``)
   lines.push(`- **Project:** ${m.project}`)
   lines.push(`- **Kind:** ${m.kind}`)
-  const scoreSuffix =
-    m.confidenceScore !== null ? ` (score ${m.confidenceScore.toFixed(2)})` : ""
-  lines.push(`- **Confidence:** ${m.confidence}${scoreSuffix}`)
   if (m.synopsis) {
     lines.push(`- **Synopsis:** ${m.synopsis}`)
   }
@@ -588,7 +581,7 @@ export function renderScanJson(report: ScanReport): string {
           },
           directionRules: [
             "memoryA.id and memoryB.id are unordered labels — order does NOT encode direction.",
-            "For asymmetric verdicts, set `affectedMemoryId` to the loser memory whose Confidence Score should halve.",
+            "For asymmetric verdicts, set `affectedMemoryId` to the loser memory that should receive the compare-dispatch audit marker.",
             "For symmetric verdicts, omit `affectedMemoryId` (rejected if set).",
             "verdict='supersedes' requires the affectedMemoryId memory to have kind='decision'.",
           ],

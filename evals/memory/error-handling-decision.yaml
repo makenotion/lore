@@ -6,7 +6,6 @@ memories:
     title: Return Result types from service boundaries
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - architecture
       - reliability
@@ -22,7 +21,6 @@ memories:
     title: Structured log field nomenclature
     kind: note
     status: informational
-    confidence: likely
     tags:
       - observability
     keywords: log field severity timestamp

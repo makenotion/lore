@@ -145,15 +145,11 @@ describe("confidenceFactor", () => {
     expect(confidenceFactor(0.8)).toBeCloseTo(0.9, 6)
   })
 
-  it("LORE_DISABLE_CONFIDENCE_FACTOR=1 returns 1.0 unconditionally — kill switch (issue 0.8.0/08)", () => {
+  it("LORE_DISABLE_CONFIDENCE_FACTOR=1 returns 1.0 unconditionally", () => {
     // Operator escape hatch. The kill switch lives at the top of
-    // `confidenceFactor` so single-branch and hybrid paths share one
-    // bypass — same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
-    // `LORE_DISABLE_NEAR_DUPLICATE_PROBE`. With the env var set, every
-    // call returns 1.0 — even for fully-decayed (`0.0`) rows that would
-    // otherwise map to `CONFIDENCE_FACTOR_MIN`. Exhaustive coverage
-    // across the input range pins that a future refactor splitting the
-    // bypass between scored / unscored paths is caught.
+    // `confidenceFactor` so every fact-ranking caller shares one bypass. With
+    // the env var set, every call returns 1.0, even for fully decayed rows that
+    // would otherwise map to `CONFIDENCE_FACTOR_MIN`.
     const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
     process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = "1"
     try {

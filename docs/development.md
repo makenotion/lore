@@ -99,7 +99,7 @@ and migration differences.
   `.lore.yaml` `features:` plus backward-compatible env vars. The feature
   taxonomy is: duplicate/advisory gates (`nearDuplicateProbe`,
   `autosaveLearningDedup`, `taskReuse`, `taskCrossref`), write/read behavior
-  gates (`autoMentions`, `learningExtraction`, `confidenceFactor`,
+  gates (`autoMentions`, `learningExtraction`, fact `confidenceFactor`,
   `forceSemanticSearch`), and the `runTool` family (`enabled`, `blockEdit`,
   `filterSql`, `search`, `aggregate`, `batchCreates`). Env rollback switches
   such as `LORE_DISABLE_AUTO_MENTIONS=1` and `LORE_USE_RUNTOOL=0` still win

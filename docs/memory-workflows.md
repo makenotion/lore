@@ -21,15 +21,15 @@ gotchas, durable facts, and tracked follow-up work.
   they are done or cancelled.
 
 When a fact becomes stale, invalidate it with `lore-fact action='invalidate'`.
-That action also halves the originating memory's numeric `Confidence Score`, so
-use it for real contradictions rather than soft uncertainty.
+That action closes the fact's validity window and updates the fact-side
+confidence fields; it does not mutate the supporting memory.
 
-For recurring corpus hygiene — low-trust memories, orphan facts, overdue
-governance, duplicate clusters, topic sprawl, ownerless rows, scope anomalies,
-operational expiry gaps, and log-shaped summaries — run
-[`lore debt scan`](./memory-debt.md) periodically. The scanner is read-only by
-default; `docs/memory-debt.md` describes the categories, scoring, recommended
-monthly cadence, and the opt-in `lore debt create-tasks` Phase-2 surface.
+For recurring corpus hygiene — orphan facts, overdue governance, duplicate
+clusters, topic sprawl, ownerless rows, scope anomalies, operational expiry
+gaps, and log-shaped summaries — run [`lore debt scan`](./memory-debt.md)
+periodically. The scanner is read-only by default; `docs/memory-debt.md`
+describes the categories, scoring, recommended monthly cadence, and the opt-in
+`lore debt create-tasks` surface.
 
 Memory `synopsis` values are scan hooks, not mini-bodies. `lore-memory`
 save/update rejects synopses over `memory.synopsisMaxChars`; the default is
@@ -43,25 +43,20 @@ memory:
 The configurable cap cannot exceed 500 characters, which remains the
 structural storage ceiling for the Synopsis property.
 
-## Confidence
+## Memory Confidence Columns
 
-The Memories database carries two confidence columns:
-
-- `Confidence` is categorical and agent-set: `certain`, `likely`, or
-  `speculative`. Set it honestly on writes when the default does not match your
-  stance.
-- `Confidence Score` is numeric and system-managed. Reads bump it, contradiction
-  signals decrement it, and old untouched memories decay toward zero.
-
-Do not try to write `Confidence Score` directly. The categorical value expresses
-your stance; the numeric score accumulates evidence over time.
+Some vaults still have legacy Memories database columns named `Confidence` and
+`Confidence Score`. They are retained for schema compatibility only. Memory
+write tools do not accept confidence inputs, memory reads do not rank or render
+by those columns, and operators should not write them directly. Fact confidence
+is separate and remains active on the Facts database.
 
 ## Conflict Verdicts
 
 `lore-memory action='compare'` accepts six verdicts for a pair of memories.
 `memoryIdA` and `memoryIdB` are unordered labels. For asymmetric verdicts, pass
-`affectedMemoryId` to name the memory whose score should be reduced. For
-symmetric verdicts, omit it.
+`affectedMemoryId` to name the contradicted or superseded memory. For symmetric
+verdicts, omit it.
 
 | Verdict          | Direction  | Meaning                                                                                                                                       |
 | ---------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -182,28 +177,28 @@ the reviewer + timestamp. Both terminal verdicts drop the row out of
 the proposed-memory inbox: `approve` makes it eligible for default
 recall, `reject` keeps it off default recall (the
 `reviewTerminalStatusExclusionFilters` default-exclude on
-`MemoryService.list` / `search` / `queryStaleConfidence` covers
-both `proposed` and `rejected`), so neither verdict pollutes shared
+`MemoryService.list` / `search` covers both `proposed` and `rejected`), so
+neither verdict pollutes shared
 recall with noisy auto-extractions. The inbox depth surfaces in
 `lore status`'s Proposed memories line and the wake-up Proposed
 Memories section. Has no effect when `hooks.learningExtraction` is
 `false` — there is no learning save to gate.
 
 Atomic learning saves are deduplicated more strictly than ordinary memory
-saves. In background-agent runs, a `source: "conversation"`, `kind: "note"`,
-`confidence: "likely"` save with a session id checks likely conversation notes
+saves. In background-agent runs, a `source: "autosave_learning"`,
+`kind: "note"` save with a session id checks existing autosave-learning notes
 before creating a row. Project-scoped autosaves reuse same-project-set matches
-across sessions, including legacy unscoped rows; projectless and catch-all
-fallback autosaves stay same-session scoped. If Lore cannot read the duplicate
-candidate set, the autosave learning save fails before creating a possible
-duplicate. To force a separate row during recovery or migration, set
+across sessions; projectless and catch-all fallback autosaves stay same-session
+scoped. If Lore cannot read the duplicate candidate set, the autosave learning
+save fails before creating a possible duplicate. To force a separate row during
+recovery or migration, set
 `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` for that autosave run.
 
 ## Procedures (Reusable Procedural Memories)
 
 Procedures are reviewed, fleet-wide operating knowledge promoted from
 resolved episodes — closed tasks, resolved incidents, postmortems,
-and high-confidence notes. Adapted from LangMem's
+and reviewed notes. Adapted from LangMem's
 episodic / semantic / procedural taxonomy: episodes stay inspectable
 history, while `kind: "procedure"` memories carry the "when this
 situation appears, this sequence worked" guidance an agent reaches
@@ -384,7 +379,7 @@ for a retired project.
 
 This applies to `--fix-fact-encoding`, `--fix-memory-encoding`,
 `--build-entities`, `--normalize-agents`, `--backfill-fact-sources`,
-`--backfill-synopses`, `--build-confidence-scores`, and
+`--backfill-synopses`, `--backfill-autosave-learning-source`, and
 `--build-fact-confidence-scores`.
 
 Recommended flow:

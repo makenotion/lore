@@ -75,10 +75,10 @@ surfaces share the same `MemoryService.recordReview` service path and append a
 `## Reviewed (YYYY-MM-DD)` audit block with the reviewer + timestamp. Both
 terminal verdicts drop the row out of the proposed-memory inbox: `approve`
 makes it eligible for default recall, `reject` keeps it off default recall
-(the `reviewTerminalStatusExclusionFilters` default-exclude on
-`MemoryService.list` / `search` / `queryStaleConfidence` covers both
-`proposed` and `rejected`), so neither verdict pollutes shared recall with
-noisy auto-extractions. The inbox depth also surfaces in `lore status`'s
+	(the `reviewTerminalStatusExclusionFilters` default-exclude on
+	`MemoryService.list` / `search` covers both `proposed` and `rejected`), so
+	neither verdict pollutes shared recall with
+	noisy auto-extractions. The inbox depth also surfaces in `lore status`'s
 **Proposed memories** line and the wake-up **Proposed Memories** section.
 
 Single-engineer / personal-vault deployments can leave the flag at its

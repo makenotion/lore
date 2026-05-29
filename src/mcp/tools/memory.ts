@@ -22,7 +22,6 @@ import { createMemoryDispatchSchema } from "./memory/schema.js"
 import { handleSuggestTopicKey } from "./memory/suggest-topic-key.js"
 import {
   COMPARE_VERDICTS,
-  CONFIDENCES,
   EXPAND_MAX_IDS,
   SOURCES,
   STATUSES,
@@ -140,7 +139,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(SOURCES)
           .optional()
           .describe(
-            "(action='save') How this memory was captured: conversation, file, manual, or digest. Default: conversation."
+            "(action='save') How this memory was captured: conversation, autosave_learning, file, manual, or digest. Default: conversation."
           ),
         kind: z
           .enum(SUGGEST_KIND_VALUES)
@@ -152,10 +151,6 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(STATUSES)
           .optional()
           .describe("(save | update) Lifecycle state (default: informational on save)."),
-        confidence: z
-          .enum(CONFIDENCES)
-          .optional()
-          .describe("(save | update) Confidence level (default: certain on save)."),
         reviewBy: clearableYmdDateSchema
           .optional()
           .describe(

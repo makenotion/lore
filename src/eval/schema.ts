@@ -55,7 +55,6 @@ export const EVAL_SURFACES = [
   "wake-up.taskOnly",
   "wake-up.memories",
   "wake-up.relatedMemories",
-  "wake-up.staleConfidence",
   "wake-up.context",
   "wake-up.pinnedContext",
   "wake-up.inheritedMemories",
@@ -91,7 +90,7 @@ const evalTaskSchema = z
       .describe(
         "Prompt for the task. Consumed as `userQuery` on the " +
           "wake-up.taskMemories, wake-up.taskOnly, and wake-up.context surfaces. Decorative on " +
-          "memories, relatedMemories, and staleConfidence surfaces, which route " +
+          "memories and relatedMemories surfaces, which route " +
           "through queries that ignore the prompt. See docs/evals-suite-format.md " +
           '("Wake-up surfaces") for the per-surface contract.'
       ),
@@ -175,7 +174,6 @@ export const evalMemoryScenarioSchema = z
                 "rejected",
               ])
               .default("informational"),
-            confidence: z.enum(["certain", "likely", "speculative"]).default("certain"),
             tags: z.array(z.string().min(1)).default([]),
             keywords: z.string().default(""),
             synopsis: z.string().default(""),
@@ -185,7 +183,6 @@ export const evalMemoryScenarioSchema = z
             // carry multiple flags (e.g., a digest row also surfaces in
             // recents). Defaults preserve the existing taskMemories-only
             // suite shape.
-            isStaleConfidence: z.boolean().default(false),
             isPinnedContext: z.boolean().default(false),
             isInheritedMemory: z.boolean().default(false),
           })

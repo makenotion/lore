@@ -47,7 +47,6 @@ exercises only the surface under test.
 | `wake-up.taskOnly`               | The task's `prompt` becomes `userQuery`; only query-ranked memories are loaded, so digest / recents / facts / task inventory noise is absent. |
 | `wake-up.memories`               | Recents -- fixture `memories` array order is the recency order.                                                                               |
 | `wake-up.relatedMemories`        | Active tasks in the fixture's top-level `tasks: [...]` block seed entity-based search. The `entity` field on each task drives the seed query. |
-| `wake-up.staleConfidence`        | Fixture memories with `isStaleConfidence: true` populate the surface.                                                                         |
 | `wake-up.context`                | Query-focused union of rendered memory channels. The prompt becomes `userQuery`; pinned and inherited governance channels are suppressed.     |
 | `wake-up.pinnedContext`          | Fixture memories with `isPinnedContext: true` populate the pinned-context channel.                                                            |
 | `wake-up.inheritedMemories`      | Fixture memories with `isInheritedMemory: true` populate one synthetic upstream inheritance channel.                                          |

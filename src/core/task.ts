@@ -379,8 +379,6 @@ export class TaskService {
       input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined
     const synopsis =
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined
-    const confidence = input.confidence ?? "certain"
-
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildMemoryProps({
@@ -389,7 +387,6 @@ export class TaskService {
         topicId: input.topicId,
         source: "manual",
         kind: "task",
-        confidence,
         // `Review By` doubles as the task's due date — same column,
         // same overdue semantics so `lore-query action='audit'` and
         // the wake-up overdue branches keep working without new logic.

@@ -18,7 +18,6 @@ import type {
   CreateMemoryInput,
   FreshCreatePreparation,
   Memory,
-  MemoryConfidence,
   MemoryKind,
   MemorySource,
   MemoryStatus,
@@ -26,7 +25,7 @@ import type {
   MemoryScopeInput,
 } from "../../../types.js"
 import type { ToolResult } from "./types.js"
-import { CONFIDENCES, KINDS, SOURCES, STATUSES } from "./types.js"
+import { KINDS, SOURCES, STATUSES } from "./types.js"
 
 /**
  * Trigram threshold for the `lore-memory action='save'` near-duplicate
@@ -65,12 +64,20 @@ function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
   return lines
 }
 
-function isAutosaveLearningSave(args: SaveArgs, resolvedKind: MemoryKind): boolean {
+function resolveMemorySourceForSave(args: SaveArgs): MemorySource {
+  const requestedSource = args.source as MemorySource | undefined
+  return requestedSource ?? "conversation"
+}
+
+function isAutosaveLearningSave(
+  args: SaveArgs,
+  resolvedKind: MemoryKind,
+  resolvedSource: MemorySource
+): boolean {
   return (
     process.env["LORE_BACKGROUND_AGENT"] === "true" &&
-    (args.source ?? "conversation") === "conversation" &&
+    resolvedSource === "autosave_learning" &&
     resolvedKind === "note" &&
-    args.confidence === "likely" &&
     typeof args.session === "string" &&
     args.session.trim().length > 0
   )
@@ -177,7 +184,6 @@ export interface SaveArgs {
   source?: (typeof SOURCES)[number]
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
-  confidence?: (typeof CONFIDENCES)[number]
   reviewBy?: string
   decidedAt?: string
   expiresAt?: string
@@ -340,7 +346,12 @@ export async function handleSave(
         })
       : Promise.resolve([] as NearDuplicateMatch[])
 
-    const autosaveLearningSave = isAutosaveLearningSave(args, resolvedKind)
+    const resolvedSource = resolveMemorySourceForSave(args)
+    const autosaveLearningSave = isAutosaveLearningSave(
+      args,
+      resolvedKind,
+      resolvedSource
+    )
     const hasExplicitProjectScope =
       Boolean(args.projectName) || Boolean(args.projectNames?.length)
     const canUseProjectAutosaveDedup =
@@ -502,9 +513,8 @@ export async function handleSave(
             title: args.title,
             content: args.content,
             kind: resolvedKind,
-            source: (args.source ?? "conversation") as MemorySource,
+            source: resolvedSource,
             status: args.status as MemoryStatus | undefined,
-            confidence: args.confidence as MemoryConfidence | undefined,
             topicId,
             tags: args.tags,
             keywords: args.keywords,
@@ -531,10 +541,9 @@ export async function handleSave(
           content: args.content,
           projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
           topicId,
-          source: args.source ?? "conversation",
+          source: resolvedSource,
           kind: args.kind as MemoryKind | undefined,
           status: args.status as MemoryStatus | undefined,
-          confidence: args.confidence as MemoryConfidence | undefined,
           reviewBy: args.reviewBy,
           decidedAt: args.decidedAt,
           tags: args.tags,

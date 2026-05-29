@@ -280,9 +280,8 @@ export class MemoryCreate {
     ) {
       return null
     }
-    if ((input.source ?? "manual") !== "conversation") return null
+    if ((input.source ?? "manual") !== "autosave_learning") return null
     if ((input.kind ?? "note") !== "note") return null
-    if (input.confidence !== "likely") return null
 
     const session = input.session?.trim()
     if (!session) return null
@@ -353,8 +352,6 @@ export class MemoryCreate {
         source: input.source ?? "manual",
         kind: input.kind,
         status: input.status,
-        confidence: input.confidence,
-        confidenceScore: input.confidenceScore,
         reviewBy: input.reviewBy,
         decidedAt: input.decidedAt,
         lastReferencedAt: input.lastReferencedAt,

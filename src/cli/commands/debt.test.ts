@@ -64,8 +64,6 @@ function makeMemory(
     source: "manual",
     kind: "task",
     status: "informational",
-    confidence: "certain",
-    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
@@ -587,10 +585,6 @@ describe("debtCommand exit paths", () => {
     }) as never)
     vi.mocked(initServices).mockResolvedValue({
       memories: {
-        // First call: the eligibility scan (queryStaleConfidence etc.).
-        // Subsequent calls: the preflight search returning empty (no
-        // existing audit task). Both shapes covered by returning empty.
-        queryStaleConfidence: vi.fn(async () => []),
         listForScan: vi.fn(async () => [[]]),
         list: vi.fn(async () => ({ items: [], capped: false })),
         expiringScopedStats: vi.fn(async () => ({
@@ -612,8 +606,7 @@ describe("debtCommand exit paths", () => {
             validUntil: null,
             reviewBy: null,
             sourceMemoryId: null,
-            confidence: "certain",
-            confidenceScore: null,
+            confidence: "likely",
             lastReferencedAt: null,
             createdAt: "2026-04-01T00:00:00.000Z",
             subjectEntityId: null,
@@ -687,7 +680,6 @@ describe("debtCommand exit paths", () => {
     }) as never)
     vi.mocked(initServices).mockResolvedValue({
       memories: {
-        queryStaleConfidence: vi.fn(async () => []),
         listForScan: vi.fn(async () => [[]]),
         list: vi.fn(async () => ({ items: [], capped: false })),
         expiringScopedStats: vi.fn(async () => ({
@@ -710,8 +702,7 @@ describe("debtCommand exit paths", () => {
             validUntil: null,
             reviewBy: null,
             sourceMemoryId: null,
-            confidence: "certain",
-            confidenceScore: null,
+            confidence: "likely",
             lastReferencedAt: null,
             createdAt: "2026-04-01T00:00:00.000Z",
             subjectEntityId: null,
@@ -785,7 +776,6 @@ describe("renderDebtMarkdown", () => {
 
   function makeStats(overrides: Partial<DebtStats> = {}): DebtStats {
     return {
-      staleConfidenceCandidates: 0,
       orphanFacts: 0,
       orphanFactsCapped: false,
       overdueDecisions: 0,
@@ -819,7 +809,6 @@ describe("renderDebtMarkdown", () => {
         p2: 0,
         p3: 0,
         byCategory: {
-          low_trust: 0,
           orphan_fact: 0,
           ownerless: 0,
           duplicate_cluster: 0,

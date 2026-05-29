@@ -16,8 +16,6 @@ const searchMemory: Memory = {
   source: "manual",
   kind: "note",
   status: "informational",
-  confidence: "certain",
-  confidenceScore: null,
   reviewBy: null,
   doneAt: null,
   decidedAt: null,

@@ -263,10 +263,8 @@ export async function handleSearch(
  * branches.
  *
  * The `branch` field is the canonical signal; `containsRank` /
- * `semanticRank` / `rrfScore` carry rank/score detail when applicable.
- * Stored and effective confidence factors render side by side so ranking-time
- * decay is diagnosable without reading the Notion row. Agents that don't pass
- * `explain` pay zero output-token cost.
+ * `semanticRank` / `rrfScore` carry rank/score detail when applicable. Agents
+ * that don't pass `explain` pay zero output-token cost.
  */
 function formatScoreTrace(explain: SearchExplain[]): string {
   if (explain.length === 0) return ""
@@ -281,15 +279,7 @@ function formatScoreTrace(explain: SearchExplain[]): string {
     // decimal threshold and silently render them as `0.0000`. Six
     // decimals covers RRF_K up to ~100000 without information loss.
     const rrf = e.rrfScore === null ? "—" : e.rrfScore.toFixed(6)
-    // Three decimals matches the resolution of `confidenceFactor`'s
-    // [0.5, 1.0] range (the floor controlled by `CONFIDENCE_FACTOR_MIN`).
-    // 0.500 / 0.750 / 1.000 are the operationally meaningful values;
-    // deeper precision would surface arithmetic noise without
-    // diagnostic value.
-    const cf = e.confidenceFactor.toFixed(3)
-    const storedCf = (e.storedConfidenceFactor ?? e.confidenceFactor).toFixed(3)
-    const effectiveCf = (e.effectiveConfidenceFactor ?? e.confidenceFactor).toFixed(3)
-    return `${e.memoryId} branch=${e.branch} contains=${contains} semantic=${semantic} rrf=${rrf} confidenceFactor=${cf} storedConfidenceFactor=${storedCf} effectiveConfidenceFactor=${effectiveCf}`
+    return `${e.memoryId} branch=${e.branch} contains=${contains} semantic=${semantic} rrf=${rrf}`
   })
   return `\n\n## Score trace\n\n${lines.join("\n")}`
 }

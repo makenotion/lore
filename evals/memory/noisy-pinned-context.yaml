@@ -6,7 +6,6 @@ memories:
     title: Payments retry idempotency shortcut
     kind: policy
     status: accepted
-    confidence: speculative
     tags:
       - operations
     keywords: payments retry handling idempotency keys production shortcut deploy destructive

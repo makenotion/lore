@@ -63,7 +63,6 @@ type DecisionStructuralField =
   | "projectIds"
   | "topicId"
   | "status"
-  | "confidence"
   | "reviewBy"
   | "decidedAt"
   | "supersedesIds"
@@ -200,7 +199,6 @@ export class DecisionService {
 
     const decidedAt = input.decidedAt ?? todayISO()
     const status = input.status ?? "accepted"
-    const confidence = input.confidence ?? "certain"
     const decoded = decodeDecisionTextFields(input)
 
     const page = await this.client.pages.create({
@@ -212,7 +210,6 @@ export class DecisionService {
         source: "manual",
         kind: "decision",
         status,
-        confidence,
         reviewBy: input.reviewBy,
         decidedAt,
         supersedesIds: input.supersedesIds,

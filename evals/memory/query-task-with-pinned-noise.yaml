@@ -6,7 +6,6 @@ memories:
     title: Retry handler must preserve idempotency keys
     kind: note
     status: informational
-    confidence: certain
     tags:
       - reliability
     keywords: retry handler idempotency key
@@ -17,7 +16,6 @@ memories:
     title: Payments retry idempotency governance shortcut
     kind: policy
     status: accepted
-    confidence: likely
     tags:
       - operations
     keywords: payments retry handling idempotency keys governance shortcut

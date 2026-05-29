@@ -9,8 +9,7 @@ For each recall fact, call `lore-memory action='save'` with:
   - title: short noun-led phrase <= 80 chars
   - content: 1-3 sentences with the fact + minimal context, written as something future sessions can rely on
   - kind: "note"
-  - source: "conversation"
-  - confidence: "likely" (required for autosave recall dedup; do not bump to "certain" even when the user explicitly says to remember the fact){{statusLine}}
+  - source: "autosave_learning"{{statusLine}}
 
 A recall fact must be:
   1. **Atomic.** One fact, one memory. Split compound statements.

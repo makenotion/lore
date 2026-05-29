@@ -125,26 +125,25 @@ important misses.
 
 Foreground/background dedup has a structural autosave-learning gate plus a
 prompt-level search probe. The save path treats background
-`source: "conversation"`, `kind: "note"`, `confidence: "likely"` saves with a
-session id as atomic-learning-shaped and checks existing likely conversation
-notes before creating a row. Explicit project saves and non-catch-all resolved
-projects use exact project-set reuse. Projectless and catch-all fallback saves
-use same-session reuse.
+`source: "autosave_learning"`, `kind: "note"` saves with a session id as
+atomic-learning-shaped and checks existing autosave-learning notes before
+creating a row. Explicit project saves and non-catch-all resolved projects use
+exact project-set reuse. Projectless and catch-all fallback saves use
+same-session reuse.
 
 The service layer repeats the blocking check under a filesystem lock immediately
 before create, then keeps the lock through bounded post-create query-index
 stabilization. Direct-write hook paths must call `MemoryService.create` or
 `createWithResult` instead of bypassing the service. If a later autosave
-restates the same likely-note learning, `lore-memory action='save'` returns the
+restates the same autosave learning, `lore-memory action='save'` returns the
 existing row instead of creating another one.
 
-Unscoped legacy learning rows can be reused by later scoped saves, but scoped
-project sets still have to match exactly. An A-only row does not block an A+B
-save. The gate does not apply to synopsis-style saves, so the session-level
-memory stays independent from per-learning rows. The prompt must use
-`confidence: "likely"` on every atomic learning; using `"certain"` opts out of
-the structural learning gate and should not be used by autosave learning
-extraction.
+Project sets have to match exactly. An A-only row does not block an A+B save.
+The gate does not apply to synopsis-style saves, so the session-level memory
+stays independent from per-learning rows. The prompt must use
+`source: "autosave_learning"` on every atomic learning; omitting that source
+opts out of the structural learning gate and should not be used by autosave
+learning extraction.
 
 The prompt also tells the sub-agent to probe `lore-query action='search'`,
 scoped to the same project and seeded by the candidate's title or distinctive
@@ -154,9 +153,16 @@ miss foreground `lore-memory action='save'` rows whose titles do not already
 carry matching fact edges. `lore-query` remains in `DEFAULT_SAVE_ALLOWLIST` for
 that cross-session check.
 
-Atomic learnings inherit `source: "conversation"`. The source values track
-mechanisms, not memory kinds, so autosave extraction does not introduce a new
-`MemorySource` value.
+Atomic learnings use `source: "autosave_learning"`. The source marker lets the
+save path apply autosave-specific duplicate blocking without overloading memory
+confidence or ordinary conversation saves.
+
+Vaults with autosave learnings written by older releases can run
+`lore migrate --backfill-autosave-learning-source --project <name>` to preview
+rows that still carry the retired autosave marker shape. Apply with
+`lore migrate --backfill-autosave-learning-source --project <name> --yes` in a
+quiet window. Use `--allow-unscoped` instead of `--project <name>` only for an
+intentional vault-wide backfill.
 
 Claude Code compaction can reduce the transcript visible to the autosave
 background agent. Learnings that only appear in a compacted-away region will

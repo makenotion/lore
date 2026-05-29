@@ -405,7 +405,6 @@ export async function syncDecisionReachability(
             ? newDecision.projectIds
             : undefined,
       sourceMemoryId: newDecision.id,
-      confidence: newDecision.confidence,
       // Carry the canonical entity relation forward so the retargeted
       // row stays exact-recall under `queryByEntityId`. `null`
       // (unbackfilled source fact) flows through as `undefined` and the

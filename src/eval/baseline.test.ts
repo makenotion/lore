@@ -433,7 +433,6 @@ function passingResult(
     | "wake-up.taskOnly"
     | "wake-up.memories"
     | "wake-up.relatedMemories"
-    | "wake-up.staleConfidence"
 ): EvalTaskResult {
   return {
     taskId,
@@ -462,7 +461,6 @@ function failingResult(
     | "wake-up.taskOnly"
     | "wake-up.memories"
     | "wake-up.relatedMemories"
-    | "wake-up.staleConfidence"
 ): EvalTaskResult {
   return {
     taskId,

@@ -6,7 +6,6 @@ memories:
     title: Use jest as the project's test runner (superseded)
     kind: decision
     status: superseded
-    confidence: certain
     tags:
       - tooling
       - testing

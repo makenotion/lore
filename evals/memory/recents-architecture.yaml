@@ -6,7 +6,6 @@ memories:
     title: Event sourcing adopted for the orders pipeline
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - architecture
     keywords: event sourcing orders pipeline ledger
@@ -15,7 +14,6 @@ memories:
     title: Recent changelog entry for orders pipeline
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: changelog release notes

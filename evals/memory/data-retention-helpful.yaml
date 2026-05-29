@@ -6,7 +6,6 @@ memories:
     title: Customer data retention policy is 90 days
     kind: policy
     status: accepted
-    confidence: certain
     tags:
       - architecture
       - security
@@ -19,7 +18,6 @@ memories:
     title: Dashboard color palette tokens
     kind: note
     status: informational
-    confidence: likely
     tags:
       - hygiene
     keywords: palette swatch token shade

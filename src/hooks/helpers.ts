@@ -986,14 +986,9 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
         // Hook never renders decisions - skip the two Notion queries so
         // session-start latency doesn't regress on the hot path.
         includeDecisions: false,
-        // Hook never renders the Stale Confidence section either - skip
-        // the extra Notion query for the same reason. Same posture as
-        // `includeDecisions: false` above.
-        includeStaleConfidence: false,
         // Hook never renders the Proposed Memories inbox section —
         // skip the extra Notion query so the session-start latency
-        // stays unchanged. Same posture as `includeDecisions: false`
-        // and `includeStaleConfidence: false` above.
+        // stays unchanged. Same posture as `includeDecisions: false`.
         includeProposedMemories: false,
         // Hook never renders the Inherited Memories section — skip
         // the per-upstream Notion fan-out so the session-start hot

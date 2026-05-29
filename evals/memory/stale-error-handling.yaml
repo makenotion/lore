@@ -6,7 +6,6 @@ memories:
     title: Throw exceptions from service boundaries (superseded)
     kind: decision
     status: superseded
-    confidence: certain
     tags:
       - architecture
       - reliability

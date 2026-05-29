@@ -6,7 +6,6 @@ memories:
     title: Auth decision requires signed session cookies
     kind: decision
     status: accepted
-    confidence: certain
     tags:
       - architecture
       - security
@@ -19,7 +18,6 @@ memories:
     title: General UI polish checklist
     kind: note
     status: informational
-    confidence: likely
     tags:
       - ui
     keywords: spacing typography empty states

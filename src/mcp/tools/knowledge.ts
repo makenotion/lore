@@ -5,7 +5,6 @@ import {
   formatDispatchError,
   paginationFooter,
   toolError,
-  debugLogContradictionFailure,
   debugLogTouchFailure,
   debugLogFactTouchFailure,
   withWakeUpCacheBump,
@@ -449,30 +448,9 @@ export async function handleInvalidate(
     if (factReadFailed) {
       warnings.push(
         args.sourceMemoryId
-          ? "Fact metadata read failed before invalidation; sourceMemoryId audit link and supporting-memory confidence decrement were skipped."
-          : "Fact metadata read failed before invalidation; supporting-memory confidence decrement was skipped."
+          ? "Fact metadata read failed before invalidation; sourceMemoryId audit link was skipped."
+          : "Fact metadata read failed before invalidation."
       )
-    }
-
-    const sourceMemoryId = fact?.sourceMemoryId ?? null
-    if (sourceMemoryId !== null) {
-      // Contradiction decrement is advisory: a transient 429 on the
-      // source-memory read OR the `pages.update` write must not fail
-      // the surrounding `lore-fact` response. The user already got the
-      // contradiction write they asked for (the fact IS invalidated).
-      // Both calls live under the same `try/catch` so a future
-      // contributor can't accidentally narrow the advisory scope by
-      // moving one out — collapsing the inner `.catch` away here would
-      // let the decrement throw propagate to `toolError`.
-      // `getPropertiesById` skips the `retrieveMarkdown` round-trip
-      // because the decrement algebra reads only `id`, `confidence`,
-      // `confidenceScore`, `lastReferencedAt`, `createdAt`.
-      try {
-        const sourceMemory = await services.memories.getPropertiesById(sourceMemoryId)
-        await services.memories.decrementConfidence(sourceMemory)
-      } catch (err) {
-        debugLogContradictionFailure("invalidate", sourceMemoryId, err)
-      }
     }
 
     const lines = [`Invalidated fact ${args.factId}`]
@@ -630,15 +608,6 @@ export async function handleAudit(
             (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000
           )
           const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-          // DEFERRED-02 — emit the trust line between the title row
-          // and the Review by row when the fact's `confidenceScore`
-          // has decayed below `CONFIDENCE_DISPLAY_THRESHOLD`. Same
-          // shape as the symmetric Overdue Decisions block below
-          // (DEFERRED-07) so an audit reader sees the trust signal
-          // immediately under the title and BEFORE the staleness
-          // detail. `renderTrustLine` returns null for null /
-          // above-threshold scores, so unmigrated-vault audit output
-          // is byte-identical to pre-DEFERRED-02.
           const trustLine = renderTrustLine(f.confidenceScore ?? null, "  ")
           const trustRow = trustLine !== null ? `${trustLine}\n` : ""
           return (
@@ -661,16 +630,8 @@ export async function handleAudit(
               )
             : 0
           const decided = d.decidedAt ? ` | decided ${d.decidedAt}` : ""
-          // Trust indicator (0.9.0/DEFERRED-07). Bullet-shaped surface
-          // with continuation lines — the trust line sits between the
-          // title row and the Review By row so the audit reader sees
-          // the signal before the staleness detail. Same indent as
-          // the surrounding continuation lines.
-          const trustLine = renderTrustLine(d.confidenceScore, "  ")
-          const trustRow = trustLine !== null ? `${trustLine}\n` : ""
           return (
             `- **${d.title}** [${d.status}]${decided}\n` +
-            trustRow +
             `  Review by: ${d.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
             `  ID: ${d.id}`
           )
@@ -693,11 +654,8 @@ export async function handleAudit(
         const stateLabel = t.taskState ?? "open"
         const blocked = t.blockedBy ? `, blocked by ${t.blockedBy}` : ""
         const entity = t.entity ? ` | entity ${t.entity}` : ""
-        const trustLine = renderTrustLine(t.confidenceScore ?? null, "  ")
-        const trustRow = trustLine !== null ? `${trustLine}\n` : ""
         return [
           `- **${t.title}** [${stateLabel}${blocked}]${entity}\n` +
-            trustRow +
             `  Review by: ${t.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
             `  ID: ${t.id}`,
         ]
@@ -844,7 +802,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       description:
         "Create/invalidate facts; set or clear fact review dates. Action-dispatched:\n\n" +
         "- `action: 'create'` — add a Subject —predicate→ Object triple. Auto-dedupes against existing equivalent triples and merges metadata onto the survivor.\n" +
-        "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` and `Invalidated At` to today). Preserved for history. Pass `sourceMemoryId` to record which memory prompted the invalidation in the `Invalidated By` relation. Side effect: when the fact has a `Source` memory, that memory's `Confidence Score` is halved as a contradiction signal (DEFERRED-02 / 0.8.0/#06).\n" +
+        "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` and `Invalidated At` to today). Preserved for history. Pass `sourceMemoryId` to record which memory prompted the invalidation in the `Invalidated By` relation.\n" +
         "- `action: 'extend'` — set or clear a fact's review-by date.\n\n" +
         "Every created fact MUST link back to a supporting memory via `sourceMemoryId` so `lore-query action='ask'` can retrace the reasoning. Pass a live Memories row ID directly, or pass `agent`+`session` matching an earlier `lore-memory action='save'` / `lore-decision action='create'` call in the same process and `sourceMemoryId` auto-links. If neither path produces a compatible Source memory, the create call is rejected before writing.\n\n" +
         "Decision predicates (`decided_by`, `supersedes_decision`, `informs`) and the auto-emitted `mentions` predicate are internal-only and not accepted here — `decided_by` / `supersedes_decision` / `informs` are auto-created by the decision tool family; `mentions` is auto-emitted by `lore-memory action='save'`. Use richer relationship predicates (`uses`, `depends_on`, etc.) for agent-curated edges.",

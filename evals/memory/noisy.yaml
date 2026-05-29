@@ -6,7 +6,6 @@ memories:
     title: API tokens stay in developer keychains
     kind: note
     status: informational
-    confidence: likely
     tags:
       - security
       - tooling
@@ -18,7 +17,6 @@ memories:
     title: UI regression check runbook
     kind: runbook
     status: informational
-    confidence: likely
     tags:
       - testing
       - ui

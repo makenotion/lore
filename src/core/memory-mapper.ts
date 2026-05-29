@@ -4,7 +4,6 @@
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import type {
   Memory,
-  MemoryConfidence as MemoryConfidenceLevel,
   MemoryKind,
   MemoryLifetime,
   MemoryScope,
@@ -111,11 +110,6 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     // via the hardened extractors — no backfill required.
     kind: extractSelect(props[MEMORY_PROPS.KIND], "note") as MemoryKind,
     status: extractSelect(props[MEMORY_PROPS.STATUS], "informational") as MemoryStatus,
-    confidence: extractSelect(
-      props[MEMORY_PROPS.CONFIDENCE],
-      "certain"
-    ) as MemoryConfidenceLevel,
-    confidenceScore: extractNumber(props[MEMORY_PROPS.CONFIDENCE_SCORE]),
     reviewBy: extractDate(props[MEMORY_PROPS.REVIEW_BY]),
     doneAt: extractDate(props[MEMORY_PROPS.DONE_AT]),
     decidedAt: extractDate(props[MEMORY_PROPS.DECIDED_AT]),
@@ -141,10 +135,8 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     // Legacy rows have a null `Revision Count` column. Coalesce
     // to 1 — every existing row has been "saved once," so
     // `formatMemoryListItem` treats the count as single-revision
-    // and surfaces no `rev` line. Distinct from the Confidence Score
-    // path (which preserves null to signal "never scored") because
-    // Revision Count carries no "uninitialized" semantic — every row
-    // has been written at least once by definition.
+    // and surfaces no `rev` line. Revision Count carries no "uninitialized"
+    // semantic — every row has been written at least once by definition.
     revisionCount: extractNumber(props[MEMORY_PROPS.REVISION_COUNT]) ?? 1,
     comparedWith: extractRelationIds(props[MEMORY_PROPS.COMPARED_WITH]),
     compareNotes: extractRichText(props[MEMORY_PROPS.COMPARE_NOTES]),
