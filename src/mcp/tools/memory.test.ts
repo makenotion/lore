@@ -1875,6 +1875,30 @@ describe("lore-search projectName resolution", () => {
     expect(text).toContain("Fix the project scope")
     expect(memoriesSearch).not.toHaveBeenCalled()
   })
+
+  it("names the scoped project when a search returns no rows", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: {
+        project: { id: "proj-mail-ios", name: "Mail iOS" },
+        isCatchAllFallback: false,
+      },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "swipe actions" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('No memories found for: "swipe actions" in project "Mail iOS"')
+  })
 })
 
 describe("lore-recall content-off default", () => {
@@ -2285,10 +2309,7 @@ describe("lore-search content-off default", () => {
 })
 
 describe("lore-search mode parameter", () => {
-  it("defaults mode to hybrid and forwards it to the service", async () => {
-    // P3-04: The new default. Hybrid runs contains first and only falls
-    // back to semantic when contains under-shoots. The MCP layer threads
-    // the mode through so the service can switch on it.
+  it("defaults mode to semantic and forwards it to the service", async () => {
     const mockServer = createMockServer()
     const memoriesSearch = vi
       .fn()
@@ -2308,7 +2329,7 @@ describe("lore-search mode parameter", () => {
     await search({ query: "q" } as never)
 
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: "hybrid" })
+      expect.objectContaining({ mode: "semantic" })
     )
   })
 
@@ -2348,11 +2369,7 @@ describe("lore-search mode parameter", () => {
     )
   })
 
-  it("over-fetches in semantic mode but uses the requested limit verbatim in contains/hybrid", async () => {
-    // Semantic mode still post-filters kind/status because client.search
-    // ignores property filters — the over-fetch keeps the post-filter from
-    // starving output. Contains/hybrid filter server-side so no over-fetch
-    // is needed; the tool forwards the requested limit verbatim.
+  it("uses the requested limit verbatim for every mode", async () => {
     const mockServer = createMockServer()
     const memoriesSearch = vi.fn().mockResolvedValue([])
     const services = {
@@ -2368,7 +2385,7 @@ describe("lore-search mode parameter", () => {
 
     await search({ query: "q", limit: 5, mode: "semantic" } as never)
     expect(memoriesSearch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mode: "semantic", limit: 10 })
+      expect.objectContaining({ mode: "semantic", limit: 5 })
     )
 
     await search({ query: "q", limit: 5, mode: "contains" } as never)

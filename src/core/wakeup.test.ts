@@ -16,6 +16,7 @@ import {
   loadWakeUpData,
   type WakeUpServices,
 } from "./wakeup.js"
+import { SemanticSearchUnavailableError } from "./memory-search.js"
 import { MemoryService } from "./memory.js"
 import type {
   DecisionSummary,
@@ -30,6 +31,7 @@ import type {
 } from "../types.js"
 import { DEFAULT_PINNED_BLOCK_LIMIT } from "../types.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
+import { defaultFeatureFlags } from "../feature-flags.js"
 
 const NOW = new Date("2026-04-20T12:00:00Z").getTime()
 
@@ -322,6 +324,7 @@ function stubServices(
     rawMemories?: Memory[]
     digestMemories?: Memory[]
     relatedMemories?: Memory[]
+    relatedSearchError?: Error
     /**
      * Memories returned when the search query equals `taskQuery`. Lets
      * P3-05 tests distinguish the user-query-seeded task search from the
@@ -330,6 +333,7 @@ function stubServices(
      */
     taskQuery?: string
     taskMemories?: Memory[]
+    taskSearchError?: Error
     facts?: Fact[]
     proposedDecisions?: DecisionSummary[]
     overdueDecisions?: DecisionSummary[]
@@ -404,11 +408,17 @@ function stubServices(
       }),
       search: vi.fn(async (args: SearchCall) => {
         memoriesSearchCalls.push(args)
+        if (opts.relatedSearchError !== undefined) {
+          throw opts.relatedSearchError
+        }
         if (
           opts.taskQuery !== undefined &&
           opts.taskMemories !== undefined &&
           args.query === opts.taskQuery
         ) {
+          if (opts.taskSearchError !== undefined) {
+            throw opts.taskSearchError
+          }
           return applySearchCallFilters(opts.taskMemories, args)
         }
         return applySearchCallFilters(opts.relatedMemories ?? [], args)
@@ -1614,6 +1624,27 @@ describe("loadWakeUpData", () => {
     expect(relatedCall.query).toContain("Historic autolabel")
   })
 
+  it("returns a related-memory unavailable reason when semantic search cannot run", async () => {
+    const task = buildTask({
+      id: "t-1",
+      title: "Historic autolabel pipeline",
+      entity: "Historic autolabel",
+    })
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      tasks: [task],
+      relatedSearchError: new SemanticSearchUnavailableError("RunTool search disabled"),
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.relatedMemories).toEqual([])
+    expect(data.relatedMemoriesUnavailable).toBe(
+      "AI semantic search unavailable: RunTool search disabled"
+    )
+  })
+
   it("dedupes related memories against the digest and recent memories", async () => {
     const fresh = buildMemory({
       id: "d1",
@@ -2016,41 +2047,91 @@ describe("loadWakeUpData", () => {
       expect(taskCall?.projectId).toBe("p1")
     })
 
-    it("uses effective confidence ranking for taskMemories", async () => {
-      const querySpy = vi.fn(async () => ({
-        results: [
-          buildWakeUpSearchPage("stale-stored-high", {
-            title: "Auth stale high stored confidence",
-            confidenceScore: 0.9,
-            lastReferencedAt: "2000-01-01",
-          }),
-          buildWakeUpSearchPage("fresh-stored-lower", {
-            title: "Auth fresh lower stored confidence",
-            confidenceScore: 0.8,
-            lastReferencedAt: "2999-01-01",
-          }),
-        ],
-        has_more: false,
-        next_cursor: null,
-      }))
+    it("captures task-memory semantic unavailability without failing wake-up", async () => {
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "How do I fix the auth bug?",
+        taskMemories: [],
+        taskSearchError: new SemanticSearchUnavailableError("RunTool search disabled"),
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "How do I fix the auth bug?",
+        now: NOW,
+      })
+
+      expect(data.taskMemories).toEqual([])
+      expect(data.taskMemoriesUnavailable).toBe(
+        "AI semantic search unavailable: RunTool search disabled"
+      )
+    })
+
+    it("preserves AI relevance ordering for taskMemories", async () => {
+      const stalePage = buildWakeUpSearchPage("stale-stored-high", {
+        title: "Auth stale high stored confidence",
+        confidenceScore: 0.9,
+        lastReferencedAt: "2000-01-01",
+      })
+      const freshPage = buildWakeUpSearchPage("fresh-stored-lower", {
+        title: "Auth fresh lower stored confidence",
+        confidenceScore: 0.8,
+        lastReferencedAt: "2999-01-01",
+      })
+      const runToolIds = [
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+      ]
+      const pagesById = new Map([
+        [runToolIds[0], stalePage],
+        [runToolIds[1], freshPage],
+      ])
       const searchSpy = vi.fn(async () => ({
         results: [],
         has_more: false,
         next_cursor: null,
       }))
+      const requestSpy = vi.fn(async () => ({
+        type: "ai_search" as const,
+        results: runToolIds.map((id, index) => ({
+          id: `search-resource-${index}`,
+          title: index === 0 ? stalePage.id : freshPage.id,
+          url: id,
+          type: "page",
+          highlight: "",
+          timestamp: "2026-04-20T00:00:00.000Z",
+        })),
+      }))
       const updateSpy = vi.fn()
       const client = {
-        dataSources: { query: querySpy },
+        request: requestSpy,
         search: searchSpy,
         pages: {
           update: updateSpy,
+          retrieve: vi.fn(async ({ page_id }: { page_id: string }) => {
+            const page = pagesById.get(page_id)
+            if (!page) throw new Error(`unknown page ${page_id}`)
+            return page
+          }),
           retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
         },
       } as unknown as Client
-      const memoryService = new MemoryService(client, {
-        databaseId: "memories-db",
-        dataSourceId: "memories-ds",
-      })
+      const defaults = defaultFeatureFlags()
+      const memoryService = new MemoryService(
+        client,
+        {
+          databaseId: "memories-db",
+          dataSourceId: "memories-ds",
+        },
+        undefined,
+        {
+          features: {
+            ...defaults,
+            runTool: { ...defaults.runTool, search: true },
+          },
+        }
+      )
       const base = stubServices({
         rawMemories: [],
         digestMemories: [],
@@ -2071,9 +2152,11 @@ describe("loadWakeUpData", () => {
       })
 
       expect(data.taskMemories.map((m) => m.id)).toEqual([
-        "fresh-stored-lower",
         "stale-stored-high",
+        "fresh-stored-lower",
       ])
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      expect(searchSpy).not.toHaveBeenCalled()
       expect(updateSpy).not.toHaveBeenCalled()
     })
 

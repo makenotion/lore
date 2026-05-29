@@ -168,7 +168,7 @@ let warnedRestrictedResourceFallback = false
 
 /**
  * Emit a single once-per-process stderr warning when ANY RunTool
- * consumer falls back from a 403 RestrictedResource. Lifted out of
+ * consumer hits a 403 RestrictedResource. Lifted out of
  * the per-consumer modules (the `update_page` latch on the runtool
  * client, the search latch on the runtool search wrapper) so an
  * integration-secret operator
@@ -188,9 +188,13 @@ export function warnRunToolRestrictedResourceOnce(
   warnedRestrictedResourceFallback = true
   const message = err instanceof Error ? err.message : ""
   const detail = message ? `: ${redactDebugMessage(message)}` : ""
+  const posture =
+    source === "search"
+      ? "semantic search will report unavailable"
+      : "falling back to REST/SDK path"
   process.stderr.write(
-    `[lore] runtool: 403 RestrictedResource on ${source}; falling back to ` +
-      `REST/SDK path. RunTool requires an ntn-issued user-actor token; ` +
+    `[lore] runtool: 403 RestrictedResource on ${source}; ${posture}. ` +
+      `RunTool requires an ntn-issued user-actor token; ` +
       `integration-secret auth cannot use RunTool` +
       detail +
       `\n`
@@ -221,7 +225,8 @@ export function warnRunToolIntegrationSecretOnce(authSource: string): void {
   process.stderr.write(
     `[lore] runtool: LORE_USE_RUNTOOL* flag is enabled but the resolved auth ` +
       `source (${authSource}) is an integration-secret path that RunTool ` +
-      `rejects with 403. Every flagged-on call will silently fall back to REST. ` +
+      `rejects with 403. Fallback-capable consumers use their REST/SDK path; ` +
+      `semantic search reports unavailable. ` +
       `Migrate to ntn-issued auth via 'lore auth --login' to dogfood RunTool, ` +
       `or unset the LORE_USE_RUNTOOL* flags to silence this warning.\n`
   )

@@ -148,6 +148,7 @@ describe("searchCommand", () => {
       query: "needle",
       projectId: "p-widget",
       tags: ["cli", "validation"],
+      capped: false,
       results: [searchMemory],
     })
     expect(errorSpy).not.toHaveBeenCalled()
@@ -168,10 +169,38 @@ describe("searchCommand", () => {
       query: "auth",
       projectId: "proj-context",
       tags: null,
+      capped: false,
       results: [],
     })
     expect(logSpy.mock.calls[0]?.[0]).not.toContain("No memories found")
     expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it("uses searchWithMeta and surfaces capped semantic windows", async () => {
+    const search = vi.fn()
+    const searchWithMeta = vi.fn().mockResolvedValue({
+      memories: [searchMemory],
+      capped: true,
+    })
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn() },
+      memories: { search, searchWithMeta },
+      context: { project: { id: "proj-context", name: "Context" } },
+    } as never)
+
+    await searchCommand.parseAsync(["auth", "--limit", "26"], { from: "user" })
+
+    expect(searchWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "auth",
+        projectId: "proj-context",
+        limit: 26,
+      })
+    )
+    expect(search).not.toHaveBeenCalled()
+    expect(logSpy.mock.calls.flat().join("\n")).toContain(
+      "AI search returned a capped top-25 window"
+    )
   })
 
   it.each(INVALID_LIMIT_STRINGS)(
@@ -312,6 +341,8 @@ describe("searchCommand", () => {
     expect(search).toHaveBeenCalledWith(
       expect.objectContaining({ query: "auth", projectId: "proj-context" })
     )
-    expect(logSpy).toHaveBeenCalledWith('No memories found for: "auth"')
+    expect(logSpy).toHaveBeenCalledWith(
+      'No memories found for: "auth" in project "Context"'
+    )
   })
 })

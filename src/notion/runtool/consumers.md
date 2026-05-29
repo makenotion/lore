@@ -198,20 +198,21 @@ The wrapper builds `data_source_url: collection://<memories-data-source-id>`,
 sets `max_highlight_length: 0`, clamps `page_size` to 25, narrows hits to
 Notion page ids, preserves `is_archived`, and returns a `saturated` flag.
 
-RunTool `search` has no cursor and caps the raw window at 25. The caller falls
-back to REST in three structural cases:
+RunTool `search` has no cursor and caps the raw window at 25. Lore treats that
+top-25 AI-ranked window as the semantic search contract:
 
-| Case                              | Reason                                                           |
-| --------------------------------- | ---------------------------------------------------------------- |
-| Empty composed query              | RunTool requires `query.length >= 1`; REST accepts empty search. |
-| Requested `limit > 25`            | The requested window cannot be represented in one RunTool call.  |
-| Raw response saturates at 25 hits | Hidden hits beyond the cap can affect ranking and hybrid RRF.    |
+| Case                              | Reason                                                                     |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| Empty composed query              | RunTool requires `query.length >= 1`; semantic search reports unavailable. |
+| Requested `limit > 25`            | The returned AI window is capped at 25 and `capped=true` is surfaced.      |
+| Raw response saturates at 25 hits | The returned AI window is capped and `capped=true` is surfaced.            |
 
-403 `restricted_resource` returns `null` so the caller falls back to REST after
-the wrapper emits the once-per-process warning. 401, 429, 5xx, malformed, and
-validation errors propagate. Cooperative aborts propagate as aborts so
-`Promise.allSettled` discard behavior matches the REST path.
+403 `restricted_resource` throws `RunToolSearchRestrictedError`; the caller
+renders semantic-search unavailability after the wrapper emits the
+once-per-process warning. Non-`ai_search` responses also render unavailable.
+401, 429, 5xx, malformed, and validation errors propagate. Cooperative aborts
+propagate as aborts so `Promise.allSettled` discard behavior remains bounded.
 
-RunTool search is therefore a low-recall optimization: it helps when the
-candidate corpus naturally fits under 25 hits. Broad queries on large vaults
-pay one extra RunTool round trip and then run the canonical REST path.
+RunTool search is therefore the authoritative semantic lane, not an
+optimization over a keyword fallback. Broad queries on large vaults return the
+top AI-ranked window plus cap metadata.

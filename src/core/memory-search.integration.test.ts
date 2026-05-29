@@ -37,6 +37,7 @@ import type {
 } from "@notionhq/client"
 import { MemoryService } from "./memory.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
+import { defaultFeatureFlags } from "../feature-flags.js"
 import type { DatabaseRef } from "../types.js"
 
 interface MemoryRow {
@@ -210,11 +211,13 @@ class MemoriesFixtureVault {
           }
         },
       },
-      // The contains lane never calls `client.search`; the hybrid lane does
-      // but its result is discarded under saturation. Empty-results stub
-      // covers both.
+      request: async () => ({ type: "ai_search", results: [] }),
+      // Search must remain unused; semantic search is served by RunTool.
       search: async () => ({ results: [] }),
       pages: {
+        retrieve: async () => {
+          throw new Error("MemoriesFixtureVault: no RunTool hits to hydrate")
+        },
         // Every test passes `includeContent: false`, so this stub is
         // never reached. Kept on the surface so a future contributor
         // enabling content materialization sees that the stub is
@@ -228,6 +231,12 @@ class MemoriesFixtureVault {
 const MEMORIES_DB: DatabaseRef = {
   databaseId: "memories-db",
   dataSourceId: "memories-ds",
+}
+
+function featuresWithRunToolSearch() {
+  const features = defaultFeatureFlags()
+  features.runTool.search = true
+  return features
 }
 
 /**
@@ -294,7 +303,9 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
     })
 
     const client = vault.client()
-    const service = new MemoryService(client, MEMORIES_DB)
+    const service = new MemoryService(client, MEMORIES_DB, undefined, {
+      features: featuresWithRunToolSearch(),
+    })
 
     // Pre-#04 simulation: only Title/Keywords surface the rationale match.
     const preResponse = await client.dataSources.query({
@@ -351,7 +362,9 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
     })
 
     const client = vault.client()
-    const service = new MemoryService(client, MEMORIES_DB)
+    const service = new MemoryService(client, MEMORIES_DB, undefined, {
+      features: featuresWithRunToolSearch(),
+    })
 
     const preResponse = await client.dataSources.query({
       data_source_id: MEMORIES_DB.dataSourceId,
@@ -424,7 +437,9 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
     })
 
     const client = vault.client()
-    const service = new MemoryService(client, MEMORIES_DB)
+    const service = new MemoryService(client, MEMORIES_DB, undefined, {
+      features: featuresWithRunToolSearch(),
+    })
 
     const preResponse = await client.dataSources.query({
       data_source_id: MEMORIES_DB.dataSourceId,
@@ -488,7 +503,9 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
     })
 
     const client = vault.client()
-    const service = new MemoryService(client, MEMORIES_DB)
+    const service = new MemoryService(client, MEMORIES_DB, undefined, {
+      features: featuresWithRunToolSearch(),
+    })
 
     // Pre-#04 simulation: top-5 are t-1..t-5, no eviction (only 5 rows match).
     const preResponse = await client.dataSources.query({
@@ -571,7 +588,9 @@ describe("memory search — Synopsis in contains-mode (issue 0.7.0/04)", () => {
     })
 
     const client = vault.client()
-    const service = new MemoryService(client, MEMORIES_DB)
+    const service = new MemoryService(client, MEMORIES_DB, undefined, {
+      features: featuresWithRunToolSearch(),
+    })
 
     // Pre-#04 counterfactual: 2 contains hits (Title + Keywords). Below the
     // threshold of 3, so a hybrid pipeline pre-#04 would have RRF-merged

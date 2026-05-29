@@ -135,7 +135,10 @@ export async function handleSearch(
   args: SearchArgs
 ): Promise<ToolResult> {
   try {
-    const { projectId } = await resolveReadProjectScope(services, args.projectName)
+    const { projectId, project, isCatchAllFallback } = await resolveReadProjectScope(
+      services,
+      args.projectName
+    )
     let topicId: string | undefined
     const warnings: string[] = []
 
@@ -154,13 +157,10 @@ export async function handleSearch(
     }
 
     const withContent = args.includeContent === true
-    const resolvedMode: SearchMode = args.mode ?? "hybrid"
+    const resolvedMode: SearchMode = args.mode ?? "semantic"
     const wantExplain = args.explain === true
 
-    // Over-fetch slightly only when post-filters are still active — i.e.
-    // semantic mode, which can't apply kind/status server-side. Contains
-    // and hybrid push kind/status/tags/topicName into the Notion query, so
-    // the requested limit is already authoritative there.
+    const finalLimit = args.limit ?? 10
     const searchInput = {
       query: args.query,
       projectId,
@@ -168,10 +168,7 @@ export async function handleSearch(
       tags: args.tags,
       kind: args.kind as MemoryKind | undefined,
       status: args.status as MemoryStatus | undefined,
-      limit:
-        resolvedMode === "semantic"
-          ? Math.min((args.limit ?? 10) * 2, 50)
-          : (args.limit ?? 10),
+      limit: finalLimit,
       includeContent: withContent,
       mode: resolvedMode,
       intent: args.intent,
@@ -195,26 +192,31 @@ export async function handleSearch(
 
     // The service applies kind/status server-side in contains/hybrid and
     // post-filter in semantic, so the result set is already correctly
-    // narrowed by mode. The final slice protects against the semantic
-    // over-fetch above leaking extra rows past the caller's limit.
-    const finalLimit = args.limit ?? 10
+    // narrowed by mode. The final slice is a defensive guard for older
+    // service implementations that do not own cap metadata.
     const results = searchResults.slice(0, finalLimit)
     const explainSlice = explain.slice(0, finalLimit)
 
     if (searchCapped) {
       warnings.push(
-        "Search scan reached the live-row refill cap; more matching memories may exist."
+        resolvedMode === "semantic"
+          ? "AI search returned a capped top-25 window; more relevant memories may exist."
+          : "Search scan reached the live-row refill cap; more matching memories may exist."
       )
     }
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
     const cappedFooter = paginationFooter(undefined, { truncated: searchCapped })
 
     if (results.length === 0) {
+      const scopeSuffix =
+        project === null
+          ? ""
+          : ` in project "${project.name}"${isCatchAllFallback ? " (catch-all context)" : ""}`
       return {
         content: [
           {
             type: "text",
-            text: `No memories found for: "${args.query}"${warn}${cappedFooter}`,
+            text: `No memories found for: "${args.query}"${scopeSuffix}${warn}${cappedFooter}`,
           },
         ],
         costOutputs: { memoriesReturned: 0 },
@@ -269,9 +271,9 @@ export async function handleSearch(
  *
  * The `branch` field is the canonical signal; `containsRank` /
  * `semanticRank` / `rrfScore` carry rank/score detail when applicable.
- * Stored and effective confidence factors render side by side so ranking-time
- * decay is diagnosable without reading the Notion row. Agents that don't pass
- * `explain` pay zero output-token cost.
+ * Stored and effective confidence factors render side by side so trust
+ * metadata is diagnosable without reading the Notion row. Agents that don't
+ * pass `explain` pay zero output-token cost.
  */
 function formatScoreTrace(explain: SearchExplain[]): string {
   if (explain.length === 0) return ""

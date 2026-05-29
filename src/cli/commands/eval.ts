@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { Command } from "commander"
 import { initServices } from "../../services.js"
 import {
@@ -1048,6 +1048,66 @@ evalCommand.addCommand(
           }
         } catch (err) {
           console.error("Eval failed:", err instanceof Error ? err.message : err)
+          process.exit(1)
+        }
+      }
+    )
+)
+
+evalCommand.addCommand(
+  new Command("retrieval-quality")
+    .description("Run labeled query-to-memory retrieval quality cases")
+    .argument("<suite>", "Path to a retrieval-quality suite YAML file")
+    .option("--limit <n>", "Max results per lane", "10")
+    .option("--out <path>", "Write the JSON artifact to a specific path")
+    .option("--json", "Print the full JSON artifact to stdout")
+    .action(
+      async (suite: string, opts: { limit: string; out?: string; json?: boolean }) => {
+        const parsedLimit = parsePositiveDecimalInteger("--limit", opts.limit)
+        if (!parsedLimit.ok) {
+          console.error(`Retrieval quality failed: ${parsedLimit.message}`)
+          process.exit(1)
+          return
+        }
+
+        try {
+          const { runRetrievalQualitySuite } =
+            await import("../../eval/retrieval-quality.js")
+          const services = await initServices(undefined, { driftCheck: false })
+          const artifact = await runRetrievalQualitySuite(services, suite, {
+            limit: parsedLimit.value,
+          })
+          if (opts.out) {
+            await writeFile(opts.out, `${JSON.stringify(artifact, null, 2)}\n`)
+          }
+
+          if (opts.json) {
+            console.log(JSON.stringify(artifact, null, 2))
+            return
+          }
+
+          console.log(`Retrieval quality: ${artifact.suite.name}`)
+          for (const lane of artifact.lanes) {
+            const summary = artifact.summary[lane]
+            console.log(
+              `  ${lane}: recall@1=${summary.recallAt1.toFixed(3)} ` +
+                `recall@5=${summary.recallAt5.toFixed(3)} ` +
+                `recall@10=${summary.recallAt10.toFixed(3)} ` +
+                `MRR=${summary.mrr.toFixed(3)} missing=${summary.missing}/${summary.cases}`
+            )
+          }
+          for (const result of artifact.results) {
+            const ranks = result.lanes
+              .map((lane) => `${lane.lane}=${lane.targetRank ?? "miss"}`)
+              .join(", ")
+            console.log(`  - ${result.id}: ${ranks}`)
+          }
+          if (opts.out) console.log(`Artifact: ${opts.out}`)
+        } catch (err) {
+          console.error(
+            "Retrieval quality failed:",
+            err instanceof Error ? err.message : err
+          )
           process.exit(1)
         }
       }

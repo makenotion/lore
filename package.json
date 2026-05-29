@@ -23,6 +23,7 @@
     "CONTRIBUTING.md",
     "dist",
     "docs",
+    "evals/retrieval-quality",
     "evals/vaults.yaml",
     "hooks",
     "profiles",

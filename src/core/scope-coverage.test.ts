@@ -24,6 +24,7 @@ import { FactService } from "./fact.js"
 import { DecisionService } from "./decision.js"
 import { TaskService } from "./task.js"
 import { FACT_PROPS, MEMORY_PROPS } from "../notion/schema.js"
+import { defaultFeatureFlags } from "../feature-flags.js"
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -641,7 +642,7 @@ describe("FactService.listRecent — scope filter end-to-end", () => {
 // ---------------------------------------------------------------------------
 
 describe("semantic post-filter — unknown Scope Kind handling", () => {
-  // The semantic post-filter runs client-side on `client.search`
+  // The semantic post-filter runs client-side on hydrated AI-search
   // results. The server-side filter has no clause for an unknown
   // `Scope Kind` select option (e.g. someone manually adding a
   // `"vault"` value to the Notion select column outside the migration
@@ -651,7 +652,7 @@ describe("semantic post-filter — unknown Scope Kind handling", () => {
   // lanes.
   //
   // We exercise this through `MemoryService.applySemanticPostFilters`
-  // by mocking `client.search` to return a single page carrying an
+  // by mocking RunTool search to return a single page carrying an
   // unknown Scope Kind, then asserting the page is filtered out.
   it("drops a row whose Scope Kind is an unrecognized value", async () => {
     const { MemoryService } = await import("./memory.js")
@@ -687,18 +688,35 @@ describe("semantic post-filter — unknown Scope Kind handling", () => {
         [MEMORY_PROPS.KEYWORDS]: { type: "rich_text", rich_text: [] },
       },
     }
+    const features = defaultFeatureFlags()
+    features.runTool.search = true
     const client = {
-      search: vi.fn(async () => ({
-        results: [unknownPage],
-        has_more: false,
+      request: vi.fn(async () => ({
+        type: "ai_search",
+        results: [
+          {
+            id: "resource-1",
+            title: "x",
+            url: "00000000-0000-0000-0000-000000000001",
+            type: "page",
+            highlight: "",
+            timestamp: "2026-05-04T00:00:00Z",
+          },
+        ],
       })),
+      search: vi.fn(async () => ({ results: [] })),
       dataSources: { query: vi.fn() },
       pages: {
         retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
-        retrieve: vi.fn(),
+        retrieve: vi.fn(async () => unknownPage),
       },
     } as unknown as Client
-    const service = new MemoryService(client, memoriesDb, { session: "sess-A" })
+    const service = new MemoryService(
+      client,
+      memoriesDb,
+      { session: "sess-A" },
+      { features }
+    )
     const result = await service.search({
       query: "anything",
       mode: "semantic",

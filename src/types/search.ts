@@ -14,21 +14,20 @@ import type { MemoryKind, MemoryStatus } from "./domain.js"
  * ranking over page bodies. Best for substring/exact-phrase queries on
  * titles, keyword tokens (PR numbers, ticket IDs, function names), and the
  * short curated synopsis written at save time.
- * - `"semantic"` — workspace-wide `client.search` ranked by Notion's vector
- * index over titles AND bodies. Preserves relevance ranking, but cannot
- * apply server-side property filters and may rank non-Memory pages from
- * the same workspace ahead of real hits when the query is niche. Best for
+ * - `"semantic"` — Notion AI search via RunTool, ranked by Notion's
+ * relevance engine over titles AND bodies. Preserves the AI-ranked order;
+ * property filters apply after hydrating the AI-ranked window. Best for
  * phrase-shaped or conceptual queries where body matches matter.
- * - `"hybrid"` (default) — fires `contains` and `semantic` in parallel via
+ * - `"hybrid"` — fires `contains` and `semantic` in parallel via
  * `Promise.allSettled`. If contains saturates
  * (`>= HYBRID_FALLBACK_THRESHOLD` hits), the contains rows are used
  * alone and the parallel semantic result is discarded; otherwise the
  * two ranked lists are merged via Reciprocal Rank Fusion (RRF) with
  * a deterministic tie-break (`score → best-rank → contains-presence
  * → page id`). Speculative parallelism keeps the worst-case wall-clock
- * at one round-trip (≈ `client.search` latency) regardless of which
- * leg saturates — the cheap-path waste is one discarded Notion call
- * governed by the shared rate limiter.
+ * at one RunTool search round-trip plus bounded page hydration
+ * regardless of which leg saturates — the cheap-path waste is one
+ * discarded Notion call governed by the shared rate limiter.
  */
 export type SearchMode = "contains" | "semantic" | "hybrid"
 
@@ -45,8 +44,8 @@ export interface SearchMemoriesInput {
   tags?: string[]
   /**
    * Server-side filter in `"contains"` (and the contains leg of `"hybrid"`);
-   * post-filter in `"semantic"` because `client.search` does not accept
-   * property filters.
+   * post-filter in `"semantic"` because AI search ranks first and Lore
+   * narrows the returned window afterwards.
    */
   kind?: MemoryKind
   status?: MemoryStatus
@@ -61,8 +60,8 @@ export interface SearchMemoriesInput {
    * Mirrors `MemoryService.list`'s `includeProposed` flag with the
    * same semantics. Server-side filter in `"contains"` (and the
    * contains leg of `"hybrid"`); client-side post-filter in
-   * `"semantic"` because `client.search` lacks property-filter
-   * support.
+   * `"semantic"` because AI search ranks first and Lore narrows the
+   * returned window afterwards.
    */
   includeProposed?: boolean
   /**
@@ -72,8 +71,8 @@ export interface SearchMemoriesInput {
    * window.
    *
    * Server-side filter in `"contains"` (and the contains leg of
-   * `"hybrid"`); client-side post-filter in `"semantic"` because
-   * `client.search` lacks property-filter support.
+   * `"hybrid"`); client-side post-filter in `"semantic"` because AI
+   * search ranks first and Lore narrows the returned window afterwards.
    */
   excludePinned?: boolean
   limit?: number
@@ -85,7 +84,7 @@ export interface SearchMemoriesInput {
    */
   includeContent?: boolean
   /**
-   * Search execution mode. Defaults to `"hybrid"`. See `SearchMode` for the
+   * Search execution mode. Defaults to `"semantic"`. See `SearchMode` for the
    * tradeoffs between scope precision and ranking quality.
    */
   mode?: SearchMode
@@ -99,7 +98,7 @@ export interface SearchMemoriesInput {
    * Whitespace-only intent (`" "`) normalizes to unset across every
    * consumer.
    *
-   * Under `mode: "hybrid"` (default), setting intent disables the
+   * Under `mode: "hybrid"`, setting intent disables the
    * saturation cutoff so the RRF merge always runs — intent would
    * otherwise be discarded when contains has `>= HYBRID_FALLBACK_THRESHOLD`
    * hits. Under RRF, the contains lane is up-weighted so contains-precision
@@ -118,8 +117,8 @@ export interface SearchMemoriesInput {
    * default retrieval — the load-bearing acceptance criterion of scope.
    *
    * Server-side filter clause in `"contains"` (and the contains leg of
-   * `"hybrid"`); client-side post-filter in `"semantic"` because
-   * `client.search` lacks property-filter support.
+   * `"hybrid"`); client-side post-filter in `"semantic"` because AI
+   * search ranks first and Lore narrows the returned window afterwards.
    */
   includeOutOfScope?: boolean
   /**
@@ -170,13 +169,11 @@ export interface SearchExplain {
   rrfScore: number | null
   branch: "contains-only" | "semantic-only" | "contains-saturated" | "rrf"
   /**
-   * The confidence-weighting factor applied to this row's per-branch RRF
-   * score. `1.0` for unscored (unmigrated `Confidence Score = null`)
-   * or fully-trusted rows; `CONFIDENCE_FACTOR_MIN` (default `0.5`) for
-   * fully-decayed rows. This is the applied effective factor, including
-   * ranking-time neglect decay from `Last Referenced At`. Multiplied into the score in
-   * `MemoryService.searchByHybridPages` and the single-branch
-   * `searchByContainsPages` / `searchBySemanticPages` paths.
+   * Diagnostic confidence factor for this row. `1.0` for unscored
+   * (unmigrated `Confidence Score = null`) or fully-trusted rows;
+   * `CONFIDENCE_FACTOR_MIN` (default `0.5`) for fully-decayed rows.
+   * Retrieval ordering does not use this factor; it is exposed only so
+   * operators can inspect stale or low-trust rows in explain output.
    *
    * Older traces may have this field absent; deserialize-aware
    * consumers tolerate the missing field.
@@ -185,7 +182,7 @@ export interface SearchExplain {
   /**
    * Factor from the stored `Confidence Score`, without ranking-time decay.
    * Present on live traces so explain output can show when effective decay
-   * changed ordering. Older traces may lack this field.
+   * differs from the stored value. Older traces may lack this field.
    */
   storedConfidenceFactor?: number
   /**

@@ -6,6 +6,7 @@ import type { DatabaseRef, Memory } from "../types.js"
 import {
   HYBRID_FALLBACK_THRESHOLD,
   MemorySearch,
+  SemanticSearchUnavailableError,
   tieBreakingRrfCompare,
   type RrfEntry,
 } from "./memory-search.js"
@@ -15,14 +16,18 @@ const DB: DatabaseRef = {
   dataSourceId: "memories-ds",
 }
 
-function features(overrides: Partial<LoreFeatureFlags> = {}): LoreFeatureFlags {
+type FeatureOverrides = Partial<Omit<LoreFeatureFlags, "runTool">> & {
+  runTool?: Partial<LoreFeatureFlags["runTool"]>
+}
+
+function features(overrides: FeatureOverrides = {}): LoreFeatureFlags {
   const defaults = defaultFeatureFlags()
   return {
     ...defaults,
     ...overrides,
     runTool: {
       ...defaults.runTool,
-      search: false,
+      search: true,
       ...overrides.runTool,
     },
   }
@@ -115,34 +120,75 @@ function memoryForPage(p: PageObjectResponse): Memory {
   } as Memory
 }
 
+function semanticPageId(index: number): string {
+  return `00000000-0000-0000-0000-${(index + 1).toString().padStart(12, "0")}`
+}
+
 function makeSubject(
   args: {
     containsPages?: PageObjectResponse[]
     semanticPages?: PageObjectResponse[]
-    featureOverrides?: Partial<LoreFeatureFlags>
+    semanticSearchType?: "ai_search" | "workspace_search" | "none"
+    semanticRawHitCount?: number
+    featureOverrides?: FeatureOverrides
   } = {}
 ): {
   searcher: MemorySearch
   querySpy: ReturnType<typeof vi.fn>
   searchSpy: ReturnType<typeof vi.fn>
+  requestSpy: ReturnType<typeof vi.fn>
+  retrieveSpy: ReturnType<typeof vi.fn>
   materializeSpy: ReturnType<typeof vi.fn>
 } {
+  const semanticPages = args.semanticPages ?? []
+  const pagesByRetrieveId = new Map(
+    semanticPages.map((p, index) => [semanticPageId(index), p] as const)
+  )
   const querySpy = vi.fn(async () => ({
     results: args.containsPages ?? [],
     has_more: false,
     next_cursor: null,
   }))
   const searchSpy = vi.fn(async () => ({
-    results: args.semanticPages ?? [],
+    results: [],
     has_more: false,
     next_cursor: null,
   }))
+  const requestSpy = vi.fn(async ({ body }: { body: Record<string, unknown> }) => {
+    const search = (body as { search: { page_size: number } }).search
+    const rawHitCount = args.semanticRawHitCount ?? semanticPages.length
+    const results = Array.from({ length: rawHitCount }, (_, index) => {
+      const pageId = semanticPageId(index)
+      const pageForTitle = semanticPages[index]
+      return {
+        id: `resource-${index}`,
+        title: pageForTitle?.id ?? `external-${index}`,
+        url: pageForTitle === undefined ? `https://example.com/${index}` : pageId,
+        type: pageForTitle === undefined ? "external" : "page",
+        highlight: "",
+        timestamp: "2026-05-01T00:00:00.000Z",
+      }
+    }).slice(0, search.page_size)
+    return {
+      type: args.semanticSearchType ?? ("ai_search" as const),
+      results,
+    }
+  })
+  const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+    const page = pagesByRetrieveId.get(page_id)
+    if (!page) throw new Error(`unknown semantic page ${page_id}`)
+    return page
+  })
   const materializeSpy = vi.fn(async (pages: PageObjectResponse[]) =>
     pages.map(memoryForPage)
   )
   const client = {
     dataSources: { query: querySpy },
     search: searchSpy,
+    request: requestSpy,
+    pages: {
+      retrieve: retrieveSpy,
+    },
   } as unknown as Client
 
   return {
@@ -156,6 +202,8 @@ function makeSubject(
     ),
     querySpy,
     searchSpy,
+    requestSpy,
+    retrieveSpy,
     materializeSpy,
   }
 }
@@ -292,8 +340,8 @@ describe("MemorySearch mode selection", () => {
     ])
   })
 
-  it("semantic mode uses client.search and explains semantic ranks", async () => {
-    const { searcher, querySpy, searchSpy } = makeSubject({
+  it("semantic mode uses RunTool AI search and explains semantic ranks", async () => {
+    const { searcher, querySpy, searchSpy, requestSpy, retrieveSpy } = makeSubject({
       containsPages: [page("contains-hit")],
       semanticPages: [page("semantic-hit")],
     })
@@ -305,12 +353,13 @@ describe("MemorySearch mode selection", () => {
     })
 
     expect(querySpy).not.toHaveBeenCalled()
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy.mock.calls[0][0]).toMatchObject({
-      query: "semantic",
-      filter: { property: "object", value: "page" },
-      page_size: 100,
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(requestSpy.mock.calls[0][0]).toMatchObject({
+      method: "post",
+      path: "tools/run",
     })
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
     expect(memories.map((m) => m.id)).toEqual(["semantic-hit"])
     expect(explain).toEqual([
       {
@@ -325,7 +374,7 @@ describe("MemorySearch mode selection", () => {
   })
 
   it("hybrid mode runs both search branches before RRF ranking", async () => {
-    const { searcher, querySpy, searchSpy } = makeSubject({
+    const { searcher, querySpy, searchSpy, requestSpy } = makeSubject({
       containsPages: [page("contains-hit")],
       semanticPages: [page("semantic-hit")],
     })
@@ -337,12 +386,13 @@ describe("MemorySearch mode selection", () => {
     })
 
     expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(requestSpy).toHaveBeenCalledTimes(1)
     expect(explain.every((entry) => entry.branch === "rrf")).toBe(true)
   })
 
   it("forceSemanticSearch routes even an explicit contains request through semantic mode", async () => {
-    const { searcher, querySpy, searchSpy } = makeSubject({
+    const { searcher, querySpy, searchSpy, requestSpy } = makeSubject({
       containsPages: [page("contains-hit")],
       semanticPages: [page("semantic-hit")],
       featureOverrides: { forceSemanticSearch: true },
@@ -355,14 +405,80 @@ describe("MemorySearch mode selection", () => {
     })
 
     expect(querySpy).not.toHaveBeenCalled()
-    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(requestSpy).toHaveBeenCalledTimes(1)
     expect(memories.map((m) => m.id)).toEqual(["semantic-hit"])
     expect(explain[0].branch).toBe("semantic-only")
+  })
+
+  it("semantic mode fails loud when RunTool search is disabled", async () => {
+    const { searcher, searchSpy, requestSpy } = makeSubject({
+      semanticPages: [page("semantic-hit")],
+      featureOverrides: { runTool: { search: false } },
+    })
+
+    await expect(
+      searcher.search({
+        query: "semantic",
+        mode: "semantic",
+      })
+    ).rejects.toThrow(SemanticSearchUnavailableError)
+    expect(requestSpy).not.toHaveBeenCalled()
+    expect(searchSpy).not.toHaveBeenCalled()
+  })
+
+  it("semantic mode fails loud for empty AI queries", async () => {
+    const { searcher, searchSpy, requestSpy } = makeSubject({
+      semanticPages: [page("semantic-hit")],
+    })
+
+    await expect(
+      searcher.search({
+        query: "   ",
+        mode: "semantic",
+      })
+    ).rejects.toThrow(/AI semantic search unavailable: query must contain/)
+    expect(requestSpy).not.toHaveBeenCalled()
+    expect(searchSpy).not.toHaveBeenCalled()
+  })
+
+  it.each(["workspace_search", "none"] as const)(
+    "semantic mode fails loud when RunTool returns %s",
+    async (searchType) => {
+      const { searcher, searchSpy, requestSpy } = makeSubject({
+        semanticPages: [page("semantic-hit")],
+        semanticSearchType: searchType,
+      })
+
+      await expect(
+        searcher.search({
+          query: "semantic",
+          mode: "semantic",
+        })
+      ).rejects.toThrow(new RegExp(`RunTool search returned ${searchType}`))
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      expect(searchSpy).not.toHaveBeenCalled()
+    }
+  )
+
+  it("hybrid surfaces semantic unavailability even when contains also fails", async () => {
+    const { searcher, querySpy } = makeSubject({
+      semanticPages: [page("semantic-hit")],
+      semanticSearchType: "workspace_search",
+    })
+    querySpy.mockRejectedValueOnce(new Error("contains unavailable"))
+
+    await expect(
+      searcher.search({
+        query: "semantic",
+        mode: "hybrid",
+      })
+    ).rejects.toThrow(/AI semantic search unavailable: RunTool search returned/)
   })
 })
 
 describe("MemorySearch hybrid ranking", () => {
-  it("returns contains results on saturation without merging semantic fallback rows", async () => {
+  it("returns contains results on saturation without merging semantic rows", async () => {
     const containsPages = Array.from({ length: HYBRID_FALLBACK_THRESHOLD }, (_, i) =>
       page(`contains-${i}`)
     )
@@ -391,7 +507,7 @@ describe("MemorySearch hybrid ranking", () => {
     )
   })
 
-  it("hybrid saturation reranks contains results by effective confidence", async () => {
+  it("hybrid saturation preserves contains order and exposes confidence diagnostics", async () => {
     const { searcher } = makeSubject({
       containsPages: [
         page("stale-stored-high", {
@@ -417,9 +533,9 @@ describe("MemorySearch hybrid ranking", () => {
     })
 
     expect(memories.map((m) => m.id)).toEqual([
+      "stale-stored-high",
       "fresh-stored-lower",
       "fresh-third",
-      "stale-stored-high",
     ])
     expect(memories.map((m) => m.id)).not.toContain("semantic-only")
     expect(explain.every((entry) => entry.branch === "contains-saturated")).toBe(true)
@@ -429,9 +545,9 @@ describe("MemorySearch hybrid ranking", () => {
         containsRank: entry.containsRank,
       }))
     ).toEqual([
+      { id: "stale-stored-high", containsRank: 0 },
       { id: "fresh-stored-lower", containsRank: 1 },
       { id: "fresh-third", containsRank: 2 },
-      { id: "stale-stored-high", containsRank: 0 },
     ])
     const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
     expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
@@ -483,7 +599,7 @@ describe("MemorySearch hybrid ranking", () => {
     ])
   })
 
-  it("applies confidence weighting before single-branch ordering", async () => {
+  it("contains mode preserves Notion order while exposing confidence diagnostics", async () => {
     const { searcher } = makeSubject({
       containsPages: [
         page("rank-0-decayed", { confidenceScore: 0.0 }),
@@ -497,11 +613,11 @@ describe("MemorySearch hybrid ranking", () => {
       includeContent: false,
     })
 
-    expect(memories.map((m) => m.id)).toEqual(["rank-1-trusted", "rank-0-decayed"])
-    expect(explain.map((entry) => entry.confidenceFactor)).toEqual([1.0, 0.5])
+    expect(memories.map((m) => m.id)).toEqual(["rank-0-decayed", "rank-1-trusted"])
+    expect(explain.map((entry) => entry.confidenceFactor)).toEqual([0.5, 1.0])
   })
 
-  it("contains mode ranks by effective confidence decay", async () => {
+  it("contains mode reports effective confidence decay without reranking", async () => {
     const { searcher } = makeSubject({
       containsPages: [
         page("stale-stored-high", {
@@ -521,14 +637,14 @@ describe("MemorySearch hybrid ranking", () => {
       includeContent: false,
     })
 
-    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    expect(memories.map((m) => m.id)).toEqual(["stale-stored-high", "fresh-stored-lower"])
     const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
     expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
     expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)
     expect(stale.confidenceFactor).toBe(stale.effectiveConfidenceFactor)
   })
 
-  it("semantic mode ranks by effective confidence decay", async () => {
+  it("semantic mode preserves AI order regardless of effective confidence decay", async () => {
     const { searcher } = makeSubject({
       semanticPages: [
         page("stale-stored-high", {
@@ -548,13 +664,57 @@ describe("MemorySearch hybrid ranking", () => {
       includeContent: false,
     })
 
-    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    expect(memories.map((m) => m.id)).toEqual(["stale-stored-high", "fresh-stored-lower"])
     const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
     expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
     expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)
   })
 
-  it("hybrid RRF ranks by effective confidence decay", async () => {
+  it("semantic mode returns saturated AI results without REST fallback", async () => {
+    const semanticPages = Array.from({ length: 25 }, (_, index) =>
+      page(`semantic-${index}`)
+    )
+    const { searcher, searchSpy, requestSpy } = makeSubject({ semanticPages })
+
+    const { memories, capped } = await searcher.searchWithMeta({
+      query: "semantic",
+      mode: "semantic",
+      limit: 5,
+      includeContent: false,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual([
+      "semantic-0",
+      "semantic-1",
+      "semantic-2",
+      "semantic-3",
+      "semantic-4",
+    ])
+    expect(capped).toBe(true)
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
+  })
+
+  it("semantic mode clamps requests above the RunTool cap and reports capped", async () => {
+    const semanticPages = Array.from({ length: 25 }, (_, index) =>
+      page(`semantic-${index}`)
+    )
+    const { searcher, searchSpy, requestSpy } = makeSubject({ semanticPages })
+
+    const { memories, capped } = await searcher.searchWithMeta({
+      query: "semantic",
+      mode: "semantic",
+      limit: 26,
+      includeContent: false,
+    })
+
+    expect(memories).toHaveLength(25)
+    expect(capped).toBe(true)
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
+  })
+
+  it("hybrid RRF ignores confidence for ranking while exposing decay", async () => {
     const { searcher } = makeSubject({
       containsPages: [
         page("stale-stored-high", {
@@ -575,7 +735,7 @@ describe("MemorySearch hybrid ranking", () => {
       includeContent: false,
     })
 
-    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    expect(memories.map((m) => m.id)).toEqual(["stale-stored-high", "fresh-stored-lower"])
     expect(explain.every((entry) => entry.branch === "rrf")).toBe(true)
     const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
     expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)

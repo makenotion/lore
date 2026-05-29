@@ -11,7 +11,8 @@
  *   - 403 RestrictedResource throws `RunToolSearchRestrictedError`
  *     and emits the once-per-process stderr warning exactly once.
  *   - 401 / 429 / 5xx / 400 / malformed propagate verbatim.
- *   - External connector hits (`url` ≠ Notion page id) drop out.
+ *   - Bare Notion page ids and Notion-hosted page URLs hydrate; external
+ *     connector hits drop out.
  *   - Empty `query` and empty `dataSourceId` reject pre-call.
  *   - `saturated` flag fires when raw response returns the cap.
  */
@@ -428,6 +429,33 @@ describe("searchViaRunTool — error classification", () => {
 })
 
 describe("searchViaRunTool — result narrowing", () => {
+  it("normalizes Notion page URLs to page ids", async () => {
+    const notionUrl = `https://app.dev.notion.com/p/${UNDASHED_UUID}`
+    const { client } = makeStubClient(() =>
+      makeAiSearchResponse([
+        {
+          ...makeNotionHit(UNDASHED_UUID, "Memory URL"),
+          url: notionUrl,
+        },
+      ])
+    )
+
+    const result = await searchViaRunTool(client, {
+      query: "x",
+      dataSourceId: "ds-mem",
+      pageSize: 10,
+    })
+
+    expect(result.hits).toEqual([
+      {
+        id: UNDASHED_UUID,
+        title: "Memory URL",
+        url: UNDASHED_UUID,
+        isArchived: false,
+      },
+    ])
+  })
+
   it("filters out external connector hits (non-Notion-page-id urls)", async () => {
     const { client } = makeStubClient(() =>
       makeAiSearchResponse([

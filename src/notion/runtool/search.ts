@@ -8,9 +8,7 @@
  * 1. **Server cap discipline.** The pinned `SearchToolParams` schema
  *    caps `page_size` at `RUNTOOL_SEARCH_MAX_PAGE_SIZE = 25` and
  *    exposes no cursor, so the wrapper clamps locally and returns a
- *    `saturated` flag the caller uses to decide between "trust the
- *    response" and "fall back to REST because the window may have
- *    truncated."
+ *    `saturated` flag the caller surfaces as cap metadata.
  *
  * 2. **Data-source scoping.** Lore's only `search` consumer scopes to
  *    the Memories data source; the wrapper requires `dataSourceId`
@@ -19,11 +17,11 @@
  *    pipeline in `MemoryService` does NOT need to re-scope because
  *    `data_source_url` does it server-side.
  *
- * 3. **Error mapping.** 403 `RestrictedResource` is fall-back-able
+ * 3. **Error mapping.** 403 `RestrictedResource` is classified
  *    via {@link RunToolSearchRestrictedError} — the auth-refresh
  *    proxy refreshes only on 401, and integration-secret operators
  *    can't pass RunTool's actor-type check. Once-per-process stderr
- *    warning fires the first time so the silent degrade is
+ *    warning fires the first time so the capability failure is
  *    observable. Validation 400s, 401, 429, and 5xx propagate
  *    verbatim so the rate-limit and auth-refresh proxies stay
  *    authoritative on those classes (canonical vocabulary pinned
@@ -50,7 +48,6 @@ import {
   isInternalSearchResponse,
   RUNTOOL_SEARCH_MAX_PAGE_SIZE,
   type RunToolInternalSearchResponse,
-  type RunToolInternalSearchResult,
   type RunToolSearchParams,
 } from "./types.js"
 
@@ -58,16 +55,15 @@ export { RUNTOOL_SEARCH_MAX_PAGE_SIZE }
 
 /**
  * Structured error indicating the RunTool `search` dispatch failed in
- * a way the caller should fall back from rather than surface as a
- * hard error. Mirrors the `restricted_resource` arm of
+ * a way the caller should surface as semantic-search unavailability.
+ * Mirrors the `restricted_resource` arm of
  * {@link import("./client.js").RunToolBlockEditError} for the search
  * surface. All RunTool consumers use `restricted_resource` for
  * fall-back-able 403 capability or actor-shape rejections.
  *
- * The caller (`MemoryService`) treats this as "use the REST
- * `client.search` path for this call" — same posture as the
- * `update_page` wrapper, so an integration-secret token never
- * silently fails the surrounding query.
+ * The caller (`MemoryService`) converts this to a loud
+ * `SemanticSearchUnavailableError` because semantic relevance is
+ * defined by AI search, not by a keyword fallback.
  */
 export class RunToolSearchRestrictedError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -78,16 +74,16 @@ export class RunToolSearchRestrictedError extends Error {
 
 /**
  * One Notion-internal page hit from a RunTool `search` response.
- * External connector hits (Slack / Linear / Drive — `url` is a full
+ * External connector hits (Slack / Linear / Drive - `url` is a full
  * external URL rather than a page id) are filtered out by the
  * wrapper; Lore's consumers only care about Notion pages.
  */
 export interface RunToolSearchHit {
   id: string
   title: string
-  /** Page id for Notion results; the wrapper drops external connector
-   *  hits before returning so this is always safe to pass to
-   *  `pages.retrieve`. */
+  /** Page id for Notion results; the wrapper normalizes bare ids and
+   *  Notion page URLs, then drops external connector hits before
+   *  returning so this is always safe to pass to `pages.retrieve`. */
   url: string
   /** Mirrors Notion's archived flag. Optional on the wire (older
    *  responses omit it); defaults to `false` here so the consumer's
@@ -99,16 +95,12 @@ export interface RunToolSearchOutcome {
   hits: RunToolSearchHit[]
   /** True when the response returned exactly `RUNTOOL_SEARCH_MAX_PAGE_SIZE`
    *  hits. The wrapper has no cursor to fetch more, so a saturated
-   *  window is the caller's signal that the requested recall MAY be
-   *  under-served. The caller decides whether to fall back to REST
-   *  (which paginates with `start_cursor` up to
-   *  `SEMANTIC_SEARCH_MAX_PAGES`).
+   *  window is the caller's signal that the returned AI-ranked window
+   *  is capped.
    *
    *  Conversely, `saturated === false` means **the server has shown
-   *  its hand at the requested `page_size`** — REST fallback would
-   *  not surface additional matches because the underlying corpus
-   *  has fewer than `page_size` matches for this query. The
-   *  consumer can trust the result without falling back.
+   *  its hand at the requested `page_size`** because the underlying
+   *  corpus has fewer than `page_size` matches for this query.
    *
    *  This flag is independent of the post-filter survivor count —
    *  the wrapper does not run Lore's post-filter pipeline; the
@@ -121,12 +113,10 @@ export interface RunToolSearchOutcome {
    *  intermixed external and Notion hits. */
   saturated: boolean
   /** The kind of internal search the server actually ran
-   *  (`ai_search` / `workspace_search` / `none`). Surfaced for
-   *  observability; consumers do not branch on it. `none` indicates
-   *  the server returned no relevance signal — typically empty
-   *  results, but not necessarily structurally empty (the server may
-   *  return `none` with `results: []` when the workspace has no
-   *  search backend configured). */
+   *  (`ai_search` / `workspace_search` / `none`). Semantic consumers
+   *  require `ai_search`; `workspace_search` and `none` are capability
+   *  failures for Lore's relevance contract, even when the results
+   *  array is empty. */
   searchType: RunToolInternalSearchResponse["type"]
 }
 
@@ -134,8 +124,8 @@ export interface RunToolSearchOutcome {
  * Issue a RunTool `search` request scoped to one Notion data source.
  *
  * `query` MUST be non-empty (the server enforces `length >= 1`); the
- * caller is responsible for falling back to REST when the composed
- * query is empty.
+ * caller is responsible for routing empty-query list-like requests to
+ * `contains` or `recall`.
  *
  * `pageSize` is **optional** and defaults to
  * `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (the server cap). Production
@@ -151,9 +141,8 @@ export interface RunToolSearchOutcome {
  * The wrapper sets `max_highlight_length: 0` because Lore never
  * surfaces RunTool's highlight string — saving the response-size
  * budget keeps the round-trip lean. **This is by design, not by
- * oversight**: REST `client.search` returns no highlights either,
- * so the RunTool path with `max_highlight_length: 0` produces an
- * isomorphic response shape to what REST already gives consumers.
+ * oversight**: Lore's search surfaces do not render highlights, so the
+ * response can stay small.
  * If a future caller wants highlights they can override the field
  * — but Lore's `MemoryService` post-filter and materialization
  * pipeline never reads `highlight`.
@@ -174,7 +163,7 @@ export async function searchViaRunTool(
     throw new Error(
       "searchViaRunTool: query must be non-empty (RunTool search " +
         "requires query length >= 1; the caller is responsible for " +
-        "falling back to REST on empty queries)."
+        "routing empty-query list-like requests to contains or recall)."
     )
   }
   if (params.dataSourceId.length === 0) {
@@ -208,9 +197,9 @@ export async function searchViaRunTool(
       warnRunToolRestrictedResourceOnce("search", err)
       throw new RunToolSearchRestrictedError(
         "RunTool search rejected this token (RestrictedResource). " +
-          "Falling back to REST. RunTool requires an ntn-issued " +
-          "user-actor token; a public OAuth integration secret " +
-          "cannot pass the actor-type check.",
+          "RunTool search requires an ntn-issued user-actor token " +
+          "or personal access token with AI-search access; a public " +
+          "OAuth integration secret cannot pass the actor-type check.",
         err
       )
     }
@@ -234,11 +223,12 @@ export async function searchViaRunTool(
   // the caller can pass `hit.url` straight to `pages.retrieve`.
   const hits: RunToolSearchHit[] = []
   for (const result of response.results) {
-    if (!isNotionInternalHit(result)) continue
+    const pageId = pageIdFromSearchResultUrl(result.url)
+    if (pageId === null) continue
     hits.push({
       id: result.id,
       title: result.title,
-      url: result.url,
+      url: pageId,
       // `=== true` strict-coerces non-boolean values (e.g. a
       // hypothetical string `"true"`) to false. Acceptable because
       // `applySemanticPostFilters` re-checks the canonical
@@ -257,16 +247,43 @@ export async function searchViaRunTool(
 }
 
 /**
- * `true` for hits whose `url` is a Notion page id rather than an
- * external connector URL. The pinned schema documents the format as
- * "page id for Notion results, full URL for connector results";
- * Notion page ids are 32-character lowercase hex (no separators) or
- * dashed UUID (8-4-4-4-12). Anything else (a `https://` prefix, a
- * Slack / Linear / Drive URL, an empty string) is dropped.
+ * Extract the Notion page id from a RunTool search result URL.
+ *
+ * The pinned schema documents `url` as a page id for Notion results
+ * and a full URL for external connector results, but production
+ * Notion page hits can also return full Notion URLs such as
+ * `https://app.dev.notion.com/p/<id>`. Accept bare page ids and
+ * Notion-hosted URLs; drop every other URL as an external connector
+ * hit.
  */
-function isNotionInternalHit(result: RunToolInternalSearchResult): boolean {
-  if (typeof result.url !== "string" || result.url.length === 0) return false
-  return isLikelyNotionPageId(result.url)
+function pageIdFromSearchResultUrl(value: string): string | null {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  if (isLikelyNotionPageId(trimmed)) return trimmed
+
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    return null
+  }
+  if (!isNotionHost(url.hostname)) return null
+
+  const match = url.pathname.match(
+    /[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+  )
+  const pageId = match?.[0]
+  return pageId !== undefined && isLikelyNotionPageId(pageId) ? pageId : null
+}
+
+function isNotionHost(hostname: string): boolean {
+  const lower = hostname.toLowerCase()
+  return (
+    lower === "notion.so" ||
+    lower.endsWith(".notion.so") ||
+    lower === "notion.com" ||
+    lower.endsWith(".notion.com")
+  )
 }
 
 function isRestrictedResourceError(err: unknown): boolean {

@@ -8,9 +8,9 @@
  * holds verbatim content. Page properties hold metadata for filtering
  * and categorization.
  *
- * Semantic search leverages Notion's existing embedding + vector search
- * pipeline: content written to Notion pages is automatically chunked,
- * embedded, and indexed. We search via the Notion search API.
+ * Semantic search uses Notion AI search via RunTool: content written
+ * to Notion pages is automatically chunked, embedded, and indexed by
+ * Notion, and Lore consumes the AI-ranked result window directly.
  */
 
 import type { Client } from "@notionhq/client"
@@ -115,6 +115,7 @@ export type {
 export {
   HYBRID_FALLBACK_THRESHOLD,
   SEMANTIC_SEARCH_MAX_PAGES,
+  SemanticSearchUnavailableError,
   tieBreakingRrfCompare,
 } from "./memory-search.js"
 export type { RrfEntry } from "./memory-search.js"
@@ -1515,7 +1516,7 @@ export class MemoryService {
     input: SearchMemoriesInput,
     intent: string | null,
     signal?: AbortSignal
-  ): Promise<PageObjectResponse[]> {
+  ): Promise<SearchPagesResult> {
     return this.searcher.fetchSemanticPages(input, intent, signal)
   }
 
@@ -1524,7 +1525,7 @@ export class MemoryService {
     composedQuery: string,
     limit: number,
     signal?: AbortSignal
-  ): Promise<PageObjectResponse[] | null> {
+  ): Promise<SearchPagesResult> {
     return this.searcher.fetchSemanticPagesViaRunTool(input, composedQuery, limit, signal)
   }
 

@@ -1,0 +1,19 @@
+version: 1
+name: mail-retrieval-quality
+description: Labeled Mail vault paraphrase queries for retrieval-quality checks.
+cases:
+  - id: mail-ios-swipe-actions-lazyvstack
+    query: swipe actions do nothing inside a vertical scrolling stack
+    projectName: Mail iOS
+    expectedMemoryId: 359b35e6-e67f-81bb-974f-f3bdb6dd3625
+    expectedTitle: .swipeActions silently no-ops inside LazyVStack — use List
+  - id: mail-ios-evaluate-javascript-jsonencoder
+    query: safely encode a Swift value before interpolating into an evaluateJavaScript string
+    projectName: Mail iOS
+    expectedMemoryId: 359b35e6-e67f-81b8-9923-eb6bbd35719c
+    expectedTitle: Encode Swift values via JSONEncoder before splicing into evaluateJavaScript strings
+  - id: notion-api-multiselect-too-many-options
+    query: Notion API silently rejects a multi_select update when there are too many options
+    projectName: Mail
+    expectedMemoryId: 360b35e6-e67f-81d4-9f5b-eb7f9354c140
+    expectedTitle: Notion rejects multi_select PATCH silently when options exceed 100

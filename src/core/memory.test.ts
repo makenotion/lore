@@ -11,7 +11,6 @@ import {
   clampPinnedPriority,
   pageToMemory,
   pinnedBlockAudienceMatches,
-  tieBreakingRrfCompare,
   appendCompareNote,
   appendCompareDispatchLedgerEntry,
   buildCompareDispatchLedgerEntry,
@@ -25,9 +24,7 @@ import {
   computePromotionAdvisory,
   PROMOTE_BODY_LENGTH_THRESHOLD,
   PROMOTE_REVISION_THRESHOLD,
-  SEMANTIC_SEARCH_MAX_PAGES,
   type ListMemoriesOptions,
-  type RrfEntry,
 } from "./memory.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import { AutosaveLearningDuplicateProbeError } from "./near-duplicate.js"
@@ -42,7 +39,7 @@ import {
   type UpdateMemoryInput,
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
-import { defaultFeatureFlags } from "../feature-flags.js"
+import { defaultFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * Build a synthetic `PageObjectResponse` with only the properties listed.
@@ -64,6 +61,117 @@ function buildPage(
     url: "https://notion.so/page-id-123",
     ...overrides,
   } as PageObjectResponse
+}
+
+type FeatureOverrides = Partial<Omit<LoreFeatureFlags, "runTool">> & {
+  runTool?: Partial<LoreFeatureFlags["runTool"]>
+}
+
+function featuresWithRunToolSearch(overrides: FeatureOverrides = {}): LoreFeatureFlags {
+  const defaults = defaultFeatureFlags()
+  return {
+    ...defaults,
+    ...overrides,
+    runTool: {
+      ...defaults.runTool,
+      search: true,
+      ...overrides.runTool,
+    },
+  }
+}
+
+function runToolSemanticPageId(index: number): string {
+  return `00000000-0000-0000-0000-${(index + 1).toString().padStart(12, "0")}`
+}
+
+function makeSearchClient(
+  opts: {
+    containsPages?: PageObjectResponse[]
+    semanticPages?: PageObjectResponse[]
+    semanticRawHitCount?: number
+    semanticSearchType?: "ai_search" | "workspace_search" | "none"
+    requestReject?: unknown
+    containsReject?: unknown
+    retrieveMarkdown?: string
+  } = {}
+): {
+  client: Client
+  querySpy: ReturnType<typeof vi.fn>
+  searchSpy: ReturnType<typeof vi.fn>
+  requestSpy: ReturnType<typeof vi.fn>
+  retrieveSpy: ReturnType<typeof vi.fn>
+  retrieveMarkdownSpy: ReturnType<typeof vi.fn>
+} {
+  const semanticPages = opts.semanticPages ?? []
+  const pagesByRetrieveId = new Map(
+    semanticPages.map((page, index) => [runToolSemanticPageId(index), page] as const)
+  )
+  const querySpy =
+    opts.containsReject === undefined
+      ? vi.fn(async () => ({
+          results: opts.containsPages ?? [],
+          has_more: false,
+          next_cursor: null,
+        }))
+      : vi.fn(async () => {
+          throw opts.containsReject
+        })
+  const searchSpy = vi.fn(async () => ({
+    results: [],
+    has_more: false,
+    next_cursor: null,
+  }))
+  const requestSpy = vi.fn(async ({ body }: { body: Record<string, unknown> }) => {
+    if (opts.requestReject !== undefined) throw opts.requestReject
+    const search = body["search"] as { page_size?: number } | undefined
+    const pageSize = search?.page_size ?? 25
+    const rawHitCount = opts.semanticRawHitCount ?? semanticPages.length
+    return {
+      type: opts.semanticSearchType ?? ("ai_search" as const),
+      results: Array.from({ length: rawHitCount }, (_, index) => {
+        const page = semanticPages[index]
+        return {
+          id: `resource-${index}`,
+          title: page?.id ?? `external-${index}`,
+          url:
+            page === undefined
+              ? `https://example.com/${index}`
+              : runToolSemanticPageId(index),
+          type: page === undefined ? "external" : "page",
+          highlight: "",
+          timestamp: "2026-05-01T00:00:00.000Z",
+        }
+      }).slice(0, pageSize),
+    }
+  })
+  const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+    const page = pagesByRetrieveId.get(page_id)
+    if (!page) throw new Error(`unknown semantic page ${page_id}`)
+    return page
+  })
+  const retrieveMarkdownSpy = vi.fn(async () => ({
+    markdown: opts.retrieveMarkdown ?? "body",
+  }))
+  const client = {
+    dataSources: { query: querySpy },
+    search: searchSpy,
+    request: requestSpy,
+    pages: {
+      retrieve: retrieveSpy,
+      retrieveMarkdown: retrieveMarkdownSpy,
+    },
+  } as unknown as Client
+  return { client, querySpy, searchSpy, requestSpy, retrieveSpy, retrieveMarkdownSpy }
+}
+
+function memoryServiceWithRunToolSearch(
+  client: Client,
+  db: DatabaseRef,
+  featureOverrides: FeatureOverrides = {}
+): MemoryService {
+  return new MemoryService(client, db, undefined, {
+    features: featuresWithRunToolSearch(featureOverrides),
+  })
 }
 
 describe("pageToMemory — backward compatibility with pre-migration pages", () => {
@@ -6024,7 +6132,12 @@ describe("MemoryService.search", () => {
       parentDb?: string
       parentDataSource?: string
       parentType?: "database_id" | "data_source_id"
+      archived?: boolean
+      kind?: string
+      status?: string
       tags?: string[]
+      confidenceScore?: number | null
+      lastReferencedAt?: string | null
     } = {}
   ): PageObjectResponse {
     const parentType = opts.parentType ?? "database_id"
@@ -6044,79 +6157,102 @@ describe("MemoryService.search", () => {
         Project: { type: "relation", relation: [] },
         Topic: { type: "relation", relation: [] },
         Source: { type: "select", select: { name: "manual" } },
+        Kind: { type: "select", select: { name: opts.kind ?? "note" } },
+        Status: {
+          type: "select",
+          select: { name: opts.status ?? "informational" },
+        },
         Tags: {
           type: "multi_select",
           multi_select: (opts.tags ?? []).map((name) => ({ name })),
         },
+        "Confidence Score": {
+          type: "number",
+          number: opts.confidenceScore ?? null,
+        },
+        "Last Referenced At": {
+          type: "date",
+          date: opts.lastReferencedAt ? { start: opts.lastReferencedAt } : null,
+        },
       },
-      { id, parent } as Partial<PageObjectResponse>
+      { id, parent, archived: opts.archived ?? false } as Partial<PageObjectResponse>
     )
   }
 
-  it("semantic mode requests relevance-ranked results — no sort parameter — with a 100-page fetch window", async () => {
-    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: retrieveMarkdownSpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+  it("semantic mode dispatches RunTool AI search and never calls REST search", async () => {
+    const { client, querySpy, searchSpy, requestSpy, retrieveSpy } = makeSearchClient({
+      semanticPages: [buildSearchPage("mem-1", "Mem one")],
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
-    await service.search({ query: "autolabel", limit: 5, mode: "semantic" })
+    const results = await service.search({
+      query: "autolabel",
+      limit: 5,
+      mode: "semantic",
+      includeContent: false,
+    })
 
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-    const args = searchSpy.mock.calls[0][0]
-    expect(args["query"]).toBe("autolabel")
-    expect(args["page_size"]).toBe(100)
-    // Critical: without `sort`, Notion ranks by relevance. With `sort`, it
-    // ranks by the given timestamp and demotes the query to a filter.
-    expect(args).not.toHaveProperty("sort")
+    expect(results.map((m) => m.id)).toEqual(["mem-1"])
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(requestSpy.mock.calls[0][0]).toMatchObject({
+      method: "post",
+      path: "tools/run",
+    })
+    expect(requestSpy.mock.calls[0][0].body).toMatchObject({
+      type: "search",
+      search: {
+        query: "autolabel",
+        data_source_url: "collection://" + db.dataSourceId,
+        page_size: 25,
+        max_highlight_length: 0,
+      },
+    })
+    expect(retrieveSpy).toHaveBeenCalledWith({ page_id: runToolSemanticPageId(0) })
   })
 
-  it("semantic mode filters to the Memories database and caps at the caller's limit before fetching markdown", async () => {
-    const client = {
-      search: vi.fn(async () => ({
-        results: [
-          // Three pages belong to the memories DB.
-          buildSearchPage("mem-1", "Mem one"),
-          buildSearchPage("mem-2", "Mem two"),
-          buildSearchPage("mem-3", "Mem three"),
-          // Two pages from a different DB should be filtered out.
-          buildSearchPage("other-1", "Other one", { parentDb: "some-other-db" }),
-          buildSearchPage("other-2", "Other two", { parentDb: "some-other-db" }),
-        ],
-      })),
-      pages: {
-        retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })),
-      },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+  it("defaults to semantic mode", async () => {
+    const { client, querySpy, searchSpy, requestSpy } = makeSearchClient({
+      containsPages: [buildSearchPage("contains-hit", "Contains hit")],
+      semanticPages: [buildSearchPage("semantic-hit", "Semantic hit")],
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
+
+    const results = await service.search({ query: "q", includeContent: false })
+
+    expect(results.map((m) => m.id)).toEqual(["semantic-hit"])
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("filters hydrated AI hits to memories and materializes only the caller limit", async () => {
+    const { client, retrieveSpy, retrieveMarkdownSpy } = makeSearchClient({
+      semanticPages: [
+        buildSearchPage("mem-1", "Mem one"),
+        buildSearchPage("mem-2", "Mem two"),
+        buildSearchPage("mem-3", "Mem three"),
+        buildSearchPage("other-1", "Other one", { parentDb: "some-other-db" }),
+      ],
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
     const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
 
     expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
-    // Markdown fetched only for the capped subset — not wasted on filtered-out
-    // or over-limit results.
-    expect(
-      (client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>).mock.calls.length
-    ).toBe(2)
+    expect(retrieveSpy).toHaveBeenCalledTimes(4)
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(2)
   })
 
-  it("semantic mode skips the per-page markdown fetch when includeContent: false", async () => {
-    // Callers that render only title / date / tags (e.g. the hook wake-up
-    // path's related-memories section) pass includeContent: false to avoid
-    // N+1 `retrieveMarkdown` round-trips on a hot path.
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "body" }))
-    const client = {
-      search: vi.fn(async () => ({
-        results: [
-          buildSearchPage("mem-1", "Mem one"),
-          buildSearchPage("mem-2", "Mem two"),
-        ],
-      })),
-      pages: { retrieveMarkdown: retrieveMarkdownSpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+  it("semantic mode skips markdown materialization when includeContent is false", async () => {
+    const { client, retrieveMarkdownSpy } = makeSearchClient({
+      semanticPages: [
+        buildSearchPage("mem-1", "Mem one"),
+        buildSearchPage("mem-2", "Mem two"),
+      ],
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
     const results = await service.search({
       query: "q",
@@ -6129,561 +6265,128 @@ describe("MemoryService.search", () => {
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
   })
 
-  it("semantic mode accepts pages with a data_source_id parent (Notion SDK v5 shape)", async () => {
-    // Regression test: Notion's `client.search()` returns pages with
-    // `parent.type === "data_source_id"` in v5 workspaces — which is the
-    // shape observed in production. If the filter only accepted
-    // `database_id` parents it would silently return zero results for every
-    // real query. Match `parent.data_source_id` against `db.dataSourceId`.
-    const client = {
-      search: vi.fn(async () => ({
-        results: [
-          buildSearchPage("ds-hit", "data-source match", {
-            parentType: "data_source_id",
-          }),
-          buildSearchPage("db-hit", "database match", {
-            parentType: "database_id",
-          }),
-          buildSearchPage("ds-miss", "unrelated data source", {
-            parentType: "data_source_id",
-            parentDataSource: "other-ds",
-          }),
-        ],
-      })),
-      pages: {
-        retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
-      },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+  it("semantic post-filters accept database and data source parents and drop archived rows", async () => {
+    const { client } = makeSearchClient({
+      semanticPages: [
+        buildSearchPage("ds-hit", "data-source match", {
+          parentType: "data_source_id",
+        }),
+        buildSearchPage("db-hit", "database match", {
+          parentType: "database_id",
+        }),
+        buildSearchPage("ds-miss", "unrelated data source", {
+          parentType: "data_source_id",
+          parentDataSource: "other-ds",
+        }),
+        buildSearchPage("archived", "archived row", { archived: true }),
+      ],
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
-    const results = await service.search({ query: "q", limit: 10, mode: "semantic" })
+    const results = await service.search({
+      query: "q",
+      limit: 10,
+      mode: "semantic",
+      includeContent: false,
+    })
 
     expect(results.map((m) => m.id).sort()).toEqual(["db-hit", "ds-hit"])
   })
 
-  it("semantic mode excludes archived pages before property post-filters run", async () => {
-    // `client.search` exposes no archived filter — soft-deleted pages
-    // would otherwise leak into recall, wake-up's related-memories
-    // pass, and every other `MemoryService.search` caller. Pin the
-    // post-filter at the same layer where the parent-shape narrowing
-    // happens so an archived row never costs a `Project`/`Topic`/
-    // `Tags` extraction it would be discarded for. Same posture as
-    // `MemoryService.list`.
-    const livePage = buildSearchPage("live-row", "live row", {
-      parentType: "data_source_id",
+  it("semantic mode applies kind and status as client-side post-filters", async () => {
+    const { client, searchSpy } = makeSearchClient({
+      semanticPages: [
+        buildSearchPage("decision", "decision row", { kind: "decision" }),
+        buildSearchPage("note", "note row", { kind: "note" }),
+        buildSearchPage("proposed", "proposed decision", {
+          kind: "decision",
+          status: "proposed",
+        }),
+      ],
     })
-    const archivedPage = buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: "archived row" }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id: "archived-row",
-        archived: true,
-        parent: { type: "data_source_id", data_source_id: db.dataSourceId },
-      } as Partial<PageObjectResponse>
-    )
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
-    const client = {
-      search: vi.fn(async () => ({ results: [livePage, archivedPage] })),
-      pages: { retrieveMarkdown: retrieveMarkdownSpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({ query: "q", mode: "semantic" })
-
-    expect(results.map((m) => m.id)).toEqual(["live-row"])
-    // Materialization runs only on the surviving live row — an archived
-    // row never pays a `retrieveMarkdown` round-trip it would be dropped
-    // from.
-    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(1)
-    expect(retrieveMarkdownSpy).toHaveBeenCalledWith({ page_id: "live-row" })
-  })
-
-  it("semantic mode applies kind/status as client-side post-filters (search API has no property filters)", async () => {
-    // Regression-safety pin for P3-04: callers passing `kind` / `status`
-    // in semantic mode still get post-filtering, since `client.search`
-    // ignores property filters. The service narrows the result set to
-    // matching kind/status before fetching markdown.
-    const decisionPage = buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: "decision row" }] },
-        Kind: { type: "select", select: { name: "decision" } },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-      },
-      { id: "a", parent: { type: "database_id", database_id: db.databaseId } }
-    )
-    const notePage = buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: "note row" }] },
-        Kind: { type: "select", select: { name: "note" } },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-      },
-      { id: "b", parent: { type: "database_id", database_id: db.databaseId } }
-    )
-    const searchSpy = vi.fn(async () => ({ results: [decisionPage, notePage] }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+    const service = memoryServiceWithRunToolSearch(client, db)
 
     const results = await service.search({
       query: "q",
       kind: "decision",
+      status: "informational",
       mode: "semantic",
       includeContent: false,
     })
 
-    // Only the decision row survives — the note is post-filtered out.
-    expect(results.map((m) => m.id)).toEqual(["a"])
-    // The post-filter path goes through `client.search`, not `dataSources.query`.
-    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(results.map((m) => m.id)).toEqual(["decision"])
+    expect(searchSpy).not.toHaveBeenCalled()
   })
 
-  it("semantic mode paginates client.search until the requested limit is satisfied", async () => {
-    // Issue #192: workspace-wide search returns relevance-ranked pages
-    // across the entire workspace; Lore filters those down to the
-    // Memories DS afterwards. When the first 100 raw hits are dominated
-    // by non-Lore pages, matching memories on the second page must
-    // still surface — single-page fetch silently starved them pre-fix.
-    //
-    // Setup: page 1 is all non-memory pages (filtered out client-side);
-    // page 2 carries the matching Lore memories. The caller asks for 2.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
-    )
-    const page2 = [
-      buildSearchPage("mem-1", "Mem one"),
-      buildSearchPage("mem-2", "Mem two"),
-    ]
-    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
-      if (args["start_cursor"] === undefined) {
-        return { results: page1, has_more: true, next_cursor: "cursor-1" }
-      }
-      return { results: page2, has_more: false, next_cursor: null }
+  it("semantic mode preserves the AI-ranked order instead of reranking by confidence", async () => {
+    const { client } = makeSearchClient({
+      semanticPages: [
+        buildSearchPage("low-confidence-first", "AI rank one", {
+          confidenceScore: 0.0,
+        }),
+        buildSearchPage("high-confidence-second", "AI rank two", {
+          confidenceScore: 1.0,
+        }),
+      ],
     })
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
-
-    expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
-    expect(searchSpy).toHaveBeenCalledTimes(2)
-    // First page primes pagination with no cursor; second page threads
-    // the `next_cursor` returned by the first.
-    expect(searchSpy.mock.calls[0][0]["start_cursor"]).toBeUndefined()
-    expect(searchSpy.mock.calls[1][0]["start_cursor"]).toBe("cursor-1")
-  })
-
-  it("semantic mode keeps paginating when client-side post-filters reject most of the first raw page", async () => {
-    // Acceptance criterion #2: project / kind / status post-filtering
-    // can still fill the requested limit when enough matches exist past
-    // the first raw page. Setup: page 1 has 100 memory-DB pages but all
-    // are kind=note; page 2 has 3 kind=decision rows. Caller asks for
-    // 2 decisions.
-    const note = (id: string): PageObjectResponse =>
-      buildPage(
-        {
-          Title: { type: "title", title: [{ plain_text: `note ${id}` }] },
-          Kind: { type: "select", select: { name: "note" } },
-          Project: { type: "relation", relation: [] },
-          Topic: { type: "relation", relation: [] },
-        },
-        { id, parent: { type: "database_id", database_id: db.databaseId } }
-      )
-    const decision = (id: string): PageObjectResponse =>
-      buildPage(
-        {
-          Title: { type: "title", title: [{ plain_text: `decision ${id}` }] },
-          Kind: { type: "select", select: { name: "decision" } },
-          Project: { type: "relation", relation: [] },
-          Topic: { type: "relation", relation: [] },
-        },
-        { id, parent: { type: "database_id", database_id: db.databaseId } }
-      )
-
-    const page1 = Array.from({ length: 100 }, (_, i) => note(`note-${i}`))
-    const page2 = [decision("dec-1"), decision("dec-2"), decision("dec-3")]
-
-    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
-      if (args["start_cursor"] === undefined) {
-        return { results: page1, has_more: true, next_cursor: "cursor-1" }
-      }
-      return { results: page2, has_more: false, next_cursor: null }
-    })
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+    const service = memoryServiceWithRunToolSearch(client, db)
 
     const results = await service.search({
       query: "q",
-      limit: 2,
-      kind: "decision",
       mode: "semantic",
       includeContent: false,
     })
 
-    expect(results.map((m) => m.id)).toEqual(["dec-1", "dec-2"])
-    expect(searchSpy).toHaveBeenCalledTimes(2)
+    expect(results.map((m) => m.id)).toEqual([
+      "low-confidence-first",
+      "high-confidence-second",
+    ])
   })
 
-  it("semantic mode stops paginating once Notion reports has_more: false even without saturation", async () => {
-    // Exhaustion path: a workspace genuinely has fewer matching memories
-    // than the requested limit. The loop must exit at `has_more: false`
-    // without burning through the full scan cap.
-    const page1 = [buildSearchPage("mem-1", "Mem one")]
-    const searchSpy = vi.fn(async () => ({
-      results: page1,
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({ query: "q", limit: 50, mode: "semantic" })
-
-    expect(results.map((m) => m.id)).toEqual(["mem-1"])
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("semantic mode bounds the scan at SEMANTIC_SEARCH_MAX_PAGES even when has_more keeps returning true", async () => {
-    // Acceptance criterion #3: the search path remains bounded by an
-    // explicit maximum number of search pages. Pathological case — a
-    // workspace where every page matches the query lexically but no
-    // page belongs to the Memories DS (every raw hit is filtered out).
-    // Without the cap, the loop would never terminate; with the cap, it
-    // exits after exactly `SEMANTIC_SEARCH_MAX_PAGES` calls and returns
-    // an empty result set.
-    const allOther = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
-    )
-    const searchSpy = vi.fn(async () => ({
-      results: allOther,
-      has_more: true,
-      next_cursor: "more",
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({ query: "q", limit: 10, mode: "semantic" })
-
-    expect(results).toEqual([])
-    expect(searchSpy).toHaveBeenCalledTimes(SEMANTIC_SEARCH_MAX_PAGES)
-  })
-
-  it("semantic mode treats next_cursor: null with has_more: true as exhaustion (defensive guard)", async () => {
-    // Notion's documented contract is that `next_cursor` is only null
-    // when `has_more` is false, but the SDK's response type permits
-    // `string | null` regardless. Ensure the loop terminates cleanly on
-    // the inconsistent shape rather than spinning on a `start_cursor:
-    // undefined` repeat (which Notion treats as "start from the
-    // beginning" — an infinite loop).
-    const page1 = [buildSearchPage("mem-1", "Mem one")]
-    const searchSpy = vi.fn(async () => ({
-      results: page1,
-      has_more: true,
-      next_cursor: null,
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({ query: "q", limit: 50, mode: "semantic" })
-
-    expect(results.map((m) => m.id)).toEqual(["mem-1"])
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("semantic mode dedupes across paginated pages so a cross-page-promoted row surfaces only once", async () => {
-    // Notion's `client.search` does NOT live-rerank between cursor
-    // steps (each call is a fresh workspace-wide query, not a slice of
-    // a frozen result set), so concurrent edits between the page-1 and
-    // page-2 fetches CAN promote the same memory across both pages.
-    // Pre-pagination this couldn't happen — single page meant single
-    // observation. Without dedup, hybrid's RRF accumulator
-    // double-credits the duplicated row (intra-branch double-credit
-    // inflates fused score) AND the semantic-only caller sees the same
-    // memory rendered twice (visible correctness bug). One Set guards
-    // both consumers.
-    const sharedMem = buildSearchPage("mem-shared", "shared")
-    const page1 = [
-      sharedMem,
-      ...Array.from({ length: 99 }, (_, i) =>
-        buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
+  it("reports the top-25 AI window as capped", async () => {
+    const { client, searchSpy, requestSpy } = makeSearchClient({
+      semanticPages: Array.from({ length: 25 }, (_, index) =>
+        buildSearchPage("mem-" + index, "Mem " + index)
       ),
-    ]
-    const page2 = [sharedMem, buildSearchPage("mem-2", "Mem two")]
-    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
-      if (args["start_cursor"] === undefined) {
-        return { results: page1, has_more: true, next_cursor: "cursor-1" }
-      }
-      return { results: page2, has_more: false, next_cursor: null }
     })
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+    const service = memoryServiceWithRunToolSearch(client, db)
 
-    const results = await service.search({ query: "q", limit: 5, mode: "semantic" })
-
-    // `mem-shared` appears exactly once even though raw pages observed
-    // it twice. `mem-2` follows.
-    expect(results.map((m) => m.id)).toEqual(["mem-shared", "mem-2"])
-  })
-
-  it("semantic mode does not fire a second client.search when the first page already saturates the limit", async () => {
-    // Saturation path: the first raw page already carries enough
-    // post-filtered Lore memories. Pagination must short-circuit before
-    // burning a second round-trip — otherwise rate-limit cost compounds
-    // on every common-case query.
-    const page1 = [
-      buildSearchPage("mem-1", "Mem one"),
-      buildSearchPage("mem-2", "Mem two"),
-      buildSearchPage("mem-3", "Mem three"),
-    ]
-    const searchSpy = vi.fn(async () => ({
-      results: page1,
-      has_more: true,
-      next_cursor: "cursor-1",
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
-
-    expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("semantic mode excludes archived memory pages so they do not occupy result slots", async () => {
-    // `client.search` ignores Notion's `archived` flag. Under
-    // pagination, an archived memory pushed into the accumulator
-    // counts toward `limit` and can stop the loop before later live
-    // matches are fetched, so the caller would get fewer usable
-    // results than requested. Mirror the every-other-walker contract.
-    const archivedMem = buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: "archived" }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-      },
-      {
-        id: "mem-archived",
-        archived: true,
-        parent: { type: "database_id", database_id: db.databaseId },
-      } as Partial<PageObjectResponse>
-    )
-    const live1 = buildSearchPage("mem-live-1", "live one")
-    const live2 = buildSearchPage("mem-live-2", "live two")
-    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
-      if (args["start_cursor"] === undefined) {
-        // First page: archived row would saturate `limit: 2` if it
-        // counted, masking the live row on page 2.
-        return { results: [archivedMem, live1], has_more: true, next_cursor: "cursor-1" }
-      }
-      return { results: [live2], has_more: false, next_cursor: null }
+    const { memories, capped } = await service.searchWithMeta({
+      query: "q",
+      mode: "semantic",
+      limit: 26,
+      includeContent: false,
     })
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
 
-    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
-
-    // Archived row excluded; live rows fill the limit across both pages.
-    expect(results.map((m) => m.id)).toEqual(["mem-live-1", "mem-live-2"])
-    expect(searchSpy).toHaveBeenCalledTimes(2)
+    expect(memories).toHaveLength(25)
+    expect(capped).toBe(true)
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
   })
 
-  it("semantic mode returns the full pagination accumulator (no early limit trim) so hybrid RRF sees rows past `limit`", async () => {
-    // The under-shoot RRF case in `searchByHybridPages` benefits from a
-    // wider semantic pool: a row at semantic-rank 11 that ALSO appears
-    // in contains can plausibly beat a contains-only row via fused
-    // score — but ONLY if it survives long enough to reach the
-    // accumulator. A premature `slice(0, limit)` inside
-    // `fetchSemanticPages` silently nullifies that cross-branch signal.
-    //
-    // Regression pin: after the saturation gate breaks the loop,
-    // `fetchSemanticPages` must return EVERY accumulated post-filter
-    // survivor (up to `limit + page_size − 1`), not just the first
-    // `limit`. `runSearch`'s `pages.slice(0, limit)` is the
-    // authoritative final cap for the semantic-only path; hybrid
-    // consumes the wider pool.
-    const page1 = Array.from({ length: 50 }, (_, i) =>
-      buildSearchPage(`mem-${i}`, `Mem ${i}`)
+  it("fails loud when semantic search is unavailable", async () => {
+    const { client, requestSpy, searchSpy } = makeSearchClient({
+      semanticPages: [buildSearchPage("mem-1", "Mem one")],
+      semanticSearchType: "workspace_search",
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
+
+    await expect(service.search({ query: "q", mode: "semantic" })).rejects.toThrow(
+      /AI semantic search unavailable: RunTool search returned workspace_search/
     )
-    const searchSpy = vi.fn(async () => ({
-      results: page1,
-      has_more: false,
-      next_cursor: null,
-    }))
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: retrieveMarkdownSpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
 
-    // Spy on the public path. Cap at limit=10 — the semantic-only
-    // caller still sees 10 (runSearch trims), but we need a probe of
-    // the helper output to assert the wider pool. Use `searchWithExplain`
-    // and the indirect side effect — markdown is fetched only for the
-    // capped subset, so we can't probe pool width through there.
-    //
-    // Direct probe: call the private `fetchSemanticPages` via
-    // unknown-cast indirection. Established pattern in this file.
-    type FetchSemanticPagesFn = (
-      input: { query: string; limit?: number },
-      intent: string | null
-    ) => Promise<PageObjectResponse[]>
-    const fetcher = (
-      service as unknown as { fetchSemanticPages: FetchSemanticPagesFn }
-    ).fetchSemanticPages.bind(service)
-
-    const pages = await fetcher({ query: "q", limit: 10 }, null)
-
-    // All 50 post-filter survivors flow through, not just the first 10.
-    expect(pages).toHaveLength(50)
-    expect(pages.slice(0, 3).map((p) => p.id)).toEqual(["mem-0", "mem-1", "mem-2"])
-    // The `limit + page_size − 1` upper bound holds: one full page of
-    // 100 in flight plus the saturation gate gives at most ~109 rows.
-    expect(pages.length).toBeLessThanOrEqual(109)
-  })
-
-  it("semantic mode logs a stderr signal under LORE_DEBUG=1 when the scan cap fires without saturating", async () => {
-    // Operator-triage signal: when the cap fires with
-    // `accumulated.length < limit`, a caller cannot distinguish "no
-    // matches in workspace" from "pathological query, cap fired,
-    // matches may exist past 500 rows." The `[lore]
-    // semantic-search-cap-fired:` line under LORE_DEBUG=1 closes the
-    // gap. Format mirrors `debugLogHybridBranchFailure`.
-    const allOther = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
+    const disabled = new MemoryService(client, db, undefined, {
+      features: featuresWithRunToolSearch({ runTool: { search: false } }),
+    })
+    await expect(disabled.search({ query: "q", mode: "semantic" })).rejects.toThrow(
+      /AI semantic search unavailable: RunTool search is disabled/
     )
-    const searchSpy = vi.fn(async () => ({
-      results: allOther,
-      has_more: true,
-      next_cursor: "more",
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
 
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    process.env["LORE_DEBUG"] = "1"
-    try {
-      await service.search({ query: "q", limit: 10, mode: "semantic" })
-
-      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
-      const capLines = lines.filter((l) => l.includes("semantic-search-cap-fired"))
-      expect(capLines).toHaveLength(1)
-      expect(capLines[0]).toContain(`pages=${SEMANTIC_SEARCH_MAX_PAGES}`)
-      expect(capLines[0]).toContain("accumulated=0")
-      expect(capLines[0]).toContain("limit=10")
-      expect(capLines[0]).toContain("source=fetch-semantic-pages")
-      expect(capLines[0].endsWith("\n")).toBe(true)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-
-  it("semantic mode does NOT log the cap-fired signal under LORE_DEBUG=1 when the loop saturates", async () => {
-    // Saturation is the success path; logging here would be noise on
-    // every common-case query an operator runs with LORE_DEBUG=1 set.
-    const page1 = [
-      buildSearchPage("mem-1", "Mem one"),
-      buildSearchPage("mem-2", "Mem two"),
-    ]
-    const searchSpy = vi.fn(async () => ({
-      results: page1,
-      has_more: true,
-      next_cursor: "cursor-1",
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    process.env["LORE_DEBUG"] = "1"
-    try {
-      await service.search({ query: "q", limit: 2, mode: "semantic" })
-
-      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
-      expect(lines.some((l) => l.includes("semantic-search-cap-fired"))).toBe(false)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-
-  it("semantic mode does NOT log the cap-fired signal when LORE_DEBUG is unset", async () => {
-    // Without `LORE_DEBUG=1`, even a cap-fire stays silent — operators
-    // who don't opt in shouldn't see search internals on stderr.
-    const allOther = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
+    await expect(service.search({ query: "   ", mode: "semantic" })).rejects.toThrow(
+      /AI semantic search unavailable: query must contain/
     )
-    const searchSpy = vi.fn(async () => ({
-      results: allOther,
-      has_more: true,
-      next_cursor: "more",
-    }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    delete process.env["LORE_DEBUG"]
-    try {
-      await service.search({ query: "q", limit: 10, mode: "semantic" })
-
-      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
-      expect(lines.some((l) => l.includes("semantic-search-cap-fired"))).toBe(false)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original !== undefined) process.env["LORE_DEBUG"] = original
-    }
   })
 })
 
@@ -7075,285 +6778,6 @@ describe("MemoryService.search — contains mode", () => {
 describe("MemoryService.search — hybrid mode", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
-  function buildHybridPage(
-    id: string,
-    title: string,
-    opts: { archived?: boolean } = {}
-  ): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id,
-        archived: opts.archived ?? false,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("hybrid mode excludes archived rows from BOTH branches transitively", async () => {
-    // Hybrid composes the raw `fetchContainsPages` and `fetchSemanticPages`
-    // (per the "Fetch/sort pipeline split" doc in core/CLAUDE.md). If
-    // the archived filter only landed on one branch, RRF merging would
-    // surface archived rows from the other. Pin both branches at once.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("c-live", "live contains"),
-        buildHybridPage("c-archived", "archived contains", { archived: true }),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("s-live", "live semantic"),
-        buildHybridPage("s-archived", "archived semantic", { archived: true }),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    const ids = new Set(results.map((m) => m.id))
-    expect(ids.has("c-live")).toBe(true)
-    expect(ids.has("s-live")).toBe(true)
-    expect(ids.has("c-archived")).toBe(false)
-    expect(ids.has("s-archived")).toBe(false)
-  })
-
-  it("is the default mode and returns contains-only results when contains saturates", async () => {
-    // Three contains hits is the threshold; the parallel semantic call
-    // still fires (speculative parallelism keeps wall-clock at one
-    // round-trip) but its result is discarded.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("a", "Title a"),
-        buildHybridPage("b", "Title b"),
-        buildHybridPage("c", "Title c"),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      // Semantic returns rows that would be merged on under-shoot — but
-      // contains saturated, so this whole result is dropped.
-      results: [buildHybridPage("z-discarded", "would-be-semantic")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    // No `mode` argument — exercises the "default to hybrid" branch.
-    const results = await service.search({ query: "q", includeContent: false })
-
-    expect(results.map((m) => m.id)).toEqual(["a", "b", "c"])
-    // Both queries fire in parallel — the saturation decision happens
-    // after Promise.all settles, not before the second call dispatches.
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("hybrid fires both queries in parallel — wall-clock is max(contains, semantic), not sum", async () => {
-    // Pin the speculative-parallelism contract: Promise.all dispatches
-    // both the dataSources.query and the client.search before either
-    // resolves. Without this, an under-shooting hybrid would pay
-    // contains-then-semantic sequentially, regressing wall-clock vs the
-    // pre-PR single-call path.
-    let dispatchedSearchAt = 0
-    let containsResolvedAt = 0
-    let now = 0
-    const querySpy = vi.fn(async () => {
-      // The query takes 50 simulated ms to resolve.
-      await new Promise<void>((resolve) =>
-        setTimeout(() => {
-          containsResolvedAt = ++now
-          resolve()
-        }, 0)
-      )
-      return {
-        results: [buildHybridPage("c-1", "one")],
-        has_more: false,
-        next_cursor: null,
-      }
-    })
-    const searchSpy = vi.fn(async () => {
-      dispatchedSearchAt = ++now
-      return { results: [] }
-    })
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({ query: "q", mode: "hybrid", includeContent: false })
-
-    // Search dispatched BEFORE contains resolved → parallel, not sequential.
-    expect(dispatchedSearchAt).toBeGreaterThan(0)
-    expect(dispatchedSearchAt).toBeLessThan(containsResolvedAt)
-  })
-
-  it("falls back to semantic when contains returns < 3 hits and merges unique rows", async () => {
-    const querySpy = vi.fn(async () => ({
-      results: [buildHybridPage("contains-only", "Substring hit")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        // Same row that contains already returned — should be deduped.
-        buildHybridPage("contains-only", "Substring hit"),
-        // New rows that contains missed (semantic ranking found body matches).
-        buildHybridPage("semantic-only-1", "Something else"),
-        buildHybridPage("semantic-only-2", "And another"),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      limit: 5,
-      includeContent: false,
-    })
-
-    // Contains row first, then unique semantic rows, no duplicate id.
-    expect(results.map((m) => m.id)).toEqual([
-      "contains-only",
-      "semantic-only-1",
-      "semantic-only-2",
-    ])
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("hybrid caps the merged result list at the caller's limit", async () => {
-    const querySpy = vi.fn(async () => ({
-      results: [buildHybridPage("c-1", "one")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("s-1", "two"),
-        buildHybridPage("s-2", "three"),
-        buildHybridPage("s-3", "four"),
-        buildHybridPage("s-4", "five"),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      limit: 2,
-      includeContent: false,
-    })
-
-    // Limit caps the merged list at 2 even though more semantic rows exist.
-    expect(results.map((m) => m.id)).toEqual(["c-1", "s-1"])
-  })
-
-  it("hybrid materializes markdown only for the final capped set, never for discarded candidates", async () => {
-    // Round-trip protection: under-shooting hybrid with includeContent: true
-    // must not fetch markdown for every contains + semantic candidate
-    // before the dedupe+cap. Concretely: limit=3, contains returns 1,
-    // semantic returns 4 (1 dedup'd) → final merged size is 3 → exactly
-    // 3 retrieveMarkdown calls, not 5.
-    const querySpy = vi.fn(async () => ({
-      results: [buildHybridPage("c-1", "contains row")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        // Dup'd against contains — would pre-fetch markdown if materialization
-        // happened in the per-mode helpers.
-        buildHybridPage("c-1", "contains row"),
-        buildHybridPage("s-1", "semantic 1"),
-        buildHybridPage("s-2", "semantic 2"),
-        buildHybridPage("s-3", "semantic 3 — over the cap"),
-      ],
-    }))
-    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "body" }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: retrieveMarkdownSpy },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      limit: 3,
-      includeContent: true, // forces the materialization path
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["c-1", "s-1", "s-2"])
-    // 3 markdown fetches — not 5 (1 contains + 4 semantic candidates).
-    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(3)
-  })
-
-  it("hybrid fires exactly two data round-trips (one dataSources.query + one client.search)", async () => {
-    // Pin the round-trip count contract for hybrid: parallelism keeps
-    // wall-clock at one round-trip, but the work is two API calls.
-    // Adding a third (e.g. a sequential semantic call after contains)
-    // would regress.
-    const querySpy = vi.fn(async () => ({
-      results: [buildHybridPage("c-1", "one"), buildHybridPage("c-2", "two")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({ query: "q", mode: "hybrid", includeContent: false })
-
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe("MemoryService.search — RRF fusion under saturation threshold", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
   function buildHybridPage(id: string, title: string): PageObjectResponse {
     return buildPage(
       {
@@ -7373,31 +6797,35 @@ describe("MemoryService.search — RRF fusion under saturation threshold", () =>
     )
   }
 
-  it("a row ranked #1 in both branches sorts above a row ranked #1 in only one branch", async () => {
-    // Cross-branch agreement is the signal RRF surfaces. Pre-RRF concat
-    // would have placed `contains-only-top` first because contains rows
-    // always came first; under RRF, `cross-branch-#1` wins because it
-    // scores 2/(60+1) ≈ 0.0328 vs the other rows' 1/61 ≈ 0.0164.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("contains-only-top", "first in contains only"),
-        buildHybridPage("cross-branch-1", "in both branches"),
+  function containsClause(args: Record<string, unknown>): Array<{
+    property: string
+    rich_text?: { contains: string }
+    title?: { contains: string }
+  }> {
+    const filter = args["filter"] as { and?: unknown[]; or?: unknown[] } | undefined
+    if (!filter) return []
+    const orClause = filter.and
+      ? (filter.and.find(
+          (clause) => typeof clause === "object" && clause !== null && "or" in clause
+        ) as { or: unknown[] } | undefined)
+      : filter.or
+        ? { or: filter.or }
+        : undefined
+    return (orClause?.or ?? []) as ReturnType<typeof containsClause>
+  }
+
+  it("uses contains plus RunTool AI search for RRF without REST search", async () => {
+    const { client, querySpy, searchSpy, requestSpy } = makeSearchClient({
+      containsPages: [
+        buildHybridPage("contains-only", "Substring hit"),
+        buildHybridPage("overlap", "Shared hit"),
       ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("cross-branch-1", "in both branches"),
-        buildHybridPage("semantic-only-top", "first in semantic only"),
+      semanticPages: [
+        buildHybridPage("semantic-only", "Semantic hit"),
+        buildHybridPage("overlap", "Shared hit"),
       ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
     const results = await service.search({
       query: "q",
@@ -7406,832 +6834,59 @@ describe("MemoryService.search — RRF fusion under saturation threshold", () =>
     })
 
     expect(results.map((m) => m.id)).toEqual([
-      "cross-branch-1",
-      "contains-only-top",
-      "semantic-only-top",
+      "overlap",
+      "contains-only",
+      "semantic-only",
     ])
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
   })
 
-  it("RRF score for a known input pair matches 1/(60+rank+1)", async () => {
-    // Pin the RRF formula. A row ranked #0 in contains and absent from
-    // semantic scores exactly 1/61. Surfaces via the explain trace.
-    const querySpy = vi.fn(async () => ({
-      results: [buildHybridPage("solo-contains", "alone in contains")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    expect(explain[0].rrfScore).toBeCloseTo(1 / 61, 10)
-  })
-
-  it("saturation cutoff still short-circuits at the threshold — RRF does not run", async () => {
-    // Three contains hits is the threshold. Pre-RRF behavior is preserved
-    // verbatim above the new merge code: the contains rows are returned
-    // in their original order, the semantic branch's output is discarded.
-    const querySpy = vi.fn(async () => ({
-      results: [
+  it("returns contains-only rows when contains saturates but still avoids REST search", async () => {
+    const { client, requestSpy, searchSpy } = makeSearchClient({
+      containsPages: [
         buildHybridPage("c-0", "first"),
         buildHybridPage("c-1", "second"),
         buildHybridPage("c-2", "third"),
       ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      // If RRF ran on this saturating case, semantic-only would float in
-      // and the test would fail. The cutoff prevents that.
-      results: [buildHybridPage("semantic-only", "would float in under RRF")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+      semanticPages: [buildHybridPage("semantic-only", "would be discarded")],
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
-    const results = await service.search({
+    const { memories, explain } = await service.searchWithExplain({
       query: "q",
       mode: "hybrid",
       includeContent: false,
     })
 
-    expect(results.map((m) => m.id)).toEqual(["c-0", "c-1", "c-2"])
+    expect(memories.map((m) => m.id)).toEqual(["c-0", "c-1", "c-2"])
+    expect(explain.every((entry) => entry.branch === "contains-saturated")).toBe(true)
+    expect(requestSpy).toHaveBeenCalled()
+    expect(searchSpy).not.toHaveBeenCalled()
   })
-})
 
-describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  it("propagates semantic unavailability instead of silently falling back to contains", async () => {
+    const { client, searchSpy } = makeSearchClient({
+      containsPages: [buildHybridPage("contains", "contains")],
+      semanticSearchType: "workspace_search",
+    })
+    const service = memoryServiceWithRunToolSearch(client, db)
 
-  function buildScoredPage(
-    id: string,
-    title: string,
-    confidenceScore: number | null
-  ): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-        "Confidence Score": { type: "number", number: confidenceScore },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
+    await expect(
+      service.search({ query: "q", mode: "hybrid", includeContent: false })
+    ).rejects.toThrow(
+      /AI semantic search unavailable: RunTool search returned workspace_search/
     )
-  }
+    expect(searchSpy).not.toHaveBeenCalled()
+  })
 
-  it("hybrid mode: rows with identical ranks but different Confidence Scores sort by confidence", async () => {
-    // Both rows: contains-only at rank 0 and rank 1. Without confidence
-    // weighting, contains rank 0 wins. With confidence weighting, the
-    // 0.9-scored row at rank 1 (score 1/62 * (0.5+0.5*0.9) = 1/62 * 0.95)
-    // sorts above the 0.1-scored row at rank 0 (score 1/61 * 0.55) ONLY
-    // when the confidence delta is large enough. With these constants:
-    // row-low: (1/61) * 0.55 ≈ 0.00902
-    // row-high: (1/62) * 0.95 ≈ 0.01532
-    // So the higher-confidence rank-1 row beats the lower-confidence
-    // rank-0 row. Pin this end-to-end through hybrid's RRF accumulator.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("row-low", "rank 0 in contains, decayed", 0.1),
-        buildScoredPage("row-high", "rank 1 in contains, fresh", 0.9),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
+  it("intent augments only the RunTool AI query, not the contains filter", async () => {
+    const { client, querySpy, requestSpy } = makeSearchClient({
+      containsPages: [buildHybridPage("contains", "contains")],
+      semanticPages: [buildHybridPage("semantic", "semantic")],
     })
-
-    // High-confidence row at rank 1 beats low-confidence row at rank 0
-    // because the confidence-factor delta (0.95 vs 0.55) outweighs the
-    // single-rank gap.
-    expect(results.map((m) => m.id)).toEqual(["row-high", "row-low"])
-  })
-
-  it("contains mode: a fresh-rank-3 row sorts above a decayed-rank-1 row", async () => {
-    // The acceptance-criteria worked example:
-    // rank 3 with confidence=0.95: (1/64) * (0.5+0.5*0.95) = (1/64) * 0.975 ≈ 0.01523
-    // rank 1 with confidence=0.0: (1/62) * 0.5 ≈ 0.00806
-    // Fresh-rank-3 wins.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
-        buildScoredPage("decay-rank-1", "rank 1, decayed", 0.0),
-        buildScoredPage("decay-rank-2", "rank 2, decayed", 0.0),
-        buildScoredPage("fresh-rank-3", "rank 3, fresh", 0.95),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(results[0].id).toBe("fresh-rank-3")
-  })
-
-  it("unscored rows (Confidence Score = null) yield byte-identical pre-0.8.0 ordering", async () => {
-    // Pre-migration vault: every row has `Confidence Score = null`.
-    // `confidenceFactor(null) = 1.0` and the all-unscored short-circuit in
-    // `rerankByConfidence` returns Notion's input order verbatim. Pinning
-    // this preserves the soft-dep contract from the spec: 0.8.0 ships
-    // visibly inert until #11's backfill / Phase 2 read-touches populate
-    // scores.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("first", "first by recency", null),
-        buildScoredPage("second", "second by recency", null),
-        buildScoredPage("third", "third by recency", null),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["first", "second", "third"])
-  })
-
-  it("hybrid mode: scored row at Confidence Score=0.0 has effective weight 0.5*baseWeight, NOT 0.25 (no double application)", async () => {
-    // The spec's flagship double-application regression test. In hybrid
-    // mode, a row at Confidence Score=0.0 with contains-rank=0 and absent
-    // from semantic should score `(1/61) * 1 * 0.5`, not
-    // `(1/61) * 1 * 0.5 * 0.5`. If hybrid composed the public single-
-    // branch wrappers (which apply the factor in their sort), the factor
-    // would be applied here AND in the RRF accumulator — collapsing the
-    // documented [0.5, 1.0] floor to [0.25, 1.0]. The fetch/sort split
-    // pins this.
-    const querySpy = vi.fn(async () => ({
-      results: [buildScoredPage("decayed", "decayed row", 0.0)],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    // Single-application: (1/61) * 0.5
-    expect(explain[0].rrfScore).toBeCloseTo((1 / 61) * 0.5, 10)
-    // Sanity: NOT the double-applied value
-    expect(explain[0].rrfScore).not.toBeCloseTo((1 / 61) * 0.5 * 0.5, 10)
-    expect(explain[0].confidenceFactor).toBeCloseTo(0.5, 10)
-  })
-
-  it("confidenceFactor=false reverts ordering to pre-0.8.0", async () => {
-    // Operator escape hatch. With the resolved feature gate off,
-    // every row's factor is forced to 1.0 and ordering matches
-    // pre-0.8.0 — even on a vault with populated scores. Verified
-    // end-to-end on the same contains-mode fixture as the
-    // "fresh-rank-3 wins" test above.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
-        buildScoredPage("decay-rank-1", "rank 1, decayed", 0.0),
-        buildScoredPage("decay-rank-2", "rank 2, decayed", 0.0),
-        buildScoredPage("fresh-rank-3", "rank 3, fresh", 0.95),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db, undefined, {
-      features: { ...defaultFeatureFlags(), confidenceFactor: false },
-    })
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-    // Without the factor, Notion's recency order is preserved.
-    expect(results.map((m) => m.id)).toEqual([
-      "decay-rank-0",
-      "decay-rank-1",
-      "decay-rank-2",
-      "fresh-rank-3",
-    ])
-  })
-
-  it("saturation cutoff is unchanged — vault with 3+ high-confidence contains hits skips the RRF merge", async () => {
-    // Pin that 0.8.0 does NOT modify the saturation cutoff. The spec
-    // explicitly defers any "saturated-but-low-confidence" bypass to
-    // a follow-up; the RRF merge runs only when contains under-shoots.
-    // Even when contains saturates with low-confidence rows, the
-    // semantic branch's output is discarded as before. (The trace's
-    // confidenceFactor field still surfaces per-row factors so #09's
-    // rendering can still highlight stale rows.)
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("c-0", "decayed first", 0.0),
-        buildScoredPage("c-1", "decayed second", 0.0),
-        buildScoredPage("c-2", "decayed third", 0.0),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildScoredPage("would-float-in", "fresh semantic hit", 0.95)],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // Cutoff fires; semantic-only row is discarded.
-    expect(results.map((m) => m.id)).toEqual(["c-0", "c-1", "c-2"])
-  })
-
-  it("searchWithExplain populates confidenceFactor on every row across every branch", async () => {
-    // Pin the SearchExplain shape contract: confidenceFactor is now
-    // a required field, populated for every row regardless of branch.
-    // The single-branch contains case maps each row to its
-    // confidenceFactor; the hybrid RRF case carries it via the trace;
-    // the contains-saturated case carries it via the saturation trace.
-    const containsRows = [
-      buildScoredPage("scored", "fresh row", 0.8),
-      buildScoredPage("unscored", "pre-migration row", null),
-    ]
-    const querySpy = vi.fn(async () => ({
-      results: containsRows,
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(2)
-    for (const e of explain) {
-      expect(typeof e.confidenceFactor).toBe("number")
-      expect(e.confidenceFactor).toBeGreaterThanOrEqual(0.5)
-      expect(e.confidenceFactor).toBeLessThanOrEqual(1.0)
-    }
-    // Specifically: scored row at 0.8 → factor 0.5 + 0.5*0.8 = 0.9.
-    const scored = explain.find((e) => e.memoryId === "scored")!
-    expect(scored.confidenceFactor).toBeCloseTo(0.9, 10)
-    // Unscored row → factor 1.0 (neutral).
-    const unscored = explain.find((e) => e.memoryId === "unscored")!
-    expect(unscored.confidenceFactor).toBe(1.0)
-  })
-
-  it("score (level 1) dominates page-id (level 4) tie-break — comparator runs on factor-weighted scores", async () => {
-    // Pin that the comparator runs on the factor-weighted score (level
-    // 1), not on raw `1/(RRF_K + rank + 1)`. Two rows have factor 1.0
-    // each (so no factor delta) and the higher rank's higher score
-    // dominates the alphabetic page-id fall-through (level 4). If a
-    // future refactor wired the comparator to read raw scores from
-    // some pre-factor field, the tie-break levels would still trigger
-    // but on the wrong values; this test would catch a level-1
-    // collision on factor-weighted scores even when none should exist.
-    //
-    // The factor-driven ordering flip is covered by the companion test
-    // below ("decayed rank-0 sorts below fresh rank-1") — that one
-    // proves the factor is what changes the ordering. This test pins
-    // the comparator's read-side: it operates on the same scored
-    // values that come out of the accumulator.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        // Both rows scored at 1.0 → both factors 1.0 → score is purely
-        // rank-driven. Use scored rows (not unscored) so the
-        // all-unscored short-circuit doesn't fire.
-        buildScoredPage("z-id-rank-0", "fresh, alphabetically late", 1.0),
-        buildScoredPage("a-id-rank-1", "fresh, alphabetically early", 1.0),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    // (1/61) > (1/62), so z-id-rank-0 wins on level 1 score even
-    // though page-id ascending (level 4) would put a-id first. Score
-    // dominates because the comparator decides at the first level
-    // that produces a non-zero result.
-    expect(results.map((m) => m.id)).toEqual(["z-id-rank-0", "a-id-rank-1"])
-  })
-
-  it("decayed rank-0 sorts below fresh rank-1 in contains mode — factor flips ordering at level 1", async () => {
-    // Companion to the fresh-rank-3 worked example, scoped to the
-    // adjacent-rank case the spec calls out: pin that the factor
-    // multiplies in BEFORE the score comparison. A row at contains-
-    // rank 0 with `Confidence Score = 0.0` (factor = 0.5) scores
-    // (1/61) * 0.5 ≈ 0.00820. A row at contains-rank 1 with
-    // `Confidence Score = 1.0` (factor = 1.0) scores (1/62) * 1.0
-    // ≈ 0.01613. Fresh-rank-1 wins on level 1. If a future refactor
-    // accidentally applied the factor AFTER the comparator (or
-    // skipped it on the single-branch path), the comparator would
-    // see the unweighted scores and rank 0 would win — flipping this
-    // assertion.
-    //
-    // This case is distinct from the fresh-rank-3 test in that it
-    // pins the closest possible adjacent-rank flip — the smallest
-    // ordering change the factor can produce in a single-branch
-    // path — so a future tightening of `CONFIDENCE_FACTOR_MIN` toward
-    // 1.0 (which would shrink the factor's effective range and
-    // potentially un-flip this case) is caught here at the boundary.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildScoredPage("rank-0-decayed", "rank 0, fully decayed", 0.0),
-        buildScoredPage("rank-1-fresh", "rank 1, fully trusted", 1.0),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["rank-1-fresh", "rank-0-decayed"])
-  })
-})
-
-describe("MemoryService.searchByHybridPages — structural pipeline split (issue 0.8.0/08)", () => {
-  // Pin that hybrid composes the **raw** fetch helpers, not the public
-  // confidence-aware sort wrappers. Going through the public wrappers
-  // would double-apply the confidence factor and collapse the
-  // documented [0.5, 1.0] floor to [0.25, 1.0] in hybrid mode.
-  //
-  // We can't spy on private methods directly without exposing them, so
-  // the structural test goes through the observable Notion calls: the
-  // raw fetch helpers each issue exactly one Notion call (the
-  // dataSources.query and client.search respectively). If hybrid called
-  // the public sort wrappers, the wrappers would still issue one Notion
-  // call each (they pass through to the raw helpers), so the round-trip
-  // count is identical. The double-application detection lives in the
-  // `confidenceFactor` numerical pin in the test above.
-
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildScoredPage(
-    id: string,
-    confidenceScore: number | null
-  ): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: id }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-        "Confidence Score": { type: "number", number: confidenceScore },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("hybrid issues exactly one dataSources.query and one client.search — same shape as pre-0.8.0", async () => {
-    // Round-trip pinning: hybrid calls the raw fetchContains/fetchSemantic
-    // helpers exactly once each. If a future refactor wired hybrid to call
-    // the public confidence-aware searchByContainsPages /
-    // searchBySemanticPages instead, the raw helpers would still be called
-    // exactly once each (transitively, via the public wrappers), so this
-    // test alone wouldn't catch the regression. The double-application
-    // numerical pin above is the load-bearing test; this one ensures the
-    // round-trip cost contract didn't drift.
-    const querySpy = vi.fn(async () => ({
-      results: [buildScoredPage("c-only", 0.5)],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildScoredPage("s-only", 0.7)],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("the documented [0.5, 1.0] confidence-factor floor holds in hybrid mode (no factor² collapse)", async () => {
-    // The cleanest cross-check that hybrid does NOT call the public
-    // wrappers. If it did, the score for a Confidence Score=0.0 row
-    // would be `(1/61) * 0.5 * 0.5 = ~0.00410`. With the correct fetch/
-    // sort split, the score is `(1/61) * 0.5 = ~0.00820`. The 2x gap
-    // is wide enough that floating-point noise can't mask the
-    // regression.
-    const querySpy = vi.fn(async () => ({
-      results: [buildScoredPage("decayed", 0.0)],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    const single = (1 / 61) * 0.5
-    const doubled = single * 0.5
-    expect(explain[0].rrfScore).toBeCloseTo(single, 10)
-    // Belt-and-braces: explicitly assert NOT the doubled value.
-    expect(Math.abs((explain[0].rrfScore ?? 0) - doubled)).toBeGreaterThan(1e-6)
-  })
-})
-
-describe("MemoryService.search — RRF tie-break determinism", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildHybridPage(id: string, title: string): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("end-to-end: when scores and best-rank tie via mirrored ranks, page id ascending decides", async () => {
-    // With weight=1 and integer ranks, two rows with the same multiset
-    // of ranks across branches necessarily share both score AND
-    // best-rank — so end-to-end coverage of level 2 alone (different
-    // best-rank, same score) is impossible without a per-call weight
-    // knob. The direct comparator unit tests below cover level 2; this
-    // integration test pins the level 4 fall-through that the
-    // mirrored-rank fixture actually exercises.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("c-rank-1", "ranked second in contains"),
-        buildHybridPage("c-rank-0", "ranked first in contains"),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("c-rank-0", "ranked second in semantic"),
-        buildHybridPage("c-rank-1", "ranked first in semantic"),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // Both rows score 1/61 + 1/62 (identical), best-rank 0 (each was
-    // #1 in some branch), contains-presence on both. Tie-break falls
-    // through to page id ascending → c-rank-0 wins lexically.
-    expect(results.map((m) => m.id)).toEqual(["c-rank-0", "c-rank-1"])
-  })
-
-  it("tie-break level 3: contains-presence wins on score+rank tie", async () => {
-    // A contains-only row at rank 0 and a semantic-only row at rank 0
-    // both score 1/61 with best-rank 0. Contains-presence breaks the
-    // tie. This is the "contains is precision" intuition the prior
-    // concat-first heuristic encoded — a future contributor tempted
-    // to "make tie-break symmetric" would silently shift this case.
-    const querySpy = vi.fn(async () => ({
-      results: [buildHybridPage("aaaa-contains", "contains hit")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      // `zzzz-semantic` sorts after `aaaa-contains` lexically, but the
-      // tie-break stops at contains-presence (level 3), never reaching
-      // page id. To prove contains-presence is what wins, we put the
-      // semantic-only row's id alphabetically *before* the contains
-      // row's id — if the comparator fell through to page id, the
-      // semantic row would win.
-      results: [
-        buildHybridPage("aaaa-semantic-but-alphabetically-before", "semantic hit"),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // contains-presence wins on score+rank tie even when the
-    // semantic-only row sorts earlier alphabetically.
-    expect(results.map((m) => m.id)[0]).toBe("aaaa-contains")
-  })
-
-  it("tie-break level 4: page id ascending is the final deterministic fallback", async () => {
-    // Two semantic-only rows at the same rank are impossible (a single
-    // branch returns rows in distinct positions). Construct the page id
-    // tie-break by having two rows that both score 1/61 + 1/61 = 2/61
-    // (each appears at rank 0 in both branches). Both have contains-
-    // presence, identical scores, identical best-rank. Page id
-    // determines order.
-    //
-    // We can't have two rows simultaneously at rank 0 in the same
-    // branch, so this test exercises the tie-break by way of the
-    // sort's secondary stability — the comparator must reach level 4
-    // to resolve the order between rows that genuinely tie at every
-    // earlier level. We verify by sandwiching: if we have two pairs
-    // and the comparator reaches level 4, the pair-internal order is
-    // page id ascending.
-    const querySpy = vi.fn(async () => ({
-      // Two rows; the alphabetically-later id is at rank 0, the earlier
-      // at rank 1.
-      results: [buildHybridPage("zzz-1", "z one"), buildHybridPage("aaa-1", "a one")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      // Swap the order in semantic: alphabetically-earlier at rank 0,
-      // later at rank 1. Now zzz-1 has (contains 0, semantic 1) and
-      // aaa-1 has (contains 1, semantic 0). Both score 1/61 + 1/62 =
-      // identical. Both best-rank 0. Both contains-presence. Tie-break
-      // falls through to page id ascending → aaa-1 wins.
-      results: [buildHybridPage("aaa-1", "a one"), buildHybridPage("zzz-1", "z one")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["aaa-1", "zzz-1"])
-  })
-})
-
-describe("tieBreakingRrfCompare — direct unit tests, one per tie-break level", () => {
-  // Direct unit tests against the comparator. End-to-end coverage of
-  // level 2 (different best-rank, equal score) is impossible with
-  // weight=1 and integer ranks, because two rows with identical scores
-  // necessarily share their rank multiset and therefore their min-rank.
-  // The unit tests synthesize fixtures the end-to-end fixture cannot
-  // produce, ensuring a contributor who simplifies the comparator
-  // (e.g. drops level 2) is caught.
-
-  function entry(
-    id: string,
-    score: number,
-    containsRank: number | null,
-    semanticRank: number | null,
-    confidenceFactor: number = 1.0
-  ): RrfEntry {
-    return {
-      page: { id } as unknown as PageObjectResponse,
-      score,
-      containsRank,
-      semanticRank,
-      confidenceFactor,
-    }
-  }
-
-  it("level 1: higher score wins", () => {
-    const a = entry("a", 0.05, 5, 5)
-    const b = entry("b", 0.01, 0, 0)
-    // Even though `b` has better best-rank, score wins primarily.
-    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
-    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
-  })
-
-  it("level 2: lower best-rank wins on score tie", () => {
-    const a = entry("a", 0.0322, 0, 5) // best-rank 0
-    const b = entry("b", 0.0322, 2, 1) // best-rank 1
-    // Same score; level 2 (best-rank) breaks the tie. `a` wins.
-    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
-    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
-  })
-
-  it("level 3: contains-presence wins on score+best-rank tie", () => {
-    const a = entry("a", 0.0164, 0, null) // contains-only
-    const b = entry("b", 0.0164, null, 0) // semantic-only
-    // Equal score (1/61), equal best-rank (0). Contains-presence breaks.
-    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
-    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
-  })
-
-  it("level 4: page id ascending is the final fallback", () => {
-    // Both rows: same score, same best-rank, both contains-present.
-    const a = entry("aaa", 0.0322, 0, 1)
-    const b = entry("zzz", 0.0322, 0, 1)
-    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
-    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
-  })
-
-  it("equal entries (identical id and ranks) compare to 0", () => {
-    const a = entry("same", 0.0322, 0, 1)
-    const b = entry("same", 0.0322, 0, 1)
-    expect(tieBreakingRrfCompare(a, b)).toBe(0)
-  })
-})
-
-describe("MemoryService.search — intent parameter (#17)", () => {
-  // Pin the contains-vs-semantic asymmetry, normalize-once rule (whitespace-only
-  // = unset), saturation-bypass-under-intent gate, and contains-lane up-weight
-  // under RRF. The tests below mirror the acceptance criteria in
-  // `Phase-2/17-search-intent-parameter.md` one-for-one.
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildIntentPage(id: string, title: string): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  function makeContainsClause(args: Record<string, unknown>): {
-    property: string
-    rich_text?: { contains: string }
-    title?: { contains: string }
-  }[] {
-    // Walk into the composed filter and pull out the `(Title contains q) OR
-    // (Keywords contains q)` clause so we can pin "intent never enters
-    // contains" by string-comparing the contains payload.
-    const filter = args["filter"] as { and?: unknown[] } | { or?: unknown[] } | undefined
-    if (!filter) return []
-    const ands = (filter as { and?: unknown[] }).and
-    const direct = (filter as { or?: unknown[] }).or
-    const orClause = ands
-      ? (ands.find((c) => typeof c === "object" && c !== null && "or" in c) as
-          | { or: unknown[] }
-          | undefined)
-      : direct
-        ? { or: direct }
-        : undefined
-    if (!orClause) return []
-    return orClause.or as ReturnType<typeof makeContainsClause>
-  }
-
-  it("intent does NOT enter the contains branch's filter — substring stays query-only", async () => {
-    // The motivating rule: appending intent into the substring filter would
-    // narrow recall in the wrong direction (Titles missing the literal
-    // disambiguator drop out). Pin contains' filter equals `query` alone.
-    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
+    const service = memoryServiceWithRunToolSearch(client, db)
 
     await service.search({
       query: "auth",
@@ -8240,361 +6895,25 @@ describe("MemoryService.search — intent parameter (#17)", () => {
       includeContent: false,
     })
 
-    expect(querySpy).toHaveBeenCalledTimes(1)
     const containsArgs = querySpy.mock.calls[0][0] as Record<string, unknown>
-    const orClause = makeContainsClause(containsArgs)
-    // Both inner clauses contain `"auth"`, never `"WeChat"` or the joined string.
-    expect(orClause.length).toBeGreaterThan(0)
-    for (const clause of orClause) {
+    for (const clause of containsClause(containsArgs)) {
       const needle = clause.rich_text?.contains ?? clause.title?.contains ?? ""
       expect(needle).toBe("auth")
-      expect(needle).not.toContain("WeChat")
     }
-  })
-
-  it("intent enters the semantic branch's query when non-empty after trim", async () => {
-    // Composition is `[query.trim(), intent].filter(Boolean).join(" ")`.
-    // Standard non-empty case: `"auth WeChat session cookie"`.
-    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({
-      query: "auth",
-      intent: "WeChat session cookie",
-      mode: "semantic",
+    expect(requestSpy.mock.calls[0][0].body).toMatchObject({
+      type: "search",
+      search: { query: "auth WeChat session cookie" },
     })
-
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy.mock.calls[0][0]["query"]).toBe("auth WeChat session cookie")
   })
 
-  it("intent composition handles empty query without a leading space", async () => {
-    // Edge case from Fix 3: `MemoryService.search` callers may pass `""`
-    // for unscoped relevance lookups. Naive `${query.trim()} ${intent}`
-    // would produce `" intent"` — Notion ranks that differently from
-    // `"intent"`. The `filter(Boolean)` shape protects against this.
-    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({
-      query: "",
-      intent: "performance",
-      mode: "semantic",
+  it("forceSemanticSearch routes explicit contains mode through RunTool semantic search", async () => {
+    const { client, querySpy, searchSpy, requestSpy } = makeSearchClient({
+      containsPages: [buildHybridPage("contains", "contains")],
+      semanticPages: [buildHybridPage("semantic", "semantic")],
     })
-
-    expect(searchSpy.mock.calls[0][0]["query"]).toBe("performance")
-  })
-
-  it("whitespace-only intent (`' '`) is byte-identical to unset on the semantic-branch composition", async () => {
-    // Pins the semantic-branch consumer of the normalize-once rule —
-    // whitespace-only intent collapses to `null` and the composed query
-    // is `"auth"`, not `"auth "` or `"auth "`. The other two
-    // consumers (saturation gate, lane weighting under hybrid) are
-    // pinned independently by the dedicated test
-    // `"whitespace-only intent triggers neither saturation bypass nor
-    // lane up-weight"` below.
-    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
-    const client = {
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({ query: "auth", intent: " ", mode: "semantic" })
-
-    // Whitespace-only intent → semantic query is `"auth"`, NOT `"auth "`
-    // and NOT `"auth "` — byte-identical to the unset path.
-    expect(searchSpy.mock.calls[0][0]["query"]).toBe("auth")
-  })
-
-  it("mode='contains' ignores intent entirely — server-side filter identical to intent-unset", async () => {
-    // Acceptance: contains-mode filter shape is byte-identical with or
-    // without intent. Drive both calls and snapshot the filter argument.
-    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      // contains mode never touches client.search; presence here is just
-      // to satisfy the constructor.
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    await service.search({ query: "auth", mode: "contains", includeContent: false })
-    const filterUnset = (querySpy.mock.calls[0][0] as Record<string, unknown>)["filter"]
-
-    await service.search({
-      query: "auth",
-      intent: "WeChat session cookie",
-      mode: "contains",
-      includeContent: false,
+    const service = memoryServiceWithRunToolSearch(client, db, {
+      forceSemanticSearch: true,
     })
-    const filterWithIntent = (querySpy.mock.calls[1][0] as Record<string, unknown>)[
-      "filter"
-    ]
-
-    expect(filterWithIntent).toEqual(filterUnset)
-  })
-
-  it("mode='hybrid' bypasses the saturation cutoff when intent is non-empty after trim", async () => {
-    // Three contains hits would normally saturate. With intent set, the
-    // RRF merge runs anyway so the semantic lane can influence ordering.
-    const containsHits = [
-      buildIntentPage("c-0", "first"),
-      buildIntentPage("c-1", "second"),
-      buildIntentPage("c-2", "third"),
-    ]
-    const querySpy = vi.fn(async () => ({
-      results: containsHits,
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      // A row only the semantic branch surfaces. If the saturation cutoff
-      // fired, this row would be discarded and the result would be
-      // contains-only (`["c-0", "c-1", "c-2"]`).
-      results: [buildIntentPage("semantic-only", "would float in under RRF")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "auth",
-      intent: "WeChat session cookie",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // The branch must be `rrf`, not `contains-saturated` — that is the
-    // signal the saturation gate was bypassed. The semantic-only row
-    // surfaces somewhere in the result set as well, but its position is
-    // covered by the dedicated lane-weighting test below.
-    expect(explain.every((e) => e.branch === "rrf")).toBe(true)
-    const ids = explain.map((e) => e.memoryId)
-    expect(ids).toContain("semantic-only")
-  })
-
-  it("mode='hybrid' with intent: contains lane is up-weighted (weight=2) under RRF", async () => {
-    // Up-weighting only matters when both branches return the same row.
-    // Construct a fixture where one row appears in both branches and one
-    // appears in only the semantic branch. Under weight=1 on contains
-    // (no intent), both rows would score 2/61 and 1/61 — same ordering.
-    // The cleanest way to pin "weight=2 actually applied" is the rrfScore
-    // on the cross-branch row: `2 * (1/61) + 1 * (1/61) = 3/61` instead
-    // of the unweighted `2/61`.
-    const querySpy = vi.fn(async () => ({
-      results: [buildIntentPage("cross", "in both branches")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildIntentPage("cross", "in both branches")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "auth",
-      intent: "WeChat",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    expect(explain[0].memoryId).toBe("cross")
-    // contains weight=2 → 2/61; semantic weight=1 → 1/61; sum = 3/61.
-    expect(explain[0].rrfScore).toBeCloseTo(3 / 61, 10)
-  })
-
-  it("mode='hybrid' with intent unset: saturation cutoff fires + RRF weights default to 1 below it", async () => {
-    // Acceptance: when intent is unset, behavior is byte-identical to
-    // #16's baseline. Drive two scenarios under intent-unset and pin
-    // them both: (a) saturating cutoff still fires at the threshold,
-    // and (b) below-threshold RRF runs with both weights = 1.
-
-    // (a) Saturating: 3 contains hits → contains-saturated branch.
-    {
-      const querySpy = vi.fn(async () => ({
-        results: [
-          buildIntentPage("c-0", "first"),
-          buildIntentPage("c-1", "second"),
-          buildIntentPage("c-2", "third"),
-        ],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => ({
-        results: [buildIntentPage("semantic-only", "would float in under RRF")],
-      }))
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      const { explain } = await service.searchWithExplain({
-        query: "auth",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      expect(explain.every((e) => e.branch === "contains-saturated")).toBe(true)
-      expect(explain.map((e) => e.memoryId)).toEqual(["c-0", "c-1", "c-2"])
-    }
-
-    // (b) Under-shoot: intent unset, both lanes weight=1 → cross-branch row scores 2/61.
-    {
-      const querySpy = vi.fn(async () => ({
-        results: [buildIntentPage("cross", "in both branches")],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => ({
-        results: [buildIntentPage("cross", "in both branches")],
-      }))
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      const { explain } = await service.searchWithExplain({
-        query: "auth",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      expect(explain).toHaveLength(1)
-      expect(explain[0].rrfScore).toBeCloseTo(2 / 61, 10)
-    }
-  })
-
-  it("whitespace-only intent triggers neither saturation bypass nor lane up-weight", async () => {
-    // Reinforces the "whitespace-only is unset" rule across the two
-    // hybrid-only consumers: saturation gate must fire, and the RRF
-    // weights below the threshold must default to 1.
-
-    // Saturation case — whitespace-only intent should NOT bypass the cutoff.
-    {
-      const querySpy = vi.fn(async () => ({
-        results: [
-          buildIntentPage("c-0", "first"),
-          buildIntentPage("c-1", "second"),
-          buildIntentPage("c-2", "third"),
-        ],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => ({
-        results: [buildIntentPage("semantic-only", "would float in under RRF")],
-      }))
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      const { explain } = await service.searchWithExplain({
-        query: "auth",
-        intent: " ",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      expect(explain.every((e) => e.branch === "contains-saturated")).toBe(true)
-      expect(explain.map((e) => e.memoryId)).toEqual(["c-0", "c-1", "c-2"])
-    }
-
-    // Under-shoot case — whitespace-only intent should NOT up-weight contains.
-    {
-      const querySpy = vi.fn(async () => ({
-        results: [buildIntentPage("cross", "in both branches")],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => ({
-        results: [buildIntentPage("cross", "in both branches")],
-      }))
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      const { explain } = await service.searchWithExplain({
-        query: "auth",
-        intent: " ",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      expect(explain).toHaveLength(1)
-      // Both weights = 1 → 2/61, NOT 3/61.
-      expect(explain[0].rrfScore).toBeCloseTo(2 / 61, 10)
-    }
-  })
-})
-
-describe("MemoryService.searchWithExplain — branch-field rules and explain alignment", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildPageInDb(id: string, title: string): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("MemoryService.search return type is unchanged — Memory[]", async () => {
-    // Structural pin: a future contributor cannot accidentally add a
-    // wrapper return type to `search()` without breaking this fixture.
-    const querySpy = vi.fn(async () => ({
-      results: [buildPageInDb("a", "first")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
 
     const results = await service.search({
       query: "q",
@@ -8602,1143 +6921,10 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
       includeContent: false,
     })
 
-    expect(Array.isArray(results)).toBe(true)
-    expect(results[0].id).toBe("a")
-    // Each entry is a `Memory` — has the structural-domain fields.
-    expect(results[0].title).toBe("first")
-  })
-
-  it("explain[i] aligns with memories[i] by page id", async () => {
-    // The alignment guarantee is what makes the trace useful — a caller
-    // can iterate both arrays in lockstep and know the trace describes
-    // the same row.
-    const querySpy = vi.fn(async () => ({
-      results: [buildPageInDb("c-1", "contains hit")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildPageInDb("s-1", "semantic 1"), buildPageInDb("s-2", "semantic 2")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { memories, explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(memories).toHaveLength(explain.length)
-    for (let i = 0; i < memories.length; i++) {
-      expect(explain[i].memoryId).toBe(memories[i].id)
-    }
-  })
-
-  it("contains mode: branch is 'contains-only', semanticRank and rrfScore are null", async () => {
-    const querySpy = vi.fn(async () => ({
-      results: [buildPageInDb("a", "first"), buildPageInDb("b", "second")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(2)
-    for (let i = 0; i < explain.length; i++) {
-      expect(explain[i].branch).toBe("contains-only")
-      expect(explain[i].containsRank).toBe(i)
-      expect(explain[i].semanticRank).toBeNull()
-      expect(explain[i].rrfScore).toBeNull()
-    }
-  })
-
-  it("semantic mode: branch is 'semantic-only', containsRank and rrfScore are null", async () => {
-    const searchSpy = vi.fn(async () => ({
-      results: [buildPageInDb("a", "first"), buildPageInDb("b", "second")],
-    }))
-    const client = {
-      dataSources: { query: vi.fn() },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "semantic",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(2)
-    for (let i = 0; i < explain.length; i++) {
-      expect(explain[i].branch).toBe("semantic-only")
-      expect(explain[i].containsRank).toBeNull()
-      expect(explain[i].semanticRank).toBe(i)
-      expect(explain[i].rrfScore).toBeNull()
-    }
-  })
-
-  it("hybrid saturated branch: semanticRank is null even when semantic surfaced the row", async () => {
-    // The semantic branch ran in parallel and may even have returned the
-    // same id, but its output was discarded — surfacing semanticRank
-    // would imply influence on ordering that did not happen.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildPageInDb("a", "first"),
-        buildPageInDb("b", "second"),
-        buildPageInDb("c", "third"),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      // Semantic returns row `a` at rank 0 — but contains saturated, so
-      // its rank is suppressed in the trace.
-      results: [buildPageInDb("a", "first")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(3)
-    for (let i = 0; i < explain.length; i++) {
-      expect(explain[i].branch).toBe("contains-saturated")
-      expect(explain[i].containsRank).toBe(i)
-      expect(explain[i].semanticRank).toBeNull()
-      expect(explain[i].rrfScore).toBeNull()
-    }
-  })
-
-  it("hybrid saturation: 3 contains hits land on contains-saturated regardless of which property each row matched on", async () => {
-    // Structural pin for the saturation-cutoff. Synopsis hits count
-    // toward HYBRID_FALLBACK_THRESHOLD the same way Title/Keywords hits
-    // do — three rows in the contains result list saturate, the parallel
-    // semantic call's output is discarded, and every row carries
-    // `contains-saturated`. The actual pre-#04→post-#04 threshold
-    // *crossing* (where adding Synopsis takes the hit count from 2 to
-    // 3) is demonstrated end-to-end in
-    // `memory-search.integration.test.ts` against a fixture vault that
-    // evaluates the contains predicate. Here we pin only the post-#04
-    // outcome at the threshold boundary.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildPageInDb("title-hit", "PR-25650 row"),
-        buildPageInDb("keywords-hit", "Other row"),
-        buildPageInDb("synopsis-hit", "Yet another row"),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildPageInDb("semantic-only", "would float in under RRF")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { memories, explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // Three contains hits hit the saturation threshold — semantic
-    // result is discarded and every row carries `contains-saturated`.
-    expect(memories.map((m) => m.id)).toEqual([
-      "title-hit",
-      "keywords-hit",
-      "synopsis-hit",
-    ])
-    for (const e of explain) {
-      expect(e.branch).toBe("contains-saturated")
-      expect(e.semanticRank).toBeNull()
-      expect(e.rrfScore).toBeNull()
-    }
-  })
-
-  it("hybrid stable branch: zero contains hits stays on rrf regardless of Synopsis OR branch", async () => {
-    // Companion to the threshold-crossing test: when the post-#04
-    // contains count stays on the same side of the threshold as
-    // pre-#04 (here, 0 → 0), the resolved branch is unchanged. Pins
-    // the "stable-branch fixture" half of issue 0.7.0/04's
-    // branch-stability acceptance.
-    const querySpy = vi.fn(async () => ({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [buildPageInDb("s-1", "semantic 1"), buildPageInDb("s-2", "semantic 2")],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    // Zero contains hits → RRF runs (the saturation gate doesn't fire).
-    // Every row sits on `rrf`, semantic-only.
-    for (const e of explain) {
-      expect(e.branch).toBe("rrf")
-      expect(e.containsRank).toBeNull()
-      expect(e.semanticRank).not.toBeNull()
-    }
-  })
-
-  it("hybrid rrf branch: both ranks reflect actual branch presence; rrfScore populated", async () => {
-    const querySpy = vi.fn(async () => ({
-      results: [buildPageInDb("c-only", "contains alone")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        buildPageInDb("c-only", "contains alone"),
-        buildPageInDb("s-only", "semantic alone"),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { memories, explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    const cOnly = explain.find((e) => e.memoryId === "c-only")
-    const sOnly = explain.find((e) => e.memoryId === "s-only")
-
-    expect(cOnly?.branch).toBe("rrf")
-    expect(cOnly?.containsRank).toBe(0)
-    expect(cOnly?.semanticRank).toBe(0)
-    expect(cOnly?.rrfScore).toBeCloseTo(2 / 61, 10)
-
-    expect(sOnly?.branch).toBe("rrf")
-    expect(sOnly?.containsRank).toBeNull()
-    expect(sOnly?.semanticRank).toBe(1)
-    expect(sOnly?.rrfScore).toBeCloseTo(1 / 62, 10)
-
-    // c-only sorts above s-only because cross-branch agreement scores
-    // higher than single-branch presence.
-    expect(memories.map((m) => m.id)).toEqual(["c-only", "s-only"])
-  })
-
-  it("forceSemanticSearch=true routes mode='hybrid' through 'semantic-only'", async () => {
-    // Pin the kill-switch path: when the operator forces semantic, the
-    // explain trace reports `semantic-only`, not `rrf` or
-    // `contains-saturated`. The `mode` argument is ignored.
-    const searchSpy = vi.fn(async () => ({
-      results: [buildPageInDb("a", "first")],
-    }))
-    const client = {
-      dataSources: { query: vi.fn() },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const features = defaultFeatureFlags()
-    features.forceSemanticSearch = true
-    features.runTool.search = false
-    const service = new MemoryService(client, db, undefined, { features })
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(explain).toHaveLength(1)
-    expect(explain[0].branch).toBe("semantic-only")
-    expect(explain[0].containsRank).toBeNull()
-  })
-
-  it("SearchExplain field names are canonical to lore (containsRank, not lexRank)", async () => {
-    // qmd uses `lexRank` for the contains lane. Pin lore's vocabulary so
-    // a future contributor doesn't silently rename chasing qmd's words.
-    const querySpy = vi.fn(async () => ({
-      results: [buildPageInDb("a", "first")],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: vi.fn(async () => ({ results: [] })),
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const { explain } = await service.searchWithExplain({
-      query: "q",
-      mode: "contains",
-      includeContent: false,
-    })
-
-    const entry = explain[0]
-    expect(Object.keys(entry).sort()).toEqual([
-      "branch",
-      "confidenceFactor",
-      "containsRank",
-      "effectiveConfidenceFactor",
-      "memoryId",
-      "rrfScore",
-      "semanticRank",
-      "storedConfidenceFactor",
-    ])
-  })
-})
-
-describe("MemoryService.search — hybrid single-branch resilience (PF3-03)", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildHybridPage(id: string, title: string): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  it("returns contains-only results when the semantic branch rejects", async () => {
-    // Pre-PF3-03 (Promise.all): a transient 429 from client.search would
-    // propagate to the caller even though contains saturated independently.
-    // With Promise.allSettled the surviving branch's rows pass through.
-    const querySpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("c-1", "one"),
-        buildHybridPage("c-2", "two"),
-        buildHybridPage("c-3", "three"),
-      ],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => {
-      throw new Error("simulated 429 from client.search")
-    })
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["c-1", "c-2", "c-3"])
-    // Both branches were dispatched — the failure path runs after settle,
-    // not before dispatch.
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("returns semantic-only results when the contains branch rejects", async () => {
-    // Inverted scenario: a Notion outage on dataSources.query while
-    // client.search still serves vector hits. Contains' empty result is
-    // treated as "no contains rows", semantic provides the full output.
-    const querySpy = vi.fn(async () => {
-      throw new Error("simulated 5xx from dataSources.query")
-    })
-    const searchSpy = vi.fn(async () => ({
-      results: [
-        buildHybridPage("s-1", "semantic 1"),
-        buildHybridPage("s-2", "semantic 2"),
-      ],
-    }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const service = new MemoryService(client, db)
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-    })
-
-    expect(results.map((m) => m.id)).toEqual(["s-1", "s-2"])
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("surfaces an error when both branches reject (no silent empty)", async () => {
-    // Both-failure case must propagate. A genuinely broken search
-    // subsystem should not look identical to "no results found" — that
-    // would mask a production outage.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    try {
-      const containsError = new Error("contains-failed")
-      const semanticError = new Error("semantic-failed")
-      const querySpy = vi.fn(async () => {
-        throw containsError
-      })
-      const searchSpy = vi.fn(async () => {
-        throw semanticError
-      })
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      await expect(
-        service.search({ query: "q", mode: "hybrid", includeContent: false })
-      ).rejects.toThrow("contains-failed")
-    } finally {
-      stderrSpy.mockRestore()
-    }
-  })
-
-  it("LORE_DEBUG=1 emits one stderr line per failing branch with branch= and error=", async () => {
-    // Operator observability: under LORE_DEBUG=1 a failed branch logs
-    // exactly one line so log aggregators can correlate transient blips
-    // without the caller seeing them. No log line under default LORE_DEBUG.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    process.env["LORE_DEBUG"] = "1"
-    try {
-      const querySpy = vi.fn(async () => ({
-        results: [
-          buildHybridPage("c-1", "one"),
-          buildHybridPage("c-2", "two"),
-          buildHybridPage("c-3", "three"),
-        ],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => {
-        throw new Error("simulated rate-limit")
-      })
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      await service.search({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
-      const hybridLines = lines.filter((l) => l.includes("source=hybrid-search"))
-      expect(hybridLines).toHaveLength(1)
-      expect(hybridLines[0]).toContain("branch=semantic")
-      expect(hybridLines[0]).toContain("error=simulated rate-limit")
-      // One-event-per-line invariant — the line is newline-terminated.
-      expect(hybridLines[0].endsWith("\n")).toBe(true)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-
-  it("emits no stderr line when LORE_DEBUG is unset (default-quiet)", async () => {
-    // The default operator experience: a transient blip degrades to a
-    // surviving-branch-only result with zero stderr noise. Operators
-    // who want visibility opt in via LORE_DEBUG=1.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    delete process.env["LORE_DEBUG"]
-    try {
-      const querySpy = vi.fn(async () => ({
-        results: [
-          buildHybridPage("c-1", "one"),
-          buildHybridPage("c-2", "two"),
-          buildHybridPage("c-3", "three"),
-        ],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => {
-        throw new Error("simulated rate-limit")
-      })
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      await service.search({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      const hybridLines = stderrSpy.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes("source=hybrid-search"))
-      expect(hybridLines).toHaveLength(0)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-
-  it("returns an empty result when one branch rejects and the survivor genuinely has zero hits", async () => {
-    // The visibility cost called out in the spec: a caller cannot
-    // distinguish "contains down + no semantic match" from "clean miss".
-    // This is by design — the surviving branch's empty result IS the
-    // honest answer to the query — but pinning the contract here keeps
-    // the tradeoff greppable. LORE_DEBUG=1 is the operator-side
-    // mitigation; the production followup is an error-counter dashboard.
-    //
-    // stderrSpy is defensive: under default LORE_DEBUG the partial-failure
-    // helper is a no-op, but a parent test that leaks LORE_DEBUG=1 (or a
-    // future vitest pool config flip from `forks` to `threads`) would let
-    // stderr noise pollute test output. Cheap insurance.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    try {
-      const querySpy = vi.fn(async () => {
-        throw new Error("simulated 5xx from dataSources.query")
-      })
-      const searchSpy = vi.fn(async () => ({ results: [] }))
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      const results = await service.search({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      // Zero rows surfaced — same shape a genuine clean-miss would return.
-      // The caller cannot tell the difference; only the operator can, via
-      // the LORE_DEBUG=1 stderr line covered by a separate test.
-      expect(results).toEqual([])
-      expect(querySpy).toHaveBeenCalledTimes(1)
-      expect(searchSpy).toHaveBeenCalledTimes(1)
-    } finally {
-      stderrSpy.mockRestore()
-    }
-  })
-
-  it("both-fail emits a [lore] both-failure line UNCONDITIONALLY (not gated on LORE_DEBUG)", async () => {
-    // Reviewer concern: the both-fail case is the worst-case scenario —
-    // there is no surviving response to mask noise on, the caller's
-    // try/catch only sees the chosen throw, and the operator needs every
-    // rejection reason on stderr regardless of LORE_DEBUG. Logging
-    // unconditionally is the right tradeoff here even though the
-    // partial-failure path stays opt-in.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    delete process.env["LORE_DEBUG"]
-    try {
-      const querySpy = vi.fn(async () => {
-        throw new Error("contains-down")
-      })
-      const searchSpy = vi.fn(async () => {
-        throw new Error("semantic-down")
-      })
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      await expect(
-        service.search({ query: "q", mode: "hybrid", includeContent: false })
-      ).rejects.toThrow("contains-down")
-
-      const bothFailureLines = stderrSpy.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes("[lore] both-failure:"))
-      expect(bothFailureLines).toHaveLength(1)
-      const line = bothFailureLines[0]
-      // Both rejection messages on the single line — operators see the
-      // suppressed-branch error alongside the thrown one.
-      expect(line).toContain("contains=contains-down")
-      expect(line).toContain("semantic=semantic-down")
-      expect(line).toContain("source=hybrid-search")
-      expect(line.endsWith("\n")).toBe(true)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-
-  it("non-Error rejection reasons (undefined, null, plain string) render as diagnostic strings, not 'undefined'", async () => {
-    // Defensive log-quality fallback: a sloppy `Promise.reject()` (no arg)
-    // would otherwise read `error=undefined`, which is parsable but not
-    // diagnostic. Plain-string rejections pass through unchanged.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    process.env["LORE_DEBUG"] = "1"
-    try {
-      const querySpy = vi.fn(async () => ({
-        results: [
-          buildHybridPage("c-1", "one"),
-          buildHybridPage("c-2", "two"),
-          buildHybridPage("c-3", "three"),
-        ],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => Promise.reject(undefined))
-      const client = {
-        dataSources: { query: querySpy },
-        search: searchSpy,
-        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-      } as unknown as Client
-      const service = new MemoryService(client, db)
-
-      await service.search({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-      })
-
-      const hybridLines = stderrSpy.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes("source=hybrid-search"))
-      expect(hybridLines).toHaveLength(1)
-      expect(hybridLines[0]).toContain("error=<non-error rejection>")
-      // Crucially NOT this — that's the bug the fallback fixes.
-      expect(hybridLines[0]).not.toContain("error=undefined")
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-})
-
-describe("MemoryService.search — hybrid abort on contains saturation (issue #490)", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  function buildHybridPage(id: string, title: string): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-        Source: { type: "select", select: { name: "manual" } },
-        Tags: { type: "multi_select", multi_select: [] },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  // Build a PageObjectResponse whose parent is the test's Memories DS so
-  // `applySemanticPostFilters` keeps it. `client.search` returns
-  // workspace-wide results that Lore filters down — fixtures that don't
-  // set the parent correctly are silently dropped and confuse abort
-  // tests.
-  function buildSemanticPage(id: string, title: string): PageObjectResponse {
-    return buildPage(
-      {
-        Title: { type: "title", title: [{ plain_text: title }] },
-        Project: { type: "relation", relation: [] },
-        Topic: { type: "relation", relation: [] },
-      },
-      {
-        id,
-        parent: {
-          type: "data_source_id",
-          data_source_id: db.dataSourceId,
-        },
-      } as Partial<PageObjectResponse>
-    )
-  }
-
-  type SemanticPage = {
-    results: PageObjectResponse[]
-    has_more?: boolean
-    next_cursor?: string | null
-  }
-
-  type ContainsResponse =
-    | { kind: "fulfilled"; results: PageObjectResponse[] }
-    | { kind: "rejected"; reason: Error }
-
-  /**
-   * Build a `Client` mock for the abort/saturation tests. The four
-   * abort tests differ only in:
-   *
-   * - the contains result shape (saturating vs under-shooting vs
-   * rejected),
-   * - the cursor → semantic-page map,
-   * - whether the first semantic page yields to a macrotask before
-   * resolving (the load-bearing pin for the "exactly one
-   * `client.search` call" assertion in the synchronous-mock
-   * setup; production gets the same residual-call bound from the
-   * actual `client.search` HTTP latency).
-   *
-   * Without this helper, each test inlined ~30 lines of mock client
-   * construction with subtle differences that obscured the actual
-   * test contract. The helper surfaces the contract directly: WHAT
-   * contains returns, WHAT each semantic page returns, WHETHER page 1
-   * yields to a macrotask.
-   */
-  function buildHybridSearchMockClient(opts: {
-    contains: ContainsResponse
-    /**
-     * Map of `start_cursor` → page response. `undefined` is the first
-     * page; subsequent pages are keyed by the `next_cursor` returned
-     * by the previous page. A request whose cursor isn't in the map
-     * returns an empty exhaustion shape (`has_more: false`,
-     * `next_cursor: null`).
-     */
-    semanticPagesByCursor: Map<string | undefined, SemanticPage>
-    /**
-     * When true, semantic page 1's mock awaits `setTimeout(0)` before
-     * resolving — a macrotask boundary that lets every microtask
-     * queued before it run, so contains' saturation handler has time
-     * to call `controller.abort()` before the next iteration's
-     * pre-call signal check fires. Without this, the synchronous
-     * mock can produce 2 in-flight `client.search` calls in the
-     * worst microtask ordering even though production would only
-     * produce 1 (the network round-trip provides the same yield).
-     */
-    yieldOnFirstSemanticPage: boolean
-  }): {
-    client: Client
-    querySpy: ReturnType<typeof vi.fn>
-    searchSpy: ReturnType<typeof vi.fn>
-  } {
-    const querySpy =
-      opts.contains.kind === "fulfilled"
-        ? vi.fn(async () => ({
-            results: (
-              opts.contains as { kind: "fulfilled"; results: PageObjectResponse[] }
-            ).results,
-            has_more: false,
-            next_cursor: null,
-          }))
-        : vi.fn(async () => {
-            throw (opts.contains as { kind: "rejected"; reason: Error }).reason
-          })
-
-    let semanticCallCount = 0
-    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
-      const cursor = args["start_cursor"] as string | undefined
-      const page = opts.semanticPagesByCursor.get(cursor) ?? {
-        results: [],
-        has_more: false,
-        next_cursor: null,
-      }
-      const isFirstPage = ++semanticCallCount === 1
-      if (isFirstPage && opts.yieldOnFirstSemanticPage) {
-        await new Promise<void>((r) => setTimeout(r, 0))
-      }
-      return {
-        results: page.results,
-        has_more: page.has_more ?? false,
-        next_cursor: page.next_cursor ?? null,
-      }
-    })
-
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-
-    return { client, querySpy, searchSpy }
-  }
-
-  it("aborts the in-flight semantic pagination after contains saturates — second client.search never fires", async () => {
-    // Pre-fix: a saturating contains query still paid up to
-    // SEMANTIC_SEARCH_MAX_PAGES (5) sequential semantic round-trips
-    // before the discarded result resolved. Post-fix: the semantic
-    // loop terminates after the in-flight page lands, so subsequent
-    // pages never dispatch.
-    //
-    // Synchronization rationale: contains resolves immediately and
-    // the side-effect saturation handler attached in
-    // `searchByHybridPages` queues as a microtask. Semantic page 1
-    // awaits `setTimeout(0)` — a macrotask boundary that lets every
-    // microtask queued before it run before the macrotask continues
-    // — so by the time page 1 resolves, contains has settled, the
-    // saturation handler has called `controller.abort()`, and the
-    // post-filter signal check inside `applySemanticPostFilters`
-    // throws before page 2 dispatches. This pin reflects the
-    // production-typical bound (residual = 1) rather than the
-    // worst-case synchronous-mock bound (residual = 2 in the
-    // semantic-continuation-runs-first microtask ordering); see
-    // `fetchSemanticPages`'s docstring for the full residual-call
-    // analysis.
-    const { service, searchSpy } = buildHybridSearchTestRig({
-      contains: {
-        kind: "fulfilled",
-        results: [
-          buildHybridPage("c-1", "one"),
-          buildHybridPage("c-2", "two"),
-          buildHybridPage("c-3", "three"),
-        ],
-      },
-      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
-        [
-          undefined,
-          {
-            results: [
-              buildSemanticPage("s-1", "semantic 1"),
-              buildSemanticPage("s-2", "semantic 2"),
-            ],
-            has_more: true,
-            next_cursor: "cursor-1",
-          },
-        ],
-        [
-          "cursor-1",
-          {
-            results: [buildSemanticPage("s-3", "semantic 3")],
-            has_more: false,
-            next_cursor: null,
-          },
-        ],
-      ]),
-      yieldOnFirstSemanticPage: true,
-    })
-
-    const results = await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-      // limit > saturation threshold so semantic would NOT saturate on
-      // its own — only the abort can stop the second page.
-      limit: 10,
-    })
-
-    // Saturation cutoff: contains rows alone are the answer; semantic
-    // result is discarded.
-    expect(results.map((m) => m.id)).toEqual(["c-1", "c-2", "c-3"])
-    // The win: exactly one `client.search` call. Pre-fix this would
-    // have been 2 (or up to 5 on a pathological query).
-    expect(searchSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not abort when contains under-shoots the saturation threshold", async () => {
-    // Defensive contract: under-shoot means RRF runs and the semantic
-    // pagination must complete normally. An over-eager abort here
-    // would silently lose semantic rows that should fuse with contains
-    // under RRF.
-    const semanticPage1 = Array.from({ length: 100 }, (_, i) =>
-      buildSemanticPage(`s-page1-${i}`, `semantic page1 ${i}`)
-    )
-    const { service, searchSpy } = buildHybridSearchTestRig({
-      contains: {
-        kind: "fulfilled",
-        // Two contains hits — below HYBRID_FALLBACK_THRESHOLD (3).
-        results: [buildHybridPage("c-1", "one"), buildHybridPage("c-2", "two")],
-      },
-      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
-        [undefined, { results: semanticPage1, has_more: true, next_cursor: "cursor-1" }],
-        [
-          "cursor-1",
-          {
-            results: [buildSemanticPage("s-page2-1", "semantic page2 1")],
-            has_more: false,
-            next_cursor: null,
-          },
-        ],
-      ]),
-      yieldOnFirstSemanticPage: false,
-    })
-
-    // limit=200 forces semantic to keep paginating past page 1 because
-    // accumulated < limit. If abort fired incorrectly, only page 1
-    // would land.
-    await service.search({
-      query: "q",
-      mode: "hybrid",
-      includeContent: false,
-      limit: 200,
-    })
-
-    // No abort — semantic paginates through to exhaustion (2 pages).
-    expect(searchSpy).toHaveBeenCalledTimes(2)
-  })
-
-  it("does not abort when intent is set even if contains would saturate", async () => {
-    // Per #17, a non-empty intent disables the saturation cutoff so
-    // the intent-augmented semantic lane gets to influence ordering
-    // under RRF. Aborting here would silently nullify intent on every
-    // query whose contains branch produces 3+ hits — the common case
-    // intent exists to fix.
-    const semanticPage1 = Array.from({ length: 100 }, (_, i) =>
-      buildSemanticPage(`s-page1-${i}`, `semantic page1 ${i}`)
-    )
-    const { service, searchSpy } = buildHybridSearchTestRig({
-      contains: {
-        kind: "fulfilled",
-        results: [
-          buildHybridPage("c-1", "one"),
-          buildHybridPage("c-2", "two"),
-          buildHybridPage("c-3", "three"),
-        ],
-      },
-      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
-        [undefined, { results: semanticPage1, has_more: true, next_cursor: "cursor-1" }],
-        [
-          "cursor-1",
-          {
-            results: [buildSemanticPage("s-page2-1", "semantic page2 1")],
-            has_more: false,
-            next_cursor: null,
-          },
-        ],
-      ]),
-      yieldOnFirstSemanticPage: false,
-    })
-
-    await service.search({
-      query: "q",
-      mode: "hybrid",
-      intent: "disambiguator",
-      includeContent: false,
-      limit: 200,
-    })
-
-    // No abort under intent — semantic paginates through to exhaustion.
-    expect(searchSpy).toHaveBeenCalledTimes(2)
-  })
-
-  it("LORE_DEBUG=1 does NOT log the cooperative abort as a partial-failure", async () => {
-    // The abort signal we raise on contains saturation produces an
-    // AbortError-shaped rejection on the semantic Promise — but it's
-    // a cooperative discard, not a real branch failure. Logging it
-    // under LORE_DEBUG=1 would drown the legitimate transient blip
-    // signal in operator-issued cancellations on every saturating
-    // hybrid call.
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    const original = process.env["LORE_DEBUG"]
-    process.env["LORE_DEBUG"] = "1"
-    try {
-      const { service, searchSpy } = buildHybridSearchTestRig({
-        contains: {
-          kind: "fulfilled",
-          results: [
-            buildHybridPage("c-1", "one"),
-            buildHybridPage("c-2", "two"),
-            buildHybridPage("c-3", "three"),
-          ],
-        },
-        semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
-          [
-            undefined,
-            {
-              results: [buildSemanticPage("s-1", "semantic 1")],
-              has_more: true,
-              next_cursor: "cursor-1",
-            },
-          ],
-        ]),
-        yieldOnFirstSemanticPage: true,
-      })
-
-      await service.search({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-        limit: 10,
-      })
-
-      // Strong assertion: zero `[lore]`-prefixed lines landed at all.
-      // The earlier shape of this test asserted only the
-      // `source=hybrid-search` filter, which a refactor moving the
-      // log line to a different surface (structured logger, prefix
-      // change, alternate event marker) would have silently passed.
-      // The `[lore]` prefix is the broader greppable contract every
-      // hybrid-search log line shares — pinning it catches both the
-      // current path and any near-future variant. Two checks, one
-      // contract: the prefix-level pin is the strong invariant; the
-      // surface-specific pin remains as a localized regression
-      // signal.
-      const allLines = stderrSpy.mock.calls.map((c) => String(c[0]))
-      const loreLines = allLines.filter((l) => l.includes("[lore]"))
-      const hybridLines = allLines.filter((l) => l.includes("source=hybrid-search"))
-      expect(loreLines).toHaveLength(0)
-      expect(hybridLines).toHaveLength(0)
-      // Sanity: the abort actually fired (one client.search call).
-      expect(searchSpy).toHaveBeenCalledTimes(1)
-    } finally {
-      stderrSpy.mockRestore()
-      if (original === undefined) {
-        delete process.env["LORE_DEBUG"]
-      } else {
-        process.env["LORE_DEBUG"] = original
-      }
-    }
-  })
-
-  it("a contains rejection does NOT abort the semantic branch — semantic completes pagination", async () => {
-    // The abort-on-saturation handler must observe contains FULFILLED
-    // with a saturating result. A contains rejection is a partial
-    // failure that surfaces as zero contains rows — and zero is NOT
-    // saturating. Aborting semantic here would convert a recoverable
-    // contains-down case into a both-down outage from the caller's
-    // perspective.
-    const semanticPage1 = Array.from({ length: 100 }, (_, i) =>
-      buildSemanticPage(`s-page1-${i}`, `semantic page1 ${i}`)
-    )
-    const { service, searchSpy } = buildHybridSearchTestRig({
-      contains: {
-        kind: "rejected",
-        reason: new Error("simulated 5xx from dataSources.query"),
-      },
-      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
-        [undefined, { results: semanticPage1, has_more: true, next_cursor: "cursor-1" }],
-        [
-          "cursor-1",
-          {
-            results: [buildSemanticPage("s-page2-1", "semantic page2 1")],
-            has_more: false,
-            next_cursor: null,
-          },
-        ],
-      ]),
-      yieldOnFirstSemanticPage: false,
-    })
-
-    // Stub stderr so the partial-failure log doesn't pollute test
-    // output (LORE_DEBUG is unset by default in this test, so nothing
-    // would write — but defensive against env leakage between tests).
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-    try {
-      await service.search({
-        query: "q",
-        mode: "hybrid",
-        includeContent: false,
-        limit: 200,
-      })
-    } finally {
-      stderrSpy.mockRestore()
-    }
-
-    // Contains failed; semantic ran to completion across both pages.
-    expect(searchSpy).toHaveBeenCalledTimes(2)
-  })
-
-  // Helper: every test instantiates the same `MemoryService(client, db)`
-  // pair from the mock client. Pulling that construction into one
-  // closure avoids a per-test boilerplate line and keeps the test
-  // body focused on the contract.
-  function buildHybridSearchTestRig(
-    opts: Parameters<typeof buildHybridSearchMockClient>[0]
-  ): {
-    service: MemoryService
-    querySpy: ReturnType<typeof vi.fn>
-    searchSpy: ReturnType<typeof vi.fn>
-  } {
-    const { client, querySpy, searchSpy } = buildHybridSearchMockClient(opts)
-    return { service: new MemoryService(client, db), querySpy, searchSpy }
-  }
-})
-
-describe("MemoryService.search — kill switch", () => {
-  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
-
-  it("forceSemanticSearch=true routes every call through client.search regardless of caller mode", async () => {
-    // Operator escape hatch for the rollback story raised in review:
-    // if contains under-recalls in a vault that hasn't run
-    // `lore migrate --fix-memory-encoding` yet, this resolved flag
-    // forces every search through the legacy workspace-wide path.
-    const querySpy = vi.fn(async () => ({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    }))
-    const searchSpy = vi.fn(async () => ({ results: [] }))
-    const client = {
-      dataSources: { query: querySpy },
-      search: searchSpy,
-      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
-    } as unknown as Client
-    const features = defaultFeatureFlags()
-    features.forceSemanticSearch = true
-    features.runTool.search = false
-    const service = new MemoryService(client, db, undefined, { features })
-
-    await service.search({ query: "q", mode: "contains" })
-    await service.search({ query: "q", mode: "hybrid" })
-
-    // Both calls routed through client.search, neither touched dataSources.query.
-    expect(searchSpy).toHaveBeenCalledTimes(2)
+    expect(results.map((m) => m.id)).toEqual(["semantic"])
     expect(querySpy).not.toHaveBeenCalled()
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
   })
 })
 

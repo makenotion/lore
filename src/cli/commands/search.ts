@@ -20,6 +20,7 @@ export interface SearchJsonOutput {
   query: string
   projectId: string | null
   tags: string[] | null
+  capped: boolean
   results: Memory[]
 }
 
@@ -80,6 +81,7 @@ export const searchCommand = new Command("search")
         )
         const services = await initServices()
         let projectId: string | undefined
+        let projectName: string | undefined
 
         if (explicitProjectName !== undefined) {
           const found = await resolveProjectScopeName(
@@ -91,23 +93,38 @@ export const searchCommand = new Command("search")
             }
           )
           projectId = found.id
+          projectName = found.name
         } else if (services.context.project) {
           projectId = services.context.project.id
+          projectName = services.context.project.name
         }
 
-        const results = await services.memories.search({
+        const searchInput = {
           query,
           projectId,
           tags: parsed.value.tags,
           limit: parsed.value.limit,
           includeExpired: parsed.value.includeExpired,
-        })
+        }
+        const out =
+          typeof services.memories.searchWithMeta === "function"
+            ? await services.memories.searchWithMeta(searchInput)
+            : {
+                memories: await services.memories.search(searchInput),
+                capped: false,
+              }
+        const results = out.memories
+        const capped = out.capped
+        const cappedWarning = capped
+          ? "AI search returned a capped top-25 window; more relevant memories may exist."
+          : ""
 
         if (parsed.value.json) {
           const output: SearchJsonOutput = {
             query,
             projectId: projectId ?? null,
             tags: parsed.value.tags ?? null,
+            capped,
             results,
           }
           console.log(JSON.stringify(output, null, 2))
@@ -115,7 +132,9 @@ export const searchCommand = new Command("search")
         }
 
         if (results.length === 0) {
-          console.log(`No memories found for: "${query}"`)
+          const scope = projectName ? ` in project "${projectName}"` : ""
+          const warning = cappedWarning ? `\nWarning: ${cappedWarning}` : ""
+          console.log(`No memories found for: "${query}"${scope}${warning}`)
           return
         }
 
@@ -132,6 +151,9 @@ export const searchCommand = new Command("search")
             console.log(`  ${preview}${mem.content.length > 120 ? "..." : ""}`)
           }
           console.log()
+        }
+        if (cappedWarning) {
+          console.log(`Warning: ${cappedWarning}`)
         }
       } catch (err) {
         console.error("Search failed:", err instanceof Error ? err.message : err)

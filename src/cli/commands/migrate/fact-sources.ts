@@ -115,6 +115,7 @@ export async function proposeSourceMemory(
       const results = await services.memories.search({
         query,
         projectId,
+        mode: "contains",
         limit: 5,
         includeContent: false,
       })

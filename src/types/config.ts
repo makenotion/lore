@@ -109,8 +109,8 @@ export interface LoreFeatureConfig {
    */
   confidenceFactor?: boolean
   /**
-   * Force legacy workspace-wide semantic search instead of the newer
-   * contains/hybrid modes. Default: false.
+   * Force all memory search calls through semantic AI search instead
+   * of contains/hybrid modes. Default: false.
    * `LORE_FORCE_SEMANTIC_SEARCH=1` forces this on.
    */
   forceSemanticSearch?: boolean

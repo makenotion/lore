@@ -531,9 +531,11 @@ export async function handleWakeUp(
       overdueDecisions,
       overdueDecisionsCapped,
       relatedMemories,
+      relatedMemoriesUnavailable,
       tasks,
       taskBucketCoverage,
       taskMemories,
+      taskMemoriesUnavailable,
       proposedMemories,
       proposedMemoriesTotal,
       staleConfidence,
@@ -750,6 +752,9 @@ export async function handleWakeUp(
         sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
         recordSurfaced(group)
       }
+    } else if (taskMemoriesUnavailable !== null) {
+      sections.push("## For Your Current Task\n")
+      sections.push(`> ${taskMemoriesUnavailable}\n`)
     }
 
     if (!taskOnly && memories.length > 0) {
@@ -778,7 +783,11 @@ export async function handleWakeUp(
       }
     } else if (!taskOnly && !digest) {
       sections.push("No memories found for this context.\n")
-    } else if (taskOnly && taskMemories.length === 0) {
+    } else if (
+      taskOnly &&
+      taskMemories.length === 0 &&
+      taskMemoriesUnavailable === null
+    ) {
       sections.push("No task-relevant memories found for this context.\n")
     }
 
@@ -884,6 +893,9 @@ export async function handleWakeUp(
         sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
         recordSurfaced(group)
       }
+    } else if (!taskOnly && relatedMemoriesUnavailable !== null) {
+      sections.push("## Related to Active Tasks\n")
+      sections.push(`> ${relatedMemoriesUnavailable}\n`)
     }
 
     if (

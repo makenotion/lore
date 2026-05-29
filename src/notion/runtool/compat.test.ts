@@ -21,7 +21,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { findNearDuplicates } from "../../core/near-duplicate.js"
-import { MemoryService } from "../../core/memory.js"
+import { MemoryService, SemanticSearchUnavailableError } from "../../core/memory.js"
 import type { DatabaseRef, Memory, MemoryStatus } from "../../types.js"
 import { __resetRunToolSearchWarningsForTest } from "./search.js"
 
@@ -498,18 +498,15 @@ describe("RunTool SQL vs REST/SDK A/B harness", () => {
  * the same final `limit`. Ordering and score scale may differ and are
  * documented."
  *
- * Each fixture row is registered both as a REST `client.search` hit
+ * Each fixture row is registered both as a sentinel `client.search` hit
  * AND as a RunTool `search` hit; the harness exercises
- * `MemoryService.search({ mode: "semantic" })` once with
- * `LORE_USE_RUNTOOL_SEARCH=1` and once with the flag unset, then
- * asserts the resulting Memory id sets are equal at the same final
- * `limit`.
+ * `MemoryService.search({ mode: "semantic" })` with
+ * `LORE_USE_RUNTOOL_SEARCH=1` and asserts the sentinel REST path is
+ * never consulted.
  *
  * The harness deliberately uses ONE shared stub client whose
- * `request` (RunTool path) and `search` (REST path) both serve the
- * same fixture set. When the flag is off, `request` is NOT called;
- * when on, `search` is NOT called for the queries the wrapper can
- * serve.
+ * `request` (RunTool path) serves the semantic result set while
+ * `search` is kept as a mechanism assertion.
  */
 
 const SEMANTIC_DB: DatabaseRef = {
@@ -660,65 +657,72 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     delete process.env["LORE_USE_RUNTOOL"]
   })
 
-  it("flag-off and flag-on agree on the page-id set at limit ≤ 25", async () => {
+  it("flag-off semantic search fails loud instead of falling back to REST", async () => {
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "0"
-    const restStub = buildSemanticStubClient()
-    const restService = new MemoryService(restStub.client, SEMANTIC_DB)
-    const restResult = await restService.search({
-      query: "Memory",
-      mode: "semantic",
-      limit: 5,
-    })
+    const stub = buildSemanticStubClient()
+    const service = new MemoryService(stub.client, SEMANTIC_DB)
 
-    process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
-    const runStub = buildSemanticStubClient()
-    const runService = new MemoryService(runStub.client, SEMANTIC_DB)
-    const runResult = await runService.search({
-      query: "Memory",
-      mode: "semantic",
-      limit: 5,
-    })
+    await expect(
+      service.search({
+        query: "Memory",
+        mode: "semantic",
+        limit: 5,
+      })
+    ).rejects.toThrow(SemanticSearchUnavailableError)
 
-    // Both paths must drop the archived row (id ...4444) and the
-    // out-of-DS row (id ...5555). The surviving id set must match.
-    const restIds = new Set(restResult.map((m) => m.id))
-    const runIds = new Set(runResult.map((m) => m.id))
-    expect(runIds).toEqual(restIds)
-    expect(restIds.has("44444444-4444-4444-4444-444444444444")).toBe(false)
-    expect(restIds.has("55555555-5555-5555-5555-555555555555")).toBe(false)
-
-    // Flag-off ⇒ no RunTool dispatch. Flag-on ⇒ no `client.search`.
-    expect(restStub.counters.searchCalls).toBe(1)
-    expect(restStub.counters.requestCalls).toBe(0)
-    expect(runStub.counters.searchCalls).toBe(0)
-    expect(runStub.counters.requestCalls).toBe(1)
-    // Flag-on hydrates only Notion-internal hits (4: A, B, C,
-    // archived). The out-of-DS row is filtered server-side via
-    // `data_source_url`, so it never enters hydration.
-    expect(runStub.counters.retrieveCalls).toBe(4)
+    expect(stub.counters.searchCalls).toBe(0)
+    expect(stub.counters.requestCalls).toBe(0)
   })
 
-  it("flag-on with empty composed query falls back to REST without dispatching RunTool", async () => {
+  it("flag-on uses AI search directly and does not call client.search", async () => {
+    process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
+    const stub = buildSemanticStubClient()
+    const service = new MemoryService(stub.client, SEMANTIC_DB)
+    const result = await service.search({
+      query: "Memory",
+      mode: "semantic",
+      limit: 5,
+    })
+
+    expect(result.map((m) => m.id)).toEqual([
+      "11111111-1111-1111-1111-111111111111",
+      "22222222-2222-2222-2222-222222222222",
+      "33333333-3333-3333-3333-333333333333",
+    ])
+    expect(
+      result.find((m) => m.id === "44444444-4444-4444-4444-444444444444")
+    ).toBeUndefined()
+    expect(
+      result.find((m) => m.id === "55555555-5555-5555-5555-555555555555")
+    ).toBeUndefined()
+
+    expect(stub.counters.searchCalls).toBe(0)
+    expect(stub.counters.requestCalls).toBe(1)
+    // Hydrates only Notion-internal hits (4: A, B, C,
+    // archived). The out-of-DS row is filtered server-side via
+    // `data_source_url`, so it never enters hydration.
+    expect(stub.counters.retrieveCalls).toBe(4)
+  })
+
+  it("flag-on with empty composed query fails loud without dispatching RunTool", async () => {
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const stub = buildSemanticStubClient()
     const service = new MemoryService(stub.client, SEMANTIC_DB)
 
-    await service.search({ query: "", mode: "semantic", limit: 5 })
+    await expect(
+      service.search({ query: "", mode: "semantic", limit: 5 })
+    ).rejects.toThrow(SemanticSearchUnavailableError)
 
-    // RunTool requires query length >= 1; the flag-on branch
-    // structurally cannot serve this call, so it falls back without
-    // attempting the dispatch.
     expect(stub.counters.requestCalls).toBe(0)
-    expect(stub.counters.searchCalls).toBe(1)
+    expect(stub.counters.searchCalls).toBe(0)
   })
 
-  it("flag-off and flag-on agree on the page-id set with a non-saturating mixed-hit fixture", async () => {
+  it("flag-on filters a non-saturating mixed-hit fixture without REST fallback", async () => {
     // Larger A/B harness: 15 in-DS rows + 4 external connector
     // hits = 19 total, BELOW the saturation cap of 25 so the
-    // RunTool path actually runs (rather than falling back on
-    // saturation per the ranking-parity rule). Both paths must
-    // surface the same set of in-DS, non-archived, in-Memories
-    // page ids at the same final `limit`.
+    // RunTool path actually runs and no REST keyword fallback is
+    // available. The result must surface in-DS, non-archived Notion
+    // pages at the same final `limit`.
     interface RichRow {
       id: string
       title: string
@@ -827,41 +831,25 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
       }
     }
 
-    process.env["LORE_USE_RUNTOOL_SEARCH"] = "0"
-    const restService = new MemoryService(buildRichStub().client, SEMANTIC_DB)
-    const restResult = await restService.search({
-      query: "Memory",
-      mode: "semantic",
-      limit: 10,
-    })
-
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
-    const runService = new MemoryService(buildRichStub().client, SEMANTIC_DB)
+    const richStub = buildRichStub()
+    const runService = new MemoryService(richStub.client, SEMANTIC_DB)
     const runResult = await runService.search({
       query: "Memory",
       mode: "semantic",
       limit: 10,
     })
 
-    // Both paths surface the same page-id set at limit=10. Order
-    // and confidence-rerank may differ; the AC asserts SET
-    // equivalence, not list order.
-    expect(new Set(runResult.map((m) => m.id))).toEqual(
-      new Set(restResult.map((m) => m.id))
-    )
+    expect(runResult).toHaveLength(10)
     // Archived rows (i = 0, 7, 14) are excluded by both paths.
-    expect(restResult.find((m) => m.id.startsWith("00000000"))).toBeUndefined()
     expect(runResult.find((m) => m.id.startsWith("00000000"))).toBeUndefined()
     // External connector hits dropped by both paths.
-    expect(restResult.find((m) => m.id.startsWith("ext-"))).toBeUndefined()
     expect(runResult.find((m) => m.id.startsWith("ext-"))).toBeUndefined()
   })
 
   it("flag-on with limit at the RUNTOOL_SEARCH_MAX_PAGE_SIZE boundary still routes through RunTool", async () => {
-    // Pin the gate's `<=` semantics: limit=25 must dispatch through
-    // RunTool; limit=26 must fall back. A subtle off-by-one that
-    // flipped this to `<` would silently switch every limit=25
-    // caller to REST.
+    // Pin the semantic contract: the RunTool branch dispatches at the
+    // maximum AI-search window and never drops to REST keyword search.
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const stub = buildSemanticStubClient()
     const service = new MemoryService(stub.client, SEMANTIC_DB)
@@ -872,19 +860,20 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     expect(stub.counters.searchCalls).toBe(0)
   })
 
-  it("flag-on with limit > RUNTOOL_SEARCH_MAX_PAGE_SIZE falls back to REST", async () => {
+  it("flag-on with limit > RUNTOOL_SEARCH_MAX_PAGE_SIZE still uses RunTool and reports capped", async () => {
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const stub = buildSemanticStubClient()
     const service = new MemoryService(stub.client, SEMANTIC_DB)
 
-    await service.search({ query: "Memory", mode: "semantic", limit: 26 })
+    const result = await service.searchWithMeta({
+      query: "Memory",
+      mode: "semantic",
+      limit: 26,
+    })
 
-    // The wrapper has no cursor and caps at 25 hits per call. A
-    // requested window > 25 cannot be represented without
-    // potentially under-recalling, so the consumer routes through
-    // REST which paginates up to SEMANTIC_SEARCH_MAX_PAGES * 100.
-    expect(stub.counters.requestCalls).toBe(0)
-    expect(stub.counters.searchCalls).toBe(1)
+    expect(result.capped).toBe(true)
+    expect(stub.counters.requestCalls).toBe(1)
+    expect(stub.counters.searchCalls).toBe(0)
   })
 
   it("flag-on hydrates via hit.url (page id), not hit.id (search index id)", async () => {
@@ -1140,21 +1129,11 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     expect(result.map((m) => m.id)).toEqual([liveId])
   })
 
-  it("flag-on saturated raw window falls back to REST regardless of post-filter survivor count (ranking-parity rule)", async () => {
-    // The saturation gate is unconditional in the post-filter
-    // dimension: when raw response saturates at 25, REST might
-    // surface additional confidence-promotable or RRF-promotable
-    // candidates beyond the no-cursor cap. Even if the wrapper's
-    // 25 raw hits all survive post-filter and visibly satisfy
-    // `limit`, the hidden-survivors case can change the
-    // semantic-only `rerankByConfidence` outcome and the hybrid
-    // RRF outcome.
-    //
-    // This test exercises the most-aggressive form of the rule:
-    // 25 raw hits, 25 survive post-filter, limit=5. Old gate
-    // (`filtered.length < limit && saturated`) would have
-    // returned the top 5 from RunTool. New gate (`saturated`)
-    // routes through REST.
+  it("flag-on saturated raw window uses AI results and reports capped without REST fallback", async () => {
+    // A full AI-search window is the semantic contract. The caller
+    // surfaces `capped` so operators know recall beyond the top 25 is
+    // unknown, but the returned ranking is still the authoritative AI
+    // order and `client.search` must not fire.
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const counters = { searchCalls: 0, requestCalls: 0 }
     const liveIds = Array.from(
@@ -1212,22 +1191,22 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     } as unknown as Client
 
     const service = new MemoryService(stub, SEMANTIC_DB)
-    await service.search({ query: "Memory", mode: "semantic", limit: 5 })
+    const result = await service.searchWithMeta({
+      query: "Memory",
+      mode: "semantic",
+      limit: 5,
+    })
 
-    // RunTool dispatched, saturated detected, REST fallback
-    // engaged — even though the visible 25 raw hits exceeded the
-    // requested `limit`. This is the load-bearing change that
-    // preserves ranking parity with REST under confidence rerank
-    // and hybrid RRF.
+    expect(result.memories.map((m) => m.id)).toEqual(liveIds.slice(0, 5))
+    expect(result.capped).toBe(true)
     expect(counters.requestCalls).toBe(1)
-    expect(counters.searchCalls).toBe(1)
+    expect(counters.searchCalls).toBe(0)
   })
 
-  it("flag-on saturated raw window with under-recalling post-filter still falls back to REST", async () => {
-    // Same logic applied to the original "saturated AND
-    // post-filter survivors < limit" case — which the old gate
-    // already handled. Pin that the unification of the gate
-    // doesn't regress this case.
+  it("flag-on saturated raw window with zero post-filter survivors reports capped without REST fallback", async () => {
+    // Even when every AI-ranked hit is archived after hydration, the
+    // path surfaces an empty capped result rather than silently
+    // switching to keyword search.
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const counters = { searchCalls: 0, requestCalls: 0 }
     const liveIds = Array.from(
@@ -1285,22 +1264,25 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     } as unknown as Client
 
     const service = new MemoryService(stub, SEMANTIC_DB)
-    await service.search({ query: "Memory", mode: "semantic", limit: 5 })
+    const result = await service.searchWithMeta({
+      query: "Memory",
+      mode: "semantic",
+      limit: 5,
+    })
 
+    expect(result.memories).toEqual([])
+    expect(result.capped).toBe(true)
     expect(counters.requestCalls).toBe(1)
-    expect(counters.searchCalls).toBe(1)
+    expect(counters.searchCalls).toBe(0)
   })
 
-  it("flag-on with all-external-connector hits (saturated raw, zero internal hits) falls back to REST", async () => {
+  it("flag-on with all-external-connector hits reports capped without REST fallback", async () => {
     // Pathological case: server returns its full hand of 25 hits
     // but every one is an external connector (Slack / Linear /
     // Drive — `url` is a full URL, not a Notion page id). The
-    // wrapper drops them all in `isNotionInternalHit`, so
-    // `outcome.hits.length === 0` AND `outcome.saturated === true`.
-    // Without the saturation gate's `outcome.saturated ? null : []`
-    // branch, the consumer would silently return zero memories
-    // even though REST might surface valid Lore hits the connector
-    // results crowded out.
+    // wrapper drops them all in `isNotionInternalHit`, so the caller
+    // receives an empty capped result. This is distinguishable from
+    // "no matches" without consulting REST keyword search.
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const counters = { searchCalls: 0, requestCalls: 0 }
     const stub = {
@@ -1332,10 +1314,16 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     } as unknown as Client
 
     const service = new MemoryService(stub, SEMANTIC_DB)
-    await service.search({ query: "Memory", mode: "semantic", limit: 5 })
+    const result = await service.searchWithMeta({
+      query: "Memory",
+      mode: "semantic",
+      limit: 5,
+    })
 
+    expect(result.memories).toEqual([])
+    expect(result.capped).toBe(true)
     expect(counters.requestCalls).toBe(1)
-    expect(counters.searchCalls).toBe(1)
+    expect(counters.searchCalls).toBe(0)
   })
 })
 

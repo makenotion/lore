@@ -38,6 +38,7 @@ import type {
 } from "../types.js"
 import { DEFAULT_PINNED_BLOCK_LIMIT, STALE_CONFIDENCE_LIMIT } from "../types.js"
 import { computeWakeUpCacheKey, WakeUpCache } from "./wakeup-cache.js"
+import { SemanticSearchUnavailableError } from "./memory-search.js"
 import type { UpstreamVaultBundle } from "./topology-readers.js"
 import {
   DEFAULT_DIGEST_FRESHNESS_DAYS,
@@ -382,6 +383,13 @@ export interface WakeUpData {
    */
   relatedMemories: Memory[]
   /**
+   * Semantic-search capability error from the related-memories query,
+   * when active tasks existed but the AI relevance engine was not
+   * available. Renderers should show this separately from a genuine
+   * empty result set.
+   */
+  relatedMemoriesUnavailable: string | null
+  /**
    * Active task memories (Kind = task), fetched via bounded per-bucket
    * windows so a large due-dated set cannot starve Stale / Active rows.
    * Ordered Overdue, Stale, Active so flat renderers still lead with the
@@ -402,6 +410,13 @@ export interface WakeUpData {
    * memory sections. Empty when `userQuery` was absent or whitespace-only.
    */
   taskMemories: Memory[]
+  /**
+   * Semantic-search capability error from the user-query task-memory
+   * search. Renderers should show this separately from a genuine empty
+   * result set, especially in task-only wake-up where this is the primary
+   * memory section.
+   */
+  taskMemoriesUnavailable: string | null
   /**
    * Memories awaiting review (`Status = proposed`) — the wake-up
    * surface of the proposed-memory inbox.
@@ -738,7 +753,7 @@ async function runWakeUpFanOut(
     { items: proposedDecisions },
     overdueDecisionWindow,
     taskWindow,
-    taskCandidates,
+    taskCandidateResult,
     staleConfidence,
     { items: proposedMemories },
     { total: proposedMemoriesTotal },
@@ -751,7 +766,7 @@ async function runWakeUpFanOut(
     { items: DecisionSummary[] },
     { items: DecisionSummary[]; capped: boolean },
     { tasks: TaskSummary[]; coverage: WakeUpTaskBucketCoverage },
-    Memory[],
+    { items: Memory[]; unavailable: string | null },
     Memory[],
     { items: Memory[] },
     {
@@ -814,15 +829,23 @@ async function runWakeUpFanOut(
           coverage: emptyTaskBucketCoverage(),
         }),
     projectId && userQuery && taskFetchLimit > 0
-      ? services.memories.search({
-          query: userQuery,
-          projectId,
-          limit: taskFetchLimit,
-          includeContent,
-          includeExpired,
-          excludePinned: excludePinnedFromMemorySections,
-        })
-      : Promise.resolve([] as Memory[]),
+      ? services.memories
+          .search({
+            query: userQuery,
+            projectId,
+            limit: taskFetchLimit,
+            includeContent,
+            includeExpired,
+            excludePinned: excludePinnedFromMemorySections,
+          })
+          .then((items) => ({ items, unavailable: null }))
+          .catch((err: unknown) => {
+            if (err instanceof SemanticSearchUnavailableError) {
+              return { items: [] as Memory[], unavailable: err.message }
+            }
+            throw err
+          })
+      : Promise.resolve({ items: [] as Memory[], unavailable: null }),
     staleConfidenceQuery,
     proposedMemoriesQuery,
     proposedMemoriesTotalQuery,
@@ -830,6 +853,8 @@ async function runWakeUpFanOut(
     pinnedBlocksTotalQuery,
   ])
   const tasks = taskWindow.tasks
+  const taskCandidates = taskCandidateResult.items
+  const taskMemoriesUnavailable = taskCandidateResult.unavailable
   const overdueDecisions = overdueDecisionWindow.items
 
   const latestDigest = latestDigestList[0] ?? null
@@ -855,6 +880,7 @@ async function runWakeUpFanOut(
   for (const mem of memories) alreadySurfaced.add(mem.id)
 
   let relatedMemories: Memory[] = []
+  let relatedMemoriesUnavailable: string | null = null
   if (projectId && tasks.length > 0 && relatedLimit > 0) {
     const entities = extractTaskEntities(tasks)
     if (entities.length > 0) {
@@ -872,25 +898,32 @@ async function runWakeUpFanOut(
       // finds the "label.applied classifier: false positives…"
       // memory that explains them.
       //
-      // `mode: "semantic"` is explicit (rather than relying on the default
-      // hybrid) because the contains leg of hybrid will mostly miss for
-      // phrase-shaped seed queries — running it would just add a Notion
-      // round-trip per wake-up before the inevitable semantic fallback
-      // fires. The cost saving is one round-trip per session start.
-      const candidates = filterPinnedMemoryRows(
-        await services.memories.search({
-          query: entities.join(" "),
-          projectId,
-          limit: fetchLimit,
-          includeContent,
-          mode: "semantic",
-          includeExpired,
-          excludePinned: excludePinnedFromMemorySections,
-        })
-      )
-      relatedMemories = candidates
-        .filter((m) => !alreadySurfaced.has(m.id))
-        .slice(0, relatedLimit)
+      // `mode: "semantic"` is explicit because related memories need
+      // Notion AI relevance over titles and bodies. A missing AI search
+      // engine is rendered as unavailable rather than as "zero related
+      // memories."
+      try {
+        const candidates = filterPinnedMemoryRows(
+          await services.memories.search({
+            query: entities.join(" "),
+            projectId,
+            limit: fetchLimit,
+            includeContent,
+            mode: "semantic",
+            includeExpired,
+            excludePinned: excludePinnedFromMemorySections,
+          })
+        )
+        relatedMemories = candidates
+          .filter((m) => !alreadySurfaced.has(m.id))
+          .slice(0, relatedLimit)
+      } catch (err) {
+        if (err instanceof SemanticSearchUnavailableError) {
+          relatedMemoriesUnavailable = err.message
+        } else {
+          throw err
+        }
+      }
     }
   }
 
@@ -982,9 +1015,11 @@ async function runWakeUpFanOut(
     overdueDecisions,
     overdueDecisionsCapped: overdueDecisionWindow.capped,
     relatedMemories,
+    relatedMemoriesUnavailable,
     tasks,
     taskBucketCoverage: taskWindow.coverage,
     taskMemories,
+    taskMemoriesUnavailable,
     proposedMemories,
     proposedMemoriesTotal,
     staleConfidence,

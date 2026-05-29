@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerContextTools, neutralizeLeadingBlockquote } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
+import { SemanticSearchUnavailableError } from "../../core/memory-search.js"
 import { LoreError } from "../../errors.js"
 import {
   backgroundFailureMarkerPath,
@@ -237,6 +238,7 @@ interface WakeServicesOverrides {
   memories?: Memory[]
   digest?: Memory | null
   relatedMemories?: Memory[]
+  relatedSearchError?: Error
   /**
    * Memories returned when the search query equals `taskQuery`. Lets
    * P3-05 tests distinguish the user-query-seeded task search from the
@@ -245,6 +247,7 @@ interface WakeServicesOverrides {
    */
   taskQuery?: string
   taskMemories?: Memory[]
+  taskSearchError?: Error
   facts?: Fact[]
   tasks?: TaskSummary[]
   /**
@@ -364,11 +367,17 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     return { items: overrides.memories ?? [] }
   })
   const memoriesSearch = vi.fn(async (args: { query: string }) => {
+    if (overrides.relatedSearchError !== undefined) {
+      throw overrides.relatedSearchError
+    }
     if (
       overrides.taskQuery !== undefined &&
       overrides.taskMemories !== undefined &&
       args.query === overrides.taskQuery
     ) {
+      if (overrides.taskSearchError !== undefined) {
+        throw overrides.taskSearchError
+      }
       return overrides.taskMemories
     }
     return overrides.relatedMemories ?? []
@@ -1104,6 +1113,49 @@ describe("lore-wake-up — expand interacts with collapse", () => {
     expect(text).toMatch(/^#### Recent entry/m)
     // Related to Open Loops: `## Related to Open Loops` → `### Related entry`
     expect(text).toMatch(/^### Related entry/m)
+  })
+
+  it("renders the related-memory unavailable reason separately from no results", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      tasks: [
+        makeTask({
+          id: "t1",
+          title: "Router migration",
+          entity: "Router migration",
+        }),
+      ],
+      relatedSearchError: new SemanticSearchUnavailableError("RunTool search disabled"),
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## Related to Active Tasks")
+    expect(text).toContain("> AI semantic search unavailable: RunTool search disabled")
+  })
+
+  it("renders the task-memory unavailable reason separately from no results", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "How do I fix auth?",
+      taskMemories: [],
+      taskSearchError: new SemanticSearchUnavailableError("RunTool search disabled"),
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({
+      mode: "task-only",
+      userQuery: "How do I fix auth?",
+    } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## For Your Current Task")
+    expect(text).toContain("> AI semantic search unavailable: RunTool search disabled")
+    expect(text).not.toContain("No task-relevant memories found")
   })
 })
 
@@ -3291,8 +3343,7 @@ describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
     // duplicates without shrinking the visible cluster count below
     // `limit`. The touch batch must NOT see those over-fetched rows —
     // they were never rendered to the agent, and bumping their
-    // `Confidence Score` would inflate RRF's confidence factor against
-    // a signal that should reflect actual citations.
+    // `Confidence Score` would record a citation signal that did not happen.
     //
     // Fixture builds 30 input memories (3× the default `limit: 10`)
     // with mutually-disjoint titles (no shared tokens of length ≥ 3

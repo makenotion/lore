@@ -11,6 +11,7 @@ function makeData(): WakeUpData {
     overdueDecisions: [],
     overdueDecisionsCapped: false,
     relatedMemories: [],
+    relatedMemoriesUnavailable: null,
     tasks: [],
     taskBucketCoverage: {
       overdueCapped: false,
@@ -18,6 +19,7 @@ function makeData(): WakeUpData {
       activeCapped: false,
     },
     taskMemories: [],
+    taskMemoriesUnavailable: null,
     proposedMemories: [],
     proposedMemoriesTotal: 0,
     staleConfidence: [],

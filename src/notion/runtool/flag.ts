@@ -171,12 +171,11 @@ export function isRunToolFilterSqlEnabled(env: NodeJS.ProcessEnv = process.env):
  * inherits from `LORE_USE_RUNTOOL`. **On by default.**
  *
  * Gates the RunTool `search` consumer in
- * `MemoryService.fetchSemanticPages`'s flag-on branch. The branch
- * structurally cannot serve every request shape `MemoryService`
- * accepts (empty composed query, `limit > 25`, raw-response
- * saturation under the 25-row no-cursor cap), so the flag-on path
- * falls back to REST per-call on those windows. Same parent-inherit
- * posture as the block-edit and filter-sql sub-flags.
+ * `MemoryService.fetchSemanticPages`. Semantic search is defined by
+ * the AI-ranked RunTool window; disabling this flag makes semantic
+ * search unavailable rather than routing through a REST keyword
+ * fallback. Same parent-inherit posture as the block-edit and
+ * filter-sql sub-flags.
  */
 export function isRunToolSearchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_SEARCH")
