@@ -11,7 +11,14 @@ import {
 
 export const EVAL_SUITE_VERSION = 1
 
-export const EVAL_RUNNERS = ["retrieval", "notion", "task", "bench", "profile"] as const
+export const EVAL_RUNNERS = [
+  "retrieval",
+  "notion",
+  "task",
+  "bench",
+  "profile",
+  "retrieval-quality",
+] as const
 
 /**
  * Agents the committed task-eval YAML may reference. `mock` is

@@ -1,0 +1,30 @@
+version: 1
+name: mail-retrieval-quality
+runner: retrieval-quality
+description: >
+  Live Mail vault retrieval-quality checks for paraphrased queries whose target
+  memories should rank first through Notion AI search.
+limit: 10
+lanes:
+  - product
+  - runtool-ai
+  - rest-keyword
+requiredLanes:
+  - product
+  - runtool-ai
+cases:
+  - id: mail-ios-swipeactions-lazyvstack
+    query: "swipe actions do nothing inside a vertical scrolling stack"
+    expectedMemoryId: "359b35e6-e67f-81bb-974f-f3bdb6dd3625"
+    expectedTitle: ".swipeActions silently no-ops inside LazyVStack -- use List"
+    projectName: "Mail iOS"
+  - id: mail-ios-webview-jsonencoder
+    query: "safely encode a Swift value before interpolating into an evaluateJavaScript string"
+    expectedMemoryId: "359b35e6-e67f-81b8-9923-eb6bbd35719c"
+    expectedTitle: "Encode Swift values via JSONEncoder before splicing into evaluateJavaScript strings"
+    projectName: "Mail iOS"
+  - id: mail-notion-multiselect-limit
+    query: "Notion API silently rejects a multi_select update when there are too many options"
+    expectedMemoryId: "360b35e6-e67f-81d4-9f5b-eb7f9354c140"
+    expectedTitle: "Notion rejects multi_select PATCH silently when options exceed 100"
+    projectName: "Mail"

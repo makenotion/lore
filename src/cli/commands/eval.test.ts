@@ -67,6 +67,12 @@ describe("parseEvalRunCliOptions", () => {
     if (result.ok) expect(result.value.costKillSwitchUsd).toBe(1500)
   })
 
+  it("accepts retrieval-quality runner mode", () => {
+    const result = parseEvalRunCliOptions({ runner: "retrieval-quality" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.runner).toBe("retrieval-quality")
+  })
+
   it("parses longitudinal segmentation and parallelism flags", () => {
     const result = parseEvalRunCliOptions({
       runner: "task",
@@ -219,6 +225,22 @@ describe("parseEvalRunCliOptions", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("not supported with --runner profile")
+    }
+  })
+
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Widget" },
+  ])("rejects --$flag with --runner retrieval-quality ($flag)", ({ flag, value }) => {
+    const result = parseEvalRunCliOptions({
+      runner: "retrieval-quality",
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner retrieval-quality")
     }
   })
 
@@ -595,6 +617,15 @@ describe("validateBaselineRunnerSupport", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("--runner profile is not supported")
+      expect(result.message).toContain("baseline subcommand")
+    }
+  })
+
+  it("rejects --runner retrieval-quality with an actionable operator message", () => {
+    const result = validateBaselineRunnerSupport("retrieval-quality")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--runner retrieval-quality is not supported")
       expect(result.message).toContain("baseline subcommand")
     }
   })

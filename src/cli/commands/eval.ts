@@ -255,6 +255,26 @@ export function validateEvalRunRunnerCompatibility(
     }
   }
 
+  if (runner === "retrieval-quality") {
+    const retrievalQualityIncompatible: Array<{
+      flag: string
+      raw: string | undefined
+    }> = [
+      { flag: "--baseline", raw: raw.baseline },
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of retrievalQualityIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner retrieval-quality; retrieval-quality suites carry per-case project labels and are scored by recall@k / MRR.`,
+        }
+      }
+    }
+  }
+
   return { ok: true, value: undefined }
 }
 
@@ -323,6 +343,13 @@ export function validateBaselineRunnerSupport(
       ok: false,
       message:
         "--runner profile is not supported by the baseline subcommand. Profile-mode artifacts are deterministic threshold checks, so baseline comparisons do not apply.",
+    }
+  }
+  if (runner === "retrieval-quality") {
+    return {
+      ok: false,
+      message:
+        "--runner retrieval-quality is not supported by the baseline subcommand. Retrieval-quality artifacts measure a live vault's ranked search behavior, so baseline comparisons do not apply.",
     }
   }
   return { ok: true, value: undefined }
@@ -611,7 +638,7 @@ evalCommand.addCommand(
     .argument("<suite>", "Path to an eval suite YAML file")
     .option(
       "--runner <mode>",
-      "Runner mode (retrieval|notion|task|bench|profile); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
+      "Runner mode (retrieval|notion|task|bench|profile|retrieval-quality); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
     )
     .option("--trials <n>", "Trial count; retrieval mode requires 1")
     .option("--out <path>", "Write the JSON artifact to a specific path")
@@ -760,6 +787,50 @@ evalCommand.addCommand(
             process.exit(1)
             return
           }
+          if (parsed.value.runner === "retrieval-quality") {
+            const { runRetrievalQualitySuite } =
+              await import("../../eval/retrieval-quality.js")
+            const { artifact, outPath } = await runRetrievalQualitySuite(suite, {
+              outPath: parsed.value.outPath,
+            })
+            if (parsed.value.json) {
+              console.log(JSON.stringify(artifact, null, 2))
+            } else {
+              const status =
+                artifact.summary.failedRequiredResults === 0 ? "passed" : "failed"
+              console.log(
+                `Retrieval-quality eval ${status}: ` +
+                  `${artifact.summary.passedRequiredResults}/${artifact.summary.requiredResults} required lane checks passed.`
+              )
+              for (const lane of artifact.runner.lanes) {
+                const summary = artifact.summary.lanes[lane]
+                if (!summary) continue
+                console.log(
+                  `  ${lane}: recall@1=${formatPercent(summary.recallAt1)}, ` +
+                    `recall@5=${formatPercent(summary.recallAt5)}, ` +
+                    `recall@10=${formatPercent(summary.recallAt10)}, ` +
+                    `MRR=${summary.mrr.toFixed(4)}, ` +
+                    `mechanism failures=${summary.mechanismFailures}`
+                )
+              }
+              console.log(`Artifact: ${outPath}`)
+              const requiredLanes = new Set(artifact.runner.requiredLanes)
+              for (const result of artifact.results) {
+                if (!requiredLanes.has(result.lane) || result.success) continue
+                const rank =
+                  result.targetRank === null ? "not found" : String(result.targetRank)
+                console.log(`  - ${result.caseId} [${result.lane}]: rank ${rank}`)
+                for (const failure of result.mechanism.failures) {
+                  console.log(`    - ${failure}`)
+                }
+              }
+            }
+            if (artifact.summary.failedRequiredResults > 0) {
+              process.exit(1)
+            }
+            return
+          }
+
           if (parsed.value.runner === "task") {
             const { artifact, outPath } = await runTaskEvalSuite(suite, {
               outPath: parsed.value.outPath,
@@ -1064,7 +1135,7 @@ evalCommand.addCommand(
       "--out <path>",
       "Write the baseline snapshot to this path (typically evals/baselines/<suite>.json)"
     )
-    .option("--runner <mode>", "Runner mode (retrieval|notion)")
+    .option("--runner <mode>", "Runner mode (retrieval|notion|bench|retrieval-quality)")
     .option(
       "--project <name>",
       "Sandbox project to scope retrieval against (required for --runner notion)"

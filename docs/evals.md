@@ -52,19 +52,21 @@ node dist/cli.js eval run evals/suites/lore-core.yaml \
 
 ## Runner Modes
 
-Five runners ship today. `retrieval` and `notion` share the same suite YAML
-format and surface registry; `task`, `bench`, and `profile` each have their own
-suite shape and scoring path because they score agent-produced workspace state,
-LongMemEval-style multi-session recall, or profile taxonomy quality rather than
-retrieved memory ids:
+Six runners ship today. `retrieval` and `notion` share the same suite YAML
+format and surface registry; `task`, `bench`, `profile`, and
+`retrieval-quality` each have their own suite shape and scoring path because
+they score agent-produced workspace state, LongMemEval-style multi-session
+recall, profile taxonomy quality, or ranked live-search quality rather than
+wake-up surfaced memory ids:
 
-| Runner                | What it exercises                                                                                                                                   | Where to use it                                                                                                                          |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls.                                                           | Per-PR CI; the inner-loop fast feedback.                                                                                                 |
-| `notion`              | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion.                                                            | Nightly CI; PRs that touch retrieval composition or ranking.                                                                             |
-| `task`                | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`.                                  | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path.                                                                      |
-| `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                           | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0. |
-| `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls. | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                      |
+| Runner                | What it exercises                                                                                                                                                                                           | Where to use it                                                                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls.                                                                                                                   | Per-PR CI; the inner-loop fast feedback.                                                                                                                |
+| `notion`              | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion.                                                                                                                    | Nightly CI; PRs that touch retrieval composition or ranking.                                                                                            |
+| `task`                | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`.                                                                                          | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path.                                                                                     |
+| `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                                                                                   | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0.                |
+| `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls.                                                         | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                                     |
+| `retrieval-quality`   | Labeled live-vault query → expected-memory checks through the real `MemoryService.searchWithExplain` path. Computes target rank, recall@1/5/10, and MRR across product, RunTool AI, and REST keyword lanes. | PRs and release checks that touch search transport or ranking. Read-only but live-vault-backed, so run deliberately against an operator-approved vault. |
 
 Pass `--runner notion --project <SandboxProject>` to route a run through the
 production retrieval stack (rate limiter, hybrid search, contains/semantic
@@ -85,6 +87,36 @@ rules live in [`evals-suite-format.md`](evals-suite-format.md). LongMemEval
 bench operations and the temporal-fidelity caveat that must travel with
 published benchmark numbers live in
 [`evals-longmemeval.md`](evals-longmemeval.md).
+
+## Retrieval-Quality Runner
+
+`retrieval-quality` suites live under `evals/retrieval-quality/`. They are
+live-vault, read-only suites: each case labels a natural-language paraphrase,
+the expected memory id, and the project name that owns the memory. The runner
+resolves each project by name, runs the real search path, and emits one result
+per lane.
+
+```bash
+npm run build
+LORE_CONFIG_ROOT=~/Developer/Notion/Mail \
+node dist/cli.js eval run evals/retrieval-quality/mail.yaml
+```
+
+The default lanes are:
+
+| Lane           | What it measures                                                                                                        |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `product`      | The shipped `lore search` / `lore-query action='search'` path: semantic mode with the process's resolved feature flags. |
+| `runtool-ai`   | Semantic mode with RunTool search forced on, proving Notion AI search can rank the target.                              |
+| `rest-keyword` | Contains-mode `dataSources.query` keyword search, retained as a comparison lane rather than a required pass condition.  |
+
+`product` and `runtool-ai` are required lanes by default. A required result
+passes only when the target ranks #1 and the mechanism trace proves the
+expected transport fired. For AI lanes, `tools/run` search must fire and
+REST `client.search` must not fire. For `rest-keyword`, `dataSources.query`
+must fire and neither RunTool search nor `client.search` may fire.
+Suite `limit` must be at least `10`, matching the largest reported recall@k
+cutoff.
 
 ## Sandbox Vault Discipline
 

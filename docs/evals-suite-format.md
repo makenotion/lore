@@ -210,6 +210,48 @@ The JSON artifact is the comparison contract. Human CLI output is only a
 summary. `startedAt` is operational metadata; compare `results` and `summary`
 when checking deterministic regressions.
 
+## Retrieval-Quality Suites
+
+Retrieval-quality suites live under `evals/retrieval-quality/` and use a
+live-vault schema distinct from wake-up retrieval suites. Each case names one
+paraphrased query, the expected memory id, and the project name that owns that
+memory:
+
+```yaml
+version: 1
+name: mail-retrieval-quality
+runner: retrieval-quality
+limit: 10
+lanes:
+  - product
+  - runtool-ai
+  - rest-keyword
+requiredLanes:
+  - product
+  - runtool-ai
+cases:
+  - id: mail-ios-swipeactions-lazyvstack
+    query: swipe actions do nothing inside a vertical scrolling stack
+    expectedMemoryId: 359b35e6-e67f-81bb-974f-f3bdb6dd3625
+    expectedTitle: .swipeActions silently no-ops inside LazyVStack -- use List
+    projectName: Mail iOS
+```
+
+The runner emits one row per case/lane. Each row records the target's 1-based
+rank (`null` when absent), recall@1/5/10, reciprocal rank, returned ids/titles,
+cap metadata, the search explain trace, and a transport mechanism trace.
+`limit` must be at least `10` so recall@10 is always measured against a full
+candidate window.
+`product` and `runtool-ai` are required lanes by default; `rest-keyword`
+quantifies the lexical baseline and may fail without failing the run. A required
+lane result passes only when the target ranks #1 and the expected mechanism
+fired.
+
+Mechanism checks are part of the contract. AI lanes must dispatch RunTool
+`tools/run` search and must not fall back to REST `client.search`. The
+REST-keyword lane must dispatch `dataSources.query` and must not touch RunTool
+search or `client.search`.
+
 ## Task-Eval Suites
 
 Task-eval suites live under `evals/task-suites/` and use a different YAML
