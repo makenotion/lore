@@ -44,6 +44,7 @@ interface MemoryRow {
   title: string
   keywords: string
   synopsis: string
+  source: string
   lastEditedTime: string
 }
 
@@ -55,6 +56,7 @@ type LeafFilter =
     }
   | { property: typeof MEMORY_PROPS.SYNOPSIS; rich_text: { contains: string } }
   | { property: typeof MEMORY_PROPS.STATUS; select: { does_not_equal: string } }
+  | { property: typeof MEMORY_PROPS.SOURCE; select: { does_not_equal: string } }
 type CompoundFilter = { and?: Filter[] } | { or?: Filter[] }
 type Filter = LeafFilter | CompoundFilter
 
@@ -73,6 +75,7 @@ class MemoriesFixtureVault {
       title: row.title ?? "",
       keywords: row.keywords ?? "",
       synopsis: row.synopsis ?? "",
+      source: "manual",
       lastEditedTime: row.lastEditedTime,
     })
   }
@@ -125,6 +128,9 @@ class MemoriesFixtureVault {
         // throw doesn't reject the new clause.
         return "informational" !== filter.select.does_not_equal
       }
+      if (filter.property === "Source" && "select" in filter) {
+        return row.source !== filter.select.does_not_equal
+      }
       // Inside-block throw — a future contributor adding a new property
       // leg (e.g. `Status select.equals`) who forgets to wire its arm
       // surfaces the omission immediately, instead of risking a silent
@@ -165,7 +171,7 @@ class MemoriesFixtureVault {
         } as unknown,
         Project: { type: "relation", relation: [] } as unknown,
         Topic: { type: "relation", relation: [] } as unknown,
-        Source: { type: "select", select: { name: "manual" } } as unknown,
+        Source: { type: "select", select: { name: row.source } } as unknown,
         Tags: { type: "multi_select", multi_select: [] } as unknown,
       } as PageObjectResponse["properties"],
     } as PageObjectResponse

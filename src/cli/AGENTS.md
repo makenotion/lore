@@ -55,7 +55,7 @@ in [`../../docs/cli.md`](../../docs/cli.md) must stay in sync.
 | [`commands/debt.ts`](commands/debt.ts)             | `lore debt scan/create-tasks`                                 |
 | [`commands/procedures.ts`](commands/procedures.ts) | `lore procedures scan/propose/deprecate`                      |
 | [`commands/entities.ts`](commands/entities.ts)     | `lore entities merge`                                         |
-| [`commands/vault.ts`](commands/vault.ts)           | `lore vault ensure-entities`                                  |
+| [`commands/vault.ts`](commands/vault.ts)           | `lore vault ensure-entities/migrate-agent-diary`              |
 | [`commands/eval.ts`](commands/eval.ts)             | `lore eval run/baseline/vaults/bench`                         |
 | [`commands/promote.ts`](commands/promote.ts)       | `lore promote <memoryId> --to <name>`                         |
 | [`commands/mcp.ts`](commands/mcp.ts)               | `lore mcp`                                                    |

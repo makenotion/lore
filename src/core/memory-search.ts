@@ -42,7 +42,11 @@ import {
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
 import { hydrateRelationPropertiesForPages } from "../notion/relation-properties.js"
 import { matchesDefaultScope } from "./memory-scope.js"
-import { withCleanupOrphanExclusion } from "./memory-filters.js"
+import {
+  isNotRetiredRecallSource,
+  retiredRecallSourceExclusionFilters,
+  withCleanupOrphanExclusion,
+} from "./memory-filters.js"
 import {
   isNotReviewTerminalStatus,
   reviewTerminalStatusExclusionFilters,
@@ -731,6 +735,7 @@ export class MemorySearch {
       // Explicit `status` short-circuits this branch.
       filters.push(...reviewTerminalStatusExclusionFilters())
     }
+    filters.push(...retiredRecallSourceExclusionFilters())
     // Empty-string query degenerates to "match every page in the data source"
     // because `contains: ""` is satisfied by every value. Skip the text
     // clause entirely so the caller gets a recency-ordered listing of
@@ -1429,6 +1434,7 @@ export class MemorySearch {
       }
       const keywords = extractRichText(page.properties[MEMORY_PROPS.KEYWORDS])
       if (keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) return false
+      if (!isNotRetiredRecallSource(page)) return false
       return true
     })
 

@@ -41,6 +41,7 @@ Keep this index focused on cross-command invariants, routing, and a short summar
 | `tasks`     | [`docs/cli/contracts/tasks.md`](cli/contracts/tasks.md)         | Task lifecycle contracts for create, update, close, close-many, list, reconcile, and project filtering.                                       |
 | `eval`      | [`docs/cli/contracts/eval.md`](cli/contracts/eval.md)           | Local evaluation runner, baseline, live-vault, and benchmark command contracts.                                                               |
 | `profile`   | [`docs/cli/contracts/profile.md`](cli/contracts/profile.md)     | Profile discovery, validation, preview, install, set, and migration contracts.                                                                |
+| `vault`     | [`docs/cli/contracts/vault.md`](cli/contracts/vault.md)         | Vault maintenance command contracts, including agent_diary cleanup posture.                                                                   |
 
 ## Other Command Surfaces
 
@@ -61,6 +62,9 @@ Keep this index focused on cross-command invariants, routing, and a short summar
   aliases, writes a merge note, and archives the loser only with `--yes`.
 - `vault ensure-entities` is the legacy four-database cutover helper; it should
   stay additive and dry-run-capable.
+- `vault migrate-agent-diary` audits live `source=agent_diary` rows by default;
+  apply mode rejects null-kind narration rows and re-sources note rows to
+  `conversation`, leaving other kinds for manual review.
 - `promote` copies a memory into a configured promotion target and is
   idempotent by target-vault `Promotion Source Key`; rerunning the same
   source/target reuses the existing row.

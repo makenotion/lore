@@ -33,7 +33,13 @@ const STATUSES = [
   "rejected",
 ] as const
 
-const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as const
+const READABLE_SOURCES = [
+  "conversation",
+  "file",
+  "manual",
+  "agent_diary",
+  "digest",
+] as const
 
 /**
  * Agent-facing description for `intent` on the `search` arm. Hoisted out of
@@ -70,7 +76,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     action: z.literal("recall"),
     projectName: z.string().optional(),
     topicName: z.string().optional(),
-    source: z.enum(SOURCES).optional(),
+    source: z.enum(READABLE_SOURCES).optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
     reviewBefore: ymdDateSchema.optional(),
@@ -168,7 +174,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
               "(action='search') Scope to a topic. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`."
           ),
         source: z
-          .enum(SOURCES)
+          .enum(READABLE_SOURCES)
           .optional()
           .describe("(action='recall') Filter by source type."),
         // recall | search

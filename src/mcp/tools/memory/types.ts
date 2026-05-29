@@ -80,13 +80,18 @@ export const STATUSES = [
 
 export const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
-export const SOURCES = [
+export const WRITABLE_SOURCES = ["conversation", "file", "manual", "digest"] as const
+
+export const READABLE_SOURCES = [
   "conversation",
   "file",
   "manual",
   "agent_diary",
   "digest",
 ] as const
+
+// Save-schema alias; read schemas use READABLE_SOURCES.
+export const SOURCES = WRITABLE_SOURCES
 
 export const EXPAND_MAX_IDS = 20
 

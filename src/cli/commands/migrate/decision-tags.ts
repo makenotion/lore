@@ -22,11 +22,14 @@ export async function upgradeLegacyDecisionTags(services: LoreServices): Promise
     // proposed-status legacy `decision`-tagged row would persist
     // across the migration and resurface only after the row's
     // status changes.
+    // Retired source values are included for the same reason: this
+    // command repairs legacy metadata, not recall results.
     const { items: batch } = await services.memories.list({
       tags: ["decision"],
       limit: BATCH_SIZE,
       includeContent: false,
       includeProposed: true,
+      includeRetiredSources: true,
     })
 
     // Defensive filter in case a memory is already Kind=decision but still

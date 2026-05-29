@@ -444,6 +444,10 @@ export interface NearDuplicateSqlOpts {
   kind?: string
   /** Excluded kinds (server-side `Kind NOT IN (...)`). */
   excludeKinds?: readonly string[]
+  /** Notion `Source` column name (`MEMORY_PROPS.SOURCE`). Required when `excludeSources` is non-empty. */
+  sourceProperty?: string
+  /** Source blacklist (server-side `Source NOT IN (...)`). */
+  excludeSources?: readonly string[]
   /** Status whitelist (server-side `Status IN (...)`). */
   statuses?: readonly string[]
   /**
@@ -560,6 +564,20 @@ export async function fetchNearDuplicateCandidatePageIds(
         `OR ${quoteIdent(opts.kindProperty)} IS NULL)`
     )
     for (const k of opts.excludeKinds) params.push(k)
+  }
+  if (opts.excludeSources && opts.excludeSources.length > 0) {
+    if (!opts.sourceProperty) {
+      throw new Error(
+        "fetchNearDuplicateCandidatePageIds: `excludeSources` requires " +
+          "`sourceProperty` to be set so the predicate can target the right Notion column."
+      )
+    }
+    const placeholders = opts.excludeSources.map(() => "?").join(", ")
+    predicates.push(
+      `(${quoteIdent(opts.sourceProperty)} NOT IN (${placeholders}) ` +
+        `OR ${quoteIdent(opts.sourceProperty)} IS NULL)`
+    )
+    for (const s of opts.excludeSources) params.push(s)
   }
   if (opts.statuses && opts.statuses.length > 0) {
     // `Status IN (...)` is null-restrictive on its own (a row with

@@ -64,11 +64,14 @@ async function migrateOutOfVocabTags(
   // scanned"); silently skipping proposed rows would mis-report the
   // scanned total and break idempotency (a follow-up run after a row
   // leaves proposed state would suddenly find it).
+  // `includeRetiredSources: true` applies the same full-vault posture
+  // to retired source values.
   for (;;) {
     const { items, nextCursor } = await services.memories.list({
       limit: PAGE_SIZE,
       includeContent: false,
       includeProposed: true,
+      includeRetiredSources: true,
       startCursor: cursor,
     })
     if (items.length === 0 && !nextCursor) break

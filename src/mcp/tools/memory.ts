@@ -140,7 +140,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(SOURCES)
           .optional()
           .describe(
-            "(action='save') How this memory was captured. Default: conversation."
+            "(action='save') How this memory was captured: conversation, file, manual, or digest. Default: conversation."
           ),
         kind: z
           .enum(SUGGEST_KIND_VALUES)

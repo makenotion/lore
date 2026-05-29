@@ -10,12 +10,12 @@ import type {
   SearchMode,
 } from "../../../types.js"
 import type { ToolResult } from "./types.js"
-import { KINDS, SOURCES, STATUSES } from "./types.js"
+import { KINDS, READABLE_SOURCES, STATUSES } from "./types.js"
 
 export interface RecallArgs {
   projectName?: string
   topicName?: string
-  source?: (typeof SOURCES)[number]
+  source?: (typeof READABLE_SOURCES)[number]
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
   reviewBefore?: string

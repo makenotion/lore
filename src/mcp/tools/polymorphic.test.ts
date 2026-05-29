@@ -672,6 +672,22 @@ describe("lore-memory polymorphic dispatcher", () => {
     expect(memoriesCreate).toHaveBeenCalled()
   })
 
+  it("rejects source='agent_diary' on action='save'", async () => {
+    const memoriesCreate = vi.fn()
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices({ memoriesCreate }) as never)
+    const result = await mock.get("lore-memory")({
+      action: "save",
+      title: "T",
+      content: "C",
+      source: "agent_diary",
+    } as never)
+
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("Invalid enum value")
+    expect(memoriesCreate).not.toHaveBeenCalled()
+  })
+
   // -----------------------------------------------------------------------
   // lore-memory action='suggest-topic-key'
   //
@@ -934,6 +950,18 @@ describe("lore-query polymorphic dispatcher", () => {
     if (!parsed.success) return
     expect(parsed.data.action).toBe("search")
     expect(parsed.data).toHaveProperty("intent", "WeChat session cookie")
+  })
+
+  it("queryDispatchSchema strips source from action='search' because source audits use recall", () => {
+    const parsed = queryDispatchSchema.safeParse({
+      action: "search",
+      query: "auth",
+      source: "agent_diary",
+    })
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(parsed.data.action).toBe("search")
+    expect(parsed.data).not.toHaveProperty("source")
   })
 
   it("dispatches action='search' with explain:true through searchWithExplain", async () => {

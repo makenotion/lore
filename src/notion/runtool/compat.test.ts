@@ -30,6 +30,7 @@ interface FixtureRow {
   title: string
   kind: Memory["kind"]
   status: MemoryStatus
+  source?: Memory["source"]
   projectId: string
   tags: string[]
 }
@@ -126,6 +127,17 @@ const FIXTURE: ReadonlyArray<FixtureRow> = [
     projectId: PROJECT_A,
     tags: ["unrelated"],
   },
+  // Retired source — default memory listing excludes it before the
+  // near-duplicate scorer sees candidates.
+  {
+    id: "mem-10",
+    title: "MemoryService refactor diary",
+    kind: "note",
+    status: "accepted",
+    source: "agent_diary",
+    projectId: PROJECT_A,
+    tags: ["refactor"],
+  },
 ]
 
 function makeMemory(row: FixtureRow): Memory {
@@ -134,7 +146,7 @@ function makeMemory(row: FixtureRow): Memory {
     title: row.title,
     projectIds: [row.projectId],
     topicId: null,
-    source: "manual",
+    source: row.source ?? "manual",
     kind: row.kind,
     status: row.status,
     confidence: "certain",
@@ -196,6 +208,7 @@ function restListerLike(items: ReadonlyArray<FixtureRow>) {
       }
       if (opts.kind && row.kind !== opts.kind) return false
       if (opts.excludeKinds && opts.excludeKinds.includes(row.kind)) return false
+      if (row.source === "agent_diary") return false
       // Tag filter: OR across requested tags, mirroring Notion's
       // `multi_select.contains` server-side behavior.
       if (opts.tags && opts.tags.length > 0) {
@@ -248,6 +261,7 @@ function sqlListerLike(items: ReadonlyArray<FixtureRow>) {
       if (opts.excludeKinds && opts.excludeKinds.includes(row.kind)) return false
       if (opts.statuses && !opts.statuses.includes(row.status)) return false
       if (excludeStatuses && excludeStatuses.includes(row.status)) return false
+      if (row.source === "agent_diary") return false
       if (opts.tags && opts.tags.length > 0) {
         if (!row.tags.some((t) => opts.tags!.includes(t))) return false
       }
@@ -283,6 +297,7 @@ describe("RunTool SQL vs REST/SDK A/B harness", () => {
     expect(sqlIds).toEqual(restIds)
     expect(restIds.has("mem-3")).toBe(false) // decision excluded
     expect(restIds.has("mem-5")).toBe(false) // wrong project
+    expect(restIds.has("mem-10")).toBe(false) // retired source excluded
     // mem-4 (status=superseded) is in BOTH sets because the memory
     // probe doesn't pass `statuses`. The status whitelist is a
     // decision-path-only opt-in.

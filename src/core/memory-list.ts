@@ -29,7 +29,11 @@ import {
 import type { LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_CLEANUP_ORPHAN_SENTINEL } from "./near-duplicate.js"
 import { todayUtc } from "./task.js"
-import { withCleanupOrphanExclusion } from "./memory-filters.js"
+import {
+  RETIRED_RECALL_SOURCES,
+  retiredRecallSourceExclusionFilters,
+  withCleanupOrphanExclusion,
+} from "./memory-filters.js"
 import { matchesDefaultScope } from "./memory-scope.js"
 import { reviewTerminalStatusExclusionFilters } from "./memory-review-state.js"
 
@@ -119,6 +123,12 @@ export interface ListMemoriesOptions {
   includeContent?: boolean
   includeUnscoped?: boolean
   includeProposed?: boolean
+  /**
+   * Maintenance-only opt-in for full-vault scans that must see
+   * historical rows from retired write sources. User-facing recall
+   * paths should rely on the default retired-source exclusion.
+   */
+  includeRetiredSources?: boolean
   includeExpired?: boolean
   today?: string
   /**
@@ -197,6 +207,7 @@ export class MemoryList {
           topicProperty: MEMORY_PROPS.TOPIC,
           kindProperty: MEMORY_PROPS.KIND,
           statusProperty: MEMORY_PROPS.STATUS,
+          sourceProperty: MEMORY_PROPS.SOURCE,
           keywordsProperty: MEMORY_PROPS.KEYWORDS,
           tagsProperty: MEMORY_PROPS.TAGS,
           projectId: opts.projectId,
@@ -214,6 +225,7 @@ export class MemoryList {
             ? { statuses: opts.statuses }
             : {}),
           ...(excludeStatuses ? { excludeStatuses } : {}),
+          excludeSources: RETIRED_RECALL_SOURCES,
           cleanupOrphanSentinel: MEMORY_CLEANUP_ORPHAN_SENTINEL,
           limit: opts.limit,
         })
@@ -318,6 +330,8 @@ export class MemoryList {
         property: MEMORY_PROPS.SOURCE,
         select: { equals: opts.source },
       })
+    } else if (opts?.includeRetiredSources !== true) {
+      filters.push(...retiredRecallSourceExclusionFilters())
     }
     if (opts?.kind) {
       filters.push({

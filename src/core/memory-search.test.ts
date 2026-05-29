@@ -35,6 +35,7 @@ function page(
     confidenceScore?: number | null
     pinned?: boolean
     lastReferencedAt?: string | null
+    source?: string
   } = {}
 ): PageObjectResponse {
   const title = options.title ?? id
@@ -58,7 +59,7 @@ function page(
       [MEMORY_PROPS.TOPIC]: { type: "relation", relation: [] } as unknown,
       [MEMORY_PROPS.SOURCE]: {
         type: "select",
-        select: { name: "manual" },
+        select: { name: options.source ?? "manual" },
       } as unknown,
       [MEMORY_PROPS.KIND]: {
         type: "select",
@@ -160,6 +161,41 @@ function makeSubject(
 }
 
 describe("MemorySearch mode selection", () => {
+  it("contains mode excludes agent_diary rows", async () => {
+    const { searcher, querySpy } = makeSubject()
+
+    await searcher.search({
+      query: "retry",
+      mode: "contains",
+      limit: 3,
+    })
+
+    const serialized = JSON.stringify(querySpy.mock.calls[0]![0].filter)
+    expect(serialized).toContain(MEMORY_PROPS.SOURCE)
+    expect(serialized).toContain("does_not_equal")
+    expect(serialized).toContain("agent_diary")
+  })
+
+  it("semantic mode filters agent_diary rows before materialization", async () => {
+    const { searcher, materializeSpy } = makeSubject({
+      semanticPages: [
+        page("diary", { source: "agent_diary" }),
+        page("normal", { source: "manual" }),
+      ],
+    })
+
+    const memories = await searcher.search({
+      query: "retry",
+      mode: "semantic",
+      limit: 2,
+    })
+
+    expect(memories.map((memory) => memory.id)).toEqual(["normal"])
+    expect(materializeSpy.mock.calls[0]![0].map((p: PageObjectResponse) => p.id)).toEqual(
+      ["normal"]
+    )
+  })
+
   it("contains mode pushes excludePinned into the Notion filter", async () => {
     const { searcher, querySpy } = makeSubject()
 

@@ -29,6 +29,7 @@ const NEAR_DUP_OPTS = {
   topicProperty: "Topic",
   kindProperty: "Kind",
   statusProperty: "Status",
+  sourceProperty: "Source",
   keywordsProperty: "Keywords",
   cleanupOrphanSentinel: "__lore-cleanup-orphan",
   projectId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -89,6 +90,27 @@ describe("fetchNearDuplicateCandidatePageIds — F6 has_more handling", () => {
     expect(data.query).toMatch(/"Tags" LIKE \? OR "Tags" LIKE \?/)
     expect(data.query.indexOf("Tags")).toBeLessThan(data.query.indexOf("LIMIT"))
     expect(data.params).toEqual(expect.arrayContaining([`%"refactor"%`, `%"infra"%`]))
+  })
+
+  it("pushes excluded sources into the SQL predicate ahead of LIMIT", async () => {
+    let observedBody: Record<string, unknown> | undefined
+    const client = makeStubClient((args) => {
+      observedBody = args.body
+      return { results: [], has_more: false }
+    })
+    await fetchNearDuplicateCandidatePageIds(client, {
+      ...NEAR_DUP_OPTS,
+      excludeSources: ["agent_diary"],
+      limit: 50,
+    })
+    const data = (
+      observedBody?.["query_data_sources"] as {
+        data: { query: string; params?: string[] }
+      }
+    ).data
+    expect(data.query).toMatch(/"Source" NOT IN \(\?\) OR "Source" IS NULL/)
+    expect(data.query.indexOf("Source")).toBeLessThan(data.query.indexOf("LIMIT"))
+    expect(data.params).toEqual(expect.arrayContaining(["agent_diary"]))
   })
 
   it("rejects tag values with LIKE special characters (kebab-case validation)", async () => {

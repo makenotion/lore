@@ -9876,11 +9876,11 @@ describe("MemoryService.list — pagination", () => {
       includeProposed: true,
     })
 
-    // The cleanup-orphan exclusion (issue #477) is always appended,
-    // so a single-property caller filter lands inside an `and` array
-    // rather than as the bare clause.
+    // Default source and cleanup-orphan exclusions are always appended,
+    // so a single-property caller filter lands inside an `and` array.
     expect(querySpy.mock.calls[0][0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Session", rich_text: { equals: "session-1" } },
         {
           property: "Keywords",
@@ -9902,6 +9902,7 @@ describe("MemoryService.list — pagination", () => {
 
     expect(querySpy.mock.calls[0][0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Confidence", select: { equals: "likely" } },
         {
           property: "Keywords",
@@ -9934,11 +9935,11 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
     await service.list({ includeContent: false })
 
     expect(query).toHaveBeenCalledTimes(1)
-    // The cleanup-orphan exclusion (issue #477) is always appended.
-    // The default Status != proposed clause was a single-property
-    // filter pre-#477; it is now wrapped in `and: [..., sentinel]`.
+    // Default recall excludes retired sources, review-terminal statuses,
+    // and cleanup-orphan rows in the same compound filter.
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Status", select: { does_not_equal: "proposed" } },
         { property: "Status", select: { does_not_equal: "rejected" } },
         {
@@ -9950,10 +9951,8 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
   })
 
   it("suppresses the default Status exclusion when includeProposed is true (cleanup-orphan exclusion still applies)", async () => {
-    // Pre-issue-477 this was `filter: undefined`. The cleanup-orphan
-    // exclusion is independent of `includeProposed` — it filters
-    // resurfaced empty-body shells, not proposed-status memories — so
-    // it remains present even under the includeProposed opt-in.
+    // Source and cleanup-orphan exclusions are independent of
+    // `includeProposed`, so they remain present under the opt-in.
     const query = vi
       .fn()
       .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
@@ -9963,8 +9962,13 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
     await service.list({ includeContent: false, includeProposed: true })
 
     expect(query.mock.calls[0]![0].filter).toEqual({
-      property: "Keywords",
-      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+      and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 
@@ -9985,6 +9989,7 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
 
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Status", select: { equals: "proposed" } },
         {
           property: "Keywords",
@@ -10010,6 +10015,7 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
 
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Status", select: { equals: "rejected" } },
         {
           property: "Keywords",
@@ -10028,8 +10034,8 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
 
     await service.list({ projectId: "p1", includeContent: false })
 
-    // Three-clause `and:`: project scope + Status != proposed
-    // (issue #281) + Keywords does_not_contain sentinel (issue #477).
+    // Project scope composes with the default source, status, and
+    // cleanup-orphan exclusions in one `and:` wrapper.
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
         {
@@ -10038,6 +10044,7 @@ describe("MemoryService.list — default-excludes review-terminal statuses", () 
             { property: "Project", relation: { is_empty: true } },
           ],
         },
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Status", select: { does_not_equal: "proposed" } },
         { property: "Status", select: { does_not_equal: "rejected" } },
         {
@@ -10079,8 +10086,11 @@ describe("MemoryService.search — default-excludes Status = proposed (contains)
     await service.search({ query: "foo", mode: "contains", includeProposed: true })
 
     const filter = query.mock.calls[0]![0].filter as { and?: Array<unknown> } | undefined
-    const serialized = JSON.stringify(filter)
-    expect(serialized).not.toContain("does_not_equal")
+    expect(filter?.and ?? []).not.toEqual(
+      expect.arrayContaining([
+        { property: "Status", select: { does_not_equal: "proposed" } },
+      ])
+    )
   })
 })
 
@@ -10147,11 +10157,11 @@ describe("MemoryService.list — excludeKinds (issue #281)", () => {
     })
 
     expect(query).toHaveBeenCalledTimes(1)
-    // The cleanup-orphan exclusion (issue #477) is always appended,
-    // so a single excludeKinds clause lands inside `and:` alongside
-    // the sentinel exclusion.
+    // Default source and cleanup-orphan exclusions are always appended,
+    // so a single excludeKinds clause lands inside `and:`.
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Kind", select: { does_not_equal: "decision" } },
         {
           property: "Keywords",
@@ -10179,10 +10189,11 @@ describe("MemoryService.list — excludeKinds (issue #281)", () => {
       excludeKinds: ["decision", "task"],
     })
 
-    // Three-clause `and:`: per-kind exclusions + cleanup-orphan
-    // exclusion (issue #477).
+    // Per-kind exclusions compose with default source and cleanup-orphan
+    // exclusions in one `and:` wrapper.
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
         { property: "Kind", select: { does_not_equal: "decision" } },
         { property: "Kind", select: { does_not_equal: "task" } },
         {
@@ -10206,12 +10217,16 @@ describe("MemoryService.list — excludeKinds (issue #281)", () => {
       excludeKinds: [],
     })
 
-    // Pre-issue-477 this was `filter: undefined`. The cleanup-orphan
-    // exclusion is always present so a vault-wide unscoped query
-    // doesn't surface empty-body shells from the partial-failure path.
+    // Source and cleanup-orphan exclusions stay present even when
+    // excludeKinds contributes no clauses.
     expect(query.mock.calls[0]![0].filter).toEqual({
-      property: "Keywords",
-      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+      and: [
+        { property: "Source", select: { does_not_equal: "agent_diary" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 })

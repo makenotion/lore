@@ -12,9 +12,11 @@ The 28 deprecated single-purpose aliases (24 from P3-01 + 4 from
 PF3-06) plus the `lore-journal` polymorphic tool were **removed in
 the `0.6.0` deprecation purge.** Diary-style memories now go through
 `lore-memory action='save'` with `kind: 'note'`, architectural
-decisions through `lore-decision action='create'`, and historical
-`agent_diary` memories remain readable via `lore-query action='recall'`
-with `source: "agent_diary"`. The polymorphic dispatchers listed in the
+decisions through `lore-decision action='create'`. Historical
+`agent_diary` memories remain readable only through explicit audit
+queries such as `lore-query action='recall'` with
+`source: "agent_diary"`; new saves cannot use that source. The
+polymorphic dispatchers listed in the
 `src/mcp/AGENTS.md` file map are the only registered MCP tool surface;
 `polymorphic.test.ts` pins the surface to that exact set and fails
 loudly if a new alias re-enters the registration list.

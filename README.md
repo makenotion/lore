@@ -364,7 +364,9 @@ not try to write the numeric score through MCP inputs; see
 [`docs/memory-workflows.md`](docs/memory-workflows.md#confidence) for the full
 contract.
 
-**Memory sources**: `conversation`, `file`, `manual`, `agent_diary`, `digest`
+**Memory sources**: new writes accept `conversation`, `file`, `manual`, and
+`digest`. `agent_diary` is retained for historical rows and explicit audit
+recall only.
 
 **Memory kinds**: `note`, `decision`, `incident`, `runbook`, `postmortem`,
 `policy`, `task`, `procedure`. Procedures are reviewed governance memory:

@@ -1,5 +1,9 @@
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { MEMORY_CLEANUP_ORPHAN_SENTINEL } from "./near-duplicate.js"
+import { extractSelect } from "../notion/extractors.js"
+import type { PageObjectResponse } from "@notionhq/client"
+
+export const RETIRED_RECALL_SOURCES = ["agent_diary"] as const
 
 /**
  * Server-side filter clause that excludes memories carrying the
@@ -35,4 +39,18 @@ export function withCleanupOrphanExclusion(
     }
   }
   return { and: [filter, exclusion] }
+}
+
+export function retiredRecallSourceExclusionFilters(): Array<Record<string, unknown>> {
+  return RETIRED_RECALL_SOURCES.map((source) => ({
+    property: MEMORY_PROPS.SOURCE,
+    select: { does_not_equal: source },
+  }))
+}
+
+export function isNotRetiredRecallSource(page: PageObjectResponse): boolean {
+  const source = extractSelect(page.properties[MEMORY_PROPS.SOURCE], "manual")
+  return !RETIRED_RECALL_SOURCES.includes(
+    source as (typeof RETIRED_RECALL_SOURCES)[number]
+  )
 }

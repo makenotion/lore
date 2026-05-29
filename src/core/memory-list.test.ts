@@ -93,6 +93,33 @@ function makeLister(options: {
 }
 
 describe("MemoryList.list", () => {
+  it("excludes agent_diary rows unless the caller requests that source or a maintenance scan", async () => {
+    const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    await lister.list({ limit: 3 })
+    await lister.list({ source: "agent_diary", limit: 3 })
+    await lister.list({ includeRetiredSources: true, limit: 3 })
+
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    const defaultFilter = JSON.stringify(calls[0]?.[0].filter)
+    const explicitFilter = JSON.stringify(calls[1]?.[0].filter)
+    const maintenanceFilter = JSON.stringify(calls[2]?.[0].filter)
+    expect(defaultFilter).toContain(MEMORY_PROPS.SOURCE)
+    expect(defaultFilter).toContain("does_not_equal")
+    expect(defaultFilter).toContain("agent_diary")
+    expect(explicitFilter).toContain(MEMORY_PROPS.SOURCE)
+    expect(explicitFilter).toContain("equals")
+    expect(explicitFilter).toContain("agent_diary")
+    expect(explicitFilter).not.toContain(
+      `"${MEMORY_PROPS.SOURCE}","select":{"does_not_equal":"agent_diary"}`
+    )
+    expect(maintenanceFilter).not.toContain("agent_diary")
+  })
+
   it("pushes excludePinned into the Notion filter", async () => {
     const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
     const lister = makeLister({
