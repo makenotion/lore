@@ -44,7 +44,7 @@ Do not duplicate the full tool reference in this file.
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | [`docs/mcp-tool-authoring.md`](../../docs/mcp-tool-authoring.md)                       | Flat MCP schemas, polymorphic dispatch, registration examples, and new-tool checklist |
 | [`docs/mcp-tools.md`](../../docs/mcp-tools.md)                                         | User-facing tool/action reference and current behavior                                |
-| [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | `LORE_DEBUG=1` partial-failure stderr line contract                                   |
+| [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Partial-failure stderr line contract and RunTool fallback markers                     |
 | [`docs/archive/mcp-tool-history.md`](../../docs/archive/mcp-tool-history.md)           | Removed aliases, deprecation timelines, and historical version evidence               |
 | [`docs/mcp-hosts.md`](../../docs/mcp-hosts.md)                                         | Unsupported-host configuration notes                                                  |
 
@@ -121,11 +121,10 @@ contract; the leading prose message remains for operators.
 **Rule**: Never let exceptions propagate out of a tool callback. The MCP transport
 does not handle thrown errors gracefully. Always catch and return `toolError()`.
 
-### Partial-failure observability (`LORE_DEBUG`)
+### Partial-failure observability
 
 Read-path fan-outs that return partial results must surface agent-facing
-warnings and, when `LORE_DEBUG=1`, one-line stderr diagnostics. The canonical
-stderr contract lives in
+warnings and one-line stderr diagnostics according to the canonical contract in
 [docs/partial-failure-observability.md](../../docs/partial-failure-observability.md).
 The redaction taxonomy for those diagnostics lives in the top-of-file JSDoc in
 `src/debug-redact.ts`.

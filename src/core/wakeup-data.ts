@@ -872,11 +872,9 @@ async function runWakeUpFanOut(
       // finds the "label.applied classifier: false positives…"
       // memory that explains them.
       //
-      // `mode: "semantic"` is explicit (rather than relying on the default
-      // hybrid) because the contains leg of hybrid will mostly miss for
-      // phrase-shaped seed queries — running it would just add a Notion
-      // round-trip per wake-up before the inevitable semantic fallback
-      // fires. The cost saving is one round-trip per session start.
+      // `mode: "semantic"` is explicit because these seed queries are
+      // phrase-shaped and should use Notion relevance rather than the
+      // contains lane.
       const candidates = filterPinnedMemoryRows(
         await services.memories.search({
           query: entities.join(" "),

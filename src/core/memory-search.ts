@@ -20,11 +20,7 @@ import type { LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
 import { extractMissingPropertyName } from "../notion/errors.js"
-import {
-  RunToolSearchRestrictedError,
-  RUNTOOL_SEARCH_MAX_PAGE_SIZE,
-  searchViaRunTool,
-} from "../notion/runtool/index.js"
+import { searchViaRunTool } from "../notion/runtool/index.js"
 import { MEMORY_CLEANUP_ORPHAN_SENTINEL } from "./near-duplicate.js"
 import { redactDebugMessage } from "../debug-redact.js"
 import { confidenceFactor, effectiveConfidenceFactor } from "./decay.js"
@@ -263,8 +259,8 @@ function confidenceTraceForPage(
   }
 }
 /**
- * Confidence-weighted reranking shared by `searchByContainsPages` and
- * `searchBySemanticPages`. Maps each page to a per-branch RRF entry with
+ * Confidence-weighted reranking for contains-derived result sets. Maps each
+ * page to a per-branch RRF entry with
  * `score = (1 / (RRF_K + rank + 1)) * effectiveConfidenceFactor`, then sorts via
  * `tieBreakingRrfCompare`. The `branchKind` parameter sets the
  * appropriate rank field (`containsRank` on contains-mode callers,
@@ -287,8 +283,9 @@ function confidenceTraceForPage(
  * gate, an arithmetic regression here could silently re-sort
  * unmigrated vaults into page-id order.
  *
- * Hybrid mode does NOT call this helper — it consumes the raw fetch
- * helpers directly and applies the factor inside its RRF accumulator.
+ * Semantic search does NOT call this helper because Notion AI search is the
+ * authoritative relevance engine for that lane. Hybrid mode also consumes the
+ * raw fetch helpers directly and applies the factor inside its RRF accumulator.
  */
 function rerankByConfidence(
   pages: PageObjectResponse[],
@@ -509,11 +506,12 @@ export class MemorySearch {
    * `contains` filters and server-side property filters
    * (`projectId` / `topicId` / `tags` / `kind` / `status`). No workspace
    * leakage, no vector ranking — best for substring/exact-phrase queries.
-   * - `"semantic"` — Workspace-wide `client.search`, ranked by Notion's
-   * embedding index over titles AND bodies. Property filters degrade to
-   * client-side post-filters since `client.search` lacks property-filter
-   * support. Best for phrase-shaped queries that need body relevance.
-   * - `"hybrid"` (default) — fire contains and semantic in parallel; if
+   * - `"semantic"` (default) — Notion AI search when RunTool search is
+   * enabled, otherwise workspace-wide `client.search`, ranked by Notion's
+   * relevance engine over titles AND bodies. Property filters degrade to
+   * client-side post-filters. Best for phrase-shaped queries that need body
+   * relevance.
+   * - `"hybrid"` — fire contains and semantic in parallel; if
    * contains saturates (`>= HYBRID_FALLBACK_THRESHOLD` hits), use the
    * contains rows alone and discard the parallel semantic result.
    * Otherwise merge the two ranked lists via Reciprocal Rank Fusion
@@ -531,12 +529,10 @@ export class MemorySearch {
    * candidates (potentially 100+) when only `limit` (default 10) will
    * be returned.
    *
-   * **Kill switch.** `LORE_FORCE_SEMANTIC_SEARCH=1` overrides the
-   * caller's mode and forces every search through the legacy
-   * workspace-wide path. Use as a rollback escape hatch if the
-   * contains path silently under-recalls in a vault that hasn't
-   * run `lore migrate --fix-memory-encoding` yet (encoded titles
-   * miss substring matches against post-decode queries).
+   * **Mode force.** `LORE_FORCE_SEMANTIC_SEARCH=1` overrides the
+   * caller's mode and forces every search through the semantic path. It does
+   * not disable RunTool search; `LORE_USE_RUNTOOL_SEARCH=0` is the RunTool
+   * transport rollback.
    */
   async search(input: SearchMemoriesInput): Promise<Memory[]> {
     const { memories } = await this.runSearch(input)
@@ -584,7 +580,7 @@ export class MemorySearch {
   async runSearch(
     input: SearchMemoriesInput
   ): Promise<{ memories: Memory[]; explain: SearchExplain[]; capped: boolean }> {
-    const requested: SearchMode = input.mode ?? "hybrid"
+    const requested: SearchMode = input.mode ?? "semantic"
     const mode: SearchMode = this.features.forceSemanticSearch ? "semantic" : requested
     const limit = input.limit ?? 10
     const rankingToday = todayUtc()
@@ -614,7 +610,7 @@ export class MemorySearch {
       capped = result.capped
       explainBranch = "contains-only"
     } else if (mode === "semantic") {
-      const result = await this.searchBySemanticPages(input, intent, rankingToday)
+      const result = await this.searchBySemanticPages(input, intent)
       pages = result.pages
       capped = result.capped
       explainBranch = "semantic-only"
@@ -956,8 +952,8 @@ export class MemorySearch {
     input: SearchMemoriesInput,
     intent: string | null,
     signal?: AbortSignal
-  ): Promise<PageObjectResponse[]> {
-    // Compose `client.search`'s `query` from the caller's `query` plus
+  ): Promise<SearchPagesResult> {
+    // Compose the semantic relevance query from the caller's `query` plus
     // any normalized intent. The `[query.trim(), intent].filter(Boolean)`
     // shape handles the edge case where `query` is empty (allowed on
     // `MemoryService.search` callers that pass `""` for unscoped relevance
@@ -969,52 +965,19 @@ export class MemorySearch {
         ? [input.query.trim(), intent].filter(Boolean).join(" ")
         : input.query
     const limit = input.limit ?? 10
+    if (limit <= 0) return { pages: [], capped: false }
 
-    // Flag-gated RunTool `search` branch. The pinned schema
-    // has structural divergences from REST `client.search` that the
-    // wrapper cannot mask:
-    //
-    // - **Empty query.** RunTool requires `query.length >= 1`; REST
-    // accepts `""` for unscoped relevance / list-like callers. We
-    // route empty composed queries through REST.
-    // - **Window cap.** RunTool's `page_size <= 25` and no documented
-    // cursor; REST paginates 100/page up to
-    // `SEMANTIC_SEARCH_MAX_PAGES`. When the caller asks for `limit`
-    // greater than the RunTool cap, the wrapper cannot represent
-    // the requested window in one call so we route through REST.
-    // - **Saturation under post-filter.** Even within the cap, Lore's
-    // `applySemanticPostFilters` may discard most of a 25-row
-    // response (project / kind / status / scope / archive / cleanup-
-    // orphan client-side narrowing). When the post-filter survivors
-    // come up short AND the raw response saturated at the cap, the
-    // RunTool path's recall is provably under-served and we fall
-    // back to REST per call.
-    //
-    // 403 `RestrictedResource` is fall-back-able via
-    // `RunToolSearchRestrictedError` (auth-refresh proxy can't repair;
-    // once-per-process stderr warning fires). All other classes (400
-    // validation, 401, 429, 5xx, malformed) propagate verbatim — the
-    // canonical error vocabulary pinned by the `update_page` wrapper.
-    if (
-      this.features.runTool.search &&
-      composedQuery.trim().length > 0 &&
-      limit <= RUNTOOL_SEARCH_MAX_PAGE_SIZE
-    ) {
-      const runToolPages = await this.fetchSemanticPagesViaRunTool(
-        input,
-        composedQuery,
-        limit,
-        signal
-      )
-      if (runToolPages !== null) return runToolPages
-      // `null` sentinel ⇒ the RunTool branch couldn't serve this
-      // call. Two paths produce it: 403 RestrictedResource on the
-      // search dispatch, and saturation (raw response hit the
-      // 25-row cap, signaling REST may have additional matches
-      // beyond the no-cursor window that could change ranking
-      // under confidence-rerank or RRF). Cooperative abort throws
-      // an `AbortError`-shaped value rather than returning `null`,
-      // so abort propagates through this `await`.
+    const trimmedComposedQuery = composedQuery.trim()
+    if (this.features.runTool.search && trimmedComposedQuery.length > 0) {
+      return this.fetchSemanticPagesViaRunTool(input, trimmedComposedQuery, signal)
+    }
+
+    // Empty semantic queries are recall/list-shaped rather than relevance-shaped:
+    // RunTool requires a non-empty query and a workspace-wide REST search would
+    // be an implicit API switch. Use the DS-scoped contains fetcher without a
+    // text clause so property filters and recency define the result.
+    if (trimmedComposedQuery.length === 0) {
+      return this.fetchContainsPages(input)
     }
 
     const accumulated: PageObjectResponse[] = []
@@ -1174,25 +1137,17 @@ export class MemorySearch {
     // it survives long enough to reach the accumulator. Trimming to
     // `limit` here would silently nullify that cross-branch signal
     // for the under-shoot case RRF exists to handle.
-    //
-    // Pre-PR the equivalent narrowing was structural (single page of
-    // 100 trimmed to limit), so this is not a fix-for-regression but a
-    // recall improvement on the same axis pagination opened up.
-    return accumulated
+    return { pages: accumulated, capped: cappedOut }
   }
 
   /**
    * RunTool `search` consumer for the semantic lane.
    *
-   * Returns `PageObjectResponse[]` shaped exactly like
-   * `fetchSemanticPages`'s legacy REST output so the rest of
-   * `runSearch` (post-filter, sort, materialize, explain) consumes
-   * either path identically. Returns `null` to signal "couldn't
-   * serve this call; caller falls back to REST" — used for 403
-   * RestrictedResource and saturation. Cooperative abort throws an
-   * `AbortError`-shaped value rather than returning `null`, so
-   * `searchByHybridPages`'s `Promise.allSettled` discard works
-   * unchanged.
+   * Returns `PageObjectResponse[]` plus cap metadata shaped like the
+   * REST output so the rest of `runSearch` (post-filter, materialize,
+   * explain) consumes either path identically. Cooperative abort throws an
+   * `AbortError`-shaped value so `searchByHybridPages`'s
+   * `Promise.allSettled` discard works unchanged.
    *
    * **Scoping.** `data_source_url: collection://<memories-data-
    * source-id>` narrows server-side, so the post-filter pipeline's
@@ -1209,62 +1164,38 @@ export class MemorySearch {
    * The wrapper hydrates each hit through `pages.retrieve`, which is
    * proxied by `createLimitedClient` so the per-token rate-limit
    * gate paces the fan-out. The wrapper requests
-   * `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25) regardless of caller
-   * `limit` so `applySemanticPostFilters` has the most headroom;
-   * production callers omit `pageSize` to get this default. 25
-   * retrieves is therefore both the cap and the typical case.
+   * `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25) regardless of caller limit so
+   * `applySemanticPostFilters` has the most headroom; production callers omit
+   * `pageSize` to get this default. 25 retrieves is therefore both the cap and
+   * the typical case. A saturated response is accepted as the semantic answer
+   * and surfaced through `capped: true`; the caller does not switch to REST.
    *
-   * **Saturation handling — ranking-parity rule.** When the raw
-   * response carries 25 hits, the no-cursor schema cannot surface
-   * matches beyond that window. Those hidden matches affect ranking
-   * even when the visible 25 already produced `>= limit` survivors:
-   * `rerankByConfidence` (semantic-only) can promote a high-
-   * confidence row at REST rank 11 into the final top-`limit`, and
-   * hybrid RRF consumes the semantic accumulator beyond the
-   * display limit. So the only safe condition for returning RunTool
-   * results is `outcome.saturated === false`. When saturated, the
-   * helper returns `null` and the caller drops through to REST,
-   * which paginates up to `SEMANTIC_SEARCH_MAX_PAGES` × 100 = 500
-   * raw rows.
-   *
-   * **Error classification.** 403 → `null` (silent fall-back,
-   * once-per-process stderr warning fires inside the wrapper). 401 /
-   * 429 / 5xx / 400 / malformed propagate verbatim — the canonical
-   * vocabulary pinned by the `update_page` wrapper.
+   * **Error classification.** 403 / 401 / 429 / 5xx / 400 / malformed
+   * propagate verbatim. The service-layer auth preflight rejects
+   * integration-token shapes before RunTool is called.
    */
   async fetchSemanticPagesViaRunTool(
     input: SearchMemoriesInput,
     composedQuery: string,
-    limit: number,
     signal?: AbortSignal
-  ): Promise<PageObjectResponse[] | null> {
+  ): Promise<SearchPagesResult> {
     if (signal?.aborted) {
       throw buildAbortError(signal)
     }
 
-    let outcome
-    try {
-      outcome = await searchViaRunTool(this.client, {
-        query: composedQuery,
-        dataSourceId: this.db.dataSourceId,
-        // `pageSize` is omitted so the wrapper applies its default
-        // (`RUNTOOL_SEARCH_MAX_PAGE_SIZE`). We always want the
-        // server cap regardless of caller `limit`:
-        // `applySemanticPostFilters` is the authoritative cap and
-        // the post-filter narrows aggressively (project / kind /
-        // status / scope / archived / cleanup-orphan). Maxing out
-        // the raw window minimizes saturation-induced REST fallback
-        // for typical small-`limit` callers without changing the
-        // final shape of the result.
-      })
-    } catch (err) {
-      if (err instanceof RunToolSearchRestrictedError) {
-        // 403 — auth-refresh proxy can't repair, REST/SDK path can.
-        // Wrapper already emitted the once-per-process warning.
-        return null
-      }
-      throw err
-    }
+    const outcome = await searchViaRunTool(this.client, {
+      query: composedQuery,
+      dataSourceId: this.db.dataSourceId,
+      // `pageSize` is omitted so the wrapper applies its default
+      // (`RUNTOOL_SEARCH_MAX_PAGE_SIZE`). We always want the
+      // server cap regardless of caller `limit`:
+      // `applySemanticPostFilters` is the authoritative cap and
+      // the post-filter narrows aggressively (project / kind /
+      // status / scope / archived / cleanup-orphan). Maxing out
+      // the raw window gives the semantic lane the largest
+      // RunTool-backed candidate set without changing the final
+      // shape of the result.
+    })
 
     // Cooperative abort check between the network call and the
     // hydration loop — same posture as `applySemanticPostFilters`,
@@ -1276,7 +1207,7 @@ export class MemorySearch {
     }
 
     if (outcome.hits.length === 0) {
-      return outcome.saturated ? null : []
+      return { pages: [], capped: outcome.saturated }
     }
 
     // Hydrate hits to full `PageObjectResponse` shapes. We iterate
@@ -1297,15 +1228,12 @@ export class MemorySearch {
     // opting in to the RunTool search path; tests pin it but
     // operators reading the rollout runbook should know.
     //
-    // **Hydrate via `hit.url`, not `hit.id`.** The pinned RunTool
-    // schema documents "url is page id for Notion results" —
-    // the `url` field carries the Notion page id while
-    // `id` is the search index's internal resource id and is
-    // NOT guaranteed to match the page id. The wrapper's
-    // `isNotionInternalHit` already validates `url` is a Notion
-    // page id (regex matches 32-hex or dashed UUID), so by
-    // construction `hit.url` is the right value to pass to
-    // `pages.retrieve`.
+    // **Hydrate via `hit.url`, not `hit.id`.** The RunTool `id`
+    // field is the search index's internal resource id and is NOT
+    // guaranteed to match the page id. The wrapper normalizes
+    // Notion-hosted `url` values to page ids and drops external
+    // connector hits, so by construction `hit.url` is the right
+    // value to pass to `pages.retrieve`.
     //
     // Per-id retrieval failures: 404 / RestrictedResource drop
     // silently — Notion's search index lags delete / archive /
@@ -1314,7 +1242,10 @@ export class MemorySearch {
     // rate-limit and auth-refresh proxies engage on their canonical
     // surface.
     const pages: PageObjectResponse[] = []
+    const seenPageIds = new Set<string>()
     for (const hit of outcome.hits) {
+      if (seenPageIds.has(hit.url)) continue
+      seenPageIds.add(hit.url)
       if (signal?.aborted) {
         throw buildAbortError(signal)
       }
@@ -1336,44 +1267,7 @@ export class MemorySearch {
     }
 
     const filtered = await this.applySemanticPostFilters(pages, input, signal)
-
-    // Saturation forces REST fallback **regardless of post-filter
-    // survivor count**. When the raw window saturated at 25, the
-    // server has more matches that the no-cursor schema cannot
-    // surface — and those hidden matches affect ranking even when
-    // the visible 25 already produced `>= limit` survivors:
-    //
-    // - **Semantic-only (`mode: "semantic"`)** runs
-    // `rerankByConfidence` AFTER `fetchSemanticPages` returns
-    // (`runSearch` → public `searchBySemanticPages` path). A
-    // high-confidence row at REST semantic survivor rank 11
-    // (within REST's 100-row first page) can be promoted into
-    // the final top-`limit` by the confidence factor. The
-    // RunTool path never sees that row if it sits beyond raw
-    // hit 25 — even though we have `limit` survivors visibly
-    // available.
-    //
-    // - **Hybrid (`mode: "hybrid"`, the default)** consumes the
-    // semantic accumulator beyond the display limit when
-    // computing RRF. A row outside the first `limit` survivors
-    // can still win after cross-branch fusion if it also
-    // appears in contains. Truncating to 25 silently shrinks
-    // the RRF pool relative to REST's up-to-500 raw-row pool
-    // (`SEMANTIC_SEARCH_MAX_PAGES × page_size`).
-    //
-    // Therefore: `filtered.length >= limit` is NOT a proof of
-    // ranking parity with REST. The only safe condition for
-    // returning RunTool results without fallback is
-    // `outcome.saturated === false` — i.e. "the server has shown
-    // its hand at the requested page_size" — at which point REST
-    // would not surface additional matches either. When saturated,
-    // route through REST so `rerankByConfidence` and RRF see the
-    // full candidate pool.
-    if (outcome.saturated) {
-      return null
-    }
-
-    return filtered
+    return { pages: filtered, capped: outcome.saturated }
   }
 
   /**
@@ -1574,21 +1468,16 @@ export class MemorySearch {
   }
 
   /**
-   * Public workspace-wide semantic path with confidence-aware reranking.
-   * Symmetric to `searchByContainsPages`. Hybrid consumes
-   * `fetchSemanticPages` directly so the factor is applied here exactly
-   * once.
+   * Public semantic path. Notion's relevance order is authoritative for this
+   * lane, so the result is not confidence-reranked. Hybrid consumes
+   * `fetchSemanticPages` directly and applies confidence only inside the RRF
+   * accumulator.
    */
   async searchBySemanticPages(
     input: SearchMemoriesInput,
-    intent: string | null,
-    today: string = todayUtc()
+    intent: string | null
   ): Promise<SearchPagesResult> {
-    const pages = await this.fetchSemanticPages(input, intent)
-    return {
-      pages: rerankByConfidence(pages, "semantic", this.features, today),
-      capped: false,
-    }
+    return this.fetchSemanticPages(input, intent)
   }
 
   /**
@@ -1613,10 +1502,6 @@ export class MemorySearch {
    * Tie-break order is `score → best-rank → contains-presence → page
    * id ascending` (encoded in `tieBreakingRrfCompare`). Capped at `limit`.
    *
-   * The earlier sequential design paid `containsLatency + semanticLatency`
-   * on under-shoot — strictly worse than the pre-PR single-call wall-clock
-   * for a query that's now the *common* case.
-   *
    * **Single-branch resilience.** A `Promise.all` over both legs
    * would propagate any rejection (a transient 429 from `client.search`,
    * for instance) to the caller, even when contains saturated independently
@@ -1626,9 +1511,9 @@ export class MemorySearch {
    * surfaces an error so a fully broken search subsystem doesn't masquerade
    * as an empty-result silence. Branch failures are logged to stderr under
    * `LORE_DEBUG=1` so operators can distinguish a one-off blip from a
-   * pathological loop. The kill switch (`LORE_FORCE_SEMANTIC_SEARCH=1`)
-   * remains the manual rollback for sustained problems; this guard is the
-   * automatic one for transient ones.
+   * pathological loop. `LORE_FORCE_SEMANTIC_SEARCH=1` remains the manual
+   * rollback to semantic-only mode; it does not disable the RunTool search
+   * transport.
    *
    * **Cooperative cancellation when contains saturates.**
    * A side-effect `.then` handler on the contains promise calls
@@ -1639,15 +1524,12 @@ export class MemorySearch {
    * the cutoff?" gate). The signal is plumbed into
    * `fetchSemanticPages`, which checks it pre-loop, pre-call, post-
    * page, AND inside `applySemanticPostFilters` so the residual cost
-   * skips the heavy `hydrateRelationPropertiesForPages` step on
-   * pages destined for the discard pile. Pre-fix, a saturating
-   * contains query still paid up to `SEMANTIC_SEARCH_MAX_PAGES` (5)
-   * sequential semantic round-trips before the discarded result
-   * resolved; after the fix, the production-typical bound is **1
-   * residual `client.search` call** (the page in flight when abort
-   * fired), with the synchronous-mock degenerate case bounded at 2
-   * — `fetchSemanticPages`'s docstring carries the full residual-
-   * call bound analysis. The discarded-result rejection arrives as
+   * skips the heavy `hydrateRelationPropertiesForPages` step on pages
+   * destined for the discard pile. A saturating contains query is
+   * bounded to the page already in flight when abort fires, with
+   * synchronous test doubles allowed one extra observed call because
+   * they resolve without an event-loop turn. The discarded-result
+   * rejection arrives as
    * an `AbortError`-shaped value which `isAbortRejection` filters
    * out of the partial-failure log path AND the both-failure
    * detector — a cooperative abort is not a real branch failure and
@@ -1658,12 +1540,12 @@ export class MemorySearch {
    * next-page burn, not zero-cost cancel.
    *
    * **Empty-query note.** With no text filter, the contains leg returns a
-   * recency listing under property filters; the semantic leg returns
-   * `client.search({ query: "" })` (Notion's own empty-query behavior,
-   * which is not documented). If contains saturates, semantic is
-   * discarded — empty-query hybrid effectively behaves as `mode:
-   * "contains"`. Callers wanting predictable empty-query semantics should
-   * pass `mode: "contains"` explicitly.
+   * recency listing under property filters; the semantic leg also uses the
+   * Memories data source listing path because RunTool search requires a
+   * non-empty query. If contains saturates, semantic is discarded —
+   * empty-query hybrid effectively behaves as `mode: "contains"`. Callers
+   * wanting predictable empty-query semantics should pass `mode:
+   * "contains"` explicitly.
    */
   async searchByHybridPages(
     input: SearchMemoriesInput,
@@ -1746,9 +1628,9 @@ export class MemorySearch {
     // 2. The partial-failure log below stays quiet on the abort path
     // — a cooperative discard isn't transient noise to surface
     // under `LORE_DEBUG=1`.
-    const semanticEffective: PromiseSettledResult<PageObjectResponse[]> =
+    const semanticEffective: PromiseSettledResult<SearchPagesResult> =
       semanticResult.status === "rejected" && isAbortRejection(semanticResult.reason)
-        ? { status: "fulfilled", value: [] }
+        ? { status: "fulfilled", value: { pages: [], capped: false } }
         : semanticResult
 
     if (containsResult.status === "rejected" && semanticEffective.status === "rejected") {
@@ -1776,7 +1658,9 @@ export class MemorySearch {
     const containsCapped =
       containsResult.status === "fulfilled" ? containsResult.value.capped : false
     const semanticPages =
-      semanticEffective.status === "fulfilled" ? semanticEffective.value : []
+      semanticEffective.status === "fulfilled" ? semanticEffective.value.pages : []
+    const semanticCapped =
+      semanticEffective.status === "fulfilled" ? semanticEffective.value.capped : false
 
     if (containsResult.status === "rejected") {
       debugLogHybridBranchFailure("contains", containsResult.reason)
@@ -1905,7 +1789,7 @@ export class MemorySearch {
       pages: ranked.map((entry) => entry.page),
       branch: "rrf",
       trace,
-      capped: containsCapped,
+      capped: containsCapped || semanticCapped,
     }
   }
 }

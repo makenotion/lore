@@ -211,6 +211,49 @@ describe("fetchEntitiesByAliasSubstring", () => {
   })
 })
 
+describe("fetchAlreadyComparedPairKeys", () => {
+  const COMPARED_OPTS = {
+    dataSourceId: "ds-mem",
+    projectProperty: "Project",
+    comparedWithProperty: "Compared With",
+    projectId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  }
+
+  it("throws SqlPartialResultError on has_more: true", async () => {
+    const client = makeStubClient(() => ({
+      results: [
+        {
+          id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          compared: '["https://www.notion.so/cccccccccccccccccccccccccccccccc"]',
+        },
+      ],
+      has_more: true,
+    }))
+
+    await expect(
+      fetchAlreadyComparedPairKeys(client, COMPARED_OPTS)
+    ).rejects.toBeInstanceOf(SqlPartialResultError)
+  })
+
+  it("extracts unordered compared pair keys when has_more is false", async () => {
+    const client = makeStubClient(() => ({
+      results: [
+        {
+          id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          compared: '["https://www.notion.so/cccccccccccccccccccccccccccccccc"]',
+        },
+      ],
+      has_more: false,
+    }))
+
+    const pairs = await fetchAlreadyComparedPairKeys(client, COMPARED_OPTS)
+
+    expect([...pairs]).toEqual([
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::cccccccccccccccccccccccccccccccc",
+    ])
+  })
+})
+
 describe("isRunToolAggregateEnabled", () => {
   it("inherits from LORE_USE_RUNTOOL when the sub-flag is unset", () => {
     expect(isRunToolAggregateEnabled({ LORE_USE_RUNTOOL: "1" })).toBe(true)

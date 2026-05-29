@@ -2,13 +2,16 @@
 
 Lore treats partial failures as successful calls with operator-visible
 diagnostics. The agent-facing response keeps the useful partial result and a
-`Warnings:` footer; the stderr surface is opt-in so routine transients do not
-pollute every session log.
+`Warnings:` footer. Recoverable RunTool-to-REST exceptions are always emitted
+to stderr so REST usage remains measurable while RunTool is the primary Notion
+API path.
 
 ## Debug Gate
 
-Set `LORE_DEBUG=1` to emit partial-failure diagnostics. When the environment
-variable is unset, partial-result surfaces stay silent on stderr.
+Set `LORE_DEBUG=1` to emit legacy partial-failure diagnostics that are still
+useful only during investigation, such as hybrid-search branch failures. RunTool
+fallback events are not debug-gated because they are part of the operator
+contract for explicit REST exceptions.
 
 Every new partial-result surface must route its recoverable per-item failures
 through the shared stderr convention so a single grep sweep stays useful:
@@ -59,7 +62,7 @@ Examples:
 
 ```text
 [lore] partial-failure: branch=<contains|semantic> error=<message> source=hybrid-search
-[lore] partial-failure: source=<source> status=<status> code=<code> error=<message> runtool-fallback=1
+[lore] partial-failure: source=<source> status=<status> code=<code> reason=<reason> error=<message> runtool-fallback=1 used-rest=1
 ```
 
 Downstream parsers should match on the prefix and the `error=` field, then

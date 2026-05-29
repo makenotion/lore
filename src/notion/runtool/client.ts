@@ -205,15 +205,14 @@ export async function runToolWithParamsFactory<T extends RunToolName>(
  *   surfaces or falls back; the wrapper does not silently bypass the
  *   warning.
  * - `"restricted_resource"` — the workspace, MCP-client allowlist, or
- *   actor-type check rejected the call (typically because the caller's
- *   token is an integration secret rather than an ntn-issued user-actor
- *   token). The auth-refresh proxy CANNOT repair this — it only refreshes
+ *   actor-type check rejected the call. The auth-refresh proxy CANNOT
+ *   repair this — it only refreshes
  *   on `Unauthorized` (401), and a `RestrictedResource` (403) is a
  *   capability decision, not a credential one. Falling back to the REST
  *   path is the correct response: the existing SDK call site has a
  *   different capability surface and is already known to work for the
  *   operator. The wrapper emits a single once-per-process warning so the
- *   operator sees why the flagged-on call is silently downgrading.
+ *   operator sees why the flagged-on call is downgrading.
  */
 export type RunToolBlockEditFailureKind =
   | "no_match"
@@ -265,10 +264,9 @@ export async function runUpdatePageContent(
       warnRunToolRestrictedResourceOnce("update_page", err)
       throw new RunToolBlockEditError(
         "restricted_resource",
-        "RunTool rejected this token (RestrictedResource). Falling back " +
-          "to the REST/SDK path. RunTool requires an ntn-issued user-actor " +
-          "token; a public OAuth integration secret cannot pass the " +
-          "actor-type check.",
+        "RunTool rejected this token (RestrictedResource). RunTool requires " +
+          "a Notion PAT or ntn-issued user token; integration tokens " +
+          "(secret_...) are unsupported.",
         err
       )
     }

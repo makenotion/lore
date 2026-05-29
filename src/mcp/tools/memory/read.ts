@@ -156,13 +156,8 @@ export async function handleSearch(
     }
 
     const withContent = args.includeContent === true
-    const resolvedMode: SearchMode = args.mode ?? "hybrid"
+    const resolvedMode: SearchMode = args.mode ?? "semantic"
     const wantExplain = args.explain === true
-
-    // Over-fetch slightly only when post-filters are still active — i.e.
-    // semantic mode, which can't apply kind/status server-side. Contains
-    // and hybrid push kind/status/tags/topicName into the Notion query, so
-    // the requested limit is already authoritative there.
     const searchInput = {
       query: args.query,
       projectId,
@@ -171,10 +166,7 @@ export async function handleSearch(
       source: args.source as MemorySource | undefined,
       kind: args.kind as MemoryKind | undefined,
       status: args.status as MemoryStatus | undefined,
-      limit:
-        resolvedMode === "semantic"
-          ? Math.min((args.limit ?? 10) * 2, 50)
-          : (args.limit ?? 10),
+      limit: args.limit ?? 10,
       includeContent: withContent,
       mode: resolvedMode,
       intent: args.intent,
@@ -198,15 +190,15 @@ export async function handleSearch(
 
     // The service applies kind/status server-side in contains/hybrid and
     // post-filter in semantic, so the result set is already correctly
-    // narrowed by mode. The final slice protects against the semantic
-    // over-fetch above leaking extra rows past the caller's limit.
+    // narrowed by mode. The final slice is a boundary guard for older
+    // service implementations and tests that return extra rows.
     const finalLimit = args.limit ?? 10
     const results = searchResults.slice(0, finalLimit)
     const explainSlice = explain.slice(0, finalLimit)
 
     if (searchCapped) {
       warnings.push(
-        "Search scan reached the live-row refill cap; more matching memories may exist."
+        "Search reached a candidate-window cap; more matching memories may exist."
       )
     }
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""

@@ -305,23 +305,22 @@ export function dataSourceUrl(dataSourceId: string): string {
  * Server-side hard cap on `search.page_size` per the pinned
  * `SearchToolParams` schema. The REST `client.search` allows up to 100
  * per page; RunTool `search` allows up to 25 and exposes no cursor.
- * Lore's wrapper clamps to this ceiling and falls back to REST when
- * the caller's window cannot be served from a single 25-row request.
+ * Lore's wrapper clamps to this ceiling and reports saturation as cap metadata.
  */
 export const RUNTOOL_SEARCH_MAX_PAGE_SIZE = 25
 
 /**
  * One result in the `InternalSearchResource` arm of the bare
- * `SearchResource` response. For `query_type: "internal"`, `url` is
- * the page id for Notion-hosted results; external connector results
- * (Slack, Linear, Drive) carry a full URL and are discarded by
- * `MemoryService`'s consumer because they are not Lore page
- * candidates.
+ * `SearchResource` response. For `query_type: "internal"`, `url`
+ * can be a bare page id or a Notion page URL for Notion-hosted
+ * results; external connector results (Slack, Linear, Drive) carry
+ * non-Notion URLs and are discarded by `MemoryService`'s consumer
+ * because they are not Lore page candidates.
  */
 export interface RunToolInternalSearchResult {
   id: string
   title: string
-  /** Page id for Notion results; full URL for connector results. */
+  /** Page id or Notion URL for Notion results; non-Notion URL for connector results. */
   url: string
   /** Resource type discriminator (`page`, `database`, etc.). */
   type: string
@@ -349,11 +348,10 @@ export interface RunToolInternalSearchResponse {
  * is `{ type: "search", search: <this shape> }`; `runTool` adds the
  * outer discriminator.
  *
- * `query` is required and (server-side) must have `length >= 1` —
+ * `query` is required and (server-side) must have `length >= 1`.
  * Lore's `MemoryService.fetchSemanticPages` accepts an empty composed
- * query for unscoped relevance, so the consumer falls back to REST
- * when the composed query is empty rather than sending an invalid
- * RunTool request.
+ * query for unscoped recall, so that caller uses a DS-scoped listing
+ * instead of sending an invalid RunTool request.
  *
  * `data_source_url` scopes the search to one collection
  * (`collection://<data_source_id>`). The wrapper ALWAYS sets this for
@@ -383,8 +381,8 @@ export interface RunToolSearchParams {
  * malformed-response path: a successful (200) HTTP response whose
  * body lacks `type` ∈ `{ai_search, workspace_search, none}` or
  * `results` array indicates the upstream schema drifted underneath
- * the pin and the wrapper must fall back to REST rather than feed
- * garbage to its callers. Per-result field typing is checked
+ * the pin and the wrapper must fail rather than feed garbage to its
+ * callers. Per-result field typing is checked
  * structurally on the entries the wrapper actually consumes
  * (`id`, `url`).
  */

@@ -14,12 +14,13 @@ import type { MemoryKind, MemorySource, MemoryStatus } from "./domain.js"
  * ranking over page bodies. Best for substring/exact-phrase queries on
  * titles, keyword tokens (PR numbers, ticket IDs, function names), and the
  * short curated synopsis written at save time.
- * - `"semantic"` — workspace-wide `client.search` ranked by Notion's vector
- * index over titles AND bodies. Preserves relevance ranking, but cannot
- * apply server-side property filters and may rank non-Memory pages from
- * the same workspace ahead of real hits when the query is niche. Best for
- * phrase-shaped or conceptual queries where body matches matter.
- * - `"hybrid"` (default) — fires `contains` and `semantic` in parallel via
+ * - `"semantic"` (default) — Notion AI search through RunTool when enabled,
+ * otherwise workspace-wide `client.search`, ranked by Notion's relevance
+ * engine over titles AND bodies. Preserves Notion relevance ranking, with
+ * property filters applied after search because the search surface does not
+ * accept database-property predicates. Best for phrase-shaped or conceptual
+ * queries where body matches matter.
+ * - `"hybrid"` — fires `contains` and `semantic` in parallel via
  * `Promise.allSettled`. If contains saturates
  * (`>= HYBRID_FALLBACK_THRESHOLD` hits), the contains rows are used
  * alone and the parallel semantic result is discarded; otherwise the
@@ -88,7 +89,7 @@ export interface SearchMemoriesInput {
    */
   includeContent?: boolean
   /**
-   * Search execution mode. Defaults to `"hybrid"`. See `SearchMode` for the
+   * Search execution mode. Defaults to `"semantic"`. See `SearchMode` for the
    * tradeoffs between scope precision and ranking quality.
    */
   mode?: SearchMode
@@ -102,7 +103,7 @@ export interface SearchMemoriesInput {
    * Whitespace-only intent (`" "`) normalizes to unset across every
    * consumer.
    *
-   * Under `mode: "hybrid"` (default), setting intent disables the
+   * Under `mode: "hybrid"`, setting intent disables the
    * saturation cutoff so the RRF merge always runs — intent would
    * otherwise be discarded when contains has `>= HYBRID_FALLBACK_THRESHOLD`
    * hits. Under RRF, the contains lane is up-weighted so contains-precision
@@ -146,7 +147,7 @@ export interface SearchMemoriesInput {
  * - `"contains-only"` — `mode: "contains"`. `semanticRank` is always
  * `null`; `rrfScore` is `null`.
  * - `"semantic-only"` — `mode: "semantic"` (including the
- * `LORE_FORCE_SEMANTIC_SEARCH=1` kill-switch case). `containsRank`
+ * `LORE_FORCE_SEMANTIC_SEARCH=1` mode-force case). `containsRank`
  * is always `null`; `rrfScore` is `null`.
  * - `"contains-saturated"` — `mode: "hybrid"` and the saturation cutoff
  * fired. `containsRank` reflects the row's position in the contains

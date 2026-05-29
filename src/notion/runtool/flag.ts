@@ -22,13 +22,12 @@
  *
  * Operators can disable any consumer with an explicit `=0` (parent
  * disables every inheriting sub-flag at once; per-consumer disable
- * leaves the others on). Every flagged-on consumer falls back to the
- * REST/SDK path on a per-call basis when the RunTool dispatch
- * rejects, so a degraded vault sees no functional regression — only
- * the loss of the RunTool-only optimizations (server-side filter
- * pushdown, semantic search, aggregate `GROUP BY`).
+ * leaves the others on). Each consumer defines its own RunTool
+ * error contract; some consumers can safely fall back to REST/SDK,
+ * while search treats RunTool AI search as authoritative for
+ * non-empty semantic queries.
  *
- * Each consumer has its own fall-back-shape contract:
+ * Each consumer has its own error-shape contract:
  *
  * - **Block-edit** — flagged-on consumers fall back to the
  *   existing REST/SDK path on the structured `RunToolBlockEditError`
@@ -43,6 +42,12 @@
  *   transport errors propagate up through the proxy chain so
  *   `createLimitedClient`'s 429 backoff and
  *   `createAuthRefreshingClient`'s 401 retry stay authoritative.
+ * - **Search** — flagged-on non-empty semantic search dispatches
+ *   RunTool `search` and surfaces capped candidate windows through
+ *   metadata. Restricted resources, non-`ai_search` responses, and
+ *   transport failures propagate instead of silently switching to
+ *   REST; use `LORE_USE_RUNTOOL_SEARCH=0` or `LORE_USE_RUNTOOL=0`
+ *   when an operator needs the REST search transport.
  *
  * 200-wrapped `{ object: "error" }` envelopes from the `tools/run`
  * gateway are normalized into thrown `APIResponseError`s at the
@@ -95,8 +100,7 @@ function emitUnrecognizedValueWarning(name: string, raw: string): void {
   // and inheriting sub-flags. The warning fires on the first read so
   // an incident-time rollback that types `LORE_USE_RUNTOOL=fasle`
   // doesn't quietly leave the operator on the default-on path.
-  // Mirrors `warnRunToolIntegrationSecretOnce`'s
-  // once-per-process posture.
+  // Same once-per-process posture as the RunTool fallback warnings.
   process.stderr.write(
     `[lore] notion-runtool warn: ignoring unrecognized ${name} value ` +
       `${JSON.stringify(raw)}; falling through to ${describeFlagDefault(name)}. ` +
@@ -171,12 +175,10 @@ export function isRunToolFilterSqlEnabled(env: NodeJS.ProcessEnv = process.env):
  * inherits from `LORE_USE_RUNTOOL`. **On by default.**
  *
  * Gates the RunTool `search` consumer in
- * `MemoryService.fetchSemanticPages`'s flag-on branch. The branch
- * structurally cannot serve every request shape `MemoryService`
- * accepts (empty composed query, `limit > 25`, raw-response
- * saturation under the 25-row no-cursor cap), so the flag-on path
- * falls back to REST per-call on those windows. Same parent-inherit
- * posture as the block-edit and filter-sql sub-flags.
+ * `MemoryService.fetchSemanticPages`'s flag-on branch. Non-empty semantic
+ * queries use RunTool; empty composed queries use the DS-scoped listing path
+ * because they are recall/list-shaped rather than relevance-shaped. Same
+ * parent-inherit posture as the block-edit and filter-sql sub-flags.
  */
 export function isRunToolSearchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_SEARCH")
@@ -198,7 +200,7 @@ export function isRunToolSearchEnabled(env: NodeJS.ProcessEnv = process.env): bo
  * server-side `hasAdvancedTools` capability gate (Enterprise + AI
  * workspaces only) AND lack any cursor / offset / page-size knob,
  * so a degraded vault that successfully runs filter-SQL can still
- * see this flag silently fall back per-call. Operators rolling out
+ * see this flag fall back per-call. Operators rolling out
  * RunTool need to be able to flip filter-SQL on while leaving
  * aggregate off (and vice-versa) until both paths are independently
  * verified on their target workspace tier.

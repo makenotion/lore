@@ -87,10 +87,9 @@ describe("isRunToolBlockEditEnabled", () => {
       expect(firstLine).toContain("use =0 to disable")
 
       // Second read of the same `(name, value)` pair: latch
-      // suppresses — once-per-process posture, mirroring
-      // `warnRunToolIntegrationSecretOnce`. Pinned IMMEDIATELY after
-      // the first read so a future Vitest hook-ordering refactor
-      // can't make this assertion vacuous.
+      // suppresses — once-per-process posture. The assertion is
+      // adjacent to the first read so hook ordering cannot make it
+      // vacuous.
       expect(isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: "fasle" })).toBe(true)
       expect(stderrSpy).toHaveBeenCalledTimes(1)
 
@@ -296,18 +295,12 @@ describe("updatePageContentViaRunTool", () => {
   )
 
   it("classifies 403 RestrictedResource as restricted_resource (fall-back-able, not a hard error)", async () => {
-    // Issue #534 security review: an integration-secret token (for
-    // example, a pre-PAT `NOTION_API_TOKEN` value) cannot
-    // pass RunTool's actor-type check; the server returns 403
-    // RestrictedResource. The auth-refresh proxy CANNOT repair this
-    // (it only refreshes on 401 Unauthorized). If the wrapper
-    // re-threw verbatim, every revision-append against an
-    // integration-secret operator would fail end-to-end — turning a
-    // flag flip into a hard outage. Classifying as fall-back-able
-    // lets the call site drop into the canonical REST/SDK path,
-    // which has a different capability surface and is already known
-    // to work for that operator. The shared `restricted_resource`
-    // recovery contract pins this posture.
+    // RunTool can reject a request with 403 RestrictedResource for
+    // actor-shape or capability reasons. The auth-refresh proxy CANNOT
+    // repair this (it only refreshes on 401 Unauthorized). Classifying
+    // it as fall-back-able lets the call site drop into the canonical
+    // REST/SDK path, which has a different capability surface. The
+    // shared `restricted_resource` recovery contract pins this posture.
     __resetRunToolWarningsForTest()
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     try {
@@ -331,10 +324,13 @@ describe("updatePageContentViaRunTool", () => {
       })
 
       // Once-per-process stderr warning is the observability surface.
-      // Without it, an operator using integration-secret auth would see
-      // flag-on calls silently downgrade with no diagnostic.
+      // Without it, an operator would see flag-on calls downgrade with
+      // no diagnostic.
       const writes = stderrSpy.mock.calls.map((args) => String(args[0]))
-      expect(writes.some((w) => w.includes("RestrictedResource"))).toBe(true)
+      const line = writes.find((w) => w.includes("RestrictedResource")) ?? ""
+      expect(line).toContain("used REST/SDK path")
+      expect(line).toContain("runtool-fallback=1")
+      expect(line).toContain("used-rest=1")
     } finally {
       stderrSpy.mockRestore()
     }

@@ -109,9 +109,11 @@ export interface LoreFeatureConfig {
    */
   confidenceFactor?: boolean
   /**
-   * Force legacy workspace-wide semantic search instead of the newer
-   * contains/hybrid modes. Default: false.
-   * `LORE_FORCE_SEMANTIC_SEARCH=1` forces this on.
+   * Force every memory search request through semantic mode instead of
+   * contains/hybrid modes. This does not disable RunTool search; use
+   * `LORE_USE_RUNTOOL_SEARCH=0` or `LORE_USE_RUNTOOL=0` to bypass the
+   * RunTool search transport. Default: false.
+   * `LORE_FORCE_SEMANTIC_SEARCH=1` forces semantic mode on.
    */
   forceSemanticSearch?: boolean
   /**

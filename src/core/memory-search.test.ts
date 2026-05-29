@@ -609,7 +609,7 @@ describe("MemorySearch hybrid ranking", () => {
     expect(stale.confidenceFactor).toBe(stale.effectiveConfidenceFactor)
   })
 
-  it("semantic mode ranks by effective confidence decay", async () => {
+  it("semantic mode preserves Notion relevance order while reporting confidence factors", async () => {
     const { searcher } = makeSubject({
       semanticPages: [
         page("stale-stored-high", {
@@ -629,7 +629,7 @@ describe("MemorySearch hybrid ranking", () => {
       includeContent: false,
     })
 
-    expect(memories.map((m) => m.id)).toEqual(["fresh-stored-lower", "stale-stored-high"])
+    expect(memories.map((m) => m.id)).toEqual(["stale-stored-high", "fresh-stored-lower"])
     const stale = explain.find((entry) => entry.memoryId === "stale-stored-high")!
     expect(stale.storedConfidenceFactor).toBeCloseTo(0.95, 10)
     expect(stale.effectiveConfidenceFactor).toBeLessThan(0.9)

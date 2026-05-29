@@ -590,6 +590,16 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
       expect(report.fixes[0]!.contentFixed).toBe(true)
       expect(report.fixes[0]!.contentFixedViaAnchoredPatterns).toBe(false)
       expect(report.oversizedSkipped).toEqual([])
+      const writes = stderrSpy.mock.calls.map((args) => String(args[0]))
+      expect(
+        writes.some(
+          (w) =>
+            w.includes("source=memory-encoding-anchored-patterns") &&
+            w.includes("reason=restricted_resource") &&
+            w.includes("runtool-fallback=1") &&
+            w.includes("used-rest=1")
+        )
+      ).toBe(true)
     } finally {
       stderrSpy.mockRestore()
     }

@@ -1515,17 +1515,16 @@ export class MemoryService {
     input: SearchMemoriesInput,
     intent: string | null,
     signal?: AbortSignal
-  ): Promise<PageObjectResponse[]> {
+  ): Promise<SearchPagesResult> {
     return this.searcher.fetchSemanticPages(input, intent, signal)
   }
 
   private async fetchSemanticPagesViaRunTool(
     input: SearchMemoriesInput,
     composedQuery: string,
-    limit: number,
     signal?: AbortSignal
-  ): Promise<PageObjectResponse[] | null> {
-    return this.searcher.fetchSemanticPagesViaRunTool(input, composedQuery, limit, signal)
+  ): Promise<SearchPagesResult> {
+    return this.searcher.fetchSemanticPagesViaRunTool(input, composedQuery, signal)
   }
 
   private async applySemanticPostFilters(

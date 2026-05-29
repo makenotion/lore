@@ -34,7 +34,7 @@ import {
 import { createOperationAccountingClient } from "./notion/operation-accounting.js"
 import { recordNotionRateLimitBackoff } from "./core/cost-accounting.js"
 import { resolveCostTracking, type ResolvedCostTracking } from "./core/cost-ledger.js"
-import { warnRunToolIntegrationSecretOnce } from "./notion/runtool/error-helpers.js"
+import { classifyTokenPrefix } from "./auth/token-prefix.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
 import { TopicService } from "./core/topic.js"
@@ -245,6 +245,32 @@ function deriveRelationUrlBaseForRunToolBatchCreates(
 ): string | undefined {
   if (!enabled) return undefined
   return deriveRelationUrlBase(apiBaseUrl)
+}
+
+function hasRunToolSurfaceEnabled(features: LoreFeatureFlags): boolean {
+  return (
+    features.runTool.blockEdit ||
+    features.runTool.filterSql ||
+    features.runTool.search ||
+    features.runTool.aggregate ||
+    features.runTool.batchCreates
+  )
+}
+
+function assertRunToolAuthSupported(
+  auth: Pick<ResolvedAuth, "token">,
+  features: LoreFeatureFlags
+): void {
+  if (!hasRunToolSurfaceEnabled(features)) return
+  if (classifyTokenPrefix(auth.token) !== "integration") return
+  throw new Error(
+    "RunTool requires a Notion PAT (`ntn_` / `development_ntn_`) " +
+      "or an ntn-issued user token. Integration tokens (`secret_...`) " +
+      "are unsupported because RunTool rejects them with 403 " +
+      "RestrictedResource. Create a PAT at https://www.notion.so/developers/tokens, " +
+      "use `lore auth --login`, or disable RunTool with `LORE_USE_RUNTOOL=0` " +
+      "and `LORE_USE_RUNTOOL_BATCH_CREATES=0`."
+  )
 }
 
 /**
@@ -541,6 +567,7 @@ export async function initServicesFromConfig(
   const memorySynopsisMaxChars = resolveMemorySynopsisMaxChars(config)
   const costTracking = resolveCostTracking(config, configRoot)
   const auth = await resolveAuth(config, configRoot)
+  assertRunToolAuthSupported(auth, features)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
   const authSnapshotRef = { current: toClientAuth(auth) }
   const runToolBatchRelationUrlBase = deriveRelationUrlBaseForRunToolBatchCreates(
@@ -619,21 +646,6 @@ export async function initServicesFromConfig(
   if (writeBudgetFlush !== null) {
     writeBudgetActiveFlush = writeBudgetFlush
     installWriteBudgetShutdownHooks()
-  }
-
-  // Warn-once if a RunTool feature flag is on AND the resolved auth
-  // source is a known integration-secret path that RunTool will
-  // reject with 403. Without this, every flagged-on call silently
-  // falls back to REST and the operator sees zero RunTool traffic.
-  if (
-    features.runTool.enabled ||
-    features.runTool.blockEdit ||
-    features.runTool.filterSql ||
-    features.runTool.search ||
-    features.runTool.aggregate ||
-    features.runTool.batchCreates
-  ) {
-    warnRunToolIntegrationSecretOnce(auth.source)
   }
 
   // When authRefresh is absent, the auth snapshot is intentionally static:

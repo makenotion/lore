@@ -148,6 +148,7 @@ describe("searchCommand", () => {
       query: "needle",
       projectId: "p-widget",
       tags: ["cli", "validation"],
+      capped: false,
       results: [searchMemory],
     })
     expect(errorSpy).not.toHaveBeenCalled()
@@ -168,6 +169,7 @@ describe("searchCommand", () => {
       query: "auth",
       projectId: "proj-context",
       tags: null,
+      capped: false,
       results: [],
     })
     expect(logSpy.mock.calls[0]?.[0]).not.toContain("No memories found")
@@ -232,6 +234,75 @@ describe("searchCommand", () => {
     expect(errorText).toContain("notion 503: gateway")
     expect(exitTrap.exitCodes).toEqual([1])
     expect(errorSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("uses searchWithMeta and surfaces capped populated results", async () => {
+    const search = vi.fn()
+    const searchWithMeta = vi.fn().mockResolvedValue({
+      memories: [searchMemory],
+      capped: true,
+    })
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn() },
+      memories: { search, searchWithMeta },
+      context: { project: { id: "proj-context", name: "Context" } },
+    } as never)
+
+    await searchCommand.parseAsync(["auth", "--limit", "50"], { from: "user" })
+
+    expect(searchWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "auth",
+        projectId: "proj-context",
+        limit: 50,
+      })
+    )
+    expect(search).not.toHaveBeenCalled()
+    expect(logSpy.mock.calls.flat().join("\n")).toContain(
+      "Search reached a candidate-window cap"
+    )
+  })
+
+  it("surfaces capped empty results in human output", async () => {
+    const search = vi.fn()
+    const searchWithMeta = vi.fn().mockResolvedValue({
+      memories: [],
+      capped: true,
+    })
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn() },
+      memories: { search, searchWithMeta },
+      context: { project: { id: "proj-context", name: "Context" } },
+    } as never)
+
+    await searchCommand.parseAsync(["auth"], { from: "user" })
+
+    const output = logSpy.mock.calls.flat().join("\n")
+    expect(output).toContain('No memories found for: "auth"')
+    expect(output).toContain("Search reached a candidate-window cap")
+    expect(search).not.toHaveBeenCalled()
+  })
+
+  it("emits capped metadata in JSON output", async () => {
+    const searchWithMeta = vi.fn().mockResolvedValue({
+      memories: [],
+      capped: true,
+    })
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn() },
+      memories: { search: vi.fn(), searchWithMeta },
+      context: { project: { id: "proj-context", name: "Context" } },
+    } as never)
+
+    await searchCommand.parseAsync(["auth", "--json"], { from: "user" })
+
+    expect(JSON.parse(logSpy.mock.calls[0]?.[0] as string)).toMatchObject({
+      query: "auth",
+      projectId: "proj-context",
+      tags: null,
+      capped: true,
+      results: [],
+    })
   })
 
   it("exits non-zero and skips search when --project cannot resolve", async () => {

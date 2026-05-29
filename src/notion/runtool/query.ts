@@ -296,6 +296,9 @@ export async function fetchAlreadyComparedPairKeys(
       params: [`%${undash(opts.projectId)}%`],
     },
   })
+  if (response.has_more) {
+    throw new SqlPartialResultError("conflict-already-compared")
+  }
   const pairs = new Set<string>()
   for (const row of response.results) {
     const id = sqlString(row["id"])

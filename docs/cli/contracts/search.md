@@ -21,6 +21,8 @@ scripts.
 - Default output stays human-readable: count, linked title, tags, source, date,
   page id, and a short content preview.
 - Empty human output prints `No memories found for: "<query>"`.
+- When the search service reports a capped candidate window, human output prints
+  a warning after the result list or empty-result line.
 - `--json` writes a single parseable object to stdout:
 
   ```json
@@ -28,11 +30,13 @@ scripts.
     "query": "PAT rollout",
     "projectId": "project-page-id",
     "tags": ["auth"],
+    "capped": false,
     "results": []
   }
   ```
 
 - `projectId` is `null` when the search is vault-wide. `tags` is `null` when no
-  tag filter was supplied. `results` is the `MemoryService.search()` result
-  array.
+  tag filter was supplied. `capped` is `true` when the candidate window may have
+  omitted additional matching memories. `results` is the
+  `MemoryService.search()` result array.
 - Diagnostics and errors go to stderr so `--json` remains pipe-clean.

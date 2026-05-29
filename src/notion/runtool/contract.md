@@ -188,8 +188,11 @@ Lore issues internal search requests scoped to the Memories data source:
 | `query_type`, `content_search_mode` | optional upstream fields        | Omitted for workflow-bot compatibility     |
 
 RunTool `search` has no request cursor and no response `next_cursor`. It cannot
-represent REST search's paginated `page_size: 100` path. Consumers must fall
-back when recall could be under-served.
+represent REST search's paginated `page_size: 100` path. Lore treats RunTool
+AI search as the authoritative semantic transport for non-empty queries and
+surfaces saturated candidate windows as `capped` metadata instead of silently
+switching to REST. Operators can use `LORE_USE_RUNTOOL_SEARCH=0` or
+`LORE_USE_RUNTOOL=0` when they need the REST search transport.
 
 Lore consumes `InternalSearchResource.Value`:
 

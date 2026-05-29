@@ -8,9 +8,7 @@
  * 1. **Server cap discipline.** The pinned `SearchToolParams` schema
  *    caps `page_size` at `RUNTOOL_SEARCH_MAX_PAGE_SIZE = 25` and
  *    exposes no cursor, so the wrapper clamps locally and returns a
- *    `saturated` flag the caller uses to decide between "trust the
- *    response" and "fall back to REST because the window may have
- *    truncated."
+ *    `saturated` flag the caller surfaces as cap metadata.
  *
  * 2. **Data-source scoping.** Lore's only `search` consumer scopes to
  *    the Memories data source; the wrapper requires `dataSourceId`
@@ -19,20 +17,18 @@
  *    pipeline in `MemoryService` does NOT need to re-scope because
  *    `data_source_url` does it server-side.
  *
- * 3. **Error mapping.** 403 `RestrictedResource` is fall-back-able
- *    via {@link RunToolSearchRestrictedError} — the auth-refresh
- *    proxy refreshes only on 401, and integration-secret operators
- *    can't pass RunTool's actor-type check. Once-per-process stderr
- *    warning fires the first time so the silent degrade is
- *    observable. Validation 400s, 401, 429, and 5xx propagate
- *    verbatim so the rate-limit and auth-refresh proxies stay
- *    authoritative on those classes (canonical vocabulary pinned
- *    by the `update_page` wrapper).
+ * 3. **Error mapping.** 403 `RestrictedResource` becomes
+ *    {@link RunToolSearchRestrictedError}; the wrapper emits a
+ *    once-per-process stderr warning before throwing. Validation 400s, 401,
+ *    429, and 5xx propagate verbatim so the rate-limit and auth-refresh
+ *    proxies stay authoritative on those classes.
  *
  * Response materialization is the consumer's job. RunTool's `search`
- * returns `{ id, title, url, type, ... }` per hit; the consumer
- * (`MemoryService`) needs full `PageObjectResponse` shapes to feed
- * `applySemanticPostFilters` + `hydrateRelationPropertiesForPages`.
+ * returns `{ id, title, url, type, ... }` per hit. Notion-hosted hits
+ * can put either a bare page id or a Notion page URL in `url`; the
+ * wrapper normalizes that field to a page id before returning. The
+ * consumer (`MemoryService`) needs full `PageObjectResponse` shapes
+ * to feed `applySemanticPostFilters` + `hydrateRelationPropertiesForPages`.
  * This wrapper returns the structured hit list and lets the consumer
  * hydrate via the shared rate-limited `pages.retrieve` path.
  */
@@ -42,7 +38,8 @@ import { APIErrorCode, isNotionClientError } from "@notionhq/client"
 import { runTool } from "./client.js"
 import {
   __resetWarnRunToolRestrictedResourceOnceForTest,
-  isLikelyNotionPageId,
+  NOTION_PAGE_ID_IN_TEXT_RE,
+  normalizeLikelyNotionPageId,
   warnRunToolRestrictedResourceOnce,
 } from "./error-helpers.js"
 import {
@@ -57,17 +54,10 @@ import {
 export { RUNTOOL_SEARCH_MAX_PAGE_SIZE }
 
 /**
- * Structured error indicating the RunTool `search` dispatch failed in
- * a way the caller should fall back from rather than surface as a
- * hard error. Mirrors the `restricted_resource` arm of
- * {@link import("./client.js").RunToolBlockEditError} for the search
- * surface. All RunTool consumers use `restricted_resource` for
- * fall-back-able 403 capability or actor-shape rejections.
- *
- * The caller (`MemoryService`) treats this as "use the REST
- * `client.search` path for this call" — same posture as the
- * `update_page` wrapper, so an integration-secret token never
- * silently fails the surrounding query.
+ * Structured error indicating the RunTool `search` dispatch failed because
+ * the actor or client capability surface is not allowed to use the tool.
+ * `MemoryService` lets this propagate so unsupported auth is visible rather
+ * than downgraded silently.
  */
 export class RunToolSearchRestrictedError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -78,16 +68,16 @@ export class RunToolSearchRestrictedError extends Error {
 
 /**
  * One Notion-internal page hit from a RunTool `search` response.
- * External connector hits (Slack / Linear / Drive — `url` is a full
- * external URL rather than a page id) are filtered out by the
- * wrapper; Lore's consumers only care about Notion pages.
+ * External connector hits (Slack / Linear / Drive — `url` is a
+ * non-Notion URL rather than a Notion page locator) are filtered out
+ * by the wrapper; Lore's consumers only care about Notion pages.
  */
 export interface RunToolSearchHit {
   id: string
   title: string
-  /** Page id for Notion results; the wrapper drops external connector
-   *  hits before returning so this is always safe to pass to
-   *  `pages.retrieve`. */
+  /** Normalized page id for Notion results; the wrapper drops
+   *  external connector hits before returning so this is always safe
+   *  to pass to `pages.retrieve`. */
   url: string
   /** Mirrors Notion's archived flag. Optional on the wire (older
    *  responses omit it); defaults to `false` here so the consumer's
@@ -99,16 +89,8 @@ export interface RunToolSearchOutcome {
   hits: RunToolSearchHit[]
   /** True when the response returned exactly `RUNTOOL_SEARCH_MAX_PAGE_SIZE`
    *  hits. The wrapper has no cursor to fetch more, so a saturated
-   *  window is the caller's signal that the requested recall MAY be
-   *  under-served. The caller decides whether to fall back to REST
-   *  (which paginates with `start_cursor` up to
-   *  `SEMANTIC_SEARCH_MAX_PAGES`).
-   *
-   *  Conversely, `saturated === false` means **the server has shown
-   *  its hand at the requested `page_size`** — REST fallback would
-   *  not surface additional matches because the underlying corpus
-   *  has fewer than `page_size` matches for this query. The
-   *  consumer can trust the result without falling back.
+   *  window is the caller's signal that the returned semantic window may be
+   *  truncated and should be surfaced as cap metadata.
    *
    *  This flag is independent of the post-filter survivor count —
    *  the wrapper does not run Lore's post-filter pipeline; the
@@ -120,13 +102,10 @@ export interface RunToolSearchOutcome {
    *  semantics regardless of how the server's relevance ranking
    *  intermixed external and Notion hits. */
   saturated: boolean
-  /** The kind of internal search the server actually ran
-   *  (`ai_search` / `workspace_search` / `none`). Surfaced for
-   *  observability; consumers do not branch on it. `none` indicates
-   *  the server returned no relevance signal — typically empty
-   *  results, but not necessarily structurally empty (the server may
-   *  return `none` with `results: []` when the workspace has no
-   *  search backend configured). */
+  /** The internal search backend the server reported. Always
+   *  `ai_search`; the wrapper rejects `workspace_search` and `none`
+   *  because semantic retrieval must not silently downgrade to
+   *  non-AI relevance. */
   searchType: RunToolInternalSearchResponse["type"]
 }
 
@@ -134,8 +113,8 @@ export interface RunToolSearchOutcome {
  * Issue a RunTool `search` request scoped to one Notion data source.
  *
  * `query` MUST be non-empty (the server enforces `length >= 1`); the
- * caller is responsible for falling back to REST when the composed
- * query is empty.
+ * caller is responsible for choosing another explicit retrieval path when the
+ * composed query is empty.
  *
  * `pageSize` is **optional** and defaults to
  * `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (the server cap). Production
@@ -158,13 +137,11 @@ export interface RunToolSearchOutcome {
  * — but Lore's `MemoryService` post-filter and materialization
  * pipeline never reads `highlight`.
  *
- * It does NOT set `query_type` or `content_search_mode`: the
- * workflow-bot variant of the schema omits these fields (workflow
- * bots are pinned to `query_type: internal` +
- * `content_search_mode: workspace_search`), and personal-bot /
- * user-guest-bot tokens default to AI search when available.
- * Setting them explicitly would foreclose the AI-search fast path
- * on tokens that have access to it.
+ * It does NOT set `query_type` or `content_search_mode`: supported
+ * PAT / ntn user tokens default to AI search when available. The
+ * response must report `type: "ai_search"`; `workspace_search` and
+ * `none` mean AI semantic search is unavailable and are rejected
+ * loudly instead of being treated as semantic relevance.
  */
 export async function searchViaRunTool(
   client: Client,
@@ -174,7 +151,7 @@ export async function searchViaRunTool(
     throw new Error(
       "searchViaRunTool: query must be non-empty (RunTool search " +
         "requires query length >= 1; the caller is responsible for " +
-        "falling back to REST on empty queries)."
+        "choosing another explicit retrieval path on empty queries)."
     )
   }
   if (params.dataSourceId.length === 0) {
@@ -205,12 +182,11 @@ export async function searchViaRunTool(
     response = await runTool(client, "search", requestParams)
   } catch (err) {
     if (isRestrictedResourceError(err)) {
-      warnRunToolRestrictedResourceOnce("search", err)
+      warnRunToolRestrictedResourceOnce("search", err, { usedRest: false })
       throw new RunToolSearchRestrictedError(
         "RunTool search rejected this token (RestrictedResource). " +
-          "Falling back to REST. RunTool requires an ntn-issued " +
-          "user-actor token; a public OAuth integration secret " +
-          "cannot pass the actor-type check.",
+          "RunTool requires a Notion PAT or ntn-issued user token; " +
+          "integration tokens (secret_...) are unsupported.",
         err
       )
     }
@@ -225,20 +201,27 @@ export async function searchViaRunTool(
         "The upstream schema may have drifted underneath the pinned contract."
     )
   }
+  if (response.type !== "ai_search") {
+    throw new Error(
+      `AI semantic search unavailable: RunTool search returned ${response.type}; ` +
+        `expected ai_search. Ensure this workspace and token have Notion AI search access.`
+    )
+  }
 
-  // The wrapper narrows to Notion-internal hits because Lore's
+  // The wrapper narrows to Notion-hosted hits because Lore's
   // consumers only care about Notion pages. External connector
-  // results carry a full URL in the `url` field (e.g.
-  // `https://slack.com/...`); Notion-internal results carry a bare
-  // page id. The wrapper drops the external arm before returning so
-  // the caller can pass `hit.url` straight to `pages.retrieve`.
+  // results carry non-Notion URLs in the `url` field (e.g.
+  // `https://slack.com/...`). The wrapper drops the external arm and
+  // normalizes Notion page identifiers before returning so the caller
+  // can pass `hit.url` straight to `pages.retrieve`.
   const hits: RunToolSearchHit[] = []
   for (const result of response.results) {
-    if (!isNotionInternalHit(result)) continue
+    const pageId = pageIdFromNotionInternalHit(result)
+    if (pageId === null) continue
     hits.push({
       id: result.id,
       title: result.title,
-      url: result.url,
+      url: pageId,
       // `=== true` strict-coerces non-boolean values (e.g. a
       // hypothetical string `"true"`) to false. Acceptable because
       // `applySemanticPostFilters` re-checks the canonical
@@ -257,16 +240,38 @@ export async function searchViaRunTool(
 }
 
 /**
- * `true` for hits whose `url` is a Notion page id rather than an
- * external connector URL. The pinned schema documents the format as
- * "page id for Notion results, full URL for connector results";
- * Notion page ids are 32-character lowercase hex (no separators) or
- * dashed UUID (8-4-4-4-12). Anything else (a `https://` prefix, a
- * Slack / Linear / Drive URL, an empty string) is dropped.
+ * Extract the page id for Notion-hosted hits. The search API can
+ * return either a bare page id or a Notion URL in `url`; external
+ * connector results use other hosts and are dropped.
  */
-function isNotionInternalHit(result: RunToolInternalSearchResult): boolean {
-  if (typeof result.url !== "string" || result.url.length === 0) return false
-  return isLikelyNotionPageId(result.url)
+function pageIdFromNotionInternalHit(result: RunToolInternalSearchResult): string | null {
+  if (typeof result.url !== "string" || result.url.length === 0) return null
+  const barePageId = normalizeLikelyNotionPageId(result.url)
+  if (barePageId !== null) return barePageId
+
+  let parsed: URL
+  try {
+    parsed = new URL(result.url)
+  } catch {
+    return null
+  }
+  if (!isNotionHostedSearchUrl(parsed.hostname)) return null
+
+  const pageIdMatch = parsed.pathname.match(NOTION_PAGE_ID_IN_TEXT_RE)
+  const matchedPageId = pageIdMatch?.[0]
+  return matchedPageId ? normalizeLikelyNotionPageId(matchedPageId) : null
+}
+
+function isNotionHostedSearchUrl(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  return (
+    host === "notion.so" ||
+    host.endsWith(".notion.so") ||
+    host === "notion.com" ||
+    host.endsWith(".notion.com") ||
+    host === "notion.site" ||
+    host.endsWith(".notion.site")
+  )
 }
 
 function isRestrictedResourceError(err: unknown): boolean {

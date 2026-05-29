@@ -47,20 +47,21 @@ function oneLine(value: string): string {
  *   `pageId` parameter at the wrapper boundary so a malformed id
  *   surfaces as a clear local error rather than a generic Notion
  *   400 from the wire.
- * - **`search`** (`search.ts:isNotionInternalHit`) — validates
- *   `result.url` against the regex to distinguish Notion-internal
- *   hits (where the schema puts the page id in `url`) from
- *   external connector hits (Slack / Linear / Drive — where `url`
- *   is a full external URL). The wrapper drops external hits so
- *   the consumer can pass `hit.url` straight to `pages.retrieve`
- *   without further validation.
+ * - **`search`** — validates the page id extracted from
+ *   `result.url` after the search wrapper distinguishes
+ *   Notion-hosted hits from external connector hits. The wrapper
+ *   drops external hits so the consumer can pass `hit.url`
+ *   straight to `pages.retrieve` without further validation.
  *
  * The `i` flag tolerates upstream casing drift defensively;
  * Notion's canonical form is lowercase but matching is case-
  * insensitive at the wire level.
  */
-export const NOTION_PAGE_ID_RE =
-  /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+const NOTION_PAGE_ID_PATTERN =
+  "[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+export const NOTION_PAGE_ID_RE = new RegExp(`^(?:${NOTION_PAGE_ID_PATTERN})$`, "i")
+export const NOTION_PAGE_ID_IN_TEXT_RE = new RegExp(`(?:${NOTION_PAGE_ID_PATTERN})`, "i")
 
 /**
  * `true` when `pageId` looks like a Notion page id (32-hex or
@@ -71,6 +72,24 @@ export const NOTION_PAGE_ID_RE =
  */
 export function isLikelyNotionPageId(pageId: string): boolean {
   return NOTION_PAGE_ID_RE.test(pageId.trim())
+}
+
+/**
+ * Normalize a bare Notion page id to dashed lowercase UUID form.
+ * Returns `null` when the input is not one of the page-id wire forms
+ * accepted by {@link isLikelyNotionPageId}.
+ */
+export function normalizeLikelyNotionPageId(pageId: string): string | null {
+  const trimmed = pageId.trim()
+  if (!isLikelyNotionPageId(trimmed)) return null
+  const compact = trimmed.replaceAll("-", "").toLowerCase()
+  return [
+    compact.slice(0, 8),
+    compact.slice(8, 12),
+    compact.slice(12, 16),
+    compact.slice(16, 20),
+    compact.slice(20),
+  ].join("-")
 }
 
 /**
@@ -87,11 +106,10 @@ export function isSqlValidationError(err: unknown): boolean {
 }
 
 /**
- * Emit a one-line `[lore] partial-failure: …` stderr notice when
- * `LORE_DEBUG=1`. Used by the SQL-then-REST fallback paths so an
- * operator can distinguish a transient blip from a sustained
- * capability-gate problem (the SQL flag stays opt-in by default,
- * so a sustained fallback isn't user-visible without this signal).
+ * Emit a one-line `[lore] partial-failure: …` stderr notice whenever
+ * a flagged-on RunTool path hands the call to REST/SDK. Used by the
+ * SQL-then-REST fallback paths so an operator can distinguish a
+ * transient blip from a sustained capability-gate problem.
  *
  * `source` names the call site (`entity-find-by-name`,
  * `entity-find-by-alias`, `near-duplicate-candidates`,
@@ -102,15 +120,34 @@ export function isSqlValidationError(err: unknown): boolean {
  * defense-in-depth posture as the shared partial-failure logger.
  */
 export function logRunToolFallback(source: string, err: unknown): void {
-  if (process.env["LORE_DEBUG"] !== "1") return
   const status = (err as { status?: number } | null | undefined)?.status
   const code = (err as { code?: unknown } | null | undefined)?.code
   process.stderr.write(
     `[lore] partial-failure: source=${oneLine(source)} ` +
       `status=${oneLine(String(status ?? "unknown"))} ` +
       `code=${oneLine(String(code ?? "unknown"))} ` +
-      `error=${oneLine(redactDebugError(err))} runtool-fallback=1\n`
+      `reason=${runToolFallbackReason(err)} ` +
+      `error=${oneLine(redactDebugError(err))} ` +
+      `runtool-fallback=1 used-rest=1\n`
   )
+}
+
+function runToolFallbackReason(err: unknown): string {
+  const status = (err as { status?: number } | null | undefined)?.status
+  const code = (err as { code?: unknown } | null | undefined)?.code
+  if (code === "restricted_resource" || status === 403) return "restricted_resource"
+  if (code === "unauthorized" || status === 401) return "auth_unavailable"
+  if (code === "rate_limited" || status === 429) return "rate_limited"
+  if (typeof status === "number" && status >= 500) return "server_error"
+  if (err instanceof Error && err.name === "RunToolBlockEditError") {
+    const kind = (err as { kind?: unknown }).kind
+    if (typeof kind === "string" && kind.length > 0) return kind
+  }
+  if (err instanceof Error && err.name === "SqlPartialResultError") {
+    return "partial_result"
+  }
+  if (status === undefined && code === undefined) return "transport_or_unknown"
+  return "runtool_error"
 }
 
 /**
@@ -141,40 +178,14 @@ export class SqlPartialResultError extends Error {
   }
 }
 
-/**
- * Auth sources that carry an integration-secret token (Notion
- * "internal integration" tokens, not user-actor tokens). These
- * auth paths are explicitly rejected by RunTool with 403
- * `RestrictedResource` because RunTool requires a user-actor or
- * workflow-bot token shape.
- *
- * The set is currently empty: `env-notion-api-token` is ambiguous
- * (could be either an integration secret or a personal token,
- * depending on what the operator exported), so it stays out of the
- * known-rejected set. Adding a future auth source requires explicit
- * triage.
- */
-const KNOWN_INTEGRATION_SECRET_AUTH_SOURCES = new Set<string>()
+const warnedRestrictedResources = new Set<string>()
 
 /**
- * `true` when the auth source carries an integration-secret token
- * that RunTool will reject with 403.
- */
-export function isKnownIntegrationSecretAuthSource(source: string): boolean {
-  return KNOWN_INTEGRATION_SECRET_AUTH_SOURCES.has(source)
-}
-
-let warnedRestrictedResourceFallback = false
-
-/**
- * Emit a single once-per-process stderr warning when ANY RunTool
- * consumer falls back from a 403 RestrictedResource. Lifted out of
- * the per-consumer modules (the `update_page` latch on the runtool
- * client, the search latch on the runtool search wrapper) so an
- * integration-secret operator
- * dogfooding multiple flagged-on surfaces sees one warning instead
- * of N. The `restricted_resource` recovery contract is a
- * per-process posture, not per-tool.
+ * Emit a once-per-source/outcome stderr warning when a RunTool
+ * consumer sees a 403 RestrictedResource. Lifted out of the
+ * per-consumer modules so repeated identical failures do not spam
+ * stderr, while hard failures and REST fallbacks remain separately
+ * observable.
  *
  * Routes through the shared redactor for defense-in-depth — auth-
  * shaped error messages can surface workspace ids / paths under
@@ -182,53 +193,31 @@ let warnedRestrictedResourceFallback = false
  */
 export function warnRunToolRestrictedResourceOnce(
   source: "update_page" | "search",
-  err: unknown
+  err: unknown,
+  opts: { usedRest: boolean } = { usedRest: true }
 ): void {
-  if (warnedRestrictedResourceFallback) return
-  warnedRestrictedResourceFallback = true
+  const key = `${source}:${opts.usedRest ? "fallback" : "error"}`
+  if (warnedRestrictedResources.has(key)) return
+  warnedRestrictedResources.add(key)
   const message = err instanceof Error ? err.message : ""
   const detail = message ? `: ${redactDebugMessage(message)}` : ""
+  const outcome = opts.usedRest
+    ? "used REST/SDK path"
+    : "operation failed without REST/SDK fallback"
+  const markers = opts.usedRest
+    ? "runtool-fallback=1 used-rest=1"
+    : "runtool-error=1 used-rest=0"
   process.stderr.write(
-    `[lore] runtool: 403 RestrictedResource on ${source}; falling back to ` +
-      `REST/SDK path. RunTool requires an ntn-issued user-actor token; ` +
-      `integration-secret auth cannot use RunTool` +
+    `[lore] runtool: 403 RestrictedResource on ${source}; ${outcome}. ` +
+      `RunTool requires a Notion PAT or ntn-issued user token; ` +
+      `integration tokens (secret_...) are unsupported` +
       detail +
-      `\n`
+      ` ${markers}\n`
   )
 }
 
-/** Test seam — reset the once-per-process latch so individual test
- *  cases can independently exercise the warning path. */
+/** Test seam — reset the process-local warning latches so individual
+ *  test cases can independently exercise the warning path. */
 export function __resetWarnRunToolRestrictedResourceOnceForTest(): void {
-  warnedRestrictedResourceFallback = false
-}
-
-let warnedRunToolIntegrationSecret = false
-
-/**
- * Emit a one-time stderr warning at services init when a RunTool
- * feature flag is enabled (`LORE_USE_RUNTOOL` / sub-flag) AND the
- * resolved auth source is a known integration-secret path that
- * RunTool will reject with 403.
- *
- * Once-per-process so a long-lived MCP server doesn't spam stderr;
- * idempotent on services re-init.
- */
-export function warnRunToolIntegrationSecretOnce(authSource: string): void {
-  if (warnedRunToolIntegrationSecret) return
-  if (!isKnownIntegrationSecretAuthSource(authSource)) return
-  warnedRunToolIntegrationSecret = true
-  process.stderr.write(
-    `[lore] runtool: LORE_USE_RUNTOOL* flag is enabled but the resolved auth ` +
-      `source (${authSource}) is an integration-secret path that RunTool ` +
-      `rejects with 403. Every flagged-on call will silently fall back to REST. ` +
-      `Migrate to ntn-issued auth via 'lore auth --login' to dogfood RunTool, ` +
-      `or unset the LORE_USE_RUNTOOL* flags to silence this warning.\n`
-  )
-}
-
-/** Test seam — reset the once-per-process latch so individual test
- *  cases can independently exercise the warning path. */
-export function __resetWarnRunToolIntegrationSecretForTest(): void {
-  warnedRunToolIntegrationSecret = false
+  warnedRestrictedResources.clear()
 }

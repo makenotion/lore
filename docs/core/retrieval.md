@@ -22,7 +22,7 @@ migration or audit totals. The cleanup-orphan exclusion still applies.
 
 ## Memory Search
 
-`MemoryService.search()` switches on `input.mode` (default `"hybrid"`)
+`MemoryService.search()` switches on `input.mode` (default `"semantic"`)
 between three execution paths. Each path returns the same `Memory[]` shape;
 they differ in scope, filter capability, and ranking.
 
@@ -56,8 +56,7 @@ their other filters. Sort is `last_edited_time desc`; `page_size` is the
 caller's `limit` (max 100).
 
 Body matches are **not** searched here — `dataSources.query` only filters
-on properties. Callers that need body relevance should use `"semantic"`
-or rely on the hybrid fallback below.
+on properties. Callers that need body relevance should use `"semantic"`.
 
 **Archived rows are excluded client-side.** Notion's `archived` flag
 lives on `PageObjectResponse`, not as a DB column, so `dataSources.query`
@@ -66,15 +65,24 @@ post-fetch — same posture as `findByTopicKey`, `listAllForBackfill`, and
 `listForScan`. Without this, an archived row at the top of recency could
 occupy a result slot a live row would otherwise fill.
 
-### `mode: "semantic"` (workspace-wide, vector-ranked)
+### `mode: "semantic"` (default relevance path)
 
-The legacy path. Uses `client.search()` for relevance ranking against page
-titles AND bodies. Results are post-filtered to the Memories DS — matching
-either `parent.type === "database_id"` against `db.databaseId` **or**
-`parent.type === "data_source_id"` against `db.dataSourceId`. Notion SDK
-v5 returns both shapes in the wild depending on when and how the page was
-created; accepting only `database_id` silently filters out every real
-result from a data-source-backed workspace.
+Uses RunTool `search` when `LORE_USE_RUNTOOL_SEARCH` is enabled and the
+composed query is non-empty. RunTool search is scoped to the Memories data
+source and returns Notion's relevance order over titles and bodies. The raw
+window is capped at 25 because the tool exposes no cursor; Lore accepts that
+window as authoritative and surfaces saturation as `capped: true` rather than
+switching to REST ranking. A RunTool response type other than `ai_search`
+throws an "AI semantic search unavailable" error instead of returning lexical
+workspace-search results under semantic mode.
+
+When RunTool search is disabled, the path uses `client.search()` for relevance
+ranking against page titles AND bodies. Results are post-filtered to the
+Memories DS — matching either `parent.type === "database_id"` against
+`db.databaseId` **or** `parent.type === "data_source_id"` against
+`db.dataSourceId`. Notion SDK v5 returns both shapes in the wild depending on
+when and how the page was created; accepting only `database_id` silently
+filters out every real result from a data-source-backed workspace.
 
 Property filters (`projectId` / `topicId` / `tags` / `source` / `kind` /
 `status`) all post-filter client-side because `client.search` has no
@@ -90,7 +98,7 @@ fetch `page_size: 100` instead so the post-filter to the Memories DS has
 headroom when the workspace contains unrelated pages matching the query
 tokens.
 
-**Paginates up to `SEMANTIC_SEARCH_MAX_PAGES` raw pages (default 5)** when
+When using REST, the path **paginates up to `SEMANTIC_SEARCH_MAX_PAGES` raw pages (default 5)** when
 the first 100 raw hits do not yield enough post-filtered Lore memories to
 satisfy the requested `limit` (issue #192). Loop exits early on
 saturation (`accumulated >= limit`) or exhaustion (`has_more: false`); the
@@ -118,10 +126,7 @@ to the fused score and can plausibly beat a contains-only row — but
 only if it survives long enough to reach the accumulator. `runSearch`
 applies `pages.slice(0, limit)` at the call boundary as the
 authoritative final cap for semantic-only callers; hybrid consumes the
-wider pool. Pre-PR the
-equivalent narrowing was structural (single page of 100 trimmed to
-limit), so this is a recall improvement on the same axis pagination
-opened up, not a fix-for-regression.
+wider pool.
 
 **Operator triage signal.** When the cap fires (loop exhausted
 `SEMANTIC_SEARCH_MAX_PAGES` without saturating or hitting `has_more:
@@ -142,7 +147,7 @@ the same pass as the parent-DB match — mirrors the every-other-walker
 contract (`findByTopicKey`, `listAllForBackfill`, `listForScan`,
 `fetchContainsPages`).
 
-### `mode: "hybrid"` (default)
+### `mode: "hybrid"`
 
 Speculative parallelism. `searchByHybridPages` fires `fetchContainsPages`
 and `fetchSemanticPages` (the **raw** fetch helpers — see "Fetch/sort
@@ -275,15 +280,13 @@ source=hybrid-search` **unconditionally** — not gated on
   the `error=` field; per-surface key names are intentionally
   scoped to their surface.
 
-The earlier sequential design (run contains, then run semantic if it
-under-shot) traded latency _against_ itself in the under-shooting case,
-which is the _common_ case for phrase-shaped queries. Parallelism
-restores the pre-PR worst-case wall-clock while keeping the precision
-of contains when it produces enough signal. Switching from `Promise.all`
-to `Promise.allSettled` preserves the wall-clock guarantee while
-decoupling the failure domains — the kill switch
-(`LORE_FORCE_SEMANTIC_SEARCH=1`) remains the manual rollback for
-sustained problems; this guard is the automatic one for transient ones.
+Parallelism keeps the under-shooting case to one branch fan-out while
+preserving contains precision when it produces enough signal. Switching from
+`Promise.all` to `Promise.allSettled` preserves the wall-clock guarantee while
+decoupling the failure domains. `LORE_FORCE_SEMANTIC_SEARCH=1` remains the
+manual rollback to semantic-only mode; it does not disable the RunTool search
+transport. Use `LORE_USE_RUNTOOL_SEARCH=0` or `LORE_USE_RUNTOOL=0` when the
+rollback needs to bypass RunTool itself.
 
 Three is a tradeoff: small enough that a niche query with one or two
 title hits still gets the benefit of body-relevance ranking, large enough
@@ -362,12 +365,12 @@ operator-tuning posture as `RRF_K`: a future env knob
 (`LORE_HYBRID_CONTAINS_WEIGHT`) is the next step if real-query
 ordering needs adjustment, not a per-call argument.
 
-**Empty `query` composition.** The semantic branch composes its
-`client.search` query as `[query.trim(), intent].filter(Boolean).join(" ")`,
+**Empty `query` composition.** The semantic branch composes its relevance query
+as `[query.trim(), intent].filter(Boolean).join(" ")`,
 so an empty `query` (allowed on `MemoryService.search` callers that
-pass `""` for unscoped relevance lookups) produces `"intent"` rather
-than `" intent"` — Notion's `client.search` may rank a leading-space
-string differently from the bare term.
+pass `""` for unscoped relevance lookups) produces `"intent"` rather than
+`" intent"` — Notion may rank a leading-space string differently from the bare
+term.
 
 The contains-vs-semantic asymmetry is the load-bearing decision and
 the most likely source of future regression. A future contributor
@@ -412,12 +415,12 @@ The explain shape (`SearchExplain` in `src/types.ts`) carries:
 
 **Branch-field rules** (pinned by tests):
 
-| Resolved mode                    | `branch`             | `containsRank`           | `semanticRank`           | `rrfScore`  |
-| -------------------------------- | -------------------- | ------------------------ | ------------------------ | ----------- |
-| `"contains"`                     | `contains-only`      | row position in contains | `null`                   | `null`      |
-| `"semantic"` (incl. kill-switch) | `semantic-only`      | `null`                   | row position in semantic | `null`      |
-| `"hybrid"`, saturated            | `contains-saturated` | row position in contains | **always `null`**        | `null`      |
-| `"hybrid"`, RRF                  | `rrf`                | actual rank or `null`    | actual rank or `null`    | fused score |
+| Resolved mode                   | `branch`             | `containsRank`           | `semanticRank`           | `rrfScore`  |
+| ------------------------------- | -------------------- | ------------------------ | ------------------------ | ----------- |
+| `"contains"`                    | `contains-only`      | row position in contains | `null`                   | `null`      |
+| `"semantic"` (incl. mode force) | `semantic-only`      | `null`                   | row position in semantic | `null`      |
+| `"hybrid"`, saturated           | `contains-saturated` | row position in contains | **always `null`**        | `null`      |
+| `"hybrid"`, RRF                 | `rrf`                | actual rank or `null`    | actual rank or `null`    | fused score |
 
 The "saturated → semanticRank null" rule is load-bearing: the semantic
 branch ran in parallel and may have returned the same id, but the
@@ -454,28 +457,29 @@ date / tags (e.g. the shell wake-up hook's related-memories section).
 
 ### Fetch/sort pipeline split
 
-The single-branch and hybrid paths each apply the effective confidence factor
-to the RRF score **exactly once**. The split keeps that contract enforceable:
+Contains and hybrid paths apply the effective confidence factor to the RRF
+score **exactly once**. Semantic preserves Notion relevance order. The split
+keeps that contract enforceable:
 
 | Layer  | Function                               | Confidence-aware?                                              |
 | ------ | -------------------------------------- | -------------------------------------------------------------- |
 | Fetch  | `fetchContainsPages(input)`            | No — raw Notion result                                         |
 | Fetch  | `fetchSemanticPages(input, intent)`    | No — raw Notion result                                         |
 | Public | `searchByContainsPages(input)`         | Yes — fetch + effective factor + sort                          |
-| Public | `searchBySemanticPages(input, intent)` | Yes — fetch + effective factor + sort                          |
+| Public | `searchBySemanticPages(input, intent)` | No — Notion relevance order is authoritative                   |
 | Public | `searchByHybridPages(...)`             | Yes — composes raw fetch + effective factor in RRF accumulator |
 
 Hybrid composes the **raw** fetch helpers, not the public confidence-
-aware wrappers. If hybrid called `searchByContainsPages` /
-`searchBySemanticPages`, the factor would be applied once in the
-single-branch sort and again in the RRF accumulator — collapsing the
-documented `[CONFIDENCE_FACTOR_MIN, 1.0]` floor to
+aware contains wrapper. If hybrid called `searchByContainsPages`, the factor
+would be applied once in the single-branch sort and again in the RRF
+accumulator — collapsing the documented `[CONFIDENCE_FACTOR_MIN, 1.0]` floor to
 `[CONFIDENCE_FACTOR_MIN², 1.0]` for hybrid callers (e.g. a row at
 score 0.0 would multiply by 0.25, not 0.5).
 
-`rerankByConfidence` (private, in `memory-search.ts`) is the shared
-effective-factor-then-sort applier used by both single-branch public wrappers.
-It short-circuits when every input row is unscored
+`rerankByConfidence` (private, in `memory-search.ts`) is the
+effective-factor-then-sort applier used by contains mode and the
+contains-saturated hybrid branch. It short-circuits when every input row is
+unscored
 (`Confidence Score = null`) so vaults without confidence scores keep raw
 Notion ordering — without that gate, the page-id-ascending fall-through in
 `tieBreakingRrfCompare` would re-sort otherwise-tied rows into id order,
@@ -498,15 +502,20 @@ Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
 `LORE_DISABLE_NEAR_DUPLICATE_PROBE`. The check lives at the helper
 boundary so single-branch and hybrid paths share one bypass.
 
-### Kill switch: `LORE_FORCE_SEMANTIC_SEARCH=1`
+### Mode Force: `LORE_FORCE_SEMANTIC_SEARCH=1`
 
-Operator escape hatch checked inside `search()`. When set, every search
-routes through the legacy workspace-wide path regardless of the caller's
-`mode`. Use as a rollback if the contains path silently under-recalls in
-a vault that hasn't run `lore migrate --fix-memory-encoding` yet —
-encoded titles miss substring matches against post-decode queries
-(see P2-10). Same posture as `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an
-opt-in defensive lever, not a default.
+Operator escape hatch checked inside `search()`. When set, every search resolves
+to `mode: "semantic"` regardless of the caller's requested mode. It is a
+contains/hybrid rollback, not a RunTool transport rollback: with
+`LORE_USE_RUNTOOL_SEARCH` enabled, non-empty semantic queries still use RunTool
+AI search. Operators who need to bypass RunTool search must set
+`LORE_USE_RUNTOOL_SEARCH=0` or `LORE_USE_RUNTOOL=0`.
+
+Use `LORE_FORCE_SEMANTIC_SEARCH=1` if the contains path silently under-recalls
+in a vault that hasn't run `lore migrate --fix-memory-encoding` yet — encoded
+titles miss substring matches against post-decode queries (see P2-10). Same
+posture as `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an opt-in defensive lever, not
+a default.
 
 The `list()` method uses `dataSources.query()` with property filters and is
 suited for browsing recent memories by project/topic/source. It has no

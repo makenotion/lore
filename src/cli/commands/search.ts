@@ -20,8 +20,12 @@ export interface SearchJsonOutput {
   query: string
   projectId: string | null
   tags: string[] | null
+  capped: boolean
   results: Memory[]
 }
+
+const CAPPED_SEARCH_WARNING =
+  "Search reached a candidate-window cap; more matching memories may exist."
 
 export function parseSearchCliOptions(raw: {
   project?: string
@@ -95,19 +99,29 @@ export const searchCommand = new Command("search")
           projectId = services.context.project.id
         }
 
-        const results = await services.memories.search({
+        const searchInput = {
           query,
           projectId,
           tags: parsed.value.tags,
           limit: parsed.value.limit,
           includeExpired: parsed.value.includeExpired,
-        })
+        }
+        const out =
+          typeof services.memories.searchWithMeta === "function"
+            ? await services.memories.searchWithMeta(searchInput)
+            : {
+                memories: await services.memories.search(searchInput),
+                capped: false,
+              }
+        const results = out.memories
+        const capped = out.capped
 
         if (parsed.value.json) {
           const output: SearchJsonOutput = {
             query,
             projectId: projectId ?? null,
             tags: parsed.value.tags ?? null,
+            capped,
             results,
           }
           console.log(JSON.stringify(output, null, 2))
@@ -116,6 +130,9 @@ export const searchCommand = new Command("search")
 
         if (results.length === 0) {
           console.log(`No memories found for: "${query}"`)
+          if (capped) {
+            console.log(`Warning: ${CAPPED_SEARCH_WARNING}`)
+          }
           return
         }
 
@@ -132,6 +149,9 @@ export const searchCommand = new Command("search")
             console.log(`  ${preview}${mem.content.length > 120 ? "..." : ""}`)
           }
           console.log()
+        }
+        if (capped) {
+          console.log(`Warning: ${CAPPED_SEARCH_WARNING}`)
         }
       } catch (err) {
         console.error("Search failed:", err instanceof Error ? err.message : err)

@@ -408,6 +408,11 @@ describe("initServicesFromConfig — lazy author identity", () => {
   }
 
   afterEach(() => {
+    delete process.env["LORE_USE_RUNTOOL"]
+    delete process.env["LORE_USE_RUNTOOL_BLOCK_EDIT"]
+    delete process.env["LORE_USE_RUNTOOL_FILTER_SQL"]
+    delete process.env["LORE_USE_RUNTOOL_SEARCH"]
+    delete process.env["LORE_USE_RUNTOOL_AGGREGATE"]
     delete process.env["LORE_USE_RUNTOOL_BATCH_CREATES"]
     vi.mocked(resolveAuth).mockReset()
     vi.mocked(resolveProject).mockReset()
@@ -416,6 +421,63 @@ describe("initServicesFromConfig — lazy author identity", () => {
     )
     serviceClientUsersMe.mockReset()
     operationAccountingClient.mockClear()
+  })
+
+  it("rejects integration-secret tokens when any RunTool surface is enabled", async () => {
+    process.env["LORE_USE_RUNTOOL"] = "1"
+    process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "secret_abcdefghijklmnopqrstuvwxyz",
+      source: "env-notion-api-token",
+    })
+    const loadSpy = vi.spyOn(VaultManager.prototype, "load")
+
+    try {
+      await expect(
+        initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+      ).rejects.toThrow(/Integration tokens .* are unsupported/)
+      expect(loadSpy).not.toHaveBeenCalled()
+    } finally {
+      loadSpy.mockRestore()
+    }
+  })
+
+  it("allows integration-secret tokens when every RunTool surface is disabled", async () => {
+    process.env["LORE_USE_RUNTOOL"] = "0"
+    process.env["LORE_USE_RUNTOOL_BLOCK_EDIT"] = "0"
+    process.env["LORE_USE_RUNTOOL_FILTER_SQL"] = "0"
+    process.env["LORE_USE_RUNTOOL_SEARCH"] = "0"
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "0"
+    process.env["LORE_USE_RUNTOOL_BATCH_CREATES"] = "0"
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "secret_abcdefghijklmnopqrstuvwxyz",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+
+      expect(services.features.runTool).toMatchObject({
+        blockEdit: false,
+        filterSql: false,
+        search: false,
+        aggregate: false,
+        batchCreates: false,
+      })
+    } finally {
+      loadSpy.mockRestore()
+    }
   })
 
   it("does not install operation accounting when cost tracking is disabled", async () => {

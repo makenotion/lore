@@ -2285,10 +2285,9 @@ describe("lore-search content-off default", () => {
 })
 
 describe("lore-search mode parameter", () => {
-  it("defaults mode to hybrid and forwards it to the service", async () => {
-    // P3-04: The new default. Hybrid runs contains first and only falls
-    // back to semantic when contains under-shoots. The MCP layer threads
-    // the mode through so the service can switch on it.
+  it("defaults mode to semantic and forwards it to the service", async () => {
+    // The MCP layer resolves the default explicitly so the service sees the
+    // same mode shape as callers that pass a mode themselves.
     const mockServer = createMockServer()
     const memoriesSearch = vi
       .fn()
@@ -2308,7 +2307,7 @@ describe("lore-search mode parameter", () => {
     await search({ query: "q" } as never)
 
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: "hybrid" })
+      expect.objectContaining({ mode: "semantic" })
     )
   })
 
@@ -2348,11 +2347,9 @@ describe("lore-search mode parameter", () => {
     )
   })
 
-  it("over-fetches in semantic mode but uses the requested limit verbatim in contains/hybrid", async () => {
-    // Semantic mode still post-filters kind/status because client.search
-    // ignores property filters — the over-fetch keeps the post-filter from
-    // starving output. Contains/hybrid filter server-side so no over-fetch
-    // is needed; the tool forwards the requested limit verbatim.
+  it("uses the requested limit verbatim in every search mode", async () => {
+    // The service owns post-filtering and cap metadata; the MCP boundary keeps
+    // the caller's display limit intact.
     const mockServer = createMockServer()
     const memoriesSearch = vi.fn().mockResolvedValue([])
     const services = {
@@ -2368,7 +2365,7 @@ describe("lore-search mode parameter", () => {
 
     await search({ query: "q", limit: 5, mode: "semantic" } as never)
     expect(memoriesSearch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mode: "semantic", limit: 10 })
+      expect.objectContaining({ mode: "semantic", limit: 5 })
     )
 
     await search({ query: "q", limit: 5, mode: "contains" } as never)
@@ -5574,7 +5571,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain('No memories found for: "archived"')
-    expect(text).toContain("live-row refill cap")
+    expect(text).toContain("candidate-window cap")
     expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
   })
 

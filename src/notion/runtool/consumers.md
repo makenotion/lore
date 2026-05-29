@@ -36,6 +36,24 @@ a separate auth path, base-URL resolver, or rate-limit gate.
 The test environment pins `LORE_USE_RUNTOOL=0` for the legacy REST/SDK corpus.
 Consumer tests that exercise RunTool opt back in explicitly.
 
+RunTool-capable auth is a service-init invariant. PATs (`ntn_` /
+`development_ntn_`) and ntn-issued user tokens can use RunTool. `secret_...`
+integration tokens cannot; Lore rejects them while any RunTool surface is
+enabled instead of allowing every call to degrade to REST.
+
+## REST Exception Registry
+
+Remaining REST/SDK use is classified here so the exception set is explicit:
+
+| Class            | Surfaces                                                                            | Status                                                                                                 |
+| ---------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Auth             | `secret_...` integration tokens                                                     | Rejected during service initialization when any RunTool surface is enabled.                            |
+| Capability gap   | SQL `has_more`, SQL canonicalization/date-column gaps, aggregate `hasAdvancedTools` | Allowed only through documented fallback branches; each branch emits `runtool-fallback=1 used-rest=1`. |
+| Capability limit | Search 25-row window                                                                | Accepted as the semantic AI-search contract; surfaced as `capped: true`, not a REST fallback.          |
+| Capability gap   | `update_page` anchored edit miss/ambiguity/delete warning                           | Falls back to the full-body REST markdown path and emits `runtool-fallback=1 used-rest=1`.             |
+| Security gap     | `create_pages` partial-commit recovery                                              | Kept behind `LORE_USE_RUNTOOL_BATCH_CREATES=1`; fallback preserves per-input idempotency.              |
+| Historical       | Silent REST fallback for RunTool-disabled or unsupported auth                       | Not allowed; callers either opt out explicitly or surface a fallback/unavailable event.                |
+
 ## Block Edit: `update_page`
 
 Surface:
@@ -54,12 +72,12 @@ validation failures are programmer errors and do not fall back.
 
 Fall-back-able failures are represented by `RunToolBlockEditError`:
 
-| Kind                  | Fallback behavior                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------ |
-| `no_match`            | Existing REST/SDK full-body path decides whether it can still apply.                 |
-| `multiple_matches`    | Existing path avoids ambiguous anchored replacement.                                 |
-| `deletion_warning`    | Existing path preserves children unless the caller made an explicit delete decision. |
-| `restricted_resource` | Existing path handles operators whose token/capability shape cannot use RunTool.     |
+| Kind                  | Fallback behavior                                                                       |
+| --------------------- | --------------------------------------------------------------------------------------- |
+| `no_match`            | Existing REST/SDK full-body path decides whether it can still apply.                    |
+| `multiple_matches`    | Existing path avoids ambiguous anchored replacement.                                    |
+| `deletion_warning`    | Existing path preserves children unless the caller made an explicit delete decision.    |
+| `restricted_resource` | Existing path handles capability or actor-shape rejection after init-time token checks. |
 
 401, 429, 5xx, malformed responses, and unclassified 400s propagate so auth
 refresh, shared backoff, and schema-drift surfacing continue to work.
@@ -91,12 +109,12 @@ Key behavior:
 
 Failure handling preserves per-input isolation:
 
-| Failure class                                    | Fallback                                                                                                                |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| First chunk fails with a pre-commit 4xx          | Fall back to fresh per-input creates after the already-completed dedup pass.                                            |
-| Transport failure, unknown status, or 5xx        | Re-probe via `createWithDedup` so a server-side commit with a lost response is absorbed.                                |
-| Later chunk fails after earlier chunks succeeded | Throw `BatchCreateError` with `committedIds`; credit the committed prefix and fall back for the tail.                   |
-| 401/403/auth-class denial                        | Fall back per input and emit a once-per-process warning so integration-secret operators see why RunTool is unavailable. |
+| Failure class                                    | Fallback                                                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| First chunk fails with a pre-commit 4xx          | Fall back to fresh per-input creates after the already-completed dedup pass.                          |
+| Transport failure, unknown status, or 5xx        | Re-probe via `createWithDedup` so a server-side commit with a lost response is absorbed.              |
+| Later chunk fails after earlier chunks succeeded | Throw `BatchCreateError` with `committedIds`; credit the committed prefix and fall back for the tail. |
+| 401/403/auth-class denial                        | Fall back per input and emit a once-per-process warning so operators see why RunTool is unavailable.  |
 
 ## SQL Filters: `query_data_sources`
 
@@ -132,7 +150,7 @@ Fallback:
 | ------------------------------------------ | ---------------------------------------------------------------- |
 | 400 / `validation_error`                   | Re-throw; this is query-shape or gateway drift.                  |
 | `SqlPartialResultError` / `has_more: true` | Fall back to REST/JS; partial SQL results are not authoritative. |
-| Network, 401, 403, 429, 5xx, malformed     | Fall back per call and log under `LORE_DEBUG=1`.                 |
+| Network, 401, 403, 429, 5xx, malformed     | Fall back per call and emit `runtool-fallback=1 used-rest=1`.    |
 
 ## SQL Aggregate: `query_data_sources`
 
@@ -175,10 +193,10 @@ Important constraints:
 
 Fallback:
 
-| Error                                                           | Behavior                                                                                        |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 400 / `validation_error`                                        | Re-throw; query-shape drift must be visible.                                                    |
-| `SqlPartialResultError`, network, 401, 403, 429, 5xx, malformed | Fall back to JS enumeration via `services.facts.queryBySubject("", { allowUnfiltered: true })`. |
+| Error                                                           | Behavior                                                               |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| 400 / `validation_error`                                        | Re-throw; query-shape drift must be visible.                           |
+| `SqlPartialResultError`, network, 401, 403, 429, 5xx, malformed | Fall back to JS enumeration and emit `runtool-fallback=1 used-rest=1`. |
 
 The aggregate path is most useful for small vaults or narrow project scopes.
 Large vaults usually saturate the SQL gateway and use JS enumeration.
@@ -197,21 +215,23 @@ Surface:
 The wrapper builds `data_source_url: collection://<memories-data-source-id>`,
 sets `max_highlight_length: 0`, clamps `page_size` to 25, narrows hits to
 Notion page ids, preserves `is_archived`, and returns a `saturated` flag.
+It requires the response type to be `ai_search`; `workspace_search` and `none`
+fail loudly because semantic relevance must not silently downgrade to lexical
+workspace search.
 
 RunTool `search` has no cursor and caps the raw window at 25. The caller falls
-back to REST in three structural cases:
+back to another path only in one structural case:
 
-| Case                              | Reason                                                           |
-| --------------------------------- | ---------------------------------------------------------------- |
-| Empty composed query              | RunTool requires `query.length >= 1`; REST accepts empty search. |
-| Requested `limit > 25`            | The requested window cannot be represented in one RunTool call.  |
-| Raw response saturates at 25 hits | Hidden hits beyond the cap can affect ranking and hybrid RRF.    |
+| Case                 | Reason                                                                    |
+| -------------------- | ------------------------------------------------------------------------- |
+| Empty composed query | RunTool requires `query.length >= 1`; the service uses DS-scoped listing. |
 
-403 `restricted_resource` returns `null` so the caller falls back to REST after
-the wrapper emits the once-per-process warning. 401, 429, 5xx, malformed, and
-validation errors propagate. Cooperative aborts propagate as aborts so
-`Promise.allSettled` discard behavior matches the REST path.
+Requested limits above 25 and saturated 25-hit responses do not switch to REST.
+The service accepts the RunTool window as the semantic relevance source and
+surfaces saturation through `capped: true`.
 
-RunTool search is therefore a low-recall optimization: it helps when the
-candidate corpus naturally fits under 25 hits. Broad queries on large vaults
-pay one extra RunTool round trip and then run the canonical REST path.
+403 `restricted_resource`, 401, 429, 5xx, malformed, validation errors, and
+non-`ai_search` responses propagate. The wrapper still emits the
+once-per-process restricted-resource warning before throwing. Cooperative
+aborts propagate as aborts so `Promise.allSettled` discard behavior matches the
+REST path.

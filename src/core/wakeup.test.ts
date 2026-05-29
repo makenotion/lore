@@ -2045,8 +2045,13 @@ describe("loadWakeUpData", () => {
       expect(taskCall?.projectId).toBe("p1")
     })
 
-    it("uses effective confidence ranking for taskMemories", async () => {
+    it("preserves semantic relevance ordering for taskMemories", async () => {
       const querySpy = vi.fn(async () => ({
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => ({
         results: [
           buildWakeUpSearchPage("stale-stored-high", {
             title: "Auth stale high stored confidence",
@@ -2059,11 +2064,6 @@ describe("loadWakeUpData", () => {
             lastReferencedAt: "2999-01-01",
           }),
         ],
-        has_more: false,
-        next_cursor: null,
-      }))
-      const searchSpy = vi.fn(async () => ({
-        results: [],
         has_more: false,
         next_cursor: null,
       }))
@@ -2100,8 +2100,8 @@ describe("loadWakeUpData", () => {
       })
 
       expect(data.taskMemories.map((m) => m.id)).toEqual([
-        "fresh-stored-lower",
         "stale-stored-high",
+        "fresh-stored-lower",
       ])
       expect(updateSpy).not.toHaveBeenCalled()
     })

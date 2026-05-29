@@ -4413,6 +4413,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     it.each([
       [
         "multiple_matches",
+        "multiple_matches",
         new APIResponseError({
           code: APIErrorCode.ValidationError,
           status: 400,
@@ -4424,7 +4425,8 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         }),
       ],
       [
-        "restricted_resource — integration-secret token can't pass actor check",
+        "restricted_resource — actor/capability rejection",
+        "restricted_resource",
         new APIResponseError({
           code: APIErrorCode.RestrictedResource,
           status: 403,
@@ -4437,17 +4439,14 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       ],
     ])(
       "falls back to full-body replace on RunTool fall-back-able failure (%s)",
-      async (_label, err) => {
+      async (_label, expectedReason, err) => {
         // Three of the four `RunToolBlockEditError` kinds drop the
         // upsert into the canonical full-body path: `no_match`
         // (covered above), `multiple_matches` (the body's anchor
-        // recurs), and `restricted_resource` (issue-#534 security
-        // review B1 — auth-class capability rejection that the
-        // auth-refresh proxy cannot repair). Pinning all three at
-        // the integration boundary so a future contributor narrowing
-        // the catch (e.g. on `kind === "no_match"` only) is caught
-        // by a failing test, not by a production outage on
-        // integration-secret operators.
+        // recurs), and `restricted_resource` (actor/capability
+        // rejection that the auth-refresh proxy cannot repair).
+        // Pinning all three at the integration boundary catches
+        // narrowing of the catch, e.g. on `kind === "no_match"` only.
         process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
         const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
         try {
@@ -4485,6 +4484,16 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
           expect(result.upserted).toBe(true)
           expect(requestSpy).toHaveBeenCalledTimes(1)
           expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+          const writes = stderrSpy.mock.calls.map((args) => String(args[0]))
+          expect(
+            writes.some(
+              (w) =>
+                w.includes("source=memory-topic-key-revision-append") &&
+                w.includes(`reason=${expectedReason}`) &&
+                w.includes("runtool-fallback=1") &&
+                w.includes("used-rest=1")
+            )
+          ).toBe(true)
         } finally {
           stderrSpy.mockRestore()
         }
@@ -5491,6 +5500,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     it.each([
       [
         "multiple_matches",
+        "multiple_matches",
         () => ({
           throw: new APIResponseError({
             code: APIErrorCode.ValidationError,
@@ -5504,7 +5514,8 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
         }),
       ],
       [
-        "restricted_resource — integration-secret token can't pass actor check",
+        "restricted_resource — actor/capability rejection",
+        "restricted_resource",
         () => ({
           throw: new APIResponseError({
             code: APIErrorCode.RestrictedResource,
@@ -5519,6 +5530,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       ],
       [
         "deletion_warning — server reports child-page removal without opt-in",
+        "deletion_warning",
         () => ({
           return: {
             page_id: "11111111111111111111111111111111",
@@ -5528,7 +5540,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       ],
     ])(
       "falls back to canonical replace_content on RunTool fall-back-able failure (%s)",
-      async (_label, makeBehavior) => {
+      async (_label, expectedReason, makeBehavior) => {
         // Issue-#534 security review B1+B2: 403 RestrictedResource
         // must drop into the canonical REST path instead of raising
         // a misleading `RekeyAuditError`. Pinning all three
@@ -5567,6 +5579,16 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
           expect(requestSpy).toHaveBeenCalledTimes(1)
           expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
           expect(base.updateSpy).toHaveBeenCalledTimes(1)
+          const writes = stderrSpy.mock.calls.map((args) => String(args[0]))
+          expect(
+            writes.some(
+              (w) =>
+                w.includes("source=memory-topic-key-rekey-audit") &&
+                w.includes(`reason=${expectedReason}`) &&
+                w.includes("runtool-fallback=1") &&
+                w.includes("used-rest=1")
+            )
+          ).toBe(true)
         } finally {
           stderrSpy.mockRestore()
         }
@@ -6559,19 +6581,19 @@ describe("MemoryService.search", () => {
     type FetchSemanticPagesFn = (
       input: { query: string; limit?: number },
       intent: string | null
-    ) => Promise<PageObjectResponse[]>
+    ) => Promise<{ pages: PageObjectResponse[] }>
     const fetcher = (
       service as unknown as { fetchSemanticPages: FetchSemanticPagesFn }
     ).fetchSemanticPages.bind(service)
 
-    const pages = await fetcher({ query: "q", limit: 10 }, null)
+    const result = await fetcher({ query: "q", limit: 10 }, null)
 
     // All 50 post-filter survivors flow through, not just the first 10.
-    expect(pages).toHaveLength(50)
-    expect(pages.slice(0, 3).map((p) => p.id)).toEqual(["mem-0", "mem-1", "mem-2"])
+    expect(result.pages).toHaveLength(50)
+    expect(result.pages.slice(0, 3).map((p) => p.id)).toEqual(["mem-0", "mem-1", "mem-2"])
     // The `limit + page_size − 1` upper bound holds: one full page of
     // 100 in flight plus the saturation gate gives at most ~109 rows.
-    expect(pages.length).toBeLessThanOrEqual(109)
+    expect(result.pages.length).toBeLessThanOrEqual(109)
   })
 
   it("semantic mode logs a stderr signal under LORE_DEBUG=1 when the scan cap fires without saturating", async () => {
@@ -7138,10 +7160,7 @@ describe("MemoryService.search — hybrid mode", () => {
     expect(ids.has("s-archived")).toBe(false)
   })
 
-  it("is the default mode and returns contains-only results when contains saturates", async () => {
-    // Three contains hits is the threshold; the parallel semantic call
-    // still fires (speculative parallelism keeps wall-clock at one
-    // round-trip) but its result is discarded.
+  it("defaults to semantic mode and returns Notion relevance results", async () => {
     const querySpy = vi.fn(async () => ({
       results: [
         buildHybridPage("a", "Title a"),
@@ -7152,9 +7171,9 @@ describe("MemoryService.search — hybrid mode", () => {
       next_cursor: null,
     }))
     const searchSpy = vi.fn(async () => ({
-      // Semantic returns rows that would be merged on under-shoot — but
-      // contains saturated, so this whole result is dropped.
-      results: [buildHybridPage("z-discarded", "would-be-semantic")],
+      results: [buildHybridPage("z-semantic", "semantic result")],
+      has_more: false,
+      next_cursor: null,
     }))
     const client = {
       dataSources: { query: querySpy },
@@ -7163,13 +7182,11 @@ describe("MemoryService.search — hybrid mode", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    // No `mode` argument — exercises the "default to hybrid" branch.
+    // No `mode` argument exercises the default semantic branch.
     const results = await service.search({ query: "q", includeContent: false })
 
-    expect(results.map((m) => m.id)).toEqual(["a", "b", "c"])
-    // Both queries fire in parallel — the saturation decision happens
-    // after Promise.all settles, not before the second call dispatches.
-    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(results.map((m) => m.id)).toEqual(["z-semantic"])
+    expect(querySpy).not.toHaveBeenCalled()
     expect(searchSpy).toHaveBeenCalledTimes(1)
   })
 
@@ -8863,7 +8880,7 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
   })
 
   it("forceSemanticSearch=true routes mode='hybrid' through 'semantic-only'", async () => {
-    // Pin the kill-switch path: when the operator forces semantic, the
+    // Pin the mode-force path: when the operator forces semantic, the
     // explain trace reports `semantic-only`, not `rrf` or
     // `contains-saturated`. The `mode` argument is ignored.
     const searchSpy = vi.fn(async () => ({
@@ -9709,14 +9726,70 @@ describe("MemoryService.search — hybrid abort on contains saturation (issue #4
   }
 })
 
-describe("MemoryService.search — kill switch", () => {
+describe("MemoryService.search — semantic mode force", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
-  it("forceSemanticSearch=true routes every call through client.search regardless of caller mode", async () => {
-    // Operator escape hatch for the rollback story raised in review:
-    // if contains under-recalls in a vault that hasn't run
-    // `lore migrate --fix-memory-encoding` yet, this resolved flag
-    // forces every search through the legacy workspace-wide path.
+  it("forceSemanticSearch=true routes every call through semantic mode without changing the transport flag", async () => {
+    const pageId = "11111111-1111-1111-1111-111111111111"
+    const requestSpy = vi.fn(async () => ({
+      type: "ai_search",
+      results: [
+        {
+          id: "search-resource-1",
+          title: "Mem one",
+          url: pageId,
+          type: "page",
+          highlight: "",
+          timestamp: "2026-05-01T00:00:00.000Z",
+        },
+      ],
+    }))
+    const querySpy = vi.fn(async () => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      request: requestSpy,
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: {
+        retrieve: vi.fn(async ({ page_id }: { page_id: string }) =>
+          buildPage(
+            {
+              Title: { type: "title", title: [{ plain_text: "Mem one" }] },
+              Project: { type: "relation", relation: [] },
+              Topic: { type: "relation", relation: [] },
+              Source: { type: "select", select: { name: "manual" } },
+              Tags: { type: "multi_select", multi_select: [] },
+            },
+            {
+              id: page_id,
+              parent: { type: "data_source_id", data_source_id: db.dataSourceId },
+            } as Partial<PageObjectResponse>
+          )
+        ),
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
+      },
+    } as unknown as Client
+    const features = defaultFeatureFlags()
+    features.forceSemanticSearch = true
+    const service = new MemoryService(client, db, undefined, { features })
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual([pageId])
+    expect(requestSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("forceSemanticSearch=true uses the REST semantic path only when RunTool search is disabled", async () => {
     const querySpy = vi.fn(async () => ({
       results: [],
       has_more: false,
@@ -9736,7 +9809,6 @@ describe("MemoryService.search — kill switch", () => {
     await service.search({ query: "q", mode: "contains" })
     await service.search({ query: "q", mode: "hybrid" })
 
-    // Both calls routed through client.search, neither touched dataSources.query.
     expect(searchSpy).toHaveBeenCalledTimes(2)
     expect(querySpy).not.toHaveBeenCalled()
   })

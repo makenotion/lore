@@ -647,9 +647,8 @@ describe("FactService.createBatchWithDedup — loud-enough auth fallback warning
   })
 
   it("emits a once-per-process stderr warning on 403 RestrictedResource", async () => {
-    // Operators on integration-secret auth who flip
-    // LORE_USE_RUNTOOL_BATCH_CREATES=1 must learn why their
-    // flagged-on calls never use the new path.
+    // Operators who enable batch creates must learn why their
+    // flagged-on calls cannot use RunTool.
     const mock = makeMockClient()
     mock.query.mockResolvedValue({
       results: [],

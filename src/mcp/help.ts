@@ -298,13 +298,13 @@ export const HELP_RECIPES = [
     summary:
       "Search memory titles and bodies with contains, semantic, or hybrid retrieval.",
     whenToUse:
-      "Use this before answering factual questions about stored conversation or recorded knowledge when you have search terms or a natural-language query. Use mode='contains' for exact tokens, mode='semantic' for meaning, and the default hybrid mode for most cases.",
+      "Use this before answering factual questions about stored conversation or recorded knowledge when you have search terms or a natural-language query. Semantic is the default for meaning and body relevance; use mode='contains' for exact tokens and mode='hybrid' only when you explicitly want both lanes fused.",
     example: {
       action: "search",
       query: "MCP resource help recipes",
       intent: "Find implementation notes for issue 669",
       projectName: "Lore",
-      mode: "hybrid",
+      mode: "semantic",
       limit: 8,
       includeSynopsis: true,
       explain: true,

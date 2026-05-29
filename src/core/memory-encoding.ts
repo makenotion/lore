@@ -43,6 +43,7 @@ import {
   updatePageContentViaRunTool,
   type UpdatePageContentEdit,
 } from "../notion/runtool/index.js"
+import { logRunToolFallback } from "../notion/runtool/error-helpers.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
@@ -573,7 +574,10 @@ async function tryFixContentViaAnchoredPatterns(
     })
     return true
   } catch (err) {
-    if (err instanceof RunToolBlockEditError) return false
+    if (err instanceof RunToolBlockEditError) {
+      logRunToolFallback("memory-encoding-anchored-patterns", err)
+      return false
+    }
     throw err
   }
 }

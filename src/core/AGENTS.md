@@ -36,7 +36,7 @@ ownership notes in top-of-file `ABOUTME` comments or module JSDoc.
 | Pinned context blocks          | [`memory-pinned.ts`](memory-pinned.ts) module JSDoc                                    | JSDoc-owned contract for pinned block filtering, audience matching, read-only preflight, count thresholds, migration fallback, and audit recovery                                                     |
 | Confidence dynamics: algebra   | [`decay.ts`](decay.ts) module JSDoc                                                    | JSDoc-owned contract for confidence score clamping, seed/bump/decrement/decay algebra, and retrieval weighting                                                                                        |
 | Confidence dynamics: I/O       | [`memory-confidence.ts`](memory-confidence.ts) module JSDoc                            | JSDoc-owned contract for confidence read/write wrappers, the stale-confidence triage query, backfill/statistics writes, and the Stale Confidence wake-up subsection                                   |
-| Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for `LORE_DEBUG=1` stderr line format, per-surface key divergence, and parser expectations for recoverable partial-result failures                                                 |
+| Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for stderr line format, RunTool fallback markers, per-surface key divergence, and parser expectations for recoverable partial-result failures                                      |
 
 ## Service Class Pattern
 

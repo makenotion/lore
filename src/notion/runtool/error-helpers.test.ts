@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-  __resetWarnRunToolIntegrationSecretForTest,
-  isKnownIntegrationSecretAuthSource,
+  __resetWarnRunToolRestrictedResourceOnceForTest,
   isSqlValidationError,
   logRunToolFallback,
   SqlPartialResultError,
-  warnRunToolIntegrationSecretOnce,
+  warnRunToolRestrictedResourceOnce,
 } from "./error-helpers.js"
 
 describe("isSqlValidationError", () => {
@@ -37,29 +36,18 @@ describe("isSqlValidationError", () => {
 
 describe("logRunToolFallback", () => {
   let stderrSpy: ReturnType<typeof vi.spyOn>
-  let originalDebug: string | undefined
 
   beforeEach(() => {
     stderrSpy = vi
       .spyOn(process.stderr, "write")
       .mockImplementation(() => true) as unknown as typeof stderrSpy
-    originalDebug = process.env["LORE_DEBUG"]
   })
 
   afterEach(() => {
     stderrSpy.mockRestore()
-    if (originalDebug === undefined) delete process.env["LORE_DEBUG"]
-    else process.env["LORE_DEBUG"] = originalDebug
   })
 
-  it("is a no-op when LORE_DEBUG is unset", () => {
-    delete process.env["LORE_DEBUG"]
-    logRunToolFallback("entity-find-by-name", { status: 403 })
-    expect(stderrSpy).not.toHaveBeenCalled()
-  })
-
-  it("emits one line with source / status / code under LORE_DEBUG=1", () => {
-    process.env["LORE_DEBUG"] = "1"
+  it("emits one line with source / status / code", () => {
     logRunToolFallback("near-duplicate-candidates", {
       status: 403,
       code: "restricted_resource",
@@ -71,29 +59,45 @@ describe("logRunToolFallback", () => {
     expect(line).toContain("source=near-duplicate-candidates")
     expect(line).toContain("status=403")
     expect(line).toContain("code=restricted_resource")
+    expect(line).toContain("reason=restricted_resource")
     expect(line).toContain("runtool-fallback=1")
+    expect(line).toContain("used-rest=1")
   })
 
   it("renders unknown when status / code are absent", () => {
-    process.env["LORE_DEBUG"] = "1"
     logRunToolFallback("entity-find-by-alias", new TypeError("network"))
     const line = (stderrSpy.mock.calls[0]![0] as string).trim()
     expect(line).toContain("status=unknown")
     expect(line).toContain("code=unknown")
+    expect(line).toContain("reason=transport_or_unknown")
   })
 
   it("does not throw for non-string error codes", () => {
-    process.env["LORE_DEBUG"] = "1"
     expect(() =>
       logRunToolFallback("entity-find-by-name", { code: 123, status: 503 })
     ).not.toThrow()
     const line = (stderrSpy.mock.calls[0]![0] as string).trim()
     expect(line).toContain("status=503")
     expect(line).toContain("code=123")
+    expect(line).toContain("reason=server_error")
+  })
+
+  it("uses RunToolBlockEditError kind as the fallback reason", () => {
+    const err = Object.assign(new Error("old_str did not match"), {
+      name: "RunToolBlockEditError",
+      kind: "no_match",
+    })
+
+    logRunToolFallback("memory-topic-key-revision-append", err)
+
+    const line = (stderrSpy.mock.calls[0]![0] as string).trim()
+    expect(line).toContain("source=memory-topic-key-revision-append")
+    expect(line).toContain("reason=no_match")
+    expect(line).toContain("runtool-fallback=1")
+    expect(line).toContain("used-rest=1")
   })
 
   it("redacts and one-lines fallback errors", () => {
-    process.env["LORE_DEBUG"] = "1"
     logRunToolFallback(
       "entity-find-by-name\nretry",
       new Error(
@@ -111,6 +115,39 @@ describe("logRunToolFallback", () => {
   })
 })
 
+describe("warnRunToolRestrictedResourceOnce", () => {
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    __resetWarnRunToolRestrictedResourceOnceForTest()
+    stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true) as unknown as typeof stderrSpy
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+  })
+
+  it("deduplicates repeated identical outcomes but preserves fallback/error distinction", () => {
+    const err = new Error("denied")
+
+    warnRunToolRestrictedResourceOnce("search", err, { usedRest: false })
+    warnRunToolRestrictedResourceOnce("search", err, { usedRest: false })
+    warnRunToolRestrictedResourceOnce("update_page", err, { usedRest: true })
+    warnRunToolRestrictedResourceOnce("update_page", err, { usedRest: true })
+
+    const lines = stderrSpy.mock.calls.map((call) => String(call[0]))
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toContain("search")
+    expect(lines[0]).toContain("runtool-error=1")
+    expect(lines[0]).toContain("used-rest=0")
+    expect(lines[1]).toContain("update_page")
+    expect(lines[1]).toContain("runtool-fallback=1")
+    expect(lines[1]).toContain("used-rest=1")
+  })
+})
+
 describe("SqlPartialResultError", () => {
   it("preserves source name in the message and is named", () => {
     const err = new SqlPartialResultError("near-duplicate-candidates")
@@ -121,36 +158,5 @@ describe("SqlPartialResultError", () => {
 
   it("is NOT classified as validation, so the per-call fallback engages", () => {
     expect(isSqlValidationError(new SqlPartialResultError("test"))).toBe(false)
-  })
-})
-
-describe("warnRunToolIntegrationSecretOnce + isKnownIntegrationSecretAuthSource", () => {
-  let stderrSpy: ReturnType<typeof vi.spyOn>
-
-  beforeEach(() => {
-    stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true) as unknown as typeof stderrSpy
-    __resetWarnRunToolIntegrationSecretForTest()
-  })
-
-  afterEach(() => {
-    stderrSpy.mockRestore()
-    __resetWarnRunToolIntegrationSecretForTest()
-  })
-
-  it("does NOT classify ntn-resolved or ambiguous env sources as integration-secret", () => {
-    // ntn-auth-json is the canonical user-actor path.
-    expect(isKnownIntegrationSecretAuthSource("ntn-auth-json")).toBe(false)
-    // env-notion-api-token is ambiguous (could be either an
-    // integration secret or an ntn-resolved token); deliberately
-    // out of the known-rejected set per the helper's docstring.
-    expect(isKnownIntegrationSecretAuthSource("env-notion-api-token")).toBe(false)
-  })
-
-  it("is silent for non-integration-secret sources", () => {
-    warnRunToolIntegrationSecretOnce("ntn-auth-json")
-    warnRunToolIntegrationSecretOnce("env-notion-api-token")
-    expect(stderrSpy).not.toHaveBeenCalled()
   })
 })

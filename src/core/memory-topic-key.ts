@@ -284,6 +284,7 @@ import {
   RunToolBlockEditError,
   updatePageContentViaRunTool,
 } from "../notion/runtool/index.js"
+import { logRunToolFallback } from "../notion/runtool/error-helpers.js"
 import { redactDebugMessage } from "../debug-redact.js"
 import { LoreError, errorCauseMessage } from "../errors.js"
 import type { LoreFeatureFlags } from "../feature-flags.js"
@@ -1228,14 +1229,15 @@ export class MemoryTopicKey {
         bodyEditApplied = true
       } catch (err) {
         if (!(err instanceof RunToolBlockEditError)) throw err
+        logRunToolFallback("memory-topic-key-revision-append", err)
         // Fall through to the full-body path on every structured
         // fall-back signal: `no_match` / `multiple_matches` /
         // `deletion_warning` (validation-class) AND
         // `restricted_resource` (403 capability rejection — the
         // auth-refresh proxy cannot repair this, but the existing
-        // REST/SDK path can). A future contributor narrowing the
-        // catch (e.g. on `kind === "no_match"` only) would silently
-        // re-introduce the integration-secret outage; the
+        // REST/SDK path can). Narrowing the catch (e.g. on
+        // `kind === "no_match"` only) would silently reintroduce an
+        // actor/capability outage; the
         // `restricted_resource` integration test would fail loudly.
       }
     }
@@ -1558,11 +1560,9 @@ export class MemoryTopicKey {
     // (`no_match` / `multiple_matches` / `deletion_warning` /
     // `restricted_resource`) drop through to the existing
     // `replace_content` path so a stale anchor never leaves the audit
-    // block stranded. `restricted_resource` is load-bearing for
-    // integration-secret operators: the auth-refresh proxy cannot
-    // repair the 403, but the REST/SDK path can — silently widening
-    // the catch back to validation-only would re-introduce the
-    // outage path the security review B1/B2 fixed.
+    // block stranded. `restricted_resource` is load-bearing because
+    // the auth-refresh proxy cannot repair the 403, but the REST/SDK
+    // path can.
     const rekeyFlagOn = this.features.runTool.blockEdit
     const rekeyAnchor = rekeyFlagOn ? pickRekeyAuditAnchor(memory.content) : null
     if (rekeyFlagOn && rekeyAnchor === null) {
@@ -1580,6 +1580,7 @@ export class MemoryTopicKey {
         if (!(err instanceof RunToolBlockEditError)) {
           throw buildRekeyAuditError(input.memoryId, oldTopicKey, input.newTopicKey, err)
         }
+        logRunToolFallback("memory-topic-key-rekey-audit", err)
         // Structured fall-back signal (no_match / multiple_matches /
         // deletion_warning / restricted_resource): drop through to the
         // REST path. RunTool's own deferral counter could be threaded

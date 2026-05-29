@@ -56,7 +56,7 @@ const INTENT_DESCRIPTION =
   "branch's relevance query as context, NEVER into the contains branch's " +
   "substring match. Use when `query` is short and ambiguous and the caller " +
   "knows which sense they mean (e.g. `query: 'auth'`, `intent: 'WeChat " +
-  "session cookie'`). Under `mode: 'hybrid'` (default) setting intent " +
+  "session cookie'`). Under `mode: 'hybrid'` setting intent " +
   "disables the saturation cutoff so the merge always runs and up-weights " +
   "the contains lane to keep precision dominant. Ignored under " +
   "`mode: 'contains'`. Whitespace-only intent is treated as unset."
@@ -144,7 +144,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         "**Call this BEFORE answering factual questions about stored conversation or recorded knowledge** — the vault is authoritative; abstain only after `action: 'search'` (and `action: 'ask'` when the question names an entity) return nothing. " +
         "Action-dispatched:\n\n" +
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows by default; `includeContent: true` to fetch bodies. Cursor-paginated.\n" +
-        "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `hybrid`). `contains` is DS-scoped substring with server-side filters; `semantic` is workspace-wide vector ranking over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
+        "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `semantic`). `contains` is DS-scoped substring with server-side filters; `semantic` uses Notion relevance over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
         "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`). Prepends a project framing block by default (`includeContext: false` to suppress). Pass `asOf: 'YYYY-MM-DD'` for a transaction-time as-of recall (what Lore knew at that date) or `includeHistory: true` to surface invalidated facts inline.\n" +
         "- `action: 'audit'` — list facts, decisions, and tasks past their review-by date.\n\n" +
         "For tracked work (open / blocked / done), use `lore-task action='list'` rather than `lore-query`.",
@@ -219,9 +219,9 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .enum(["contains", "semantic", "hybrid"])
           .optional()
           .describe(
-            "(action='search') Search mode (default `hybrid`). `contains` for DS-scoped substring " +
-              "matching with server-side property filters; `semantic` for workspace-wide vector " +
-              "relevance over titles AND bodies; `hybrid` fires both in parallel and uses contains " +
+            "(action='search') Search mode (default `semantic`). `contains` for DS-scoped substring " +
+              "matching with server-side property filters; `semantic` for Notion relevance " +
+              "over titles AND bodies; `hybrid` fires both in parallel and uses contains " +
               "alone when it saturates (≥ 3 hits) or RRF-fuses both branches when it doesn't."
           ),
         // search only

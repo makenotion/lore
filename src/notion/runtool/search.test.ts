@@ -11,6 +11,8 @@
  *   - 403 RestrictedResource throws `RunToolSearchRestrictedError`
  *     and emits the once-per-process stderr warning exactly once.
  *   - 401 / 429 / 5xx / 400 / malformed propagate verbatim.
+ *   - Non-`ai_search` responses fail loud instead of silently
+ *     downgrading semantic relevance.
  *   - External connector hits (`url` ≠ Notion page id) drop out.
  *   - Empty `query` and empty `dataSourceId` reject pre-call.
  *   - `saturated` flag fires when raw response returns the cap.
@@ -76,6 +78,9 @@ function makeStubClient(
 const DASHED_UUID = "11111111-2222-3333-4444-555555555555"
 const ANOTHER_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 const UNDASHED_UUID = "ffffffffffffffffffffffffffffffff"
+const UNDASHED_UUID_NORMALIZED = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+const URL_PAGE_ID = "359b35e6-e67f-81bb-974f-f3bdb6dd3625"
+const URL_PAGE_ID_COMPACT = "359b35e6e67f81bb974ff3bdb6dd3625"
 
 function makeNotionHit(
   id: string,
@@ -304,6 +309,10 @@ describe("searchViaRunTool — error classification", () => {
         String(call[0]).includes("RestrictedResource")
       )
       expect(restrictedLines).toHaveLength(1)
+      const line = String(restrictedLines[0]![0])
+      expect(line).toContain("operation failed without REST/SDK fallback")
+      expect(line).toContain("runtool-error=1")
+      expect(line).toContain("used-rest=0")
     } finally {
       stderrSpy.mockRestore()
     }
@@ -428,7 +437,7 @@ describe("searchViaRunTool — error classification", () => {
 })
 
 describe("searchViaRunTool — result narrowing", () => {
-  it("filters out external connector hits (non-Notion-page-id urls)", async () => {
+  it("filters out external connector hits and normalizes bare page ids", async () => {
     const { client } = makeStubClient(() =>
       makeAiSearchResponse([
         makeNotionHit(DASHED_UUID, "Memory A"),
@@ -452,6 +461,61 @@ describe("searchViaRunTool — result narrowing", () => {
     })
 
     expect(result.hits.map((h) => h.id)).toEqual([DASHED_UUID, UNDASHED_UUID])
+    expect(result.hits.map((h) => h.url)).toEqual([DASHED_UUID, UNDASHED_UUID_NORMALIZED])
+  })
+
+  it("accepts Notion-hosted page URLs and normalizes them for hydration", async () => {
+    const { client } = makeStubClient(() =>
+      makeAiSearchResponse([
+        {
+          id: "search-index-resource-id-1",
+          title: "Dev URL",
+          url: `https://app.dev.notion.com/p/${URL_PAGE_ID_COMPACT}`,
+          type: "page",
+          highlight: "",
+          timestamp: "2026-05-06T12:00:00.000Z",
+        },
+        {
+          id: "search-index-resource-id-2",
+          title: "Slug URL",
+          url: `https://www.notion.so/workspace/Some-page-${UNDASHED_UUID}?pvs=4`,
+          type: "page",
+          highlight: "",
+          timestamp: "2026-05-06T12:00:00.000Z",
+        },
+      ])
+    )
+
+    const result = await searchViaRunTool(client, {
+      query: "x",
+      dataSourceId: "ds-mem",
+      pageSize: 10,
+    })
+
+    expect(result.hits.map((h) => h.url)).toEqual([URL_PAGE_ID, UNDASHED_UUID_NORMALIZED])
+  })
+
+  it("drops external URLs even when their path contains a page-id-shaped value", async () => {
+    const { client } = makeStubClient(() =>
+      makeAiSearchResponse([
+        {
+          id: "external-resource-id",
+          title: "External issue",
+          url: `https://linear.app/acme/issue/${URL_PAGE_ID_COMPACT}`,
+          type: "external",
+          highlight: "",
+          timestamp: "2026-05-06T12:00:00.000Z",
+        },
+      ])
+    )
+
+    const result = await searchViaRunTool(client, {
+      query: "x",
+      dataSourceId: "ds-mem",
+      pageSize: 10,
+    })
+
+    expect(result.hits).toEqual([])
   })
 
   it("strict-coerces non-boolean is_archived to false (defensive at the wire boundary)", async () => {
@@ -542,15 +606,17 @@ describe("searchViaRunTool — result narrowing", () => {
     expect(result.saturated).toBe(false)
   })
 
-  it("returns searchType verbatim across the discriminated union", async () => {
-    for (const type of ["ai_search", "workspace_search", "none"] as const) {
+  it("fails loud when RunTool returns a non-AI search backend", async () => {
+    for (const type of ["workspace_search", "none"] as const) {
       const { client } = makeStubClient(() => ({ type, results: [] }))
-      const result = await searchViaRunTool(client, {
-        query: "x",
-        dataSourceId: "ds-mem",
-        pageSize: 5,
-      })
-      expect(result.searchType).toBe(type)
+
+      await expect(
+        searchViaRunTool(client, {
+          query: "x",
+          dataSourceId: "ds-mem",
+          pageSize: 5,
+        })
+      ).rejects.toThrow(new RegExp(`AI semantic search unavailable.*${type}`))
     }
   })
 })
