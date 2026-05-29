@@ -29,16 +29,16 @@ The scanner currently classifies findings into eight categories. Each
 category reuses an existing service surface — the scanner is an
 orchestrator, not a re-implementation of vault walking.
 
-| Category             | Source                                                                                                   | What it surfaces                                                                                                                                                                    |
-| -------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `orphan_fact`        | `FactService.queryOrphans` (bounded by `--per-category-limit + 1`)                                       | Active facts whose `Source` relation is empty (no supporting memory).                                                                                                               |
-| `overdue_governance` | `FactService.queryOverdue`, `DecisionService.queryOverdue`, `TaskService.queryOverdue` + `taskDaysStale` | Facts / decisions / tasks past their `Review By` date, plus active tasks untouched ≥ `STALE_TASK_DAYS`.                                                                             |
-| `duplicate_cluster`  | `MemoryService.listForScan` + `findConflictCandidates`                                                   | Memory pairs whose `title + keywords` trigram overlap or tag overlap crosses threshold and that share at least one project, filtering out pairs already judged via `Compared With`. |
-| `topic_sprawl`       | `findSimilarTopicGroups`                                                                                 | Topic groups whose stored names differ but normalize to the same key.                                                                                                               |
-| `scope_anomaly`      | `loadExpiringScopedStatus` (issue #283 columns)                                                          | Counts of expired / expiring-soon / narrow-scope-out-of-context rows.                                                                                                               |
-| `operational_expiry` | `MemoryService.list(kind: "operational")` + task/PR closure checks                                       | Operational memories missing expiry metadata, or whose linked PR/task closure has happened.                                                                                         |
-| `summary_quality`    | `MemoryService.list(source: "digest")` + synopsis audit                                                  | Digest bodies and synopses that read like chronological logs instead of durable signal.                                                                                             |
-| `ownerless`          | `MemoryService.list` (paginated)                                                                         | Memories in a project that have no Topic AND no author/agent attribution.                                                                                                           |
+| Category             | Source                                                                                                   | What it surfaces                                                                                                                                                                               |
+| -------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `orphan_fact`        | `FactService.queryOrphans` (bounded by `--per-category-limit + 1`)                                       | Active facts whose `Source` relation is empty (no supporting memory).                                                                                                                          |
+| `overdue_governance` | `FactService.queryOverdue`, `DecisionService.queryOverdue`, `TaskService.queryOverdue` + `taskDaysStale` | Facts / decisions / tasks past their `Review By` date, plus active tasks untouched ≥ `STALE_TASK_DAYS`.                                                                                        |
+| `duplicate_cluster`  | `MemoryService.listForScan` + `findConflictCandidates`                                                   | Non-digest memory pairs whose `title + keywords` trigram overlap or tag overlap crosses threshold and that share at least one project, filtering out pairs already judged via `Compared With`. |
+| `topic_sprawl`       | `findSimilarTopicGroups`                                                                                 | Topic groups whose stored names differ but normalize to the same key.                                                                                                                          |
+| `scope_anomaly`      | `loadExpiringScopedStatus` (issue #283 columns)                                                          | Counts of expired / expiring-soon / narrow-scope-out-of-context rows.                                                                                                                          |
+| `operational_expiry` | `MemoryService.list(kind: "operational")` + task/PR closure checks                                       | Operational memories missing expiry metadata, or whose linked PR/task closure has happened.                                                                                                    |
+| `summary_quality`    | `MemoryService.list(source: "digest")` + synopsis audit                                                  | Digest bodies and synopses that read like chronological logs instead of durable signal.                                                                                                        |
+| `ownerless`          | `MemoryService.list` (paginated)                                                                         | Memories in a project that have no Topic AND no author/agent attribution.                                                                                                                      |
 
 ### Prerequisites and category semantics
 
@@ -101,11 +101,11 @@ score = severityWeight + retrievalRisk + stalenessWeight
 
 Priority bins:
 
-| Bucket | Score band        | Meaning                                                                             |
-| ------ | ----------------- | ----------------------------------------------------------------------------------- |
-| P1     | `score ≥ 70`      | Triage now. Orphan facts and overdue decisions land here by default.                |
-| P2     | `40 ≤ score < 70` | Plan into the next maintenance pass. Duplicate clusters and stale task signals.     |
-| P3     | `score < 40`      | Background hygiene. Topic sprawl, ownerless notes, low-impact stale signals.        |
+| Bucket | Score band        | Meaning                                                                         |
+| ------ | ----------------- | ------------------------------------------------------------------------------- |
+| P1     | `score ≥ 70`      | Triage now. Orphan facts and overdue decisions land here by default.            |
+| P2     | `40 ≤ score < 70` | Plan into the next maintenance pass. Duplicate clusters and stale task signals. |
+| P3     | `score < 40`      | Background hygiene. Topic sprawl, ownerless notes, low-impact stale signals.    |
 
 The formula is a prioritization aid, not objective truth. Tune the
 `SEVERITY_WEIGHT` table or the priority thresholds in
@@ -282,8 +282,8 @@ state (the `items` list and `stats` block). On a 10-project /
 10,000-memory vault the dominant costs are:
 
 - `duplicate_cluster`: one `listForScan` per active project (full
-  paginated walk of the project's non-archived memories) plus an
-  O(N²) per-project `findConflictCandidates` pass.
+  paginated walk of the project's non-archived memories), a `source != digest`
+  filter, plus an O(N²) per-project `findConflictCandidates` pass.
 - `orphan_fact`, `overdue_governance`, `ownerless`,
   `operational_expiry`, `summary_quality`:
   each issues one or more paginated `dataSources.query` calls,

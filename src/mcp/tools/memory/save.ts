@@ -22,6 +22,7 @@ import type {
   MemorySource,
   MemoryStatus,
   TaskSummary,
+  UpdateMemoryInput,
   MemoryScopeInput,
 } from "../../../types.js"
 import type { ToolResult } from "./types.js"
@@ -43,6 +44,8 @@ const AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT = 50
 
 /** Max candidates to surface in the response. */
 const NEAR_DUPLICATE_SURFACE_LIMIT = 3
+
+const DIGEST_TITLE_RE = /^Digest — (\d{4}-\d{2}-\d{2}) — .+$/
 
 function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
   const lines: string[] = []
@@ -131,6 +134,89 @@ function formatDroppedAutosaveLearningFields(args: SaveArgs): string | null {
   return dropped.length > 0
     ? `Dropped candidate metadata on reuse: ${dropped.join(", ")}.`
     : null
+}
+
+function digestDateFromTitle(title: string): string | null {
+  const match = DIGEST_TITLE_RE.exec(title.trim())
+  if (!match) return null
+  const date = match[1]!
+  const parsed = new Date(`${date}T00:00:00.000Z`)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed.toISOString().startsWith(date) ? date : null
+}
+
+function sameProjectSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  const leftSet = new Set(left)
+  return right.every((id) => leftSet.has(id))
+}
+
+async function findSameDayDigest(
+  services: LoreServices,
+  title: string,
+  projectIds: readonly string[]
+): Promise<{ memory: Memory; date: string } | null> {
+  const date = digestDateFromTitle(title)
+  if (date === null) return null
+
+  const projectScope =
+    projectIds.length > 0
+      ? { projectId: projectIds[0], includeUnscoped: false }
+      : { unscopedOnly: true }
+  let fallback: Memory | null = null
+  let startCursor: string | undefined
+  do {
+    const { items, nextCursor } = await services.memories.list({
+      ...projectScope,
+      source: "digest",
+      limit: 100,
+      sortBy: "created_time",
+      direction: "descending",
+      includeContent: false,
+      includeOutOfScope: true,
+      recallPolicy: "all",
+      ...(startCursor !== undefined ? { startCursor } : {}),
+    })
+    const projectDateMatches = items.filter(
+      (candidate) =>
+        sameProjectSet(candidate.projectIds, projectIds) &&
+        digestDateFromTitle(candidate.title) === date
+    )
+    const exact = projectDateMatches.find((candidate) => candidate.title === title)
+    if (exact) return { memory: exact, date }
+    fallback ??= projectDateMatches[0] ?? null
+    startCursor = nextCursor
+  } while (startCursor !== undefined)
+  return fallback ? { memory: fallback, date } : null
+}
+
+function buildDigestUpdateInput(
+  args: SaveArgs,
+  fields: {
+    projectIds: string[]
+    topicId?: string
+    kind: MemoryKind
+    status?: MemoryStatus
+  }
+): UpdateMemoryInput {
+  return {
+    title: args.title,
+    content: args.content,
+    projectIds: fields.projectIds,
+    ...(fields.topicId !== undefined ? { topicId: fields.topicId } : {}),
+    kind: fields.kind,
+    ...(fields.status !== undefined ? { status: fields.status } : {}),
+    ...(args.reviewBy !== undefined ? { reviewBy: args.reviewBy } : {}),
+    ...(args.decidedAt !== undefined ? { decidedAt: args.decidedAt } : {}),
+    ...(args.tags !== undefined ? { tags: args.tags } : {}),
+    ...(args.keywords !== undefined ? { keywords: args.keywords } : {}),
+    ...(args.synopsis !== undefined ? { synopsis: args.synopsis } : {}),
+    ...(args.expiresAt !== undefined ? { expiresAt: args.expiresAt } : {}),
+    ...(args.expiresOn !== undefined ? { expiresOn: args.expiresOn } : {}),
+    ...(args.scope !== undefined || args.expiresAt !== undefined
+      ? { scope: applyExpiryArgs(args.scope, args.expiresAt) }
+      : {}),
+  }
 }
 
 async function createMemoryWithResult(
@@ -472,6 +558,8 @@ export async function handleSave(
       promotionAdvisory: PromotionAdvisory | null
       autosaveLearningDuplicate: AutosaveLearningDuplicateMatch | null
       freshCreatePreparation: FreshCreatePreparation | null
+      updatedExistingDigest: boolean
+      digestDate: string | null
     }> = topicKeyForWrite
       ? services.memories
           .upsertByTopicKey({
@@ -502,44 +590,77 @@ export async function handleSave(
             ...result,
             autosaveLearningDuplicate: null,
             freshCreatePreparation: null,
+            updatedExistingDigest: false,
+            digestDate: null,
           }))
-      : createMemoryWithResult(services, {
-          title: args.title,
-          content: args.content,
-          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-          topicId,
-          source: resolvedSource,
-          kind: args.kind as MemoryKind | undefined,
-          status: args.status as MemoryStatus | undefined,
-          reviewBy: args.reviewBy,
-          decidedAt: args.decidedAt,
-          tags: args.tags,
-          keywords: args.keywords,
-          synopsis: args.synopsis,
-          expiresAt: args.expiresAt,
-          expiresOn: args.expiresOn,
-          author: resolvedAuthor,
-          agent: args.agent,
-          session: args.session,
-          // Scope / lifetime. The Zod schema accepts the
-          // `MemoryScopeInput` shape verbatim; pass through as-is so the
-          // service layer translates it onto the Notion column writes.
-          scope: applyExpiryArgs(args.scope, args.expiresAt),
-          autosaveLearningDedupScope,
-          autosaveLearningScopeId: services.context.vault?.pageId ?? services.configRoot,
-          prepareFreshCreate,
-        }).then((result) => ({
-          memory: result.memory,
-          revisionCount: 1,
-          upserted: false,
-          // Non-topicKey saves and fresh-create upserts never carry
-          // an advisory — the upsert path returns null on
-          // fresh-create, so the non-topicKey branch matches that
-          // posture for shape uniformity.
-          promotionAdvisory: null,
-          autosaveLearningDuplicate: result.autosaveLearningDuplicate,
-          freshCreatePreparation: result.freshCreatePreparation,
-        }))
+      : (async () => {
+          if (resolvedSource === "digest" && resolvedKind === "note") {
+            const existing = await findSameDayDigest(services, args.title, resolved.ids)
+            if (existing) {
+              const memory = await services.memories.update(
+                existing.memory.id,
+                buildDigestUpdateInput(args, {
+                  projectIds: resolved.ids,
+                  topicId,
+                  kind: resolvedKind,
+                  status: args.status as MemoryStatus | undefined,
+                })
+              )
+              return {
+                memory,
+                revisionCount: 1,
+                upserted: true,
+                promotionAdvisory: null,
+                autosaveLearningDuplicate: null,
+                freshCreatePreparation: null,
+                updatedExistingDigest: true,
+                digestDate: existing.date,
+              }
+            }
+          }
+
+          const result = await createMemoryWithResult(services, {
+            title: args.title,
+            content: args.content,
+            projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+            topicId,
+            source: resolvedSource,
+            kind: args.kind as MemoryKind | undefined,
+            status: args.status as MemoryStatus | undefined,
+            reviewBy: args.reviewBy,
+            decidedAt: args.decidedAt,
+            tags: args.tags,
+            keywords: args.keywords,
+            synopsis: args.synopsis,
+            expiresAt: args.expiresAt,
+            expiresOn: args.expiresOn,
+            author: resolvedAuthor,
+            agent: args.agent,
+            session: args.session,
+            // Scope / lifetime. The Zod schema accepts the
+            // `MemoryScopeInput` shape verbatim; pass through as-is so the
+            // service layer translates it onto the Notion column writes.
+            scope: applyExpiryArgs(args.scope, args.expiresAt),
+            autosaveLearningDedupScope,
+            autosaveLearningScopeId:
+              services.context.vault?.pageId ?? services.configRoot,
+            prepareFreshCreate,
+          })
+          return {
+            memory: result.memory,
+            revisionCount: 1,
+            upserted: false,
+            // Non-topicKey saves and fresh-create upserts never carry
+            // an advisory — the upsert path returns null on
+            // fresh-create, so the non-topicKey branch matches that
+            // posture for shape uniformity.
+            promotionAdvisory: null,
+            autosaveLearningDuplicate: result.autosaveLearningDuplicate,
+            freshCreatePreparation: result.freshCreatePreparation,
+            updatedExistingDigest: false,
+            digestDate: null,
+          }
+        })()
 
     const [writeResult, nearDuplicates, relatedTasks] = await Promise.all([
       writePromise,
@@ -583,9 +704,9 @@ export async function handleSave(
     // Auto-emit `mentions` facts. Two non-obvious
     // choices the spec pins:
     //
-    // 1. Post-create placement. The `Source` relation needs the
-    //    just-created memory id, so the branch runs after the
-    //    `Promise.all([create, probes])` block resolves rather than
+    // 1. Post-write placement. The `Source` relation needs the
+    //    saved memory id, so the branch runs after the
+    //    `Promise.all([write, probes])` block resolves rather than
     //    alongside it.
     // 2. Deliberate double-tokenizer call. `extractEntityCandidates`
     //    ALSO runs inside `findRelatedActiveTasks` above. Coupling
@@ -612,15 +733,17 @@ export async function handleSave(
     // agent knows which path fired without parsing for revision count.
     // "Created (revision 1, topic key 'X')" / "Appended as revision N
     // (topic key 'X')" wording matches the upsert spec.
-    const headerLine = topicKeyForWrite
-      ? subject
-        ? writeResult.upserted
-          ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (subject '${subject}', topic key '${topicKeyForWrite}')`
-          : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, subject '${subject}', topic key '${topicKeyForWrite}')`
-        : writeResult.upserted
-          ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${topicKeyForWrite}')`
-          : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, topic key '${topicKeyForWrite}')`
-      : `Saved memory: "${memory.title}" (${memory.id})`
+    const headerLine = writeResult.updatedExistingDigest
+      ? `Saved memory: "${memory.title}" (${memory.id}) — Updated existing digest for ${writeResult.digestDate}`
+      : topicKeyForWrite
+        ? subject
+          ? writeResult.upserted
+            ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (subject '${subject}', topic key '${topicKeyForWrite}')`
+            : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, subject '${subject}', topic key '${topicKeyForWrite}')`
+          : writeResult.upserted
+            ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${topicKeyForWrite}')`
+            : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, topic key '${topicKeyForWrite}')`
+        : `Saved memory: "${memory.title}" (${memory.id})`
     const lines = [headerLine, `Project: ${projectLabel}`, `Topic: ${topicLabel}`]
     if (resolved.warnings.length > 0) {
       lines.push(`Warnings: ${resolved.warnings.join("; ")}`)

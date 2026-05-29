@@ -240,6 +240,105 @@ describe("lore-remember session recording", () => {
   })
 })
 
+describe("lore-memory action='save' digest idempotency", () => {
+  it("updates an existing same-day digest instead of creating another row", async () => {
+    const mockServer = createMockServer()
+    const title = "Digest — 2026-05-29 — Mail"
+    const existing = makeMemory("digest-existing", {
+      title: "Digest — 2026-05-29 — Mail duplicate copy",
+      source: "digest",
+      projectIds: ["proj-a"],
+      createdAt: "2026-05-29T08:00:00.000Z",
+    })
+    const wrongTitleDate = makeMemory("digest-wrong-title-date", {
+      title: "Digest — 2026-05-30 — Mail",
+      source: "digest",
+      projectIds: ["proj-a"],
+      createdAt: "2026-05-29T23:59:00.000Z",
+    })
+    const updated = makeMemory("digest-existing", {
+      title,
+      source: "digest",
+      projectIds: ["proj-a"],
+      content: "updated digest",
+    })
+    const list = vi.fn(async (opts?: { source?: string; startCursor?: string }) => {
+      if (opts?.source !== "digest") return { items: [], capped: false as const }
+      if (opts.startCursor === "page-2") {
+        return { items: [existing], capped: false as const }
+      }
+      return { items: [wrongTitleDate], nextCursor: "page-2", capped: true as const }
+    })
+    const create = vi.fn()
+    const update = vi.fn().mockResolvedValue(updated)
+    const services = {
+      projects: {
+        findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "Mail" }),
+      },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create,
+        update,
+        list,
+        upsertByTopicKey: vi.fn(),
+      },
+      facts: makeFactsMock(),
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const save = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await save({
+      title,
+      content: "updated digest",
+      source: "digest",
+      kind: "note",
+      projectName: "Mail",
+      synopsis: "Durable weekly signal.",
+    } as never)
+
+    expect(create).not.toHaveBeenCalled()
+    expect(update).toHaveBeenCalledWith(
+      "digest-existing",
+      expect.objectContaining({
+        title,
+        content: "updated digest",
+        projectIds: ["proj-a"],
+        kind: "note",
+        synopsis: "Durable weekly signal.",
+      })
+    )
+    const digestLookups = list.mock.calls
+      .map((call) => call[0])
+      .filter((opts) => opts?.source === "digest")
+    expect(digestLookups).toHaveLength(2)
+    expect(digestLookups[0]).toMatchObject({
+      projectId: "proj-a",
+      includeUnscoped: false,
+      source: "digest",
+      sortBy: "created_time",
+      direction: "descending",
+      recallPolicy: "all",
+    })
+    expect(digestLookups[0]).not.toHaveProperty("since")
+    expect(digestLookups[0]).not.toHaveProperty("until")
+    expect(digestLookups[1]).toMatchObject({ startCursor: "page-2" })
+    const wrapped = result as {
+      content: Array<{ text: string }>
+      costOutputs?: Record<string, number>
+    }
+    expect(wrapped.content[0].text).toContain(
+      'Saved memory: "Digest — 2026-05-29 — Mail" (digest-existing) — Updated existing digest for 2026-05-29'
+    )
+    expect(wrapped.costOutputs).toEqual({ memoriesUpdated: 1 })
+  })
+})
+
 describe("lore-memory action='archive'", () => {
   it("clears the decision cache after archiving a memory", async () => {
     const mockServer = createMockServer()

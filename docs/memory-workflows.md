@@ -415,7 +415,9 @@ switching to `--allow-unscoped`.
 
 The Stop hook can spawn a detached weekly digest synthesizer for the current
 project. Digest scheduling is debounced by filesystem marker and never blocks
-the user's next turn.
+the user's next turn. Digest saves are idempotent by project/date: a repeated
+save with the same `Digest — YYYY-MM-DD — <project>` title updates the existing
+digest row instead of creating another one.
 
 - Manual invocation: `lore digest --project <name>`
 - Preview: `lore digest --dry-run`

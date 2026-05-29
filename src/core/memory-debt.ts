@@ -498,7 +498,9 @@ export async function scanDebt(
       const seen = new Set<string>()
       let pairs = 0
       for (let i = 0; i < memoriesByProject.length; i++) {
-        const memories = memoriesByProject[i]!
+        const memories = memoriesByProject[i]!.filter(
+          (memory) => memory.source !== "digest"
+        )
         const label = projectLabels[i]!
         const candidates = findConflictCandidates(memories, {
           pairLimit: perCategoryLimit,

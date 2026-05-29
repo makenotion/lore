@@ -467,6 +467,29 @@ describe("scanDebt — category detection", () => {
     expect(items[0]!.id).toBe("duplicate_cluster::m1::m2")
   })
 
+  it("excludes digest rows from duplicate_cluster title clustering", async () => {
+    const first = makeMemory({
+      id: "digest-1",
+      title: "Digest — 2026-05-01 — Mail iOS",
+      source: "digest",
+      keywords: "mail ios digest",
+      projectIds: ["proj-a"],
+    })
+    const second = makeMemory({
+      id: "digest-2",
+      title: "Digest — 2026-05-11 — Mail iOS",
+      source: "digest",
+      keywords: "mail ios digest",
+      projectIds: ["proj-a"],
+    })
+    const services = makeStubServices({
+      scanMemoriesByProject: [[first, second]],
+    })
+    const report = await scanDebt(services, { today: TODAY })
+    expect(report.stats.duplicateClusterPairs).toBe(0)
+    expect(report.items.filter((i) => i.category === "duplicate_cluster")).toEqual([])
+  })
+
   it("skips already-compared pairs in duplicate_cluster", async () => {
     const a = makeMemory({
       id: "m1",

@@ -163,8 +163,10 @@ opened.
 After every accepted `Stop` event, the hook spawns a separate detached Node child
 to run the `auto-digest` helper action. The child loads `.lore.yaml`, honors
 `hooks.autoDigest: false` and `LORE_AUTO_DIGEST=false`, and delegates to
-`fireDigestIfStale`. The marker debounce in `digest-marker.ts` guarantees at
-most one digest per project per 7 days even if `Stop` fires every minute.
+`fireDigestIfStale`. The marker debounce in `digest-marker.ts` avoids repeated
+synthesizer spawns on one machine, while the `lore-memory action='save'` digest
+path updates an existing `Digest — YYYY-MM-DD — <project>` row for the same
+project/date instead of creating another one.
 
 The two-process split is load-bearing:
 
