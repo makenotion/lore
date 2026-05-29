@@ -5,6 +5,7 @@ import type { LoreServices } from "../../server.js"
 import type {
   Memory,
   MemoryKind,
+  MemorySource,
   MemoryStatus,
   SearchExplain,
   SearchMode,
@@ -120,6 +121,7 @@ export interface SearchArgs {
   projectName?: string
   topicName?: string
   tags?: string[]
+  source?: (typeof READABLE_SOURCES)[number]
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
   limit?: number
@@ -166,6 +168,7 @@ export async function handleSearch(
       projectId,
       topicId,
       tags: args.tags,
+      source: args.source as MemorySource | undefined,
       kind: args.kind as MemoryKind | undefined,
       status: args.status as MemoryStatus | undefined,
       limit:

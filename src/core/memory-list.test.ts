@@ -93,31 +93,108 @@ function makeLister(options: {
 }
 
 describe("MemoryList.list", () => {
-  it("excludes agent_diary rows unless the caller requests that source or a maintenance scan", async () => {
+  it("default-excludes non-knowledge sources and kinds from recall filters", async () => {
     const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
     const lister = makeLister({
       query,
       getPropertiesById: async (id) => makeMemory(id),
     })
 
-    await lister.list({ limit: 3 })
-    await lister.list({ source: "agent_diary", limit: 3 })
+    await lister.list({ projectId: "project-id", limit: 3 })
+
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    const serialized = JSON.stringify(calls[0]?.[0].filter)
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.SOURCE,
+        select: { does_not_equal: "agent_diary" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.SOURCE,
+        select: { does_not_equal: "digest" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.KIND,
+        select: { does_not_equal: "task" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.KIND,
+        select: { does_not_equal: "operational" },
+      })
+    )
+  })
+
+  it("lets explicit source and kind requests bypass their default exclusions", async () => {
+    const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    await lister.list({
+      source: "digest",
+      kind: "task",
+      limit: 3,
+    })
+
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    const serialized = JSON.stringify(calls[0]?.[0].filter)
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.SOURCE,
+        select: { equals: "digest" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.KIND,
+        select: { equals: "task" },
+      })
+    )
+    expect(serialized).not.toContain('"does_not_equal":"digest"')
+    expect(serialized).not.toContain('"does_not_equal":"agent_diary"')
+    expect(serialized).not.toContain('"does_not_equal":"task"')
+    expect(serialized).not.toContain('"does_not_equal":"operational"')
+  })
+
+  it("lets full-vault maintenance scans bypass default source and kind exclusions", async () => {
+    const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    await lister.list({ recallPolicy: "all", limit: 3 })
+
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    const serialized = JSON.stringify(calls[0]?.[0].filter)
+    expect(serialized).not.toContain('"does_not_equal":"agent_diary"')
+    expect(serialized).not.toContain('"does_not_equal":"digest"')
+    expect(serialized).not.toContain('"does_not_equal":"task"')
+    expect(serialized).not.toContain('"does_not_equal":"operational"')
+  })
+
+  it("keeps includeRetiredSources as a full-vault compatibility opt-in", async () => {
+    const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
     await lister.list({ includeRetiredSources: true, limit: 3 })
 
     const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
-    const defaultFilter = JSON.stringify(calls[0]?.[0].filter)
-    const explicitFilter = JSON.stringify(calls[1]?.[0].filter)
-    const maintenanceFilter = JSON.stringify(calls[2]?.[0].filter)
-    expect(defaultFilter).toContain(MEMORY_PROPS.SOURCE)
-    expect(defaultFilter).toContain("does_not_equal")
-    expect(defaultFilter).toContain("agent_diary")
-    expect(explicitFilter).toContain(MEMORY_PROPS.SOURCE)
-    expect(explicitFilter).toContain("equals")
-    expect(explicitFilter).toContain("agent_diary")
-    expect(explicitFilter).not.toContain(
-      `"${MEMORY_PROPS.SOURCE}","select":{"does_not_equal":"agent_diary"}`
-    )
-    expect(maintenanceFilter).not.toContain("agent_diary")
+    const serialized = JSON.stringify(calls[0]?.[0].filter)
+    expect(serialized).not.toContain('"does_not_equal":"agent_diary"')
+    expect(serialized).not.toContain('"does_not_equal":"digest"')
+    expect(serialized).not.toContain('"does_not_equal":"task"')
+    expect(serialized).not.toContain('"does_not_equal":"operational"')
   })
 
   it("pushes excludePinned into the Notion filter", async () => {

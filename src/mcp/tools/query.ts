@@ -10,9 +10,11 @@ import { ymdDateSchema } from "./date-schema.js"
 // and `action='search'` accept as the `kind` filter. `task` is excluded
 // because tracked work has its own polymorphic dispatcher
 // (`lore-task action='list'`) and `lore-query` cannot filter against the
-// `Task State` lifecycle. A new `MemoryKind` value must be added here for
-// recall/search to filter on it; the polymorphic surface tests pin the
-// drift contract.
+// `Task State` lifecycle. Operational rows stay filterable as an explicit
+// opt-in for audit and debt follow-up; default recall excludes them when
+// `kind` is omitted. Additional durable `MemoryKind` values must be added
+// here for recall/search to filter on it; the polymorphic surface tests pin
+// the drift contract.
 const KINDS = [
   "note",
   "decision",
@@ -21,6 +23,7 @@ const KINDS = [
   "postmortem",
   "policy",
   "state",
+  "operational",
   "procedure",
 ] as const
 
@@ -91,6 +94,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     topicName: z.string().optional(),
     tags: z.array(z.string().trim().min(1)).optional(),
+    source: z.enum(READABLE_SOURCES).optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
     limit: z.number().int().min(1).max(50).optional(),
@@ -176,7 +180,10 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         source: z
           .enum(READABLE_SOURCES)
           .optional()
-          .describe("(action='recall') Filter by source type."),
+          .describe(
+            "(action='recall') Filter by source type. " +
+              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`."
+          ),
         // recall | search
         kind: z
           .enum(KINDS)

@@ -516,4 +516,21 @@ describe("lore-query KINDS enum accepts every memory kind", () => {
       }).success
     ).toBe(true)
   })
+
+  it("recall/search accept kind: 'operational' at the dispatch boundary", () => {
+    expect(
+      queryDispatchSchema.safeParse({
+        action: "recall",
+        kind: "operational",
+        limit: 5,
+      }).success
+    ).toBe(true)
+    expect(
+      queryDispatchSchema.safeParse({
+        action: "search",
+        query: "receipt",
+        kind: "operational",
+      }).success
+    ).toBe(true)
+  })
 })

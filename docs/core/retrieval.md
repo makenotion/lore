@@ -8,6 +8,18 @@ This page is the current contract for memory retrieval behavior. Historical
 issue numbers and compatibility notes appear only where they explain an active
 invariant; they do not change the contract below.
 
+## Memory List
+
+`MemoryService.list()` is the paginated data-source read primitive behind
+agent-facing recall and several maintenance scans. Its default
+`recallPolicy` is `"knowledge"`: omitted `source` excludes `agent_diary` /
+`digest`, and omitted `kind` excludes `task` / `operational`. Explicit
+`source` and `kind` filters bypass only their own default exclusion.
+
+Maintenance scans that promise full-vault coverage must pass
+`recallPolicy: "all"` so source/kind hygiene does not silently hide rows from
+migration or audit totals. The cleanup-orphan exclusion still applies.
+
 ## Memory Search
 
 `MemoryService.search()` switches on `input.mode` (default `"hybrid"`)
@@ -24,7 +36,11 @@ Issues a `dataSources.query` against the Memories DS only — never touches
 - Topic: `Topic relation contains topicId`.
 - Tags: any-match `OR` across tag values (single value collapses to a flat
   `multi_select.contains`).
-- Kind / Status: server-side `select.equals`.
+- Source / Kind / Status: server-side `select.equals`.
+- Default recall hygiene: when `source` is omitted, `agent_diary` and
+  `digest` rows are excluded; when `kind` is omitted, `task` and
+  `operational` rows are excluded. Explicit `source` or `kind` filters bypass
+  that field's default exclusion.
 - Text clause: title, keywords, or synopsis contains the query.
   Synopsis joins the precision lane (issue 0.7.0/01–02) because it's
   agent-curated, short, and high-signal — a
@@ -60,9 +76,11 @@ v5 returns both shapes in the wild depending on when and how the page was
 created; accepting only `database_id` silently filters out every real
 result from a data-source-backed workspace.
 
-Property filters (`projectId` / `topicId` / `tags` / `kind` / `status`)
-all post-filter client-side because `client.search` has no property-filter
-support.
+Property filters (`projectId` / `topicId` / `tags` / `source` / `kind` /
+`status`) all post-filter client-side because `client.search` has no
+property-filter support. The same default recall hygiene as the contains lane
+applies client-side: omitted `source` drops `agent_diary` / `digest`, and
+omitted `kind` drops `task` / `operational`.
 
 **Do not pass a `sort` parameter to `client.search()`.** Notion's `search`
 endpoint returns results ranked by relevance when no `sort` is provided.

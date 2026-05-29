@@ -42,11 +42,13 @@ import {
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
 import { hydrateRelationPropertiesForPages } from "../notion/relation-properties.js"
 import { matchesDefaultScope } from "./memory-scope.js"
+import { withCleanupOrphanExclusion } from "./memory-filters.js"
 import {
-  isNotRetiredRecallSource,
-  retiredRecallSourceExclusionFilters,
-  withCleanupOrphanExclusion,
-} from "./memory-filters.js"
+  defaultKindExclusionFilters,
+  defaultSourceExclusionFilters,
+  isDefaultRecallKind,
+  isDefaultRecallSource,
+} from "./memory-recall-policy.js"
 import {
   isNotReviewTerminalStatus,
   reviewTerminalStatusExclusionFilters,
@@ -723,8 +725,15 @@ export class MemorySearch {
             }
       )
     }
+    if (input.source) {
+      filters.push({ property: MEMORY_PROPS.SOURCE, select: { equals: input.source } })
+    } else {
+      filters.push(...defaultSourceExclusionFilters())
+    }
     if (input.kind) {
       filters.push({ property: MEMORY_PROPS.KIND, select: { equals: input.kind } })
+    } else {
+      filters.push(...defaultKindExclusionFilters())
     }
     if (input.status) {
       filters.push({ property: MEMORY_PROPS.STATUS, select: { equals: input.status } })
@@ -735,7 +744,6 @@ export class MemorySearch {
       // Explicit `status` short-circuits this branch.
       filters.push(...reviewTerminalStatusExclusionFilters())
     }
-    filters.push(...retiredRecallSourceExclusionFilters())
     // Empty-string query degenerates to "match every page in the data source"
     // because `contains: ""` is satisfied by every value. Skip the text
     // clause entirely so the caller gets a recency-ordered listing of
@@ -1434,11 +1442,10 @@ export class MemorySearch {
       }
       const keywords = extractRichText(page.properties[MEMORY_PROPS.KEYWORDS])
       if (keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) return false
-      if (!isNotRetiredRecallSource(page)) return false
       return true
     })
 
-    // Apply additional filters (project, topic, tags, kind, status). The
+    // Apply additional filters (project, topic, tags, source, kind, status). The
     // search API has no property-filter support, so these are post-filters.
     const filterRelationProperties: string[] = []
     if (input.projectId) filterRelationProperties.push(MEMORY_PROPS.PROJECT)
@@ -1480,10 +1487,20 @@ export class MemorySearch {
         return input.tags!.some((t) => pageTags.includes(t))
       })
     }
+    if (input.source) {
+      filtered = filtered.filter(
+        (page) =>
+          extractSelect(page.properties[MEMORY_PROPS.SOURCE], "manual") === input.source
+      )
+    } else {
+      filtered = filtered.filter(isDefaultRecallSource)
+    }
     if (input.kind) {
       filtered = filtered.filter(
         (page) => extractSelect(page.properties[MEMORY_PROPS.KIND], "note") === input.kind
       )
+    } else {
+      filtered = filtered.filter(isDefaultRecallKind)
     }
     if (input.status) {
       filtered = filtered.filter(

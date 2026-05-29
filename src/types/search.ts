@@ -2,7 +2,7 @@
  * Memory search inputs and explanation payloads.
  */
 
-import type { MemoryKind, MemoryStatus } from "./domain.js"
+import type { MemoryKind, MemorySource, MemoryStatus } from "./domain.js"
 
 /**
  * Search execution mode. Trades off scope precision against ranking quality:
@@ -44,11 +44,14 @@ export interface SearchMemoriesInput {
    */
   tags?: string[]
   /**
-   * Server-side filter in `"contains"` (and the contains leg of `"hybrid"`);
-   * post-filter in `"semantic"` because `client.search` does not accept
-   * property filters.
+   * Server-side filters in `"contains"` (and the contains leg of `"hybrid"`);
+   * post-filters in `"semantic"` because `client.search` does not accept
+   * property filters. When omitted, default recall excludes non-knowledge
+   * kinds and sources; setting either field explicitly bypasses that
+   * field's default exclusion.
    */
   kind?: MemoryKind
+  source?: MemorySource
   status?: MemoryStatus
   /**
    * When `true`, do NOT exclude `Status = proposed` rows from the

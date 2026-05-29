@@ -1164,6 +1164,35 @@ describe("loadWakeUpData", () => {
     expect(digestCall?.includeContent).toBe(true)
   })
 
+  it("keeps digest and tasks on dedicated wake-up channels", async () => {
+    const fresh = buildMemory({
+      id: "digest",
+      title: "Fresh digest",
+      source: "digest",
+      content: "Condensed project state.",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const task = buildTask({
+      id: "task-1",
+      title: "Ship recall hygiene",
+      entity: "recall hygiene",
+    })
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [fresh],
+      tasks: [task],
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.digest?.id).toBe("digest")
+    expect(data.tasks.map((t) => t.id)).toContain("task-1")
+    expect(services.memoriesCalls).toContainEqual(
+      expect.objectContaining({ source: "digest" })
+    )
+    expect(services.tasksListCalls.length).toBeGreaterThan(0)
+  })
+
   it("returns recent facts as knowledge facts", async () => {
     const services = stubServices({
       rawMemories: [],

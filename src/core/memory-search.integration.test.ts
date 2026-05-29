@@ -45,6 +45,8 @@ interface MemoryRow {
   keywords: string
   synopsis: string
   source: string
+  kind: string
+  status: string
   lastEditedTime: string
 }
 
@@ -55,8 +57,13 @@ type LeafFilter =
       rich_text: { contains: string } | { does_not_contain: string }
     }
   | { property: typeof MEMORY_PROPS.SYNOPSIS; rich_text: { contains: string } }
-  | { property: typeof MEMORY_PROPS.STATUS; select: { does_not_equal: string } }
-  | { property: typeof MEMORY_PROPS.SOURCE; select: { does_not_equal: string } }
+  | {
+      property:
+        | typeof MEMORY_PROPS.SOURCE
+        | typeof MEMORY_PROPS.KIND
+        | typeof MEMORY_PROPS.STATUS
+      select: { equals: string } | { does_not_equal: string }
+    }
 type CompoundFilter = { and?: Filter[] } | { or?: Filter[] }
 type Filter = LeafFilter | CompoundFilter
 
@@ -68,6 +75,9 @@ class MemoriesFixtureVault {
     title?: string
     keywords?: string
     synopsis?: string
+    source?: string
+    kind?: string
+    status?: string
     lastEditedTime: string
   }): void {
     this.rows.push({
@@ -75,7 +85,9 @@ class MemoriesFixtureVault {
       title: row.title ?? "",
       keywords: row.keywords ?? "",
       synopsis: row.synopsis ?? "",
-      source: "manual",
+      source: row.source ?? "manual",
+      kind: row.kind ?? "note",
+      status: row.status ?? "informational",
       lastEditedTime: row.lastEditedTime,
     })
   }
@@ -119,24 +131,19 @@ class MemoriesFixtureVault {
           .toLowerCase()
           .includes(filter.rich_text.contains.toLowerCase())
       }
-      if (filter.property === "Status" && "select" in filter) {
-        // Phase 2 of issue #281 introduces a default-exclude
-        // `Status: { does_not_equal: "proposed" }` clause on
-        // `MemoryService.search`. Fixture rows have no Status set, so
-        // the extractor defaults to `"informational"` and the row passes
-        // the exclusion. Modeled here so the fixture's exhaustiveness
-        // throw doesn't reject the new clause.
-        return "informational" !== filter.select.does_not_equal
+      if ("select" in filter) {
+        return evaluateSelect(
+          {
+            Source: row.source,
+            Kind: row.kind,
+            Status: row.status,
+          }[filter.property],
+          filter.select
+        )
       }
-      if (filter.property === "Source" && "select" in filter) {
-        return row.source !== filter.select.does_not_equal
-      }
-      // Inside-block throw — a future contributor adding a new property
-      // leg (e.g. `Status select.equals`) who forgets to wire its arm
-      // surfaces the omission immediately, instead of risking a silent
-      // `false` fallthrough if an `else` branch ever lands here. The
-      // exhaustiveness check below also surfaces unknown property names
-      // at typecheck-time when the `Filter` union grows.
+      // Inside-block throw: adding a property leg requires a fixture
+      // evaluator arm so the tests fail loudly instead of silently
+      // treating an unmodeled predicate as false.
       const unknown: never = filter
       throw new Error(
         `MemoriesFixtureVault: property filter not modeled by the fixture: ${JSON.stringify(unknown)}`
@@ -172,6 +179,8 @@ class MemoriesFixtureVault {
         Project: { type: "relation", relation: [] } as unknown,
         Topic: { type: "relation", relation: [] } as unknown,
         Source: { type: "select", select: { name: row.source } } as unknown,
+        Kind: { type: "select", select: { name: row.kind } } as unknown,
+        Status: { type: "select", select: { name: row.status } } as unknown,
         Tags: { type: "multi_select", multi_select: [] } as unknown,
       } as PageObjectResponse["properties"],
     } as PageObjectResponse
@@ -223,6 +232,14 @@ class MemoriesFixtureVault {
       },
     } as unknown as Client
   }
+}
+
+function evaluateSelect(
+  actual: string,
+  filter: { equals: string } | { does_not_equal: string }
+): boolean {
+  if ("equals" in filter) return actual === filter.equals
+  return actual !== filter.does_not_equal
 }
 
 const MEMORIES_DB: DatabaseRef = {

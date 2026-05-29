@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { defaultFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
-import type { DatabaseRef, Memory } from "../types.js"
+import type { DatabaseRef, Memory, MemoryKind, MemorySource } from "../types.js"
 import {
   HYBRID_FALLBACK_THRESHOLD,
   MemorySearch,
@@ -35,7 +35,8 @@ function page(
     confidenceScore?: number | null
     pinned?: boolean
     lastReferencedAt?: string | null
-    source?: string
+    source?: MemorySource
+    kind?: MemoryKind
   } = {}
 ): PageObjectResponse {
   const title = options.title ?? id
@@ -63,7 +64,7 @@ function page(
       } as unknown,
       [MEMORY_PROPS.KIND]: {
         type: "select",
-        select: { name: "note" },
+        select: { name: options.kind ?? "note" },
       } as unknown,
       [MEMORY_PROPS.STATUS]: {
         type: "select",
@@ -161,7 +162,7 @@ function makeSubject(
 }
 
 describe("MemorySearch mode selection", () => {
-  it("contains mode excludes agent_diary rows", async () => {
+  it("contains mode default-excludes non-knowledge sources and kinds", async () => {
     const { searcher, querySpy } = makeSubject()
 
     await searcher.search({
@@ -171,29 +172,109 @@ describe("MemorySearch mode selection", () => {
     })
 
     const serialized = JSON.stringify(querySpy.mock.calls[0]![0].filter)
-    expect(serialized).toContain(MEMORY_PROPS.SOURCE)
-    expect(serialized).toContain("does_not_equal")
-    expect(serialized).toContain("agent_diary")
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.SOURCE,
+        select: { does_not_equal: "agent_diary" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.SOURCE,
+        select: { does_not_equal: "digest" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.KIND,
+        select: { does_not_equal: "task" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.KIND,
+        select: { does_not_equal: "operational" },
+      })
+    )
   })
 
-  it("semantic mode filters agent_diary rows before materialization", async () => {
+  it("contains mode lets explicit source and kind requests bypass their default exclusions", async () => {
+    const { searcher, querySpy } = makeSubject()
+
+    await searcher.search({
+      query: "retry",
+      mode: "contains",
+      source: "digest",
+      kind: "task",
+      limit: 3,
+    })
+
+    const serialized = JSON.stringify(querySpy.mock.calls[0]![0].filter)
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.SOURCE,
+        select: { equals: "digest" },
+      })
+    )
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.KIND,
+        select: { equals: "task" },
+      })
+    )
+    expect(serialized).not.toContain('"does_not_equal":"digest"')
+    expect(serialized).not.toContain('"does_not_equal":"agent_diary"')
+    expect(serialized).not.toContain('"does_not_equal":"task"')
+    expect(serialized).not.toContain('"does_not_equal":"operational"')
+  })
+
+  it("semantic mode post-filters non-knowledge sources and kinds by default", async () => {
     const { searcher, materializeSpy } = makeSubject({
       semanticPages: [
-        page("diary", { source: "agent_diary" }),
-        page("normal", { source: "manual" }),
+        page("agent-diary", { source: "agent_diary" }),
+        page("digest", { source: "digest" }),
+        page("task", { kind: "task" }),
+        page("operational", { kind: "operational" }),
+        page("decision", { kind: "decision" }),
+        page("note"),
       ],
     })
 
     const memories = await searcher.search({
       query: "retry",
       mode: "semantic",
+      limit: 6,
+    })
+
+    expect(memories.map((memory) => memory.id)).toEqual(["decision", "note"])
+    expect(materializeSpy.mock.calls[0]![0].map((p: PageObjectResponse) => p.id)).toEqual(
+      ["decision", "note"]
+    )
+  })
+
+  it("semantic mode lets explicit source and kind requests bypass their default exclusions", async () => {
+    const digestSearch = makeSubject({
+      semanticPages: [page("digest", { source: "digest" }), page("manual")],
+    })
+    const taskSearch = makeSubject({
+      semanticPages: [page("task", { kind: "task" }), page("note")],
+    })
+
+    const digestMemories = await digestSearch.searcher.search({
+      query: "retry",
+      mode: "semantic",
+      source: "digest",
+      limit: 2,
+    })
+    const taskMemories = await taskSearch.searcher.search({
+      query: "retry",
+      mode: "semantic",
+      kind: "task",
       limit: 2,
     })
 
-    expect(memories.map((memory) => memory.id)).toEqual(["normal"])
-    expect(materializeSpy.mock.calls[0]![0].map((p: PageObjectResponse) => p.id)).toEqual(
-      ["normal"]
-    )
+    expect(digestMemories.map((memory) => memory.id)).toEqual(["digest"])
+    expect(taskMemories.map((memory) => memory.id)).toEqual(["task"])
   })
 
   it("contains mode pushes excludePinned into the Notion filter", async () => {

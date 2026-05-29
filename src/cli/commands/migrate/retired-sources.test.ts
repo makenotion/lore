@@ -42,12 +42,12 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
   }
 }
 
-describe("legacy memory migrations and retired sources", () => {
+describe("legacy memory migrations and full-vault recall policy", () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it("includes retired sources when scanning out-of-vocabulary tags", async () => {
+  it("uses full-vault recall policy when scanning out-of-vocabulary tags", async () => {
     const list = vi.fn(async () => ({ items: [], nextCursor: undefined }))
     vi.spyOn(console, "log").mockImplementation(() => {})
 
@@ -62,12 +62,12 @@ describe("legacy memory migrations and retired sources", () => {
     expect(list).toHaveBeenCalledWith(
       expect.objectContaining({
         includeProposed: true,
-        includeRetiredSources: true,
+        recallPolicy: "all",
       })
     )
   })
 
-  it("includes retired sources when upgrading legacy decision tags", async () => {
+  it("uses full-vault recall policy when upgrading legacy decision tags", async () => {
     const list = vi
       .fn()
       .mockResolvedValueOnce({
@@ -90,7 +90,7 @@ describe("legacy memory migrations and retired sources", () => {
     expect(list.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         includeProposed: true,
-        includeRetiredSources: true,
+        recallPolicy: "all",
       })
     )
     expect(update).toHaveBeenCalledWith("mem-decision", {

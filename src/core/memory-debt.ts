@@ -664,6 +664,7 @@ export async function scanDebt(
       } = await services.memories.list({
         ...(opts.projectId ? { projectId: opts.projectId } : {}),
         kind: "operational",
+        recallPolicy: "all",
         limit: Math.min(100, remaining),
         includeContent: true,
         includeOutOfScope: true,
@@ -756,6 +757,7 @@ export async function scanDebt(
         ...(opts.projectId ? { projectId: opts.projectId } : {}),
         limit: Math.min(100, remaining),
         includeContent: false,
+        recallPolicy: "all",
         ...(ownerlessCursor !== undefined ? { startCursor: ownerlessCursor } : {}),
       })
       for (const m of page.items) {
@@ -1280,6 +1282,7 @@ async function collectSummaryQualityCandidates(
     } = await services.memories.list({
       ...(opts.projectId ? { projectId: opts.projectId } : {}),
       source: "digest",
+      recallPolicy: "all",
       limit: Math.min(100, remaining),
       includeContent: true,
       includeOutOfScope: true,
@@ -1309,6 +1312,7 @@ async function collectSummaryQualityCandidates(
       limit: 100,
       includeContent: false,
       includeOutOfScope: true,
+      recallPolicy: "all",
       ...(synopsisCursor !== undefined ? { startCursor: synopsisCursor } : {}),
     })
     for (const memory of page.items) {

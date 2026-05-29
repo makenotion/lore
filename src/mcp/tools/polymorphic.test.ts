@@ -869,6 +869,19 @@ describe("lore-query polymorphic dispatcher", () => {
     )
   })
 
+  it("threads kind='operational' through action='recall' as an explicit opt-in", async () => {
+    const memoriesList = vi.fn(async () => ({ items: [], nextCursor: undefined }))
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices({ memoriesList }) as never)
+    await mock.get("lore-query")({
+      action: "recall",
+      kind: "operational",
+    } as never)
+    expect(memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "operational" })
+    )
+  })
+
   it("dispatches action='search' with required query", async () => {
     const memoriesSearch = vi.fn(async () => [])
     const mock = createMockServer()
@@ -876,6 +889,40 @@ describe("lore-query polymorphic dispatcher", () => {
     await mock.get("lore-query")({ action: "search", query: "auth" } as never)
     expect(memoriesSearch).toHaveBeenCalledWith(
       expect.objectContaining({ query: "auth" })
+    )
+  })
+
+  it("threads source='agent_diary' through action='search' as a legacy escape hatch", async () => {
+    const memoriesSearch = vi.fn(async () => [])
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices({ memoriesSearch }) as never)
+    await mock.get("lore-query")({
+      action: "search",
+      query: "journal",
+      source: "agent_diary",
+    } as never)
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "journal",
+        source: "agent_diary",
+      })
+    )
+  })
+
+  it("threads kind='operational' through action='search' as an explicit opt-in", async () => {
+    const memoriesSearch = vi.fn(async () => [])
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices({ memoriesSearch }) as never)
+    await mock.get("lore-query")({
+      action: "search",
+      query: "receipt",
+      kind: "operational",
+    } as never)
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "receipt",
+        kind: "operational",
+      })
     )
   })
 
@@ -952,7 +999,7 @@ describe("lore-query polymorphic dispatcher", () => {
     expect(parsed.data).toHaveProperty("intent", "WeChat session cookie")
   })
 
-  it("queryDispatchSchema strips source from action='search' because source audits use recall", () => {
+  it("queryDispatchSchema preserves source on action='search'", () => {
     const parsed = queryDispatchSchema.safeParse({
       action: "search",
       query: "auth",
@@ -961,7 +1008,7 @@ describe("lore-query polymorphic dispatcher", () => {
     expect(parsed.success).toBe(true)
     if (!parsed.success) return
     expect(parsed.data.action).toBe("search")
-    expect(parsed.data).not.toHaveProperty("source")
+    expect(parsed.data).toHaveProperty("source", "agent_diary")
   })
 
   it("dispatches action='search' with explain:true through searchWithExplain", async () => {

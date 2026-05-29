@@ -29,22 +29,29 @@ import {
 import type { LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_CLEANUP_ORPHAN_SENTINEL } from "./near-duplicate.js"
 import { todayUtc } from "./task.js"
-import {
-  RETIRED_RECALL_SOURCES,
-  retiredRecallSourceExclusionFilters,
-  withCleanupOrphanExclusion,
-} from "./memory-filters.js"
+import { withCleanupOrphanExclusion } from "./memory-filters.js"
 import { matchesDefaultScope } from "./memory-scope.js"
+import {
+  DEFAULT_RECALL_EXCLUDED_KINDS,
+  DEFAULT_RECALL_EXCLUDED_SOURCES,
+  defaultKindExclusionFilters,
+  defaultSourceExclusionFilters,
+} from "./memory-recall-policy.js"
 import { reviewTerminalStatusExclusionFilters } from "./memory-review-state.js"
 
 type PageToMemory = (page: PageObjectResponse, content: string) => Promise<Memory>
 type GetMemoryPropertiesById = (id: string) => Promise<Memory>
+type RecallPolicy = "knowledge" | "all"
 
 // eslint-disable-next-line no-control-regex -- stderr events must stay one line
 const LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
 
 function oneLine(value: string): string {
   return value.replace(LOG_CONTROL_CHARS, " ")
+}
+
+function uniqueValues<T>(values: readonly T[]): T[] {
+  return [...new Set(values)]
 }
 
 class NearDuplicateHydrationFallbackError extends Error {
@@ -124,9 +131,15 @@ export interface ListMemoriesOptions {
   includeUnscoped?: boolean
   includeProposed?: boolean
   /**
-   * Maintenance-only opt-in for full-vault scans that must see
-   * historical rows from retired write sources. User-facing recall
-   * paths should rely on the default retired-source exclusion.
+   * Controls the default source/kind hygiene filters. User-facing recall
+   * paths use `"knowledge"`; maintenance scans that promise full-vault
+   * coverage use `"all"`.
+   */
+  recallPolicy?: RecallPolicy
+  /**
+   * Maintenance-only compatibility flag for scans that must see historical
+   * rows from retired write sources. Prefer `recallPolicy: "all"` for full
+   * source/kind coverage.
    */
   includeRetiredSources?: boolean
   includeExpired?: boolean
@@ -192,6 +205,10 @@ export class MemoryList {
           opts.statuses === undefined && !opts.includeProposed
             ? (["proposed"] as const)
             : undefined
+        const excludeKinds = uniqueValues([
+          ...(opts.kind === undefined ? DEFAULT_RECALL_EXCLUDED_KINDS : []),
+          ...(opts.excludeKinds ?? []),
+        ])
         // **Tag filtering is pushed server-side via the verified
         // exact-token SQL predicate.** An earlier overfetch
         // heuristic was rejected because wrong-tag rows could fill
@@ -218,14 +235,12 @@ export class MemoryList {
           ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
           ...(opts.tags && opts.tags.length > 0 ? { tags: opts.tags } : {}),
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
-          ...(opts.excludeKinds && opts.excludeKinds.length > 0
-            ? { excludeKinds: opts.excludeKinds }
-            : {}),
+          ...(excludeKinds.length > 0 ? { excludeKinds } : {}),
           ...(opts.statuses && opts.statuses.length > 0
             ? { statuses: opts.statuses }
             : {}),
           ...(excludeStatuses ? { excludeStatuses } : {}),
-          excludeSources: RETIRED_RECALL_SOURCES,
+          excludeSources: DEFAULT_RECALL_EXCLUDED_SOURCES,
           cleanupOrphanSentinel: MEMORY_CLEANUP_ORPHAN_SENTINEL,
           limit: opts.limit,
         })
@@ -311,6 +326,9 @@ export class MemoryList {
     capped: boolean
   }> {
     const filters: Array<Record<string, unknown>> = []
+    const recallPolicy: RecallPolicy =
+      opts?.recallPolicy ?? (opts?.includeRetiredSources === true ? "all" : "knowledge")
+    const applyKnowledgeRecallFilters = recallPolicy === "knowledge"
 
     if (opts?.projectId) {
       filters.push(
@@ -330,14 +348,16 @@ export class MemoryList {
         property: MEMORY_PROPS.SOURCE,
         select: { equals: opts.source },
       })
-    } else if (opts?.includeRetiredSources !== true) {
-      filters.push(...retiredRecallSourceExclusionFilters())
+    } else if (applyKnowledgeRecallFilters) {
+      filters.push(...defaultSourceExclusionFilters())
     }
     if (opts?.kind) {
       filters.push({
         property: MEMORY_PROPS.KIND,
         select: { equals: opts.kind },
       })
+    } else if (applyKnowledgeRecallFilters) {
+      filters.push(...defaultKindExclusionFilters(opts?.excludeKinds))
     }
     if (opts?.excludeKinds && opts.excludeKinds.length > 0) {
       // One `does_not_equal` clause per excluded kind — Notion's
