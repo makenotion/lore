@@ -48,6 +48,9 @@ function makeServices() {
     },
     facts: {
       queryBySubject: vi.fn().mockResolvedValue([]),
+      listAllForBackfill: vi.fn(async function* () {}),
+      applyBackfillScore: vi.fn(),
+      setSource: vi.fn(),
     },
     entities: {
       listAll: vi.fn().mockResolvedValue([]),
@@ -146,5 +149,30 @@ describe("migrateCommand build-entities locking", () => {
     expect(errorSpy.mock.calls.join("\n")).toContain(
       "Migrate failed: one or more select option updates exceed Notion's option limit."
     )
+  })
+
+  it("runs audit-only fact confidence checks with schema writes disabled", async () => {
+    const services = makeServices()
+    const logSpy = vi.fn()
+    vi.spyOn(console, "log").mockImplementation(logSpy)
+    vi.mocked(initServices).mockResolvedValue(services as never)
+
+    await migrateCommand.parseAsync(["--audit-fact-confidence", "--allow-unscoped"], {
+      from: "user",
+    })
+
+    expect(services.vault.migrate).toHaveBeenCalledWith({
+      dryRun: true,
+      mergeDuplicateTopics: undefined,
+      fixTopicEncoding: undefined,
+    })
+    expect(services.facts.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: undefined,
+    })
+    expect(services.facts.applyBackfillScore).not.toHaveBeenCalled()
+    expect(services.facts.setSource).not.toHaveBeenCalled()
+    const output = logSpy.mock.calls.flat().join("\n")
+    expect(output).toContain("Vault schema is up to date. Nothing to migrate.")
+    expect(output).toContain("[lore] audit-fact-confidence: scanned 0 live facts")
   })
 })

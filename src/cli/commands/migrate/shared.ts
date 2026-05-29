@@ -16,6 +16,7 @@ export interface MigrationScopeIntent {
   backfillSynopses?: boolean
   backfillAutosaveLearningSource?: boolean
   buildFactConfidenceScores?: boolean
+  auditFactConfidence?: boolean
   backfillFactObservedAt?: boolean
   project?: string
   projectId?: string
@@ -37,6 +38,7 @@ export function isProjectScopedMigrationRequested(opts: MigrationScopeIntent): b
     opts.backfillSynopses ||
     opts.backfillAutosaveLearningSource ||
     opts.buildFactConfidenceScores ||
+    opts.auditFactConfidence ||
     opts.backfillFactObservedAt
   )
 }

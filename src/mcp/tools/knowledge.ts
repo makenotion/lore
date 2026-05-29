@@ -25,6 +25,7 @@ import {
 } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { runAsk } from "../../core/ask.js"
+import { effectiveConfidenceScore } from "../../core/decay.js"
 import { FACT_PROPS } from "../../notion/schema.js"
 import { writableFactPredicates } from "../../profile/index.js"
 
@@ -608,7 +609,14 @@ export async function handleAudit(
             (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000
           )
           const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-          const trustLine = renderTrustLine(f.confidenceScore ?? null, "  ")
+          const trustLine = renderTrustLine(
+            effectiveConfidenceScore(
+              f.confidenceScore ?? null,
+              f.lastReferencedAt ?? null,
+              today
+            ),
+            "  "
+          )
           const trustRow = trustLine !== null ? `${trustLine}\n` : ""
           return (
             `- **${f.subject}** ${f.predicate.replace(/_/g, " ")} **${f.object}** [${f.confidence}]${since}\n` +

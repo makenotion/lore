@@ -20,6 +20,7 @@ import {
   composeProjectContext,
   renderProjectContextLines,
 } from "../../../core/project-context.js"
+import { effectiveConfidenceScore } from "../../../core/decay.js"
 import { taskDaysOverdue, taskDaysStale, todayUtc } from "../../../core/task.js"
 import { STALE_TASK_DAYS, type Memory, type TaskSummary } from "../../../types.js"
 import {
@@ -931,7 +932,14 @@ export async function handleWakeUp(
             trailing: `(${fact.confidence})`,
           })
         )
-        const trustLine = renderTrustLine(fact.confidenceScore ?? null, " ")
+        const trustLine = renderTrustLine(
+          effectiveConfidenceScore(
+            fact.confidenceScore ?? null,
+            fact.lastReferencedAt ?? null,
+            today
+          ),
+          " "
+        )
         if (trustLine !== null) {
           sections.push(trustLine)
         }

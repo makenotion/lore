@@ -16,6 +16,15 @@ must omit `affectedMemoryId`. The `--json` output includes a
 `compareContract` block. [`docs/memory-workflows.md`](memory-workflows.md)
 has the canonical verdict definitions.
 
+Fact confidence is not a winner-selection algorithm for this workflow.
+`lore conflicts scan` only proposes memory pairs. The caller adjudicates the
+pair and passes `affectedMemoryId` to `lore-memory action='compare'`; that
+argument identifies the contradicted or superseded memory for asymmetric
+verdicts. `judgeConfidence` is mapped onto the categorical confidence of the
+emitted `conflicts_with` / `supersedes_decision` fact, and the fact confidence
+score can affect later ranking/display, but existing fact confidence does not
+choose which side wins a conflict.
+
 ## Scan Caps
 
 The scan is bounded by two distinct caps:

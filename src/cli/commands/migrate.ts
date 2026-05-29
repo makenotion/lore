@@ -5,7 +5,10 @@ import { mergeHookDefaults } from "../../hooks/config.js"
 import { releaseMigrationLock, type MigrationLock } from "../migration-lock.js"
 import { runAgentNormalization } from "./migrate/agent-normalization.js"
 import { runBackfillAutosaveLearningSource } from "./migrate/autosave-learning-source.js"
-import { runBuildFactConfidenceScores } from "./migrate/confidence.js"
+import {
+  runAuditFactConfidence,
+  runBuildFactConfidenceScores,
+} from "./migrate/confidence.js"
 import { runDedupKeysMigration } from "./migrate/dedup-keys.js"
 import { upgradeLegacyDecisionTags } from "./migrate/decision-tags.js"
 import {
@@ -127,6 +130,10 @@ export const migrateCommand = new Command("migrate")
     "Seeds every fact's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and writes Last Referenced At = created_time, then realizes any decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope. Idempotent: rows already scored are skipped. The Last Referenced At column ships alongside Confidence Score because decay needs a per-fact reference timestamp distinct from Notion's last_edited_time. Last Referenced At = created_time is a fiction (the fact wasn't actually 'referenced' at creation) — operators who want a true read-citation anchor re-run after read traffic naturally bumps the column via touchOnRead."
   )
   .option(
+    "--audit-fact-confidence",
+    "Read-only audit of live Facts confidence: categorical distribution, stored/effective numeric score buckets, Last Referenced At freshness, and whether neglect decay would change ranking today. Pair with `--project <name>` to scope, or `--allow-unscoped` for a vault-wide audit."
+  )
+  .option(
     "--backfill-fact-observed-at",
     "Backfill issue #284 transaction-time columns (`Observed At`, `Invalidated At`) on pre-#284 fact rows. Plan-only by default; pair with `--yes` to apply, `--project <name>` to scope. Idempotent. See `docs/cli.md` for the full backfill contract (including why `Invalidated By` is not auto-seeded)."
   )
@@ -170,6 +177,7 @@ export const migrateCommand = new Command("migrate")
       synopsisBackend?: string
       synopsisBatchSize?: string
       buildFactConfidenceScores?: boolean
+      auditFactConfidence?: boolean
       backfillFactObservedAt?: boolean
       project?: string
       includeArchived?: boolean
@@ -207,7 +215,7 @@ export const migrateCommand = new Command("migrate")
         const scopedMigration = isProjectScopedMigrationRequested(opts)
         if (opts.project !== undefined && !scopedMigration) {
           console.error(
-            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --backfill-autosave-learning-source, --build-fact-confidence-scores, or --backfill-fact-observed-at."
+            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --backfill-autosave-learning-source, --build-fact-confidence-scores, --audit-fact-confidence, or --backfill-fact-observed-at."
           )
           process.exit(1)
         }
@@ -246,6 +254,8 @@ export const migrateCommand = new Command("migrate")
         }
         const synopsisBackend = parseSynopsisBackend(opts.synopsisBackend)
         const synopsisBatchSize: number = parseSynopsisBatchSize(opts.synopsisBatchSize)
+        const factConfidenceAuditOnly = isFactConfidenceAuditOnly(opts)
+        const schemaDryRun = opts.dryRun || factConfidenceAuditOnly
 
         // Load & validate merge-topics YAML before initializing services so
         // a malformed file fails fast, without a Notion round-trip.
@@ -270,7 +280,7 @@ export const migrateCommand = new Command("migrate")
         }
 
         const schemaResult = await runSchemaMigration(services, {
-          dryRun: opts.dryRun,
+          dryRun: schemaDryRun,
           mergeDuplicateTopics: opts.mergeDuplicateTopics,
           fixTopicEncoding: opts.fixTopicEncoding,
           upgradeDecisionTags: opts.upgradeDecisionTags,
@@ -281,7 +291,7 @@ export const migrateCommand = new Command("migrate")
         const { diffs, duplicateTopics, encodedTopics, totalBlockedOptions } =
           schemaResult
 
-        if (totalBlockedOptions > 0 && !opts.dryRun) {
+        if (totalBlockedOptions > 0 && !schemaDryRun) {
           console.error(
             "Migrate failed: one or more select option updates exceed Notion's option limit."
           )
@@ -424,6 +434,14 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.auditFactConfidence) {
+          await runAuditFactConfidence(services, {
+            projectName: opts.project,
+            projectId: migrationScope.projectId,
+            includeArchived: opts.includeArchived,
+          })
+        }
+
         if (opts.backfillFactObservedAt) {
           await runBackfillFactObservedAt(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
@@ -492,6 +510,7 @@ export const migrateCommand = new Command("migrate")
             opts.backfillSynopses ||
             opts.backfillAutosaveLearningSource ||
             opts.buildFactConfidenceScores ||
+            opts.auditFactConfidence ||
             opts.backfillFactObservedAt
           if (flagHints.length > 0) {
             console.log(
@@ -524,3 +543,47 @@ export const migrateCommand = new Command("migrate")
       }
     }
   )
+
+export function isFactConfidenceAuditOnly(opts: {
+  auditFactConfidence?: boolean
+  upgradeDecisionTags?: boolean
+  mergeDuplicateTopics?: boolean
+  mergeSimilarTopics?: boolean
+  fixTopicEncoding?: boolean
+  fixFactEncoding?: boolean
+  fixMemoryEncoding?: boolean
+  mergeTopics?: string
+  tags?: boolean
+  backfillFactSources?: boolean
+  dedupKeys?: boolean
+  merge?: boolean
+  normalizeAgents?: boolean
+  buildEntities?: boolean
+  reportOrphanRate?: boolean
+  backfillSynopses?: boolean
+  backfillAutosaveLearningSource?: boolean
+  buildFactConfidenceScores?: boolean
+  backfillFactObservedAt?: boolean
+}): boolean {
+  if (!opts.auditFactConfidence) return false
+  return !(
+    opts.upgradeDecisionTags ||
+    opts.mergeDuplicateTopics ||
+    opts.mergeSimilarTopics ||
+    opts.fixTopicEncoding ||
+    opts.fixFactEncoding ||
+    opts.fixMemoryEncoding ||
+    opts.mergeTopics ||
+    opts.tags ||
+    opts.backfillFactSources ||
+    opts.dedupKeys ||
+    opts.merge ||
+    opts.normalizeAgents ||
+    opts.buildEntities ||
+    opts.reportOrphanRate ||
+    opts.backfillSynopses ||
+    opts.backfillAutosaveLearningSource ||
+    opts.buildFactConfidenceScores ||
+    opts.backfillFactObservedAt
+  )
+}

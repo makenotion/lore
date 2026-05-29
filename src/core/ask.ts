@@ -1,4 +1,4 @@
-import { confidenceFactor } from "./decay.js"
+import { effectiveConfidenceFactor, effectiveConfidenceScore } from "./decay.js"
 import { expandEntityQueryVariants } from "./entity.js"
 import { composeProjectContext, renderProjectContextLines } from "./project-context.js"
 import { resolveCanonicalDecisionLinks } from "./decision-graph.js"
@@ -247,7 +247,7 @@ export async function runAsk(
       fact,
     })),
   ]
-  const rankedGovernance = applyConfidenceWeightedRrf(governanceItems, features)
+  const rankedGovernance = applyConfidenceWeightedRrf(governanceItems, features, today)
 
   const structureItems: Structured[] = grouped.structure.map((fact) => ({
     fact,
@@ -257,7 +257,7 @@ export async function runAsk(
     }),
     sortKey: fact.validFrom,
   }))
-  const rankedStructure = applyConfidenceWeightedRrf(structureItems, features)
+  const rankedStructure = applyConfidenceWeightedRrf(structureItems, features, today)
 
   const sections: string[] = []
   let anyOverflow = false
@@ -412,7 +412,7 @@ function renderDecidedByLine(fact: Fact, decision: Decision, today: string): str
       : ` (decision review by ${decision.reviewBy})`
     : ""
   const decided = decision.decidedAt ? ` (decided ${decision.decidedAt})` : ""
-  const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
+  const trustLine = renderTrustLine(effectiveFactConfidenceScore(fact, today), "  ")
   const trustSegment = trustLine !== null ? `\n${trustLine}` : ""
   return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}]${decided}${review}${trustSegment}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
 }
@@ -436,7 +436,7 @@ function renderGenericTrailing(
       ? ` **(OVERDUE — review by ${fact.reviewBy})**`
       : ` (review by ${fact.reviewBy})`
     : ""
-  const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
+  const trustLine = renderTrustLine(effectiveFactConfidenceScore(fact, today), "  ")
   const trustSegment = trustLine !== null ? `\n${trustLine}` : ""
   return `[${fact.confidence}]${validity}${invalidated}${review}${trustSegment}\n  ID: ${fact.id}`
 }
@@ -455,12 +455,20 @@ function compareSortKeyDesc(
 
 function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: Fact }>(
   items: T[],
-  features: Pick<LoreFeatureFlags, "confidenceFactor">
+  features: Pick<LoreFeatureFlags, "confidenceFactor">,
+  today: string
 ): T[] {
   if (items.length <= 1) return items
   const recencyRanked = [...items].sort(compareSortKeyDesc)
   const scored = recencyRanked.map((item, rank) => {
-    const factor = confidenceFactor(item.fact?.confidenceScore ?? null, features)
+    const factor = item.fact
+      ? effectiveConfidenceFactor(
+          item.fact.confidenceScore ?? null,
+          item.fact.lastReferencedAt ?? null,
+          today,
+          features
+        )
+      : 1.0
     const score = (1 / (FACT_RRF_K + rank + 1)) * factor
     return { item, score }
   })
@@ -469,6 +477,14 @@ function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: F
     return a.score < b.score ? 1 : -1
   })
   return scored.map((scoredItem) => scoredItem.item)
+}
+
+function effectiveFactConfidenceScore(fact: Fact, today: string): number | null {
+  return effectiveConfidenceScore(
+    fact.confidenceScore ?? null,
+    fact.lastReferencedAt ?? null,
+    today
+  )
 }
 
 function collectAskSourceMemoryIds(

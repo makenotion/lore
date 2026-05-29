@@ -295,8 +295,8 @@ export function renderRevisionMarker(revisionCount: number): string | null {
 }
 
 /**
- * Render the trust-indicator line component for a fact row whose stored
- * `Confidence Score` may be below `CONFIDENCE_DISPLAY_THRESHOLD`.
+ * Render the trust-indicator line component for a fact row whose numeric
+ * confidence may be below `CONFIDENCE_DISPLAY_THRESHOLD`.
  * Returns the italic-wrapped label (`_{label}_`) prefixed by `indent`
  * when the row is scored AND below the display threshold; returns
  * `null` otherwise (unmigrated / unscored rows AND above-threshold

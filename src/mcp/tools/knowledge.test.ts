@@ -741,13 +741,44 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
     expect(trustedIdx).toBeLessThan(decayedIdx)
   })
 
+  it("ranks by effective decay rather than the stored score alone", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-05-29T12:00:00.000Z"))
+    try {
+      const facts: Fact[] = [
+        makeFact("newer-low", {
+          predicate: "uses",
+          object: "NewerLow",
+          validFrom: "2026-04-25",
+          confidenceScore: 0.3,
+          lastReferencedAt: "2026-04-25",
+        }),
+        makeFact("older-stale-high", {
+          predicate: "uses",
+          object: "OlderStaleHigh",
+          validFrom: "2026-04-01",
+          confidenceScore: 0.95,
+          lastReferencedAt: "2025-01-01",
+        }),
+      ]
+
+      const text = await invokeAsk(facts)
+
+      const newerIdx = text.indexOf("NewerLow")
+      const staleIdx = text.indexOf("OlderStaleHigh")
+      expect(newerIdx).toBeGreaterThan(-1)
+      expect(staleIdx).toBeGreaterThan(-1)
+      expect(newerIdx).toBeLessThan(staleIdx)
+      expect(text).toContain("_very low confidence_")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("renders the trust label as a separate indented line when confidenceScore < threshold", async () => {
-    // BLOCKING fix from review 2: the new score must be visible in the
-    // user-facing surfaces, not just affect ranking. A fact at score
-    // 0.15 is "very low confidence" per `formatTrustLabel`; the
-    // trust label renders on its own indented italic line below the
-    // bullet (mirroring the decision/task surfaces from DEFERRED-07
-    // via the shared `renderTrustLine` helper).
+    // A fact at score 0.15 is "very low confidence" per
+    // `formatTrustLabel`; the trust label renders on its own indented
+    // italic line below the bullet.
     const facts: Fact[] = [
       makeFact("decayed", {
         predicate: "uses",
@@ -761,10 +792,8 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
   })
 
   it("does not render a trust label when confidenceScore is null (byte-identical pre-DEFERRED-02)", async () => {
-    // Pre-migration row: render must remain `[certain]` only with the
-    // ID footer immediately below. No trust line, no italic signal.
-    // A regression here would be visible to every agent reading
-    // lore-ask responses against an un-backfilled vault.
+    // Rows without a numeric confidence score render only the categorical
+    // confidence and ID footer.
     const facts: Fact[] = [
       makeFact("legacy", {
         predicate: "uses",

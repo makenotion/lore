@@ -5,7 +5,7 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Fact, Memory } from "../../types.js"
 import type { TopicAliasMergeResult } from "../../core/topic-merge.js"
-import { migrateCommand } from "./migrate.js"
+import { isFactConfidenceAuditOnly, migrateCommand } from "./migrate.js"
 import { runAgentNormalization } from "./migrate/agent-normalization.js"
 import { runBuildFactConfidenceScores } from "./migrate/confidence.js"
 import { runBuildEntitiesMigration } from "./migrate/entities.js"
@@ -101,6 +101,28 @@ describe("migrateCommand help", () => {
     const help = migrateCommand.helpInformation()
     expect(help).toContain("--report-orphan-rate")
     expect(help).toContain("LORE_USE_RUNTOOL_AGGREGATE")
+  })
+
+  it("documents the fact confidence audit flag", () => {
+    const help = migrateCommand.helpInformation()
+    expect(help).toContain("--audit-fact-confidence")
+    expect(help).toContain("stored/effective numeric score buckets")
+  })
+
+  it("classifies standalone fact confidence audits as schema dry-run work", () => {
+    expect(isFactConfidenceAuditOnly({ auditFactConfidence: true })).toBe(true)
+    expect(
+      isFactConfidenceAuditOnly({
+        auditFactConfidence: true,
+        buildFactConfidenceScores: true,
+      })
+    ).toBe(false)
+    expect(
+      isFactConfidenceAuditOnly({
+        auditFactConfidence: true,
+        fixFactEncoding: true,
+      })
+    ).toBe(false)
   })
 })
 

@@ -1054,9 +1054,9 @@ export interface Fact {
   /**
    * System-managed numeric confidence in [0, 1]. `null` until the fact has
    * been touched once by a read path (or backfilled by `lore migrate
-   * --build-fact-confidence-scores`). `lore-ask` reads this as a weighting
-   * factor over the existing recency sort. Distinct from the agent-curated
-   * `confidence` categorical above. Optional on the type for the same
+   * --build-fact-confidence-scores`). Read surfaces combine this value with
+   * `Last Referenced At` for ranking and trust-line display. Distinct from
+   * the agent-curated `confidence` categorical above. Optional on the type for the same
    * backward-compat reason as `subjectEntityId`: older `Fact` JSON would
    * otherwise fail validation. Internal `pageToFact` always populates (`null`
    * when the column is absent).

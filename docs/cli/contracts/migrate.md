@@ -100,6 +100,27 @@ Fact confidence-score backfill:
   `lore-fact action='create'` / `invalidate` workflows before or after the
   migration.
 
+Fact confidence audit:
+
+- `--audit-fact-confidence` is read-only. It scans live Facts rows and reports
+  categorical confidence distribution, stored/effective numeric score buckets,
+  `Last Referenced At` freshness, seed-vs-score drift, and how many scored rows
+  would rank lower after applying neglect decay at read time.
+- `--project <name>` scopes the audit to one project. Archived projects require
+  `--include-archived`. Vault-wide audits require `--allow-unscoped` so broad
+  Notion scans stay intentional.
+- The audit's effective score uses the same decay algebra as fact ranking and
+  trust-line rendering. It does not write the decayed value back to Notion.
+- The predicate breakdown helps distinguish genuinely speculative facts from
+  default-low producers such as auto-emitted relationship predicates.
+- Unexpected categorical confidence labels are reported as `unknown` rather
+  than folded into the seeded `certain` / `likely` / `speculative` buckets.
+- The audit output calls out the conflict workflow boundary: `lore conflicts scan`
+  proposes memory pairs, and `lore-memory action='compare'` uses
+  `affectedMemoryId` to identify the loser for asymmetric verdicts. Fact
+  confidence labels emitted conflict facts and affects ranking/display; it does
+  not automatically choose a winner.
+
 Entity and fact repair flags:
 
 - `--build-entities` and `lore vault ensure-entities` support legacy
