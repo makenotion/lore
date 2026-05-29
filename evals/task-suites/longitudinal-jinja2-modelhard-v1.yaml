@@ -1,0 +1,361 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-jinja2-modelhard-v1
+description: >-
+  Model-hard Jinja2 longitudinal suite. Scenarios pin a stable Jinja2 revision
+  and ask the agent to implement a small templating module against an intrinsic
+  Jinja2 contract whose correct use is counterintuitive to a strong model
+  reasoning from Python or other-templating-engine defaults: in-loop `{% set %}`
+  scoping, the `default` filter firing only on undefined values, and the
+  autoescape-off default of a bare `Environment`. Verified through deterministic
+  in-process render tests with no network access.
+seededCorpus: ../vault-seeds/jinja2-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: jinja2-set-in-loop-scoping-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/jinja
+      sha: 5ef70112a1ff19c05324ff889dd30405b1002044
+    phaseA:
+      promptId: jinja2-set-in-loop-scoping-v1-formation
+      prompt: >-
+        We will add a small Jinja2-backed report module in a later session.
+        Investigate how this version of Jinja2 scopes variables assigned with
+        `{% set %}` inside control blocks. Read the templating docs section on
+        scoping behavior, then actually render a few templates with
+        `Environment().from_string(...).render(...)` that assign a variable
+        inside a `{% for %}` loop and read it after the loop, and observe what
+        the post-loop value is. Look at how `namespace()` and the `loop`
+        variable behave, and skim the loop/block scoping tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: jinja2-set-in-loop-scoping-v1-use
+      prompt: >-
+        Implement a new module `lore_solution.py` at the repository root that
+        renders a membership report using a single Jinja2 template. Provide a
+        module-level function `render_scan_report(items, target)` that uses one
+        `Environment().from_string(...).render(...)` call over a template which
+        iterates `items` in a `{% for %}` loop, decides inside the loop whether
+        any element equals `target`, and then -- after the loop -- renders one of
+        two messages based on that decision:
+
+          - if `target` was found among `items`, a string beginning with
+            `MATCH` that also contains the `target` value;
+          - otherwise a string beginning with `NO MATCH`.
+
+        The found/not-found decision must be made by the template's loop, not by
+        pre-computing it in Python before rendering and not by passing a Python
+        boolean into the context. The result for a given call must not be
+        influenced by any previous call. Do not edit files outside
+        `lore_solution.py`.
+    expectedContext:
+      description: >-
+        A Jinja2 variable assigned with `{% set %}` inside a `{% for %}` loop
+        does not propagate to the enclosing scope, so post-loop code reading it
+        sees the pre-loop value unless a `namespace()` carries the state across
+        the loop boundary.
+      keywords:
+        - set
+        - for loop
+        - scope
+        - namespace
+        - propagate
+    seededContext:
+      renderedContext: |
+        - [memory] jinja2/set-in-loop-scoping: A variable assigned with `{% set %}` INSIDE a `{% for %}` loop (or any block) does NOT leak to the enclosing scope. `{% set found = true %}` in the loop is invisible to a `{% if found %}` after it; `found` keeps its pre-loop value, so the post-loop branch is always wrong on a match. Carry the state across the loop boundary with a `namespace`: `{% set ns = namespace(found=false) %}`, assign `{% set ns.found = true %}` inside the loop, and read `ns.found` after it. (The loop `{% else %}` block or the `loop` variable also work.) Never rely on a plain in-loop `set` to communicate state to code after the loop.
+      contextIds:
+        - jinja2/set-in-loop-scoping
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_jinja_scan.py b/lore_eval_hidden_jinja_scan.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_jinja_scan.py
+          @@ -0,0 +1,40 @@
+          +from lore_solution import render_scan_report
+          +
+          +
+          +def test_reports_match_when_target_in_middle():
+          +    out = render_scan_report(["alpha", "bravo", "charlie"], "bravo")
+          +    assert out.startswith("MATCH")
+          +    assert "bravo" in out
+          +
+          +
+          +def test_reports_match_when_target_is_last_item():
+          +    # The flag set on the final iteration must survive to the post-loop branch.
+          +    out = render_scan_report(["alpha", "bravo", "charlie"], "charlie")
+          +    assert out.startswith("MATCH")
+          +
+          +
+          +def test_reports_match_when_target_is_only_item():
+          +    out = render_scan_report(["solo"], "solo")
+          +    assert out.startswith("MATCH")
+          +
+          +
+          +def test_reports_no_match_when_target_absent():
+          +    out = render_scan_report(["alpha", "bravo"], "zeta")
+          +    assert out.startswith("NO MATCH")
+          +
+          +
+          +def test_reports_no_match_on_empty_list():
+          +    out = render_scan_report([], "anything")
+          +    assert out.startswith("NO MATCH")
+          +
+          +
+          +def test_match_state_does_not_leak_between_calls():
+          +    # A match followed by a no-match call must report independently; a flag
+          +    # that wrongly persisted in module or template state would corrupt the
+          +    # second call.
+          +    assert render_scan_report(["x"], "x").startswith("MATCH")
+          +    assert render_scan_report(["x"], "y").startswith("NO MATCH")
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.12"
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_jinja_scan.py
+          - -q
+        timeoutMs: 300000
+
+  - id: jinja2-default-filter-falsy-fallback-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/jinja
+      sha: 5ef70112a1ff19c05324ff889dd30405b1002044
+    phaseA:
+      promptId: jinja2-default-filter-falsy-fallback-v1-formation
+      prompt: >-
+        We will add a small Jinja2-backed settings renderer in a later session.
+        Investigate the exact firing condition of Jinja2's `default` filter in
+        this version. Read its implementation in the filters module, then render
+        a few templates that apply `{{ x | default(...) }}` to a context where
+        `x` is missing versus a context where `x` is a defined-but-falsy value
+        such as `False`, `0`, an empty string, or `None`, and observe in each
+        case whether the default is substituted. Try both the one-argument and
+        two-argument forms of the filter. Skim the filter tests. Produce a
+        durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: jinja2-default-filter-falsy-fallback-v1-use
+      prompt: >-
+        Implement a new module `lore_solution.py` at the repository root that
+        renders a settings summary with Jinja2. Provide a module-level function
+        `render_settings(values)` where `values` maps field names to supplied
+        values. Render exactly one `key=value` line per field, newline-separated,
+        in this order, for these three fields: `region`, `replicas`, `verbose`.
+
+        The product treats a *blank* value as "not configured". A value is blank
+        when the field is absent from `values` OR when the supplied value is one
+        of the empty/zero/false values (an empty string, `0`, `False`, `None`).
+        For any blank field, render the literal placeholder `UNSET` as the value.
+        For a field whose supplied value is non-empty, render that value verbatim.
+
+        Drive the blank-detection through the template's own value-substitution
+        machinery rather than branching on each value in Python before rendering.
+        Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        Jinja2's `default` filter substitutes only when the variable is
+        undefined; a defined-but-falsy value is left untouched by the
+        one-argument form, and the two-argument `boolean=true` form is required
+        to fall back on any falsy value.
+      keywords:
+        - default filter
+        - undefined
+        - falsy
+        - boolean true
+        - second argument
+    seededContext:
+      renderedContext: |
+        - [memory] jinja2/default-filter-undefined-only: `{{ x | default(d) }}` returns `d` ONLY when `x` is Undefined (the variable is absent), NOT when `x` is a defined falsy value like `False`, `0`, `''`, or `None`. So `{{ debug | default('on') }}` with `debug=False` renders `False`, not `on`. To fall back on ANY falsy value (empty string / zero / false / none), pass the second positional argument true: `{{ x | default(d, true) }}`. Use the two-argument `boolean=true` form whenever a blank-but-defined value should also trigger the default; the one-argument form only covers the undefined case.
+      contextIds:
+        - jinja2/default-filter-undefined-only
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_jinja_settings.py b/lore_eval_hidden_jinja_settings.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_jinja_settings.py
+          @@ -0,0 +1,43 @@
+          +from lore_solution import render_settings
+          +
+          +
+          +def _lines(out):
+          +    return dict(line.split("=", 1) for line in out.strip().splitlines())
+          +
+          +
+          +def test_absent_fields_use_placeholder():
+          +    lines = _lines(render_settings({}))
+          +    assert lines["region"] == "UNSET"
+          +    assert lines["replicas"] == "UNSET"
+          +    assert lines["verbose"] == "UNSET"
+          +
+          +
+          +def test_zero_is_treated_as_unset():
+          +    # A supplied integer 0 is a blank value and must fall back, not render "0".
+          +    lines = _lines(render_settings({"replicas": 0}))
+          +    assert lines["replicas"] == "UNSET"
+          +
+          +
+          +def test_false_is_treated_as_unset():
+          +    lines = _lines(render_settings({"verbose": False}))
+          +    assert lines["verbose"] == "UNSET"
+          +
+          +
+          +def test_empty_string_is_treated_as_unset():
+          +    lines = _lines(render_settings({"region": ""}))
+          +    assert lines["region"] == "UNSET"
+          +
+          +
+          +def test_none_is_treated_as_unset():
+          +    lines = _lines(render_settings({"region": None}))
+          +    assert lines["region"] == "UNSET"
+          +
+          +
+          +def test_nonempty_value_renders_verbatim():
+          +    lines = _lines(render_settings({"region": "eu-west", "replicas": 3}))
+          +    assert lines["region"] == "eu-west"
+          +    assert lines["replicas"] == "3"
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.12"
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_jinja_settings.py
+          - -q
+        timeoutMs: 300000
+
+  - id: jinja2-autoescape-html-output-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/jinja
+      sha: 5ef70112a1ff19c05324ff889dd30405b1002044
+    phaseA:
+      promptId: jinja2-autoescape-html-output-v1-formation
+      prompt: >-
+        We will add a small Jinja2-backed HTML rendering helper in a later
+        session. Investigate the autoescape behavior of this version of Jinja2.
+        Read where the `Environment` constructor sets its `autoescape` default,
+        then render a template that interpolates a string containing HTML
+        metacharacters (such as `<script>`) through a bare `Environment()` and
+        observe whether the markup is escaped. Compare against an environment
+        constructed with autoescaping enabled and against `select_autoescape`.
+        Skim the autoescape tests. Produce a durable implementation plan only; do
+        not edit files.
+    phaseB:
+      promptId: jinja2-autoescape-html-output-v1-use
+      prompt: >-
+        Implement a new module `lore_solution.py` at the repository root that
+        renders user comments into an HTML page fragment with Jinja2. Provide a
+        module-level function `render_comment(author, comment)` that renders both
+        `author` and `comment` into an HTML fragment of the form
+        `<article><h2>{author}</h2><p>{comment}</p></article>` using a Jinja2
+        template (`Environment(...).from_string(...).render(...)`).
+
+        `author` and `comment` are untrusted strings that may contain HTML
+        metacharacters. The rendered fragment must show the text the user typed
+        as visible text, not as live markup -- so a comment of
+        `<script>alert(1)</script>` must appear escaped in the output rather than
+        as an actual `<script>` element. Achieve this through the Jinja2
+        environment's own configuration; do not hand-roll an HTML-escaping pass
+        over the values before passing them into the template. Do not edit files
+        outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        A bare `jinja2.Environment()` has `autoescape=False`, so rendering
+        untrusted text into HTML requires explicitly enabling autoescaping;
+        templating does not escape by default the way Flask or Django do.
+      keywords:
+        - autoescape
+        - Environment
+        - default False
+        - escape
+        - select_autoescape
+    seededContext:
+      renderedContext: |
+        - [memory] jinja2/autoescape-default-off: A bare `jinja2.Environment()` has `autoescape=False` by default, so `{{ value }}` is emitted verbatim and any HTML metacharacters in user input render as live markup (an XSS vector). Standalone Jinja2 does NOT escape by default the way Flask's `render_template` or Django templates do. To safely render untrusted text into HTML, construct the environment with `autoescape=True` (or `autoescape=select_autoescape([...])`). Never assume a raw `Environment` escapes output.
+      contextIds:
+        - jinja2/autoescape-default-off
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_jinja_comment.py b/lore_eval_hidden_jinja_comment.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_jinja_comment.py
+          @@ -0,0 +1,30 @@
+          +from lore_solution import render_comment
+          +
+          +
+          +def test_script_tag_is_escaped():
+          +    out = render_comment("Alice", "<script>alert(1)</script>")
+          +    assert "<script>" not in out
+          +    assert "&lt;script&gt;" in out
+          +
+          +
+          +def test_angle_brackets_in_comment_escaped():
+          +    out = render_comment("Alice", "1 < 2 and 3 > 2")
+          +    assert "&lt;" in out and "&gt;" in out
+          +
+          +
+          +def test_ampersand_escaped():
+          +    out = render_comment("Bob & Co", "tea & coffee")
+          +    assert "&amp;" in out
+          +
+          +
+          +def test_quote_in_attribute_safe_text_escaped():
+          +    out = render_comment("Eve", '"><img src=x onerror=alert(1)>')
+          +    assert "<img" not in out
+          +
+          +
+          +def test_plain_text_round_trips_visible():
+          +    out = render_comment("Carol", "just a normal comment")
+          +    assert "just a normal comment" in out
+          +    assert "Carol" in out
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.12"
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_jinja_comment.py
+          - -q
+        timeoutMs: 300000

@@ -1,0 +1,247 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-werkzeug-modelhard-v1
+description: >-
+  Model-hard Werkzeug longitudinal suite. Scenarios are pinned before real
+  upstream URL-encoding and cookie fixes whose correct behavior is per-component
+  RFC detail a strong model gets wrong by reaching for a single quoting rule,
+  and verified through deterministic in-process tests with no networked HTTP.
+seededCorpus: ../vault-seeds/werkzeug-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: werkzeug-iri-uri-component-quoting-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/werkzeug
+      sha: 2554f4739e21d38a7b68a0e06201f70bec819bce
+    phaseA:
+      promptId: werkzeug-iri-uri-component-quoting-v1-formation
+      prompt: >-
+        We will overhaul Werkzeug's IRI/URI conversion in a later session.
+        Inspect `iri_to_uri` and `uri_to_iri`, how each URL component (path,
+        query, fragment, userinfo) is split and quoted/unquoted, the IDNA host
+        handling, and the existing URL conversion tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: werkzeug-iri-uri-component-quoting-v1-use
+      prompt: >-
+        Rework Werkzeug's `iri_to_uri` and `uri_to_iri` so each behaves
+        per-URL-component instead of running the whole string through one
+        quoting rule. `iri_to_uri` should quote only what is necessary to keep
+        the URL's parse meaning intact and should not double-encode existing
+        valid escapes; `uri_to_iri` should unquote as much as possible without
+        changing how the URL parses. Decode IDNA hosts to Unicode. Preserve the
+        public function signatures and add focused regressions that exercise the
+        distinct component behaviors without hitting the network.
+    expectedContext:
+      description: >-
+        Werkzeug's IRI/URI conversion is per-component, with distinct safe sets
+        per path/query/fragment/userinfo, and must not unquote escapes that
+        would change how `urlsplit` parses a component.
+      keywords:
+        - iri_to_uri
+        - uri_to_iri
+        - per-component
+        - urlsplit
+        - IDNA
+    seededContext:
+      renderedContext: |
+        - [memory] werkzeug/iri-uri-per-component-quoting: `iri_to_uri` and `uri_to_iri` are per-component, not whole-string. `iri_to_uri` quotes the minimum needed without changing `urlsplit` meaning (encode whitespace and characters that are unsafe in that component; keep reserved-but-safe characters and existing valid `%XX` literal — never double-encode). `uri_to_iri` unquotes the maximum without changing meaning: keep spaces quoted, and keep escapes that act as delimiters in their component (the query keeps `&` `=` `#`; the path keeps `/` `?` `#`). Decode IDNA hosts to Unicode. The safe set differs per path, query, fragment, and userinfo.
+      contextIds:
+        - werkzeug/iri-uri-per-component-quoting
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_urls.py b/lore_eval_hidden_urls.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_urls.py
+          @@ -0,0 +1,52 @@
+          +from werkzeug import urls
+          +
+          +
+          +def test_iri_to_uri_quotes_only_unsafe_path_octets():
+          +    # space must be percent-encoded, the euro sign UTF-8 encoded, but
+          +    # square brackets are valid path octets and must stay literal.
+          +    assert urls.iri_to_uri("/d ir[a]/\N{EURO SIGN}") == "/d%20ir[a]/%E2%82%AC"
+          +
+          +
+          +def test_iri_to_uri_keeps_query_delimiters_literal():
+          +    # a literal space encodes, but & and = keep their query meaning.
+          +    assert urls.iri_to_uri("/p?k=v w&x=y") == "/p?k=v%20w&x=y"
+          +
+          +
+          +def test_iri_to_uri_does_not_double_encode():
+          +    # an already-valid escape must not be re-encoded into %25XX.
+          +    assert urls.iri_to_uri("/already%2Fencoded") == "/already%2Fencoded"
+          +
+          +
+          +def test_iri_to_uri_encodes_idna_host():
+          +    assert (
+          +        urls.iri_to_uri("http://caf\N{LATIN SMALL LETTER E WITH ACUTE}.example/")
+          +        == "http://xn--caf-dma.example/"
+          +    )
+          +
+          +
+          +def test_uri_to_iri_keeps_space_quoted():
+          +    # space is not a valid IRI code point, so %20 must survive.
+          +    assert urls.uri_to_iri("http://h/a%20b") == "http://h/a%20b"
+          +
+          +
+          +def test_uri_to_iri_keeps_query_delimiter_escapes_but_unquotes_slash():
+          +    # %26 (&) and %3D (=) are query delimiters and must stay quoted, but
+          +    # %2F (/) does not change how the query parses, so it must be unquoted.
+          +    assert (
+          +        urls.uri_to_iri("http://h/?keep=%26%3D&drop=%2F")
+          +        == "http://h/?keep=%26%3D&drop=/"
+          +    )
+          +
+          +
+          +def test_uri_to_iri_keeps_path_delimiter_escapes_quoted():
+          +    # %2F (/) would add a path segment if unquoted, so it stays; the
+          +    # trailing UTF-8 escape decodes to its Unicode character.
+          +    assert urls.uri_to_iri("http://h/seg%2Fend%C3%A9") == "http://h/seg%2Fend\xe9"
+          +
+          +
+          +def test_uri_to_iri_decodes_idna_host():
+          +    assert urls.uri_to_iri("http://xn--caf-dma.example/") == (
+          +        "http://caf\N{LATIN SMALL LETTER E WITH ACUTE}.example/"
+          +    )
+          +
+          +
+          +def test_iri_uri_round_trip_is_idempotent():
+          +    uri = urls.iri_to_uri(
+          +        "http://caf\N{LATIN SMALL LETTER E WITH ACUTE}.example/d ir/\N{EURO SIGN}"
+          +    )
+          +    assert urls.iri_to_uri(urls.uri_to_iri(uri)) == uri
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_urls.py
+          - -q
+        timeoutMs: 180000
+
+  - id: werkzeug-cookie-octet-rfc6265-quoting-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/werkzeug
+      sha: d0f040a65bfc39c52930f0ea0ca0a9d465bc5043
+    phaseA:
+      promptId: werkzeug-cookie-octet-rfc6265-quoting-v1-formation
+      prompt: >-
+        We will adjust Werkzeug's cookie value serialization in a later session.
+        Inspect `dump_cookie`, the regex that decides when a value must be
+        quoted, the slash-escaping of special octets, `parse_cookie`, and the
+        cookie round-trip tests. Produce a durable implementation plan only; do
+        not edit files.
+    phaseB:
+      promptId: werkzeug-cookie-octet-rfc6265-quoting-v1-use
+      prompt: >-
+        A user reports that Werkzeug wraps cookie values in quotes far more
+        often than browsers and other servers do, bloating `Set-Cookie` headers
+        and breaking interop with clients that compare raw cookie values. Fix
+        `dump_cookie` so a value is left unquoted when every octet is one a
+        cookie value is actually allowed to carry, and only quote/escape values
+        that genuinely require it, while keeping the dump/parse round-trip exact
+        for escaped values. Preserve the public API and add focused regressions
+        without network access.
+    expectedContext:
+      description: >-
+        `dump_cookie` should leave values unquoted across the broad RFC 6265
+        cookie-octet set rather than the narrow HTTP token set, and must not
+        unquote the cookie name on parse.
+      keywords:
+        - dump_cookie
+        - parse_cookie
+        - RFC 6265
+        - cookie-octet
+        - quoting
+    seededContext:
+      renderedContext: |
+        - [memory] werkzeug/cookie-octet-rfc6265: `dump_cookie` leaves a value unquoted when every octet is in the RFC 6265 cookie-octet set (broad — includes characters like `/` `:` `=` `?` `@` `[` `]` `{` `}` `|` `~`), NOT the narrow HTTP `token` set; do not over-quote. Values containing controls, `"`, `\`, `,`, `;`, DEL, or high bytes are slash-escaped with three octal digits to match `http.cookies` (not base64), and the dump/parse round-trip must reproduce the original value. On parse, never unquote the cookie name — a quoted name must stay quoted to prevent `__Secure-`/`__Host-` prefix spoofing.
+      contextIds:
+        - werkzeug/cookie-octet-rfc6265
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_cookie.py b/lore_eval_hidden_cookie.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_cookie.py
+          @@ -0,0 +1,44 @@
+          +from werkzeug.http import dump_cookie
+          +from werkzeug.http import parse_cookie
+          +
+          +
+          +def _value(header):
+          +    return header.split(";", 1)[0].split("=", 1)[1]
+          +
+          +
+          +def test_rfc6265_cookie_octets_left_unquoted():
+          +    # /, :, =, ?, @, [, ] are all cookie-octet legal and must not trigger
+          +    # quoting of the whole value.
+          +    header = dump_cookie("session", "@p/q:r=s?t[u]")
+          +    assert header.split(";", 1)[0] == "session=@p/q:r=s?t[u]"
+          +
+          +
+          +def test_token_only_value_still_unquoted():
+          +    header = dump_cookie("session", "plainToken123")
+          +    assert _value(header) == "plainToken123"
+          +
+          +
+          +def test_special_octets_slash_escaped_with_octal_and_round_trip():
+          +    original = 'x;y,z"q\\r'
+          +    header = dump_cookie("data", original)
+          +    value = _value(header)
+          +    # Quoted because it carries ; , " and backslash; semicolon and comma
+          +    # become three-octal-digit slash escapes rather than base64.
+          +    assert value.startswith('"') and value.endswith('"')
+          +    assert "\\073" in value  # semicolon
+          +    assert "\\054" in value  # comma
+          +    parsed = parse_cookie(header.split(";", 1)[0])
+          +    assert parsed["data"] == original
+          +
+          +
+          +def test_cookie_name_is_not_unquoted_on_parse():
+          +    parsed = parse_cookie('"__Secure-token"=1')
+          +    # A quoted name must stay quoted so it cannot impersonate a real
+          +    # __Secure- prefixed cookie name.
+          +    assert "__Secure-token" not in parsed
+          +
+          +
+          +def test_plain_value_round_trips():
+          +    header = dump_cookie("session", "@p/q:r=s?t[u]")
+          +    parsed = parse_cookie(header.split(";", 1)[0])
+          +    assert parsed["session"] == "@p/q:r=s?t[u]"
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_cookie.py
+          - -q
+        timeoutMs: 180000

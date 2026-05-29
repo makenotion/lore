@@ -1,0 +1,40 @@
+version: 1
+id: requests-modelhard-v1
+description: >-
+  Model-hard seed corpus for a Requests longitudinal suite. Entries model
+  durable redirect-handling findings that reproduce obscure RFC behavior almost
+  no implementation gets right unprompted, pinned at a Requests revision before
+  the matching upstream fix.
+repository:
+  repo: psf/requests
+  sha: f89c325fbe9ad0e156b31dd6b7514dbf4d7d0088
+vault:
+  project:
+    name: requests
+    path: .
+    tags: ["python", "http", "client", "oss"]
+  topics:
+    - id: client/redirects
+      name: Client redirects
+      description: Redirect resolution loop, Location parsing, fragment and history handling.
+  memories:
+    - id: requests/redirect-fragment-retention
+      title: Redirects carry the original URL fragment unless Location supplies one
+      topics: ["client/redirects"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        A fragmentless redirect `Location` keeps the original request URL's
+        fragment; a `Location` fragment overrides and propagates to later hops.
+      body: |
+        When Requests follows a redirect, it must preserve the URL fragment the
+        way a browser does (RFC 7231 7.1.2). If the redirect `Location` has no
+        fragment, re-attach the original request URL's fragment to the
+        redirected URL instead of silently dropping it.
+
+        If `Location` carries its own fragment, that fragment wins and becomes
+        the fragment carried forward to any subsequent hop. Track the previous
+        fragment across the whole redirect loop so multi-hop chains behave
+        correctly. The fragment logic must not disturb the query string, the
+        request method, or recorded redirect history.
+      scenarios: ["requests-redirect-fragment-retention-v1"]

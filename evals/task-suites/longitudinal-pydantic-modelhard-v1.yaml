@@ -1,0 +1,173 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-pydantic-modelhard-v1
+description: >-
+  Model-hard pydantic longitudinal suite. Scenarios pin a stable pydantic
+  release and ask the agent to implement application code against an intrinsic
+  pydantic contract whose correct use is counterintuitive to a strong model
+  reasoning from defaults. Verified through deterministic in-process tests.
+seededCorpus: ../vault-seeds/pydantic-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: pydantic-alias-precedence-roundtrip-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pydantic/pydantic
+      sha: 5f033e46c54fea1b59b6894d6527daf49475e690
+    phaseA:
+      promptId: pydantic-alias-precedence-roundtrip-v1-formation
+      prompt: >-
+        We will add a small pydantic-backed module in a later session. Inspect
+        how this version of pydantic lets a single field accept one set of keys
+        on input while emitting a different set of keys on output, how
+        `model_validate` resolves incoming keys, and how `model_dump(by_alias=True)`
+        chooses output keys. Read the `Field` documentation for the alias-related
+        arguments and the validation/serialization tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: pydantic-alias-precedence-roundtrip-v1-use
+      prompt: >-
+        Implement a new module `lore_solution.py` at the repository root that
+        bridges two systems with incompatible key vocabularies for the same
+        record. Define a pydantic v2 `BaseModel` subclass named `Transfer` with
+        exactly three fields whose Python attribute names are `amount`,
+        `currency`, and `reference`. The model is fed by an upstream ledger feed
+        and persisted to a downstream archive, and the two systems use different
+        wire keys for every field:
+
+          - The upstream feed delivers each record using the keys `gross`,
+            `ccy`, and `memo` (mapping to `amount`, `currency`, `reference`).
+          - The downstream archive requires each record be written using the
+            keys `value`, `iso_currency`, and `note` (mapping to the same three
+            fields).
+
+        Also provide two module-level functions:
+
+          - `ingest(feed_record: dict) -> Transfer` builds a `Transfer` from a
+            raw upstream feed record (keyed by the upstream wire keys).
+          - `archive(transfer: Transfer) -> dict` produces the dict that will be
+            written to the downstream archive (keyed by the archive wire keys).
+
+        It must hold that `ingest` accepts a record keyed by the upstream keys
+        and rejects one keyed by the archive keys, and that `archive` emits a
+        dict keyed by the archive keys. Do not hand-roll key translation
+        dictionaries in `ingest`/`archive`; let the model's own field
+        configuration carry the input-key and output-key vocabularies, and have
+        `archive` delegate to the model's standard dump-by-alias path. The clean
+        attribute names (`amount`, `currency`, `reference`) are how the record is
+        read in memory after ingest. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        A pydantic field can carry independent input-key and output-key aliases;
+        the accepted-input alias and the dump-by-alias output key are separate
+        knobs and a single shared alias cannot express two different vocabularies.
+      keywords:
+        - validation_alias
+        - serialization_alias
+        - by_alias
+        - model_dump
+        - Field
+    seededContext:
+      renderedContext: |
+        - [memory] pydantic/alias-three-way-precedence: When a pydantic v2 field needs to accept one key on input but emit a different key on output, configure the input and output aliases independently. `validation_alias` controls the accepted input key (and fully supersedes a plain `alias` for input); `serialization_alias` controls the `model_dump(by_alias=True)` output key (and fully supersedes a plain `alias` for output). A single shared `alias` makes input and output use the same key, so it cannot bridge two systems with different key vocabularies. Do not assume `model_dump(by_alias=True)` echoes back the key you validated against — when the two aliases differ it emits the serialization alias. A round-trip across the two systems must validate with the input alias and re-key with the output alias.
+      contextIds:
+        - pydantic/alias-three-way-precedence
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_pydantic_alias.py b/lore_eval_hidden_pydantic_alias.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_pydantic_alias.py
+          @@ -0,0 +1,71 @@
+          +import pytest
+          +
+          +from lore_solution import Transfer, archive, ingest
+          +
+          +
+          +UPSTREAM = {"gross": 1250, "ccy": "EUR", "memo": "invoice-7741"}
+          +ARCHIVE = {"value": 1250, "iso_currency": "EUR", "note": "invoice-7741"}
+          +
+          +
+          +def test_ingest_accepts_upstream_keys():
+          +    transfer = ingest(dict(UPSTREAM))
+          +    assert isinstance(transfer, Transfer)
+          +    assert transfer.amount == 1250
+          +    assert transfer.currency == "EUR"
+          +    assert transfer.reference == "invoice-7741"
+          +
+          +
+          +def test_ingest_rejects_archive_keys():
+          +    # The archive vocabulary must not be a valid input vocabulary.
+          +    with pytest.raises(Exception):
+          +        ingest(dict(ARCHIVE))
+          +
+          +
+          +def test_archive_emits_archive_keys():
+          +    transfer = ingest(dict(UPSTREAM))
+          +    written = archive(transfer)
+          +    assert written == ARCHIVE
+          +
+          +
+          +def test_input_and_output_vocabularies_are_distinct():
+          +    transfer = ingest(dict(UPSTREAM))
+          +    written = archive(transfer)
+          +    # The output dict must not leak any upstream key, and must not be
+          +    # keyed by the plain python attribute names either.
+          +    assert set(written) == set(ARCHIVE)
+          +    assert "gross" not in written
+          +    assert "ccy" not in written
+          +    assert "memo" not in written
+          +    assert "amount" not in written
+          +    assert "currency" not in written
+          +    assert "reference" not in written
+          +
+          +
+          +def test_full_round_trip_bridges_the_two_systems():
+          +    # An upstream record, once ingested and archived, is keyed entirely in
+          +    # the archive vocabulary -- never the same key it came in on.
+          +    transfer = ingest(dict(UPSTREAM))
+          +    written = archive(transfer)
+          +    assert written["value"] == UPSTREAM["gross"]
+          +    assert written["iso_currency"] == UPSTREAM["ccy"]
+          +    assert written["note"] == UPSTREAM["memo"]
+          +
+          +
+          +def test_python_attribute_names_are_the_in_memory_contract():
+          +    transfer = ingest(dict(UPSTREAM))
+          +    # The field names are the canonical in-memory contract: data is read
+          +    # back through the clean python attribute names, not the wire keys.
+          +    assert transfer.amount == 1250
+          +    assert transfer.currency == "EUR"
+          +    assert transfer.reference == "invoice-7741"
+          +    assert not hasattr(transfer, "gross")
+          +    assert not hasattr(transfer, "value")
+          +
+          +
+          +def test_archive_dump_does_not_round_trip_into_ingest():
+          +    # The archive payload is intentionally NOT re-ingestible without
+          +    # re-keying: the two vocabularies are different by design.
+          +    transfer = ingest(dict(UPSTREAM))
+          +    written = archive(transfer)
+          +    with pytest.raises(Exception):
+          +        ingest(written)
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_pydantic_alias.py
+          - -q
+        timeoutMs: 300000

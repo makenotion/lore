@@ -1,0 +1,160 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-requests-modelhard-v1
+description: >-
+  Model-hard Requests longitudinal suite. Scenarios are pinned before real
+  upstream fixes whose correct behavior is an obscure RFC detail almost no
+  implementation reproduces unprompted, and verified through deterministic
+  local tests with no networked HTTP requests.
+seededCorpus: ../vault-seeds/requests-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: requests-redirect-fragment-retention-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: psf/requests
+      sha: f89c325fbe9ad0e156b31dd6b7514dbf4d7d0088
+    phaseA:
+      promptId: requests-redirect-fragment-retention-v1-formation
+      prompt: >-
+        We will fix how Requests carries URL fragments across redirects in a
+        later session. Inspect `Session.resolve_redirects`, how the next URL is
+        parsed and rebuilt from the `Location` header, how redirect history is
+        recorded, and the existing redirect tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: requests-redirect-fragment-retention-v1-use
+      prompt: >-
+        A user reports that when their request URL has a fragment and the server
+        responds with a redirect, the fragment disappears from the final
+        response URL even though browsers keep it. Fix Requests' redirect
+        resolution so the final URL behaves the way a browser would for the
+        fragment, while leaving query strings, history, methods, and the rest of
+        redirect handling unchanged. Add focused regressions that use a mounted
+        adapter rather than live network services.
+    expectedContext:
+      description: >-
+        Requests must carry the original request URL's fragment onto a redirect
+        target whose `Location` has no fragment, and let a `Location` fragment
+        override and propagate to later hops (RFC 7231 7.1.2).
+      keywords:
+        - resolve_redirects
+        - fragment
+        - Location
+        - RFC 7231
+        - redirect history
+    seededContext:
+      renderedContext: |
+        - [memory] requests/redirect-fragment-retention: When following a redirect, if the `Location` URL has no fragment, re-attach the original request URL's fragment to the redirected URL (RFC 7231 7.1.2, matching browsers). If `Location` carries its own fragment, that one wins and becomes the fragment carried to any subsequent hop. Track the previous fragment across the redirect loop; never let a fragmentless `Location` silently drop the user's fragment, and do not let it disturb the query string or history.
+      contextIds:
+        - requests/redirect-fragment-retention
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_fragment.py b/lore_eval_hidden_fragment.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_fragment.py
+          @@ -0,0 +1,73 @@
+          +import io
+          +
+          +import requests
+          +from requests.adapters import BaseAdapter
+          +
+          +
+          +class RedirectChainAdapter(BaseAdapter):
+          +    def __init__(self, hops):
+          +        super().__init__()
+          +        self.hops = hops
+          +        self.seen = []
+          +        self.i = 0
+          +
+          +    def send(self, request, **kwargs):
+          +        self.seen.append(request.url)
+          +        response = requests.Response()
+          +        response.request = request
+          +        response.url = request.url
+          +        response.raw = io.BytesIO(b"")
+          +        response.raw.release_conn = lambda *args: None
+          +        response._content = b""
+          +        response._content_consumed = True
+          +        status, location = self.hops[min(self.i, len(self.hops) - 1)]
+          +        self.i += 1
+          +        response.status_code = status
+          +        if location is not None:
+          +            response.headers["Location"] = location
+          +        return response
+          +
+          +    def close(self):
+          +        pass
+          +
+          +
+          +def _session(hops):
+          +    session = requests.Session()
+          +    session.mount("https://", RedirectChainAdapter(hops))
+          +    return session
+          +
+          +
+          +def test_original_fragment_carried_when_location_has_none():
+          +    session = _session([(303, "https://host.test/landing"), (200, None)])
+          +    response = session.get("https://host.test/begin#panel=details&tab=audit")
+          +    assert response.url == "https://host.test/landing#panel=details&tab=audit"
+          +
+          +
+          +def test_location_fragment_overrides_original():
+          +    session = _session([(303, "https://host.test/landing#section"), (200, None)])
+          +    response = session.get("https://host.test/begin#origin")
+          +    assert response.url == "https://host.test/landing#section"
+          +
+          +
+          +def test_location_fragment_propagates_to_later_hop():
+          +    session = _session(
+          +        [
+          +            (303, "https://host.test/middle#carried"),
+          +            (303, "https://host.test/landing"),
+          +            (200, None),
+          +        ]
+          +    )
+          +    response = session.get("https://host.test/begin#origin")
+          +    assert response.url == "https://host.test/landing#carried"
+          +
+          +
+          +def test_no_fragment_anywhere_stays_fragmentless():
+          +    session = _session([(303, "https://host.test/landing"), (200, None)])
+          +    response = session.get("https://host.test/begin")
+          +    assert response.url == "https://host.test/landing"
+          +
+          +
+          +def test_query_string_preserved_alongside_fragment_carry():
+          +    session = _session([(303, "https://host.test/landing?keep=1"), (200, None)])
+          +    response = session.get("https://host.test/begin#origin")
+          +    assert response.url == "https://host.test/landing?keep=1#origin"
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.9"
+          - --with-editable
+          - .
+          - --with
+          - pytest
+          - --with
+          - urllib3<1.23
+          - --with
+          - chardet<3.1.0
+          - --with
+          - idna<2.7
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_fragment.py
+          - -q
+        timeoutMs: 180000

@@ -1,0 +1,71 @@
+version: 1
+id: werkzeug-modelhard-v1
+description: >-
+  Model-hard seed corpus for a Werkzeug longitudinal suite. Entries model
+  durable URL-encoding and cookie findings whose correct behavior is
+  per-component RFC detail a strong model gets wrong by reaching for one
+  quoting rule, pinned at Werkzeug revisions before the matching upstream fix.
+repository:
+  repo: pallets/werkzeug
+  sha: 2554f4739e21d38a7b68a0e06201f70bec819bce
+vault:
+  project:
+    name: werkzeug
+    path: .
+    tags: ["python", "http", "wsgi", "oss"]
+  topics:
+    - id: urls/iri-uri
+      name: IRI and URI conversion
+      description: Per-component percent-encoding, IDNA host handling, and parse-meaning preservation.
+    - id: http/cookies
+      name: Cookie serialization
+      description: Set-Cookie value quoting, slash-escaping, RFC 6265 cookie-octet set, and parse round-trip.
+  memories:
+    - id: werkzeug/iri-uri-per-component-quoting
+      title: IRI/URI conversion is per-component, not whole-string
+      topics: ["urls/iri-uri"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `iri_to_uri` and `uri_to_iri` quote/unquote per URL component, never
+        changing how `urlsplit` parses the component.
+      body: |
+        Werkzeug's `iri_to_uri` and `uri_to_iri` must operate on each URL
+        component separately, because the safe character set differs for the
+        path, query, fragment, and userinfo. Running the whole string through a
+        single `quote`/`unquote` call corrupts component boundaries.
+
+        `iri_to_uri` quotes the minimum needed without changing parse meaning:
+        encode whitespace and characters that are unsafe in that component, but
+        keep reserved-but-safe characters literal and never double-encode an
+        existing valid `%XX`. `uri_to_iri` unquotes the maximum without changing
+        meaning: keep spaces quoted because a space is not a valid IRI code
+        point, and keep escapes that would otherwise act as delimiters in their
+        component (the query keeps `&` `=` `#` quoted, the path keeps `/` `?`
+        `#` quoted). Decode IDNA hosts to Unicode in both directions.
+      scenarios: ["werkzeug-iri-uri-component-quoting-v1"]
+    - id: werkzeug/cookie-octet-rfc6265
+      title: Cookie values use the RFC 6265 cookie-octet set, names stay quoted on parse
+      topics: ["http/cookies"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `dump_cookie` leaves a value unquoted across the broad RFC 6265
+        cookie-octet set, slash-escapes specials with octal, and never unquotes
+        the cookie name on parse.
+      body: |
+        `dump_cookie` should leave a cookie value unquoted whenever every octet
+        is in the RFC 6265 cookie-octet set, which is much broader than the HTTP
+        `token` set and includes characters such as `/` `:` `=` `?` `@` `[` `]`
+        `{` `}` `|` `~`. Quoting any value that is not a bare token is a spec
+        deviation that bloats headers and breaks interop.
+
+        Values that genuinely require quoting (controls, `"`, `\`, `,`, `;`,
+        DEL, high bytes) are slash-escaped with three octal digits to match
+        `http.cookies`, not base64, and the dump/parse round-trip must reproduce
+        the original value exactly.
+
+        On parse, the cookie name must never be unquoted: a quoted name has to
+        stay quoted, otherwise a value could be crafted to impersonate a
+        `__Secure-`/`__Host-` prefixed cookie name through quoting.
+      scenarios: ["werkzeug-cookie-octet-rfc6265-quoting-v1"]

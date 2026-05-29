@@ -1,0 +1,149 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-urllib3-modelhard-v1
+description: >-
+  Model-hard urllib3 longitudinal suite. Scenarios are pinned before real
+  upstream fixes whose correct behavior is counterintuitive to a strong model
+  reasoning from defaults, and verified through deterministic in-process tests
+  with no networked HTTP requests.
+seededCorpus: ../vault-seeds/urllib3-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: urllib3-retry-after-http-date-utc-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: urllib3/urllib3
+      sha: 8c480bf87bcefd321b3a1ae47f04e908b6b2ed7b
+    phaseA:
+      promptId: urllib3-retry-after-http-date-utc-v1-formation
+      prompt: >-
+        We will harden urllib3's `Retry-After` handling in a later session.
+        Inspect `Retry.parse_retry_after`, how it distinguishes the two header
+        forms, how it converts an HTTP-date into a number of seconds to wait,
+        how the result feeds `sleep_for_retry`, and the existing retry tests.
+        Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: urllib3-retry-after-http-date-utc-v1-use
+      prompt: >-
+        Operators report that a misbehaving upstream is sending a `Retry-After`
+        header pointing years into the future, and urllib3 dutifully tries to
+        sleep for that entire span, hanging their workers indefinitely. Harden
+        `Retry.parse_retry_after` so that a `Retry-After` value can never make a
+        client wait an unreasonable amount of time, while leaving normal small
+        delays untouched. Keep accepting both `Retry-After` forms (a plain
+        delta-seconds integer and an HTTP-date), keep treating a timezone-less
+        HTTP-date as GMT, and keep clamping past dates to zero. Make the ceiling
+        configurable per `Retry` instance and carried through when a retry is
+        cloned. Add focused regressions that do not hit the network.
+    expectedContext:
+      description: >-
+        `Retry-After` is dual-format with a GMT HTTP-date and a zero floor, and
+        an unbounded far-future date must be capped at a sane configurable
+        maximum so a hostile header cannot stall a client.
+      keywords:
+        - Retry-After
+        - parse_retry_after
+        - HTTP-date
+        - cap
+        - delta-seconds
+    seededContext:
+      renderedContext: |
+        - [memory] urllib3/retry-after-dual-format-utc (RFC 7231 section 7.1.3): `Retry-After` is either delta-seconds (a bare integer, after stripping RFC 7230 whitespace) or an HTTP-date. An HTTP-date has no timezone token and is always GMT/UTC — parse with `email.utils.parsedate_tz` plus `mktime_tz`, never via a naive `datetime`/`strptime` that defaults to local time. Compute `date - time.time()` then clamp with `max(seconds, 0)` so past dates yield 0, and cap absurd values at a sane configurable maximum (a few hours) so a far-future or hostile header cannot make a client sleep indefinitely.
+      contextIds:
+        - urllib3/retry-after-dual-format-utc
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/test/test_lore_hidden_retry_after.py b/test/test_lore_hidden_retry_after.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/test/test_lore_hidden_retry_after.py
+          @@ -0,0 +1,68 @@
+          +import time
+          +
+          +import pytest
+          +
+          +from urllib3.util.retry import Retry
+          +
+          +
+          +_FROZEN_NOW = 1_600_000_000.0
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _freeze_time(monkeypatch):
+          +    monkeypatch.setattr(time, "time", lambda: _FROZEN_NOW)
+          +
+          +
+          +def test_delta_seconds_form_and_whitespace():
+          +    retry = Retry()
+          +    assert retry.parse_retry_after("42") == 42
+          +    assert retry.parse_retry_after("   9\t") == 9
+          +
+          +
+          +def test_http_date_parsed_as_gmt_not_local():
+          +    # _FROZEN_NOW (1_600_000_000) is 2020-09-13 12:26:40 GMT.
+          +    # A GMT HTTP-date ~30s later must yield ~30s regardless of the
+          +    # machine's local timezone.
+          +    retry = Retry()
+          +    seconds = retry.parse_retry_after("Sun, 13 Sep 2020 12:27:10 GMT")
+          +    assert 28 <= seconds <= 32
+          +
+          +
+          +def test_past_http_date_clamped_to_zero():
+          +    retry = Retry()
+          +    assert retry.parse_retry_after("Thu, 01 Jan 1976 00:00:00 GMT") == 0
+          +
+          +
+          +def test_far_future_http_date_is_capped():
+          +    # A date a full century out must not produce an enormous sleep.
+          +    retry = Retry()
+          +    seconds = retry.parse_retry_after("Fri, 01 Jan 2123 00:00:00 GMT")
+          +    century_seconds = 100 * 365 * 24 * 3600
+          +    assert seconds < century_seconds
+          +    assert seconds <= 6 * 3600 + 60
+          +
+          +
+          +def test_huge_integer_delta_is_capped():
+          +    retry = Retry()
+          +    raw = 5_000_000
+          +    parsed = retry.parse_retry_after(str(raw))
+          +    assert parsed < raw
+          +    assert parsed <= 6 * 3600 + 60
+          +
+          +
+          +def test_normal_delay_is_below_default_ceiling():
+          +    retry = Retry()
+          +    assert retry.parse_retry_after("90") == 90
+          +
+          +
+          +def test_ceiling_is_configurable_per_instance():
+          +    retry = Retry(retry_after_max=30)
+          +    assert retry.parse_retry_after("12") == 12
+          +    assert retry.parse_retry_after("9999") == 30
+          +
+          +
+          +def test_configured_ceiling_survives_clone():
+          +    retry = Retry(retry_after_max=15)
+          +    clone = retry.new()
+          +    assert clone.parse_retry_after("12") == 12
+          +    assert clone.parse_retry_after("600") == 15
+        command: uv
+        args:
+          - run
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - test/test_lore_hidden_retry_after.py
+          - -q
+        timeoutMs: 300000

@@ -1,0 +1,51 @@
+version: 1
+id: sqlalchemy-modelhard-v1
+description: >-
+  Focused seed corpus for a model-hard SQLAlchemy longitudinal suite. Entries
+  capture durable, intrinsic SQLAlchemy contracts whose correct application is
+  counterintuitive to a strong model reasoning from defaults, pinned at a stable
+  SQLAlchemy release.
+repository:
+  repo: sqlalchemy/sqlalchemy
+  sha: 372eab22636380efeda26affd0b1c0f4b5031489
+vault:
+  project:
+    name: sqlalchemy
+    path: .
+    tags: ["python", "orm", "sql", "oss"]
+  topics:
+    - id: types/caching
+      name: Custom type caching
+      description: Custom TypeDecorator/UserDefinedType behavior, statement cache keys, and cache_ok semantics.
+  memories:
+    - id: sqlalchemy/typedecorator-cache-ok-state
+      title: Stateful custom types are not automatically safe to cache
+      topics: ["types/caching"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Marking a constructor-state-dependent custom type cacheable while hiding
+        that state from the cache key collides distinct configurations and
+        silently reuses the wrong bind/result processors.
+      body: |
+        A custom `TypeDecorator`/`UserDefinedType` whose behavior depends on
+        constructor arguments is not automatically safe to statement-cache. The
+        cache key for a cacheable type embeds only the type's class plus the
+        attributes whose names match its `__init__` parameters (public, hashable,
+        non-None). Derived or privately stored state — anything under a
+        `_`-prefixed name, or not matching a constructor parameter name — is left
+        out of the key.
+
+        So two instances that differ only by un-keyed state collide on the same
+        statement-cache key. The second statement silently reuses the first's
+        compiled form, including its bind/result processors, and returns values
+        decoded against the wrong configuration. The failure is silent wrong
+        data, not an error.
+
+        Make such a stateful type safe in one of two ways: set `cache_ok=False`
+        to forgo caching entirely, or store every piece of behavior-affecting
+        state in a public, hashable attribute named exactly after its
+        constructor parameter (convert lists/dicts to tuples) so it lands in the
+        cache key. Never set `cache_ok=True` while hiding that state. Leaving the
+        flag unset is different again: it emits a warning and disables caching.
+      scenarios: ["sqlalchemy-typedecorator-cache-ok-state-v1"]

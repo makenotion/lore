@@ -1,0 +1,242 @@
+version: 1
+id: github-cli-contracts-v2
+description: >-
+  Focused seed corpus for the GitHub CLI command/output-contract longitudinal
+  suite, batch 2. Entries model durable implementation plans and adjacent
+  project knowledge from prior engineering sessions. Each scenario pins the
+  repository SHA at which its target contract is absent or wrong, so the seeded
+  memory carries the non-inferable rule the agent cannot recover from local
+  code alone.
+repository:
+  repo: cli/cli
+  sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+vault:
+  project:
+    name: GitHub CLI
+    path: .
+    tags: ["go", "cli", "cobra"]
+  topics:
+    - id: commands/issue-pr
+      name: Issue and pull request commands
+      description: Issue and pull request command search guards, reopen state machine, and lock behavior.
+    - id: commands/cache
+      name: Cache commands
+      description: Cache delete flag dependencies, ref/id disambiguation, and exit-code semantics.
+    - id: commands/gist
+      name: Gist commands
+      description: Gist rename payload shape and the empty-object file-delete contract.
+    - id: commands/ssh-key
+      name: SSH key commands
+      description: SSH key add per-type endpoint routing and first-two-fields dedup.
+    - id: commands/repo
+      name: Repository commands
+      description: Repository set-default git-config resolution and the literal base marker.
+    - id: cli/contracts
+      name: CLI output and payload contracts
+      description: Non-inferable REST/GraphQL payload shapes, anchored guard regexes, and exit codes.
+    - id: tests/commands
+      name: Command package tests
+      description: Package-local tests using httpmock, CommandStubber, and hidden verifier gates.
+    - id: cli/security
+      name: CLI safety boundaries
+      description: Destructive-command dry-run boundaries and no-mutation guarantees.
+  memories:
+    - id: gh-cli/issue-list-pr-qualifier-reject
+      title: Issue list must reject pull-request-only search qualifiers before any request
+      topics: ["commands/issue-pr", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        searchIssues rejects is:pr / type:pr / type:pull-request with an
+        anchored case-insensitive regex, the exact gh-pr-list error, and zero
+        API requests.
+      body: |
+        `gh issue list --search` must reject pull-request-only search
+        qualifiers BEFORE issuing any request. The guard lives in `searchIssues`
+        in `pkg/cmd/issue/list/http.go` (the advanced-search path), not the
+        non-search `listIssues` path.
+
+        Match with the case-insensitive ANCHORED word-boundary regex
+        `(?i)\b(?:is|type):(?:pr|pull-?request)\b` — it must reject `is:pr`,
+        `type:pr`, `type:pull-request`, and `type:pullrequest`, but must NOT
+        trip on substrings such as `mispr` or `description:prologue`. Use a
+        `regexp.MustCompile` package var, not an unanchored `strings.Contains`.
+
+        When the matcher fires, return the exact error
+        `cannot use pull request search qualifiers with ` + "`gh issue list`" +
+        `; use ` + "`gh pr list`" + ` instead` and perform ZERO API calls.
+        Non-PR queries still hit the search backend normally. Package
+        regressions should assert the exact error AND that `reg.Requests` is
+        length zero for a `Search: "is:pr"` call.
+      scenarios: ["gh-cli-issue-list-reject-pr-search-qualifiers-v2"]
+    - id: gh-cli/cache-delete-succeed-on-no-caches
+      title: cache delete --succeed-on-no-caches is an --all-only exit-code flip
+      topics: ["commands/cache", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        --succeed-on-no-caches flips the empty-cache-set exit from 1 to 0 with a
+        success icon and is rejected unless --all is set without a positional
+        arg.
+      body: |
+        `gh cache delete --succeed-on-no-caches` is an `--all`-only flag.
+        Reject it with `--succeed-on-no-caches must be used in conjunction with
+        --all` when `--all` is missing OR a single id/key positional arg is
+        present. The guard is
+        `opts.SucceedOnNoCaches && (!opts.DeleteAll || len(args) == 1)`.
+
+        Without the flag, `--all` over an EMPTY cache set returns
+        `fmt.Errorf("%s No caches to delete", FailureIcon())` (exit 1). WITH the
+        flag, print `No caches to delete` using the SUCCESS icon and return nil
+        (exit 0); a `GetCaches` error is likewise swallowed to exit 0 when the
+        flag is set. Do not fold the success case into the failure branch.
+
+        Package regressions should cover the cobra-level rejection of the flag
+        without `--all` and with a positional arg, plus the run-level empty-set
+        path returning nil with the success icon when the flag is set and an
+        error when it is not.
+      scenarios: ["gh-cli-cache-delete-succeed-on-no-caches-exit-v2"]
+    - id: gh-cli/cache-delete-ref-id-guard
+      title: cache delete --ref id guard must sit inside a len(args) bound
+      topics: ["commands/cache", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        The --ref-vs-cache-ID guard must be wrapped in len(args) > 0 so a bare
+        delete or --all --ref does not index args[0]; the ID rejection message
+        and key+ref query mapping are exact.
+      body: |
+        `gh cache delete <id-or-key> [--ref <ref>]` treats a purely numeric arg
+        as a cache ID via `parseCacheID`. `--ref` is allowed with a cache KEY
+        but rejected with the exact `--ref cannot be used with cache ID` when
+        the arg is an ID.
+
+        The bug to fix: the id detection accesses `args[0]` unconditionally, so
+        it both panics on a bare `gh cache delete` and mis-reports for
+        `--all --ref`. Wrap BOTH the `parseCacheID(args[0])` detection and the
+        rejection inside `if len(args) > 0 { ... }` so the first positional is
+        only read when present. Then `--all --ref` falls through to
+        `must provide a cache key` and a bare delete reports
+        `must provide either cache id, cache key, or use --all`.
+
+        Leave the key+ref deletion query
+        `DELETE repos/{o}/{r}/actions/caches?key=<key>&ref=<ref>` (query params,
+        not body) and the 404 message
+        `Could not find a cache matching <key> (with ref <ref>) in OWNER/REPO`
+        unchanged. Add a cobra-level regression for
+        `123 --ref refs/heads/main` -> `--ref cannot be used with cache ID`.
+      scenarios: ["gh-cli-cache-delete-ref-id-guard-ordering-v2"]
+    - id: gh-cli/pr-reopen-dry-run-state-exit
+      title: pr reopen dry-run must preserve the merged-vs-open exit asymmetry
+      topics: ["commands/issue-pr", "cli/contracts", "tests/commands", "cli/security"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Dry-run pr reopen preserves SilentError on merged and nil on open and
+        runs no mutation for any state, only planning the closed case.
+      body: |
+        `gh pr reopen` fetches the PR `state` (Fields id/number/state/title)
+        before doing anything. The exit semantics are ASYMMETRIC and must be
+        preserved under `--dry-run`:
+
+        - a `MERGED` PR prints `can't be reopened because it was already merged`
+          and returns `cmdutil.SilentError` (exit 1) running NO mutation;
+        - an already-`OPEN` PR prints `is already open` and returns `nil`
+          (exit 0, no-op success) running NO mutation;
+        - only a `CLOSED` PR runs the `ReopenPullRequest` GraphQL mutation in
+          normal mode.
+
+        The new `--dry-run` branch belongs AFTER the merged and open state
+        checks and BEFORE the http client / mutation, so merged still
+        SilentErrors and open still nils. For a CLOSED PR, dry-run prints a
+        would-reopen plan and returns nil WITHOUT running the mutation. Do not
+        unify the merged and open branches — their exit codes differ.
+
+        Regressions: dry-run on MERGED returns SilentError with zero requests,
+        dry-run on OPEN returns nil with zero requests, dry-run on CLOSED
+        returns nil with zero requests (no `ReopenPullRequest` mutation).
+      scenarios: ["gh-cli-pr-reopen-dry-run-state-exit-asymmetry-v2"]
+    - id: gh-cli/gist-rename-empty-file-delete
+      title: Gist rename deletes the old file via an empty GistFile, never delete()
+      topics: ["commands/gist", "cli/contracts", "tests/commands", "cli/security"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Gist rename sets the old files-map key to an empty GistFile to trigger
+        deletion; dry-run prints that map and performs no update POST.
+      body: |
+        `gh gist rename <id> <old> <new>` renames a file via ONE
+        `POST gists/{id}` whose `files` map carries the new key with the moved
+        content (its `filename` field set to `<new>`) AND the OLD key set to an
+        EMPTY `GistFile{}` value (`gist.Files[old] = &shared.GistFile{}`).
+
+        Do NOT `delete(gist.Files, old)` — removing the map key leaves the file
+        untouched on the server; the empty-object value is what triggers the
+        delete. Guard order before the POST: `you do not own this gist`
+        (login != owner), `File <old> not found in gist`,
+        `File <new> already exists in gist`; only `description` and `files` go
+        in the body.
+
+        The new `--dry-run` prints that same planned files map (showing the new
+        key with its `filename` and the retained old key) and performs no update
+        POST. Regressions should prove the plan/payload contains the old key as
+        an empty entry (not removed) and the new key carrying `filename`, and
+        that dry-run issues no POST to `gists/{id}`.
+      scenarios: ["gh-cli-gist-rename-dry-run-empty-file-delete-payload-v2"]
+    - id: gh-cli/ssh-key-add-type-endpoint-routing
+      title: ssh-key add routes by --type to two endpoints and dedups on two fields
+      topics: ["commands/ssh-key", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        --type selects the REST endpoint (user/keys vs user/ssh_signing_keys),
+        not a payload field; dedup compares only the first two key fields;
+        dry-run reports the endpoint with no upload.
+      body: |
+        `gh ssh-key add --type` is the enum `{authentication, signing}`
+        (default `authentication`). The TYPE selects the REST ENDPOINT, not a
+        payload field: authentication keys POST to `user/keys`; signing keys
+        POST to `user/ssh_signing_keys`. The JSON body is `{title, key}` where
+        `key` is the full key line, identical for both endpoints.
+
+        Before uploading, the upload path lists the matching key set and dedups
+        by ONLY the first two whitespace-separated fields
+        (`splitKey[0] + " " + splitKey[1]`, i.e. algorithm + base64 body),
+        IGNORING the trailing comment; an existing match returns no-upload with
+        no error.
+
+        The new `--dry-run` resolves the endpoint from `--type` exactly the
+        same way and prints it WITHOUT issuing any request. Regressions: dry-run
+        with the default type reports `user/keys`, dry-run with `--type signing`
+        reports `user/ssh_signing_keys`, and dry-run issues zero requests.
+      scenarios: ["gh-cli-ssh-key-add-type-endpoint-routing-dry-run-v2"]
+    - id: gh-cli/repo-set-default-base-literal
+      title: set-default writes the literal base to gh-resolved when the repo matches a remote
+      topics: ["commands/repo", "cli/contracts", "tests/commands", "cli/security"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        gh-resolved is the literal "base" when the selected repo matches a
+        remote, otherwise OWNER/REPO; dry-run prints the planned value and
+        writes no git config.
+      body: |
+        `gh repo set-default` records the chosen default by writing the git
+        config key `remote.<name>.gh-resolved`. The value is the LITERAL string
+        `base` when the selected repo IS the repo a remote already points at
+        (`resolvedRemotes.RemoteForRepo(selectedRepo)` returns that remote); it
+        is the full `OWNER/REPO` string only when the selected repo is NOT a
+        direct remote (then it attaches to the first remote after a
+        `sort.Stable`).
+
+        Do not store `OWNER/REPO` unconditionally — the literal `base` is the
+        in-band marker for self-resolution. The write uses
+        `SetRemoteResolution`/`UnsetRemoteResolution` (git config
+        `--add`/`--unset`).
+
+        The new `--dry-run` computes the same `resolution` value and prints it
+        (with the target remote name) AFTER the resolution branch and BEFORE any
+        `SetRemoteResolution`/`UnsetRemoteResolution` call, then returns nil so
+        no git config is written. Regressions: a repo matching a remote plans
+        `base`; a repo not matching plans `OWNER/REPO`; neither dry-run runs a
+        git config command.
+      scenarios: ["gh-cli-repo-set-default-dry-run-base-literal-resolution-v2"]

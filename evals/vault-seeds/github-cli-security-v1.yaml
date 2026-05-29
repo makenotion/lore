@@ -1,0 +1,166 @@
+version: 1
+id: github-cli-security-v1
+description: >-
+  Security-hardening seed corpus for the GitHub CLI security longitudinal
+  suite. Each entry models a durable safety contract captured by a prior
+  engineering session at the pinned repository SHA, where a competent engineer
+  reimplementing the surface without the memory would confidently ship code
+  that violates a specific non-inferable safety rule. Hidden behavioral Go
+  tests measure the rule.
+repository:
+  repo: cli/cli
+  sha: 8c7935e6cec01cc910e40bad6ec9999508eb4d83
+vault:
+  project:
+    name: GitHub CLI
+    path: .
+    tags: ["go", "cli", "cobra", "security"]
+  topics:
+    - id: commands/codespace
+      name: Codespace commands
+      description: Codespace SSH, logs, RPC invoker, and connection handling.
+    - id: commands/run
+      name: Workflow run commands
+      description: Workflow run log streaming, artifact download, and terminal output.
+    - id: api/http
+      name: API HTTP client
+      description: Auth round-tripper, redirect handling, and transport boundaries.
+    - id: commands/auth
+      name: Auth commands
+      description: Login, logout, git credential helper, and multi-account config.
+    - id: commands/copilot
+      name: Copilot command
+      description: Copilot binary install, archive download, and extraction.
+    - id: tests/commands
+      name: Command package tests
+      description: Package-local tests using mocked gRPC servers, httptest, command stubs, and hidden verifier patches.
+    - id: cli/security
+      name: CLI safety boundaries
+      description: Untrusted-input validation, credential scope, terminal-escape sanitization, and path-traversal safety.
+  memories:
+    - id: gh-cli/codespace-ssh-username-validation
+      title: Codespace RPC SSH username is untrusted and must be validated
+      topics: ["commands/codespace", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        The SSH remote username returned by the codespace RPC server is
+        attacker-controllable and must be validated before being used to build
+        the local ssh command.
+      body: |
+        The SSH remote username returned by the codespace RPC server
+        (`invoker.StartSSHServerWithOptions`, `response.User`) is
+        attacker-controllable and must be treated as untrusted. A malicious
+        codespace or devcontainer can return a username that, if threaded
+        straight into the local `ssh` argument list, injects ssh options and
+        executes an arbitrary local command (argument injection / RCE).
+
+        Validate the returned username against `^[a-zA-Z0-9._-]+$` and return an
+        `invalid username` error before using it to construct the ssh command.
+        Plain alphanumeric names with `.`, `_`, and `-` are valid; anything
+        containing spaces, leading dashes that look like flags, shell
+        metacharacters, or command-substitution syntax must be rejected. Place
+        the check in the invoker so every SSH/logs consumer of the username is
+        covered, and add a package-local test that drives a poisoned RPC
+        response through the validation path (CVE-2024-52308).
+      scenarios: ["gh-cli-codespace-ssh-username-arg-injection"]
+    - id: gh-cli/run-log-terminal-escape-sanitize
+      title: Workflow log content must be terminal-escape sanitized before display
+      topics: ["commands/run", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Job/workflow log content is attacker-controllable and must pass through
+        the ascii sanitizer before it reaches the terminal.
+      body: |
+        Workflow and job log content is fully attacker-controllable: a pull
+        request can print crafted bytes that end up in the logs streamed by
+        `gh run view --log`. Log lines must never reach the terminal raw.
+
+        In `copyLogWithLinePrefix` (and any path that prints job logs) wrap the
+        reader in `transform.NewReader(r, &asciisanitizer.Sanitizer{})` from
+        `github.com/cli/go-gh/v2/pkg/asciisanitizer` before scanning and
+        writing, so raw ESC (0x1b), CSI, OSC, and screen-title sequences are
+        converted to caret notation and cannot hijack the terminal title, clear
+        the screen, or stage escape-sequence injection. Visible text and the
+        line prefix must be preserved. Add a table test that feeds escape
+        sequences through the streamer and asserts no raw ESC byte survives.
+      scenarios: ["gh-cli-run-log-terminal-escape-sanitize"]
+    - id: gh-cli/redirect-cross-host-token-strip
+      title: Auth round-tripper must drop the token on cross-host redirects
+      topics: ["api/http", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        The auth round-tripper must only attach the token on the initial
+        request or a same-host redirect, comparing host:port not bare hostname.
+      body: |
+        gh's auth round-tripper (`AddAuthTokenHeader`, `api/http_client.go`)
+        attaches `Authorization: token <tok>` to outgoing requests. When the
+        HTTP client auto-follows a redirect to a different host than the initial
+        request, the token must NOT be re-attached, or the GitHub token leaks to
+        an attacker-controlled redirect target.
+
+        Detect a redirect via `req.Response` and `req.Response.Request`, and skip
+        the auth header when the redirect's host differs from the initial
+        request's host. The host comparison must use `URL.Host` (host:port), not
+        `URL.Hostname()` — a redirect that only changes the port is still a
+        different host and must not carry the token. Only attach the token on the
+        initial request or a redirect whose host equals the initial request's
+        host. Add a test with two httptest servers where one redirects to the
+        other and assert the redirect target receives no Authorization header.
+      scenarios: ["gh-cli-redirect-cross-host-token-strip"]
+    - id: gh-cli/auth-logout-credential-reject
+      title: Logout must purge the token from the external git credential helper
+      topics: ["commands/auth", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `gh auth logout` must call the git-credentials updater Reject so the
+        token is removed from external helpers, not just gh's keyring.
+      body: |
+        `gh auth logout` must purge the token from the external git credential
+        helper (osxkeychain, wincred, the store helper, ...), not only clear
+        gh's internal config/keyring. During login (`auth setup-git`) the token
+        is written to the external helper via `git credential approve`; logout
+        is the symmetric erase site. Leaving the token in the OS keychain after
+        logout is a lingering-credential defect: a logged-out machine still
+        holds a usable GitHub token.
+
+        On logout, construct a `gitcredentials.Updater{GitClient: ...}` and call
+        `Reject(hostname)`, which runs `git credential reject` for that host.
+        Treat a Reject failure as a non-fatal warning written to stderr (git may
+        be absent) and never abort logout on it. Wire a `GitClient` onto the
+        logout options so the updater has a client. Add a test that stores a
+        credential in an isolated git config helper, runs reject for the host,
+        and asserts the credential is gone, plus a case proving a reject failure
+        does not fail logout (issue #13111).
+      scenarios: ["gh-cli-auth-logout-credential-helper-reject"]
+    - id: gh-cli/copilot-archive-zip-slip
+      title: Copilot archive extraction must reject path-traversal entries
+      topics: ["commands/copilot", "cli/security", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Each downloaded-archive entry must be validated to stay inside the
+        destination directory before any file is written (Zip Slip).
+      body: |
+        When extracting a downloaded archive (`extractTarGz`/`extractZip` in
+        `pkg/cmd/copilot/copilot.go`), an entry name is never safe to write
+        without validation. A malicious or MITM'd archive can contain an entry
+        whose name uses `../` segments or an absolute path; the naive
+        `target := filepath.Join(destDir, entryName)` followed by a write lets
+        such an entry escape the destination and overwrite arbitrary files
+        (Zip Slip → path traversal → file overwrite / code exec).
+
+        For every entry resolve `target := filepath.Join(destDir, entryName)`
+        and require that the cleaned target stays within the destination:
+        `strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator))`,
+        returning an "illegal file path in archive" error otherwise. A later
+        refactor may delegate this to a shared safepaths helper; either approach
+        is fine as long as traversal and absolute entry names are rejected and
+        no file is created outside the destination. Add a test that extracts an
+        in-memory tar.gz and zip containing benign and malicious entries into a
+        temp dir and asserts the malicious ones are rejected with nothing written
+        outside.
+      scenarios: ["gh-cli-copilot-zip-slip-archive-path"]

@@ -1,0 +1,209 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-sqlalchemy-modelhard-v1
+description: >-
+  Model-hard SQLAlchemy longitudinal suite. Scenarios pin a stable SQLAlchemy
+  release and ask the agent to implement application code against an intrinsic
+  SQLAlchemy contract whose correct use is counterintuitive to a strong model
+  reasoning from defaults. Verified through deterministic in-process tests on an
+  in-memory SQLite engine, with the C extension disabled so the install is pure
+  Python.
+seededCorpus: ../vault-seeds/sqlalchemy-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: sqlalchemy-typedecorator-cache-ok-state-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: sqlalchemy/sqlalchemy
+      sha: 372eab22636380efeda26affd0b1c0f4b5031489
+    phaseA:
+      promptId: sqlalchemy-typedecorator-cache-ok-state-v1-formation
+      prompt: >-
+        We will add a small SQLAlchemy-backed module in a later session. Inspect
+        how this version of SQLAlchemy lets you build a custom column type whose
+        bind/result conversion depends on per-instance configuration, how the
+        statement cache decides whether a type is safe to cache and what it puts
+        into the cache key, and the type-caching documentation and tests. Produce
+        a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: sqlalchemy-typedecorator-cache-ok-state-v1-use
+      prompt: >-
+        Implement a new module `lore_solution.py` at the repository root that
+        defines a reusable custom column type and two ORM models that use it with
+        different configuration.
+
+        Define a SQLAlchemy `TypeDecorator` subclass named `EnumCodec` backed by
+        an integer column. Its constructor takes a list of string `labels`; it
+        must store each value in the database as the integer index of the label
+        within that instance's `labels` list, and decode the stored integer back
+        to the label string on the way out. Different `EnumCodec` instances are
+        configured with different, non-overlapping label lists.
+
+        Define a declarative base and two mapped classes that share the same
+        in-memory SQLite metadata:
+
+          - `Ticket` with an integer primary key `id` and a column `status`
+            typed `EnumCodec(["triage", "working", "resolved"])`.
+          - `Account` with an integer primary key `id` and a column `tier`
+            typed `EnumCodec(["bronze", "silver", "gold", "platinum"])`.
+
+        Provide a module-level function `make_session()` that creates an
+        in-memory SQLite engine, creates all tables, and returns a new `Session`
+        bound to it. A user has reported that after they added a second model
+        using the same custom type, reads intermittently come back decoded
+        against the *wrong* label list — an `Account` tier decoding as if it were
+        a `Ticket` status — especially under repeated identical queries. Your
+        implementation must not exhibit that cross-configuration bleed: every
+        round-trip through either column must encode and decode against that
+        column's own label list, no matter how many structurally identical
+        statements run on the same engine. Do not edit files outside
+        `lore_solution.py`.
+    expectedContext:
+      description: >-
+        A custom type whose behavior depends on constructor state is not
+        automatically safe to statement-cache; marking it cacheable while hiding
+        that state from the cache key collides distinct configurations and
+        silently reuses the wrong bind/result processors.
+      keywords:
+        - TypeDecorator
+        - cache_ok
+        - statement cache
+        - cache key
+        - bind/result processor
+    seededContext:
+      renderedContext: |
+        - [memory] sqlalchemy/typedecorator-cache-ok-state: A custom `TypeDecorator`/`UserDefinedType` whose behavior depends on constructor arguments is not automatically safe to cache. The statement cache key for a cacheable type embeds only the type's class plus the attributes whose names match its `__init__` parameters (public, hashable, non-None) — derived or privately stored state (anything under a `_`-prefixed name, or not matching a constructor parameter name) is left out. So two instances that differ only by un-keyed state collide on the same statement-cache key and the second silently reuses the first's bind/result processors, returning wrong values. Make such a stateful type safe by either setting `cache_ok=False` (forgo caching) or storing every piece of behavior-affecting state in a public, hashable attribute named exactly after its constructor parameter so it lands in the cache key. Never set `cache_ok=True` while hiding that state; leaving the flag unset only warns and disables caching, which is different again.
+      contextIds:
+        - sqlalchemy/typedecorator-cache-ok-state
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_sa_cache.py b/lore_eval_hidden_sa_cache.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_sa_cache.py
+          @@ -0,0 +1,110 @@
+          +import warnings
+          +
+          +import pytest
+          +from sqlalchemy import select
+          +from sqlalchemy.exc import SAWarning
+          +from sqlalchemy.sql.cache_key import NO_CACHE
+          +
+          +from lore_solution import Account, EnumCodec, Ticket, make_session
+          +
+          +
+          +TICKET_LABELS = ["triage", "working", "resolved"]
+          +ACCOUNT_LABELS = ["bronze", "silver", "gold", "platinum"]
+          +
+          +
+          +def _column_type(model, attr):
+          +    return model.__table__.c[attr].type
+          +
+          +
+          +def test_each_column_round_trips_against_its_own_labels():
+          +    session = make_session()
+          +    session.add_all(
+          +        [
+          +            Ticket(id=1, status="working"),
+          +            Ticket(id=2, status="resolved"),
+          +            Account(id=1, tier="gold"),
+          +            Account(id=2, tier="platinum"),
+          +        ]
+          +    )
+          +    session.commit()
+          +    session.expire_all()
+          +
+          +    assert session.get(Ticket, 1).status == "working"
+          +    assert session.get(Ticket, 2).status == "resolved"
+          +    assert session.get(Account, 1).tier == "gold"
+          +    assert session.get(Account, 2).tier == "platinum"
+          +
+          +
+          +def test_repeated_identical_queries_do_not_bleed_configuration():
+          +    session = make_session()
+          +    session.add_all(
+          +        [
+          +            Ticket(id=10, status="triage"),
+          +            Account(id=10, tier="silver"),
+          +        ]
+          +    )
+          +    session.commit()
+          +    session.expire_all()
+          +
+          +    # Run the same structural query shape against both columns several
+          +    # times so the engine's compiled-statement cache is exercised. The
+          +    # decoded value must always reflect the queried column's own labels.
+          +    for _ in range(5):
+          +        ticket = session.execute(
+          +            select(Ticket).where(Ticket.id == 10)
+          +        ).scalar_one()
+          +        account = session.execute(
+          +            select(Account).where(Account.id == 10)
+          +        ).scalar_one()
+          +        assert ticket.status == "triage"
+          +        assert account.tier == "silver"
+          +
+          +
+          +def test_type_processors_use_their_own_label_index():
+          +    from sqlalchemy.dialects import sqlite
+          +
+          +    dialect = sqlite.dialect()
+          +    ticket_type = _column_type(Ticket, "status")
+          +    account_type = _column_type(Account, "tier")
+          +
+          +    # "resolved" is index 2 in the ticket labels; "bronze" is index 0 in
+          +    # the account labels. The two instances must bind and result-process
+          +    # against their own label list.
+          +    ticket_bind = ticket_type.bind_processor(dialect)
+          +    account_bind = account_type.bind_processor(dialect)
+          +    ticket_result = ticket_type.result_processor(dialect, None)
+          +    account_result = account_type.result_processor(dialect, None)
+          +
+          +    assert ticket_bind("resolved") == 2
+          +    assert account_bind("bronze") == 0
+          +    assert ticket_result(2) == "resolved"
+          +    assert account_result(0) == "bronze"
+          +
+          +    # Sanity: the same stored integer decodes differently per instance.
+          +    assert ticket_result(0) == "triage"
+          +    assert account_result(0) == "bronze"
+          +
+          +
+          +def test_distinct_configurations_do_not_share_a_cache_key():
+          +    ticket_type = _column_type(Ticket, "status")
+          +    account_type = _column_type(Account, "tier")
+          +    assert isinstance(ticket_type, EnumCodec)
+          +    assert isinstance(account_type, EnumCodec)
+          +
+          +    key_a = ticket_type._static_cache_key
+          +    key_b = account_type._static_cache_key
+          +    # Two differently configured instances must never collide on the same
+          +    # cacheable statement-cache key. Either they produce distinct keys, or
+          +    # caching is disabled for them (NO_CACHE). What is forbidden is sharing
+          +    # an identical non-NO_CACHE key, which is the silent-collision bug.
+          +    collides = key_a == key_b and key_a is not NO_CACHE
+          +    assert not collides
+          +
+          +
+          +def test_correct_configuration_emits_no_cache_key_warning():
+          +    with warnings.catch_warnings():
+          +        warnings.simplefilter("error", SAWarning)
+          +        # Building and resolving the cache key for a properly configured
+          +        # stateful type must not warn about an unset cache_ok flag.
+          +        _column_type(Ticket, "status")._static_cache_key
+          +        _column_type(Account, "tier")._static_cache_key
+        command: bash
+        args:
+          - -lc
+          - >-
+            DISABLE_SQLALCHEMY_CEXT=1 uv run --with-editable . --with
+            pytest==7.4.4 python -m pytest lore_eval_hidden_sa_cache.py -q
+        timeoutMs: 900000

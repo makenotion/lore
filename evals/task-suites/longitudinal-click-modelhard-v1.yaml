@@ -1,0 +1,322 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-click-modelhard-v1
+description: >-
+  Model-hard click longitudinal suite. One scenario pins click before a real
+  upstream regression where `get_parameter_source()` returns `None` during
+  eager callbacks and type conversion, and asks the agent to restore the
+  contract. A second scenario pins a stable click revision and asks the agent to
+  implement a CLI whose parameter-callback evaluation order is eager-first then
+  command-line invocation order, not declaration order. Verified through
+  deterministic in-process `CliRunner` tests with no network access.
+seededCorpus: ../vault-seeds/click-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: click-get-parameter-source-eager-callback-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/click
+      sha: 4b24a6c8f6658ef89fd6db4dcaf8ee88eef75dfa
+    phaseA:
+      promptId: click-get-parameter-source-eager-callback-v1-formation
+      prompt: >-
+        We will fix a click parameter-source reporting bug in a later session.
+        Investigate how this version of click records where a parameter's value
+        came from. Read `Parameter.handle_parse_result` and `process_value` in
+        the core module, find where `ctx.set_parameter_source` is called
+        relative to `process_value`, and trace at what point
+        `ctx.get_parameter_source(name)` becomes meaningful. Then actually run a
+        command with `CliRunner` whose eager option callback (and whose
+        `ParamType.convert`) calls `ctx.get_parameter_source(param.name)`, and
+        observe what it returns there for a default versus a command-line value.
+        Skim the parameter-source and defaults tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: click-get-parameter-source-eager-callback-v1-use
+      prompt: >-
+        A user reports that `ctx.get_parameter_source(name)` returns `None`
+        inside an eager option's callback and inside a custom `ParamType.convert`,
+        so an eager loader cannot tell whether a sibling value came from the
+        command line, an environment variable, or its default. Fix click so the
+        parameter source is recorded before the value is processed, making it
+        available during eager callbacks and type conversion, while keeping the
+        final recorded source correct after feature-switch arbitration (an option
+        that loses a `feature-switch`/flag group must not clobber the winning
+        option's recorded source). Preserve the public API and add focused
+        regressions that exercise the eager-callback and convert paths without
+        hitting the network.
+    expectedContext:
+      description: >-
+        click records a parameter's source only after value processing on the
+        pinned tree, so `get_parameter_source` returns `None` during eager
+        callbacks and type conversion; the source must be recorded before
+        processing to be usable there.
+      keywords:
+        - get_parameter_source
+        - set_parameter_source
+        - eager callback
+        - process_value
+        - ParameterSource
+    seededContext:
+      renderedContext: |
+        - [memory] click/parameter-source-recorded-before-processing: On this click revision `ctx.set_parameter_source` is called only inside the winner branch AFTER `process_value`, so `ctx.get_parameter_source(name)` returns `None` during an eager option's callback and during a custom `ParamType.convert` -- you cannot distinguish COMMANDLINE / ENVIRONMENT / DEFAULT there. Record the provisional source BEFORE `process_value` runs so eager callbacks and type conversion can read it. Still restore the winning option's source after feature-switch arbitration, so an option that loses a flag group does not overwrite the winner's recorded source. The final post-parse source must stay correct.
+      contextIds:
+        - click/parameter-source-recorded-before-processing
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_click_param_source.py b/lore_eval_hidden_click_param_source.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_click_param_source.py
+          @@ -0,0 +1,86 @@
+          +import click
+          +from click.core import ParameterSource
+          +from click.testing import CliRunner
+          +
+          +
+          +def test_source_available_in_eager_callback_for_default():
+          +    seen = {}
+          +
+          +    def cb(ctx, param, value):
+          +        seen["source"] = ctx.get_parameter_source(param.name)
+          +        return value
+          +
+          +    @click.command()
+          +    @click.option("--mode", default="auto", is_eager=True, callback=cb)
+          +    def cli(mode):
+          +        click.echo(mode)
+          +
+          +    result = CliRunner().invoke(cli, [])
+          +    assert result.exception is None
+          +    assert seen["source"] == ParameterSource.DEFAULT
+          +
+          +
+          +def test_source_available_in_eager_callback_for_commandline():
+          +    seen = {}
+          +
+          +    def cb(ctx, param, value):
+          +        seen["source"] = ctx.get_parameter_source(param.name)
+          +        return value
+          +
+          +    @click.command()
+          +    @click.option("--mode", default="auto", is_eager=True, callback=cb)
+          +    def cli(mode):
+          +        click.echo(mode)
+          +
+          +    result = CliRunner().invoke(cli, ["--mode", "fast"])
+          +    assert result.exception is None
+          +    assert seen["source"] == ParameterSource.COMMANDLINE
+          +
+          +
+          +def test_source_available_in_eager_callback_for_envvar(monkeypatch):
+          +    seen = {}
+          +
+          +    def cb(ctx, param, value):
+          +        seen["source"] = ctx.get_parameter_source(param.name)
+          +        return value
+          +
+          +    @click.command()
+          +    @click.option(
+          +        "--mode", default="auto", is_eager=True, envvar="APP_MODE", callback=cb
+          +    )
+          +    def cli(mode):
+          +        click.echo(mode)
+          +
+          +    monkeypatch.setenv("APP_MODE", "slow")
+          +    result = CliRunner().invoke(cli, [])
+          +    assert result.exception is None
+          +    assert seen["source"] == ParameterSource.ENVIRONMENT
+          +
+          +
+          +def test_source_available_during_type_conversion():
+          +    seen = {}
+          +
+          +    class Probe(click.ParamType):
+          +        name = "probe"
+          +
+          +        def convert(self, value, param, ctx):
+          +            seen["source"] = ctx.get_parameter_source(param.name)
+          +            return value
+          +
+          +    @click.command()
+          +    @click.option("--path", type=Probe(), default="/tmp/x")
+          +    def cli(path):
+          +        click.echo(path)
+          +
+          +    result = CliRunner().invoke(cli, [])
+          +    assert result.exception is None
+          +    assert seen["source"] == ParameterSource.DEFAULT
+          +
+          +
+          +def test_eager_callback_source_distinguishes_default_from_cli():
+          +    # The whole point of the contract: an eager loader can branch on whether
+          +    # a sibling value came from the user or fell back to its default.
+          +    captured = []
+          +
+          +    def cb(ctx, param, value):
+          +        captured.append(ctx.get_parameter_source(param.name))
+          +        return value
+          +
+          +    @click.command()
+          +    @click.option("--token", default="anon", is_eager=True, callback=cb)
+          +    def cli(token):
+          +        click.echo(token)
+          +
+          +    runner = CliRunner()
+          +    runner.invoke(cli, [])
+          +    runner.invoke(cli, ["--token", "real"])
+          +    assert captured == [ParameterSource.DEFAULT, ParameterSource.COMMANDLINE]
+          +    assert None not in captured
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.12"
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_click_param_source.py
+          - -q
+        timeoutMs: 300000
+
+  - id: click-callback-eval-order-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: pallets/click
+      sha: 4b24a6c8f6658ef89fd6db4dcaf8ee88eef75dfa
+    phaseA:
+      promptId: click-callback-eval-order-v1-formation
+      prompt: >-
+        We will add a small click-based command in a later session. Investigate
+        the order in which this version of click evaluates parameter callbacks.
+        Read where the core module sorts parameters for processing (look for how
+        eagerness and a per-invocation index feed the sort key), then actually
+        run a command with `CliRunner` whose options each record their name when
+        their callback fires, and observe the recorded order when you change
+        which option is marked eager and when you change the order the options
+        are typed on the command line versus the order they are declared on the
+        function. Skim the parameter-processing tests. Produce a durable
+        implementation plan only; do not edit files.
+    phaseB:
+      promptId: click-callback-eval-order-v1-use
+      prompt: >-
+        Implement a new module `lore_solution.py` at the repository root that
+        builds a deploy command whose layered settings are applied in a
+        well-defined order. A `--profile` option loads a base configuration that
+        the other settings build on, so its callback must run before any of the
+        per-setting overrides regardless of where `--profile` appears on the
+        command line. The other parameters are `--region`, `--tier`, and a
+        positional `service` argument.
+
+        Provide two module-level functions:
+
+          - `build_cli(trace)` returns the click command. Each parameter's
+            callback appends its parameter name to the shared `trace` list when
+            it receives a value, and the command echoes
+            `applied=<names joined by ">">` reflecting the real callback order.
+          - `applied_order(args)` invokes the command with the given argument
+            list via `CliRunner`, re-raising any exception, and returns the list
+            of parameter names in the order their callbacks fired.
+
+        It must hold that `--profile`'s callback always fires first, and that
+        among the remaining parameters the callbacks fire in the order the user
+        supplied them on the command line -- not the order the parameters are
+        declared on the function. Do not reorder the recorded names yourself in
+        Python after the fact; let click's own callback evaluation produce the
+        order. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        click evaluates parameter callbacks eager-first then in command-line
+        invocation order, not declaration order, so a config loader that other
+        options depend on must be marked eager.
+      keywords:
+        - is_eager
+        - callback order
+        - invocation order
+        - declaration order
+        - eager
+    seededContext:
+      renderedContext: |
+        - [memory] click/callback-eager-then-invocation-order: click does NOT evaluate parameter callbacks in declaration order. Eager parameters (`is_eager=True`) run first; among parameters of equal eagerness the order is the order the user supplied them on the command line (invocation order), not the order the options were declared on the function. A `--config`/`--profile` loader that seeds defaults other options depend on MUST be `is_eager=True`, or its callback runs too late and the dependent options resolve against unloaded defaults. Reordering options in the decorator does not change evaluation order; only eagerness and invocation order do.
+      contextIds:
+        - click/callback-eager-then-invocation-order
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_click_order.py b/lore_eval_hidden_click_order.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_click_order.py
+          @@ -0,0 +1,38 @@
+          +from lore_solution import applied_order
+          +
+          +
+          +def test_eager_profile_runs_first_regardless_of_position():
+          +    # --profile is typed last but, being eager, its callback must fire first.
+          +    order = applied_order(
+          +        ["--tier", "gold", "--region", "eu", "--profile", "prod", "svc"]
+          +    )
+          +    assert order[0] == "profile"
+          +
+          +
+          +def test_non_eager_options_follow_invocation_order():
+          +    a = applied_order(["--tier", "gold", "--region", "eu", "--profile", "prod", "svc"])
+          +    b = applied_order(["--region", "eu", "--tier", "gold", "--profile", "prod", "svc"])
+          +    # The two non-eager options swap order with the command-line order; they
+          +    # are NOT pinned to declaration order.
+          +    assert a.index("tier") < a.index("region")
+          +    assert b.index("region") < b.index("tier")
+          +
+          +
+          +def test_eager_first_then_invocation_full_order():
+          +    order = applied_order(
+          +        ["--tier", "gold", "--region", "eu", "--profile", "prod", "svc"]
+          +    )
+          +    assert order == ["profile", "tier", "region", "service"]
+          +
+          +
+          +def test_argument_resolves_after_options_in_invocation_order():
+          +    order = applied_order(
+          +        ["--region", "eu", "--tier", "gold", "--profile", "prod", "svc"]
+          +    )
+          +    assert order == ["profile", "region", "tier", "service"]
+          +
+          +
+          +def test_eager_first_even_when_profile_typed_before_others():
+          +    order = applied_order(
+          +        ["--profile", "prod", "--region", "eu", "--tier", "gold", "svc"]
+          +    )
+          +    assert order[0] == "profile"
+          +    assert order.index("region") < order.index("tier")
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.12"
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_click_order.py
+          - -q
+        timeoutMs: 300000

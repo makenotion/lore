@@ -1,0 +1,43 @@
+version: 1
+id: urllib3-modelhard-v1
+description: >-
+  Focused seed corpus for a model-hard urllib3 longitudinal suite. Entries model
+  durable protocol findings whose correct behavior is counterintuitive to a
+  strong model reasoning from defaults, captured at pinned urllib3 revisions.
+repository:
+  repo: urllib3/urllib3
+  sha: 8c480bf87bcefd321b3a1ae47f04e908b6b2ed7b
+vault:
+  project:
+    name: urllib3
+    path: .
+    tags: ["python", "http", "client", "oss"]
+  topics:
+    - id: util/retry
+      name: Retry handling
+      description: Retry policy, backoff timing, Retry-After parsing, and sleep duration computation.
+  memories:
+    - id: urllib3/retry-after-dual-format-utc
+      title: Retry-After is dual-format, GMT, zero-floored, and must be capped
+      topics: ["util/retry"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `Retry-After` is delta-seconds or a GMT HTTP-date; the computed wait is
+        clamped to a zero floor and capped at a sane configurable maximum.
+      body: |
+        `Retry-After` (RFC 7231 section 7.1.3) has two forms. A bare integer,
+        after stripping RFC 7230 whitespace, is delta-seconds. Otherwise it is
+        an HTTP-date, which carries no timezone token and is always GMT/UTC.
+        Parse the date with `email.utils.parsedate_tz` plus `mktime_tz`, never
+        a naive `datetime`/`strptime` that silently interprets the value in the
+        machine's local timezone.
+
+        Convert the date to a wait via `date - time.time()`, then clamp with
+        `max(seconds, 0)` so a date in the past yields 0 rather than a negative
+        sleep. Crucially, also cap the result at a sane configurable maximum
+        (a few hours is the common ceiling). Without a cap, a far-future date
+        or a hostile upstream can make a client try to sleep for years and hang
+        its workers. The ceiling should be a per-instance setting that is
+        carried through whenever a retry policy is cloned.
+      scenarios: ["urllib3-retry-after-http-date-utc-v1"]

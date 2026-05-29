@@ -1,0 +1,844 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-django-modelhard-v1
+description: >-
+  Model-hard Django ORM longitudinal suite. Scenarios pin a stable Django
+  revision and ask the agent to implement a small reporting or persistence
+  module against an intrinsic Django ORM / ModelForm contract whose correct use
+  is counterintuitive to a strong model reasoning from defaults. Each rule is
+  discoverable by constructing models and observing query results (row counts,
+  SQL joins, persisted side effects), but easy to violate under time pressure in
+  a way that returns silently wrong data rather than raising. Verified through
+  deterministic in-process tests on an in-memory SQLite database with no DB
+  server or network.
+seededCorpus: ../vault-seeds/django-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: django-filter-chained-vs-single-multivalued-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: django/django
+      sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+    phaseA:
+      promptId: django-filter-chained-vs-single-multivalued-v1-formation
+      prompt: >-
+        We will add a small Django ORM reporting module in a later session. This codebase models blogs and their entries as a one-to-many relation. Investigate how Django spans a multi-valued relation when you put several conditions in a lookup: construct a couple of models in a throwaway script with `settings.configure()` and `schema_editor`, seed a blog whose conditions are spread across DIFFERENT related rows versus a blog where one row satisfies everything, and run queries both as a single `filter(rel__a=.., rel__b=..)` and as chained `.filter(rel__a=..).filter(rel__b=..)`. Observe the returned primary rows and their multiplicity (count duplicates), and inspect the generated SQL joins. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: django-filter-chained-vs-single-multivalued-v1-use
+      prompt: |
+        Implement a module `lore_solution.py` at the repository root with two query helpers over a `Blog` model that has a reverse one-to-many `entries` relation (each `Entry` has `pub_year` and `headline`).
+
+        `blogs_with_year_and_keyword_same_entry(Blog, year, keyword)`: return the blogs that have a single entry which is BOTH from `year` AND whose headline contains `keyword`.
+
+        `blogs_with_year_and_keyword_any_entries(Blog, year, keyword)`: return the blogs that have an entry from `year` AND (possibly a different) entry whose headline contains `keyword`. No blog may appear more than once in the result.
+
+        Both return lists of `Blog` instances. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        Across a multi-valued relation, one `filter(rel__a, rel__b)` requires a single related row to satisfy both conditions, whereas chained `.filter().filter()` allows different related rows per condition and joins repeatedly, which can return duplicate primary rows unless de-duplicated.
+      keywords:
+        - "filter"
+        - "chained"
+        - "multi-valued"
+        - "distinct"
+        - "spanning relationships"
+    seededContext:
+      renderedContext: |
+        - [memory] django/multivalued-filter-chaining: Spanning a multi-valued relation in Django, one `.filter(rel__a=x, rel__b=y)` (both lookups in a single filter) requires the SAME related row to satisfy both conditions, while chaining `.filter(rel__a=x).filter(rel__b=y)` allows DIFFERENT related rows to satisfy each and performs multiple joins that can return DUPLICATE primary rows — add `.distinct()`. Choose the single-filter form when both conditions must hold on the same related row; choose chained filters (with `.distinct()`) when they may hold on different related rows. The two forms read identically in intent but are NOT interchangeable.
+      contextIds:
+        - django/multivalued-filter-chaining
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_django_multivalued_filter.py b/lore_eval_hidden_django_multivalued_filter.py
+          new file mode 100644
+          index 0000000..21e4310
+          --- /dev/null
+          +++ b/lore_eval_hidden_django_multivalued_filter.py
+          @@ -0,0 +1,88 @@
+          +import django
+          +from django.conf import settings
+          +
+          +if not settings.configured:
+          +    settings.configure(
+          +        DEBUG=False,
+          +        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          +        INSTALLED_APPS=[
+          +            "django.contrib.contenttypes",
+          +            "django.contrib.auth",
+          +            "lore_eval_hidden_django_multivalued_filter",
+          +        ],
+          +        USE_TZ=True,
+          +        DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
+          +    )
+          +    django.setup()
+          +
+          +from collections import Counter
+          +
+          +import pytest
+          +from django.db import connection, models
+          +
+          +from lore_solution import (
+          +    blogs_with_year_and_keyword_any_entries,
+          +    blogs_with_year_and_keyword_same_entry,
+          +)
+          +
+          +
+          +class Blog(models.Model):
+          +    name = models.CharField(max_length=100)
+          +
+          +
+          +class Entry(models.Model):
+          +    blog = models.ForeignKey(Blog, on_delete=models.CASCADE, related_name="entries")
+          +    headline = models.CharField(max_length=200)
+          +    pub_year = models.IntegerField()
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _schema():
+          +    with connection.schema_editor() as se:
+          +        se.create_model(Blog)
+          +        se.create_model(Entry)
+          +    yield
+          +    with connection.schema_editor() as se:
+          +        se.delete_model(Entry)
+          +        se.delete_model(Blog)
+          +
+          +
+          +def _seed():
+          +    cross = Blog.objects.create(name="cross")
+          +    Entry.objects.create(blog=cross, headline="release notes 1991", pub_year=1991)
+          +    Entry.objects.create(blog=cross, headline="a note on McCartney", pub_year=2014)
+          +    Entry.objects.create(blog=cross, headline="filler from 1991", pub_year=1991)
+          +
+          +    same = Blog.objects.create(name="same")
+          +    Entry.objects.create(blog=same, headline="McCartney recap of 1991", pub_year=1991)
+          +
+          +    neither = Blog.objects.create(name="neither")
+          +    Entry.objects.create(blog=neither, headline="unrelated", pub_year=2000)
+          +    return cross, same, neither
+          +
+          +
+          +def test_same_entry_requires_one_row_to_match_both():
+          +    _seed()
+          +    names = sorted(b.name for b in blogs_with_year_and_keyword_same_entry(Blog, 1991, "McCartney"))
+          +    assert names == ["same"]
+          +
+          +
+          +def test_any_entries_allows_different_rows_per_condition():
+          +    _seed()
+          +    names = sorted(b.name for b in blogs_with_year_and_keyword_any_entries(Blog, 1991, "McCartney"))
+          +    assert names == ["cross", "same"]
+          +
+          +
+          +def test_any_entries_does_not_return_duplicate_blogs():
+          +    _seed()
+          +    results = blogs_with_year_and_keyword_any_entries(Blog, 1991, "McCartney")
+          +    pks = [b.pk for b in results]
+          +    counts = Counter(pks)
+          +    assert all(c == 1 for c in counts.values()), counts
+          +
+          +
+          +def test_same_entry_is_strict_subset_of_any_entries():
+          +    _seed()
+          +    same = {b.pk for b in blogs_with_year_and_keyword_same_entry(Blog, 1991, "McCartney")}
+          +    anyq = {b.pk for b in blogs_with_year_and_keyword_any_entries(Blog, 1991, "McCartney")}
+          +    assert same < anyq
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_django_multivalued_filter.py
+          - -q
+        timeoutMs: 300000
+
+  - id: django-annotate-multi-aggregate-fanout-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: django/django
+      sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+    phaseA:
+      promptId: django-annotate-multi-aggregate-fanout-v1-formation
+      prompt: >-
+        We will add a Django ORM reporting helper in a later session. This codebase relates a book to its authors and to the stores carrying it through two independent multi-valued relations. Investigate what happens when you compute two aggregates over two different multi-valued relations in one `annotate()` call: build the models in a throwaway script with `settings.configure()` and `schema_editor`, seed a book with, say, two authors and three stores, then `annotate(Count("authors"), Count("stores"))` and read each annotated value. Compare against running each `Count` alone, and inspect the SQL to see how the joins compose. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: django-annotate-multi-aggregate-fanout-v1-use
+      prompt: |
+        Implement a module `lore_solution.py` at the repository root with a single function `book_counts(Book)` over a `Book` model that has two many-to-many relations: `authors` and `stores`.
+
+        Return a dict mapping each book's primary key to `{"authors": n, "stores": m}` where `n` is the number of distinct authors of the book and `m` is the number of distinct stores carrying it. Every book must report its true author and store counts. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        Two aggregates over two different multi-valued relations in one `annotate()` are computed by JOINs, so the counts multiply each other; for `Count`, each needs `distinct=True`, otherwise a book with 2 authors and 3 stores reports 6 and 6.
+      keywords:
+        - "annotate"
+        - "Count"
+        - "distinct"
+        - "join fanout"
+        - "multiple aggregations"
+    seededContext:
+      renderedContext: |
+        - [memory] django/multi-aggregate-join-fanout: Two `Count()` (or any two aggregate) annotations over DIFFERENT multi-valued relations in a single `annotate()` call are computed by JOINs, so the counts MULTIPLY — a book with 2 authors and 3 stores reports 6 and 6, not 2 and 3. For `Count`, pass `distinct=True` to each annotation. For non-`Count` aggregates there is no kwarg fix — compute each via a separate `Subquery`/`OuterRef` annotation. Never combine multiple multi-valued aggregates in one annotate without distinct or subqueries.
+      contextIds:
+        - django/multi-aggregate-join-fanout
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_django_multi_aggregate.py b/lore_eval_hidden_django_multi_aggregate.py
+          new file mode 100644
+          index 0000000..eb80d2c
+          --- /dev/null
+          +++ b/lore_eval_hidden_django_multi_aggregate.py
+          @@ -0,0 +1,84 @@
+          +import django
+          +from django.conf import settings
+          +
+          +if not settings.configured:
+          +    settings.configure(
+          +        DEBUG=False,
+          +        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          +        INSTALLED_APPS=[
+          +            "django.contrib.contenttypes",
+          +            "django.contrib.auth",
+          +            "lore_eval_hidden_django_multi_aggregate",
+          +        ],
+          +        USE_TZ=True,
+          +        DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
+          +    )
+          +    django.setup()
+          +
+          +import pytest
+          +from django.db import connection, models
+          +
+          +from lore_solution import book_counts
+          +
+          +
+          +class Author(models.Model):
+          +    name = models.CharField(max_length=100)
+          +
+          +
+          +class Store(models.Model):
+          +    name = models.CharField(max_length=100)
+          +
+          +
+          +class Book(models.Model):
+          +    title = models.CharField(max_length=100)
+          +    authors = models.ManyToManyField(Author, related_name="books")
+          +    stores = models.ManyToManyField(Store, related_name="books")
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _schema():
+          +    with connection.schema_editor() as se:
+          +        se.create_model(Author)
+          +        se.create_model(Store)
+          +        se.create_model(Book)
+          +    yield
+          +    with connection.schema_editor() as se:
+          +        se.delete_model(Book)
+          +        se.delete_model(Store)
+          +        se.delete_model(Author)
+          +
+          +
+          +def _seed():
+          +    novel = Book.objects.create(title="novel")
+          +    authors = [Author.objects.create(name=f"a{i}") for i in range(3)]
+          +    stores = [Store.objects.create(name=f"s{i}") for i in range(4)]
+          +    novel.authors.add(*authors)
+          +    novel.stores.add(*stores)
+          +
+          +    solo = Book.objects.create(title="solo")
+          +    solo.authors.add(authors[0])
+          +    solo.stores.add(stores[0])
+          +    return novel, solo
+          +
+          +
+          +def test_each_count_reflects_its_own_relation():
+          +    novel, solo = _seed()
+          +    result = book_counts(Book)
+          +    assert result[novel.pk] == {"authors": 3, "stores": 4}
+          +    assert result[solo.pk] == {"authors": 1, "stores": 1}
+          +
+          +
+          +def test_counts_do_not_multiply_across_relations():
+          +    novel, _ = _seed()
+          +    result = book_counts(Book)
+          +    # The join-fanout bug reports authors*stores for both counts.
+          +    assert result[novel.pk]["authors"] != result[novel.pk]["stores"]
+          +    assert result[novel.pk]["authors"] == 3
+          +    assert result[novel.pk]["stores"] == 4
+          +
+          +
+          +def test_handles_book_with_no_related_rows():
+          +    Book.objects.create(title="empty")
+          +    result = book_counts(Book)
+          +    empty = Book.objects.get(title="empty")
+          +    assert result[empty.pk] == {"authors": 0, "stores": 0}
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_django_multi_aggregate.py
+          - -q
+        timeoutMs: 300000
+
+  - id: django-annotate-filter-noncommutative-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: django/django
+      sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+    phaseA:
+      promptId: django-annotate-filter-noncommutative-v1-formation
+      prompt: >-
+        We will add a Django ORM reporting helper in a later session. This codebase relates a publisher to its books (reverse one-to-many) and each book carries a rating. Investigate whether the order of `annotate()` and `filter()` changes the per-row aggregate value: build the models in a throwaway script with `settings.configure()` and `schema_editor`, seed two publishers with mixed ratings, then run `annotate(n=Count("books")).filter(books__rating__gt=3)` and `filter(books__rating__gt=3).annotate(n=Count("books"))` and compare the `n` each publisher reports. Inspect the SQL to see which rows the aggregate sees in each ordering. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: django-annotate-filter-noncommutative-v1-use
+      prompt: |
+        Implement a module `lore_solution.py` at the repository root with two helpers over a `Publisher` model that has a reverse one-to-many `books` relation (each `Book` has a `rating`).
+
+        `total_books_per_publisher(Publisher, min_rating)`: for every publisher that has at least one book rated strictly greater than `min_rating`, return its TOTAL book count regardless of rating.
+
+        `highly_rated_books_per_publisher(Publisher, min_rating)`: for every publisher, return the count of ONLY the books rated strictly greater than `min_rating`.
+
+        Both return dicts mapping publisher name to a count. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        `annotate()` and `filter()` are not commutative: annotate-then-filter counts all related rows and only uses the filter to select which parents appear, while filter-then-annotate constrains the rows the aggregate sees; the annotate-first form also needs `distinct=True` to avoid join fanout.
+      keywords:
+        - "annotate"
+        - "filter"
+        - "order"
+        - "non-commutative"
+        - "aggregation"
+    seededContext:
+      renderedContext: |
+        - [memory] django/annotate-filter-order: `annotate()` and `filter()` are NOT commutative. `annotate(n=Count('book')).filter(book__rating__gt=3)` counts ALL books (the annotation is computed before the filter) and only uses the filter to pick which parent rows appear. `filter(book__rating__gt=3).annotate(n=Count('book'))` counts only the books matching the filter (the filter constrains the rows fed to the aggregate). Put the filter BEFORE the annotate when the aggregate should see only matching rows; put it AFTER when it should see all rows. The annotate-first form still needs `distinct=True` to avoid join fanout.
+      contextIds:
+        - django/annotate-filter-order
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_django_annotate_filter_order.py b/lore_eval_hidden_django_annotate_filter_order.py
+          new file mode 100644
+          index 0000000..0acf2c7
+          --- /dev/null
+          +++ b/lore_eval_hidden_django_annotate_filter_order.py
+          @@ -0,0 +1,81 @@
+          +import django
+          +from django.conf import settings
+          +
+          +if not settings.configured:
+          +    settings.configure(
+          +        DEBUG=False,
+          +        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          +        INSTALLED_APPS=[
+          +            "django.contrib.contenttypes",
+          +            "django.contrib.auth",
+          +            "lore_eval_hidden_django_annotate_filter_order",
+          +        ],
+          +        USE_TZ=True,
+          +        DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
+          +    )
+          +    django.setup()
+          +
+          +import pytest
+          +from django.db import connection, models
+          +
+          +from lore_solution import (
+          +    highly_rated_books_per_publisher,
+          +    total_books_per_publisher,
+          +)
+          +
+          +
+          +class Publisher(models.Model):
+          +    name = models.CharField(max_length=100)
+          +
+          +
+          +class Book(models.Model):
+          +    title = models.CharField(max_length=100)
+          +    rating = models.FloatField()
+          +    publisher = models.ForeignKey(
+          +        Publisher, on_delete=models.CASCADE, related_name="books"
+          +    )
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _schema():
+          +    with connection.schema_editor() as se:
+          +        se.create_model(Publisher)
+          +        se.create_model(Book)
+          +    yield
+          +    with connection.schema_editor() as se:
+          +        se.delete_model(Book)
+          +        se.delete_model(Publisher)
+          +
+          +
+          +def _seed():
+          +    apex = Publisher.objects.create(name="apex")
+          +    for rating in (4.0, 5.0):
+          +        Book.objects.create(title="x", rating=rating, publisher=apex)
+          +    mixed = Publisher.objects.create(name="mixed")
+          +    for rating in (1.0, 4.0):
+          +        Book.objects.create(title="y", rating=rating, publisher=mixed)
+          +    low = Publisher.objects.create(name="low")
+          +    Book.objects.create(title="z", rating=1.0, publisher=low)
+          +    return apex, mixed, low
+          +
+          +
+          +def test_total_counts_ignore_the_rating_filter():
+          +    _seed()
+          +    totals = total_books_per_publisher(Publisher, 3.0)
+          +    # Only publishers with a >3.0 book appear, but the count is their TOTAL.
+          +    assert totals == {"apex": 2, "mixed": 2}
+          +
+          +
+          +def test_high_rated_counts_only_matching_books():
+          +    _seed()
+          +    high = highly_rated_books_per_publisher(Publisher, 3.0)
+          +    assert high == {"apex": 2, "mixed": 1}
+          +
+          +
+          +def test_two_metrics_diverge_for_mixed_publisher():
+          +    _seed()
+          +    totals = total_books_per_publisher(Publisher, 3.0)
+          +    high = highly_rated_books_per_publisher(Publisher, 3.0)
+          +    assert totals["mixed"] == 2
+          +    assert high["mixed"] == 1
+          +    assert totals["mixed"] != high["mixed"]
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_django_annotate_filter_order.py
+          - -q
+        timeoutMs: 300000
+
+  - id: django-exclude-multivalued-relation-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: django/django
+      sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+    phaseA:
+      promptId: django-exclude-multivalued-relation-v1-formation
+      prompt: >-
+        We will add a Django ORM filtering helper in a later session. This codebase relates an author to their books (one-to-many), and each book has a genre and a year. Investigate how Django negates several conditions over a multi-valued relation: build the models in a throwaway script with `settings.configure()` and `schema_editor`, seed an author whose books each satisfy only ONE of two conditions (no single book satisfies both) alongside an author with a single book that satisfies both, then run `exclude(books__genre=.., books__year__lt=..)` and observe which authors survive. Compare against negating the equivalent `filter` via a subquery, and inspect the SQL the `exclude` generates. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: django-exclude-multivalued-relation-v1-use
+      prompt: |
+        Implement a module `lore_solution.py` at the repository root with a function `authors_without_matching_book(Author, genre, max_year)` over an `Author` model that has a reverse one-to-many `books` relation (each `Book` has `genre` and `year`).
+
+        Return the authors who have NO single book that is BOTH in `genre` AND published before `max_year`. An author whose books each satisfy only one of the two conditions — but where no single book satisfies both — must be INCLUDED in the result. Return a list of `Author` instances. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        A multi-kwarg `exclude(rel__a, rel__b)` over a multi-valued relation does not mean "exclude parents with a single related row matching both"; it pushes the conditions into the negation separately, so the correct "no single related row matches both" requires excluding a subquery/`Exists` of the equivalent positive filter.
+      keywords:
+        - "exclude"
+        - "multi-valued"
+        - "subquery"
+        - "Exists"
+        - "negation"
+    seededContext:
+      renderedContext: |
+        - [memory] django/exclude-multivalued-relation: `qs.exclude(rel__a=x, rel__b=y)` over a multi-valued relation does NOT mean "exclude parents that have a single related row matching both conditions". Django pushes each condition into the NOT logic separately, so it behaves differently from negating the equivalent `filter` and silently drops parents it should keep. To express "no single related row matches both conditions", exclude a subquery of the positive filter: `exclude(pk__in=Model.objects.filter(rel__a=x, rel__b=y))` (or a single nested `Q`/`Exists`). The naive multi-kwarg `exclude` reads identically to the `filter` form but is wrong on multi-valued relations.
+      contextIds:
+        - django/exclude-multivalued-relation
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_django_exclude_multivalued.py b/lore_eval_hidden_django_exclude_multivalued.py
+          new file mode 100644
+          index 0000000..da6123c
+          --- /dev/null
+          +++ b/lore_eval_hidden_django_exclude_multivalued.py
+          @@ -0,0 +1,81 @@
+          +import django
+          +from django.conf import settings
+          +
+          +if not settings.configured:
+          +    settings.configure(
+          +        DEBUG=False,
+          +        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          +        INSTALLED_APPS=[
+          +            "django.contrib.contenttypes",
+          +            "django.contrib.auth",
+          +            "lore_eval_hidden_django_exclude_multivalued",
+          +        ],
+          +        USE_TZ=True,
+          +        DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
+          +    )
+          +    django.setup()
+          +
+          +import pytest
+          +from django.db import connection, models
+          +
+          +from lore_solution import authors_without_matching_book
+          +
+          +
+          +class Author(models.Model):
+          +    name = models.CharField(max_length=100)
+          +
+          +
+          +class Book(models.Model):
+          +    author = models.ForeignKey(Author, on_delete=models.CASCADE, related_name="books")
+          +    genre = models.CharField(max_length=50)
+          +    year = models.IntegerField()
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _schema():
+          +    with connection.schema_editor() as se:
+          +        se.create_model(Author)
+          +        se.create_model(Book)
+          +    yield
+          +    with connection.schema_editor() as se:
+          +        se.delete_model(Book)
+          +        se.delete_model(Author)
+          +
+          +
+          +def _seed():
+          +    # Each book satisfies only ONE of the two conditions; no single book is
+          +    # both sci-fi AND pre-2000, so this author must be INCLUDED in the result.
+          +    straddle = Author.objects.create(name="straddle")
+          +    Book.objects.create(author=straddle, genre="sci-fi", year=2012)
+          +    Book.objects.create(author=straddle, genre="fantasy", year=1994)
+          +
+          +    # A single book is both sci-fi AND pre-2000 -> EXCLUDED.
+          +    flagged = Author.objects.create(name="flagged")
+          +    Book.objects.create(author=flagged, genre="sci-fi", year=1995)
+          +    Book.objects.create(author=flagged, genre="history", year=2018)
+          +
+          +    # No qualifying genre at all -> INCLUDED.
+          +    clean = Author.objects.create(name="clean")
+          +    Book.objects.create(author=clean, genre="memoir", year=1980)
+          +
+          +    # No books -> INCLUDED.
+          +    Author.objects.create(name="empty")
+          +    return straddle, flagged, clean
+          +
+          +
+          +def test_author_with_split_conditions_is_kept():
+          +    _seed()
+          +    names = {a.name for a in authors_without_matching_book(Author, "sci-fi", 2000)}
+          +    assert "straddle" in names
+          +
+          +
+          +def test_author_with_one_book_matching_both_is_removed():
+          +    _seed()
+          +    names = {a.name for a in authors_without_matching_book(Author, "sci-fi", 2000)}
+          +    assert "flagged" not in names
+          +
+          +
+          +def test_exact_result_set():
+          +    _seed()
+          +    names = sorted(a.name for a in authors_without_matching_book(Author, "sci-fi", 2000))
+          +    assert names == ["clean", "empty", "straddle"]
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_django_exclude_multivalued.py
+          - -q
+        timeoutMs: 300000
+
+  - id: django-bulk-create-save-side-effects-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: django/django
+      sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+    phaseA:
+      promptId: django-bulk-create-save-side-effects-v1-formation
+      prompt: >-
+        We will add a Django batch-import helper in a later session. This codebase has a model whose `save()` normalizes a field and which has a `post_save` receiver. Investigate which per-row behaviors are skipped when rows are written through the bulk path versus individual saves: build the model in a throwaway script with `settings.configure()` and `schema_editor`, attach a `post_save` receiver that counts invocations and a `save()` override that mutates a field, then create several rows via `bulk_create([...])` and inspect the stored field values and the receiver count. Compare against a loop of `obj.save()`. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: django-bulk-create-save-side-effects-v1-use
+      prompt: |
+        Implement a module `lore_solution.py` at the repository root with a function `import_items(Item, codes)` that persists one `Item` per entry in `codes`.
+
+        The `Item` model defines its own `save()` that normalizes the `code` field, and the application registers a `post_save` receiver that must run once per created row. Each row must be persisted so that the model's `save()` normalization runs and every `post_save` receiver fires once per created row, exactly as if each row had been created individually. Return the list of created `Item` instances. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        `QuerySet.bulk_create()` issues raw inserts and does not call `Model.save()` or send `pre_save`/`post_save` signals, so per-row `save()` normalization and signal receivers are silently skipped; preserving them requires looping `save()`.
+      keywords:
+        - "bulk_create"
+        - "save"
+        - "post_save"
+        - "signals"
+        - "side effects"
+    seededContext:
+      renderedContext: |
+        - [memory] django/bulk-create-bypasses-save: `QuerySet.bulk_create()` issues raw bulk INSERTs — it does NOT call `Model.save()` and does NOT send `pre_save`/`post_save` signals, so any normalization done in a `save()` override and any signal receivers are silently skipped. (Whether `auto_now_add`/PKs are populated is backend-dependent and not something to rely on.) When per-row `save()` behavior or signals must run, loop `obj.save()` instead of `bulk_create`, or dispatch the work explicitly.
+      contextIds:
+        - django/bulk-create-bypasses-save
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_django_save_side_effects.py b/lore_eval_hidden_django_save_side_effects.py
+          new file mode 100644
+          index 0000000..b931b1c
+          --- /dev/null
+          +++ b/lore_eval_hidden_django_save_side_effects.py
+          @@ -0,0 +1,68 @@
+          +import django
+          +from django.conf import settings
+          +
+          +if not settings.configured:
+          +    settings.configure(
+          +        DEBUG=False,
+          +        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          +        INSTALLED_APPS=[
+          +            "django.contrib.contenttypes",
+          +            "django.contrib.auth",
+          +            "lore_eval_hidden_django_save_side_effects",
+          +        ],
+          +        USE_TZ=True,
+          +        DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
+          +    )
+          +    django.setup()
+          +
+          +import pytest
+          +from django.db import connection, models
+          +from django.db.models.signals import post_save
+          +from django.dispatch import receiver
+          +
+          +from lore_solution import import_items
+          +
+          +
+          +class Item(models.Model):
+          +    code = models.CharField(max_length=50)
+          +
+          +    def save(self, *args, **kwargs):
+          +        # Per-row normalization that only runs through Model.save().
+          +        self.code = self.code.upper()
+          +        super().save(*args, **kwargs)
+          +
+          +
+          +_SIGNALS = {"count": 0}
+          +
+          +
+          +@receiver(post_save, sender=Item)
+          +def _count_saves(sender, **kwargs):
+          +    _SIGNALS["count"] += 1
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _schema():
+          +    _SIGNALS["count"] = 0
+          +    with connection.schema_editor() as se:
+          +        se.create_model(Item)
+          +    yield
+          +    with connection.schema_editor() as se:
+          +        se.delete_model(Item)
+          +
+          +
+          +def test_save_normalization_runs_for_every_row():
+          +    import_items(Item, ["alpha", "beta", "gamma"])
+          +    stored = sorted(Item.objects.values_list("code", flat=True))
+          +    assert stored == ["ALPHA", "BETA", "GAMMA"]
+          +
+          +
+          +def test_post_save_fires_once_per_row():
+          +    import_items(Item, ["alpha", "beta", "gamma"])
+          +    assert _SIGNALS["count"] == 3
+          +
+          +
+          +def test_all_rows_persist():
+          +    created = import_items(Item, ["alpha", "beta"])
+          +    assert Item.objects.count() == 2
+          +    assert len(created) == 2
+          +    assert all(item.pk is not None for item in created)
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_django_save_side_effects.py
+          - -q
+        timeoutMs: 300000
+
+  - id: django-modelform-commit-false-save-m2m-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: django/django
+      sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+    phaseA:
+      promptId: django-modelform-commit-false-save-m2m-v1-formation
+      prompt: >-
+        We will add a Django create-handler in a later session. This codebase has a `ModelForm` over a model with a `ManyToManyField`. Investigate what happens to the many-to-many selections when the form is saved with `commit=False` so a caller can set an extra attribute before writing: build the model, the M2M relation, and the `ModelForm` in a throwaway script with `settings.configure()` and `schema_editor`, bind valid data including M2M selections, call `form.save(commit=False)` then `instance.save()`, and inspect the related manager's count afterward. Find what the form exposes to persist the deferred M2M data. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: django-modelform-commit-false-save-m2m-v1-use
+      prompt: |
+        Implement a module `lore_solution.py` at the repository root with a function `create_author(form, owner_label)` that persists a validated `Author` `ModelForm`. The `Author` model has a `ManyToManyField` named `topics` and a plain `owner` field the form does not expose.
+
+        The handler must set `owner` on the instance to `owner_label` BEFORE the row is written, then persist the instance together with every many-to-many selection the form collected. Return the saved `Author` instance. Do not edit files outside `lore_solution.py`.
+    expectedContext:
+      description: >-
+        `ModelForm.save(commit=False)` cannot persist `ManyToManyField` data because the instance has no primary key yet; it attaches a `save_m2m()` method that must be called after `instance.save()`, or the M2M selections are silently dropped.
+      keywords:
+        - "ModelForm"
+        - "commit=False"
+        - "save_m2m"
+        - "ManyToManyField"
+        - "deferred"
+    seededContext:
+      renderedContext: |
+        - [memory] django/modelform-commit-false-save-m2m: `form.save(commit=False)` returns an UNSAVED instance and CANNOT persist `ManyToManyField` data (the instance has no PK yet). It attaches a `save_m2m()` method to the form. After you call `instance.save()`, you MUST call `form.save_m2m()` or every M2M selection is silently dropped — the row saves, the join table stays empty, no exception is raised. `save_m2m()` is required only on the `commit=False` path; a plain `form.save()` persists M2M data automatically.
+      contextIds:
+        - django/modelform-commit-false-save-m2m
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_django_modelform_m2m.py b/lore_eval_hidden_django_modelform_m2m.py
+          new file mode 100644
+          index 0000000..e900b8c
+          --- /dev/null
+          +++ b/lore_eval_hidden_django_modelform_m2m.py
+          @@ -0,0 +1,79 @@
+          +import django
+          +from django.conf import settings
+          +
+          +if not settings.configured:
+          +    settings.configure(
+          +        DEBUG=False,
+          +        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
+          +        INSTALLED_APPS=[
+          +            "django.contrib.contenttypes",
+          +            "django.contrib.auth",
+          +            "lore_eval_hidden_django_modelform_m2m",
+          +        ],
+          +        USE_TZ=True,
+          +        DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
+          +    )
+          +    django.setup()
+          +
+          +import pytest
+          +from django import forms
+          +from django.db import connection, models
+          +
+          +from lore_solution import create_author
+          +
+          +
+          +class Topic(models.Model):
+          +    name = models.CharField(max_length=50)
+          +
+          +
+          +class Author(models.Model):
+          +    name = models.CharField(max_length=50)
+          +    owner = models.CharField(max_length=50, default="")
+          +    topics = models.ManyToManyField(Topic, related_name="authors")
+          +
+          +
+          +class AuthorForm(forms.ModelForm):
+          +    class Meta:
+          +        model = Author
+          +        fields = ["name", "topics"]
+          +
+          +
+          +@pytest.fixture(autouse=True)
+          +def _schema():
+          +    with connection.schema_editor() as se:
+          +        se.create_model(Topic)
+          +        se.create_model(Author)
+          +    yield
+          +    with connection.schema_editor() as se:
+          +        se.delete_model(Author)
+          +        se.delete_model(Topic)
+          +
+          +
+          +def _bound_form():
+          +    t1 = Topic.objects.create(name="orm")
+          +    t2 = Topic.objects.create(name="forms")
+          +    form = AuthorForm({"name": "ada", "topics": [t1.pk, t2.pk]})
+          +    assert form.is_valid(), form.errors
+          +    return form, {t1.pk, t2.pk}
+          +
+          +
+          +def test_m2m_selections_are_persisted():
+          +    form, topic_pks = _bound_form()
+          +    author = create_author(form, "library")
+          +    persisted = set(
+          +        Author.objects.get(pk=author.pk).topics.values_list("pk", flat=True)
+          +    )
+          +    assert persisted == topic_pks
+          +
+          +
+          +def test_extra_attribute_is_saved():
+          +    form, _ = _bound_form()
+          +    author = create_author(form, "library")
+          +    assert Author.objects.get(pk=author.pk).owner == "library"
+          +
+          +
+          +def test_instance_row_exists():
+          +    form, _ = _bound_form()
+          +    author = create_author(form, "library")
+          +    assert author.pk is not None
+          +    assert Author.objects.filter(pk=author.pk).exists()
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_django_modelform_m2m.py
+          - -q
+        timeoutMs: 300000

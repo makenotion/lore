@@ -1,0 +1,45 @@
+version: 1
+id: pydantic-modelhard-v1
+description: >-
+  Focused seed corpus for a model-hard pydantic longitudinal suite. Entries
+  capture durable, intrinsic pydantic contracts whose correct application is
+  counterintuitive to a strong model reasoning from defaults, pinned at a stable
+  pydantic release.
+repository:
+  repo: pydantic/pydantic
+  sha: 5f033e46c54fea1b59b6894d6527daf49475e690
+vault:
+  project:
+    name: pydantic
+    path: .
+    tags: ["python", "validation", "serialization", "oss"]
+  topics:
+    - id: fields/aliases
+      name: Field aliases
+      description: Input/output alias precedence, validation_alias, serialization_alias, and by_alias dump behavior.
+  memories:
+    - id: pydantic/alias-three-way-precedence
+      title: Input and output aliases are independent per direction
+      topics: ["fields/aliases"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `validation_alias` controls accepted input keys; `serialization_alias`
+        controls `by_alias=True` output keys; a single `alias` cannot express
+        two different vocabularies.
+      body: |
+        A pydantic v2 field can carry a different accepted-input key and a
+        different dump-by-alias output key, and the two are independent knobs.
+        `validation_alias` controls the key accepted on input and fully
+        supersedes a plain `alias` for the input direction. `serialization_alias`
+        controls the key emitted by `model_dump(by_alias=True)` and fully
+        supersedes a plain `alias` for the output direction. When both are set,
+        the plain `alias` is ignored in each direction it overlaps.
+
+        The non-obvious consequence: `model_dump(by_alias=True)` does not echo
+        back the key you validated against. A single shared `alias` makes input
+        and output use the same key, so it cannot bridge two systems whose key
+        vocabularies differ. To round-trip a record across two such systems,
+        validate with the input alias and re-key the dump with the output alias
+        — do not assume the validated key reappears on dump.
+      scenarios: ["pydantic-alias-precedence-roundtrip-v1"]

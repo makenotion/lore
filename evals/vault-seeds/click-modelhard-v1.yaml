@@ -1,0 +1,76 @@
+version: 1
+id: click-modelhard-v1
+description: >-
+  Model-hard seed corpus for a click longitudinal suite. One entry models a
+  durable finding pinned before a real upstream regression where
+  `get_parameter_source()` returns `None` during eager callbacks and type
+  conversion; the other models the intrinsic, counterintuitive parameter
+  callback evaluation order (eager-first then command-line invocation order, not
+  declaration order). Pinned at the click revision before the matching upstream
+  fix.
+repository:
+  repo: pallets/click
+  sha: 4b24a6c8f6658ef89fd6db4dcaf8ee88eef75dfa
+vault:
+  project:
+    name: click
+    path: .
+    tags: ["python", "cli", "click", "oss"]
+  topics:
+    - id: params/source
+      name: Parameter source reporting
+      description: When `get_parameter_source` becomes meaningful relative to value processing.
+    - id: params/callback-order
+      name: Parameter callback evaluation order
+      description: Eager-first then command-line invocation order for callbacks and type conversion.
+  memories:
+    - id: click/parameter-source-recorded-before-processing
+      title: Parameter source must be recorded before value processing
+      topics: ["params/source"]
+      confidence: high
+      provenanceKind: pr-derived
+      synopsis: >-
+        On the pinned tree `get_parameter_source` returns `None` during eager
+        callbacks and conversion because the source is recorded only after
+        `process_value`; record it before processing.
+      body: |
+        On this click revision `ctx.set_parameter_source` is called only inside
+        the winner branch AFTER `process_value`, so `ctx.get_parameter_source(name)`
+        returns `None` during an eager option's callback and during a custom
+        `ParamType.convert`. You cannot distinguish `COMMANDLINE` /
+        `ENVIRONMENT` / `DEFAULT` there, so an eager loader that needs to branch
+        on a sibling's source silently treats everything as default.
+
+        Record the provisional source BEFORE `process_value` runs so eager
+        callbacks and type conversion can read it. Still restore the winning
+        option's source after feature-switch arbitration, so an option that
+        loses a flag group does not overwrite the winner's recorded source. The
+        final post-parse source must stay correct.
+      sourcePullRequests:
+        - repo: pallets/click
+          number: 3484
+          title: Fix `get_parameter_source()` during type conversion and eager callbacks
+          url: https://github.com/pallets/click/pull/3484
+      scenarios: ["click-get-parameter-source-eager-callback-v1"]
+    - id: click/callback-eager-then-invocation-order
+      title: Callbacks fire eager-first then in command-line invocation order
+      topics: ["params/callback-order"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        click evaluates parameter callbacks eager-first then in command-line
+        invocation order, never declaration order; a config loader other options
+        depend on must be eager.
+      body: |
+        click does NOT evaluate parameter callbacks in declaration order. Eager
+        parameters (`is_eager=True`) run first; among parameters of equal
+        eagerness the order is the order the user supplied them on the command
+        line (invocation order), not the order the options were declared on the
+        function.
+
+        A `--config`/`--profile` loader that seeds defaults the other options
+        depend on MUST be `is_eager=True`, or its callback runs too late and the
+        dependent options resolve against unloaded defaults. Reordering options
+        in the decorator does not change evaluation order; only eagerness and
+        invocation order do.
+      scenarios: ["click-callback-eval-order-v1"]

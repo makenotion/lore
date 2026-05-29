@@ -1,0 +1,92 @@
+version: 1
+id: jinja2-modelhard-v1
+description: >-
+  Model-hard seed corpus for a Jinja2 longitudinal suite. Entries model durable
+  templating-internals findings whose correct use is counterintuitive to a
+  strong model reasoning from Python or other-templating-engine defaults:
+  in-loop `{% set %}` scoping, the `default` filter firing only on undefined
+  values, and the autoescape-off default of a bare `Environment`. Pinned at a
+  stable Jinja2 revision; these are intrinsic library contracts, not bugs.
+repository:
+  repo: pallets/jinja
+  sha: 5ef70112a1ff19c05324ff889dd30405b1002044
+vault:
+  project:
+    name: jinja2
+    path: .
+    tags: ["python", "templating", "jinja", "oss"]
+  topics:
+    - id: templates/scoping
+      name: Template variable scoping
+      description: Block and loop scoping of `{% set %}`, namespace state, and post-loop visibility.
+    - id: filters/default
+      name: The default filter
+      description: Undefined-only substitution and the two-argument falsy-fallback form.
+    - id: security/autoescape
+      name: Autoescape configuration
+      description: The autoescape-off default of a bare Environment and safe HTML rendering.
+  memories:
+    - id: jinja2/set-in-loop-scoping
+      title: In-loop `{% set %}` does not propagate to the enclosing scope
+      topics: ["templates/scoping"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        A variable assigned with `{% set %}` inside a `{% for %}` loop is
+        invisible after the loop; carry state across the boundary with a
+        `namespace()`.
+      body: |
+        A variable assigned with `{% set %}` INSIDE a `{% for %}` loop (or any
+        block) does NOT leak to the enclosing scope. `{% set found = true %}`
+        inside the loop is invisible to a `{% if found %}` after it; `found`
+        keeps its pre-loop value, so the post-loop branch is always wrong on a
+        match even though the template renders without error.
+
+        Carry the state across the loop boundary with a `namespace`:
+        `{% set ns = namespace(found=false) %}`, assign `{% set ns.found = true %}`
+        inside the loop, and read `ns.found` after the loop. The loop's
+        `{% else %}` block or the `loop` variable also solve the common
+        find-in-loop case. Never rely on a plain in-loop `set` to communicate
+        state to code after the loop.
+      scenarios: ["jinja2-set-in-loop-scoping-v1"]
+    - id: jinja2/default-filter-undefined-only
+      title: The `default` filter fires only on undefined, not on falsy
+      topics: ["filters/default"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `{{ x | default(d) }}` substitutes only when `x` is undefined; use the
+        two-argument `default(d, true)` form to fall back on any falsy value.
+      body: |
+        Jinja2's `default` filter `{{ x | default(d) }}` returns `d` ONLY when
+        `x` is Undefined (the variable is absent), NOT when `x` is a defined
+        falsy value like `False`, `0`, `''`, or `None`. So
+        `{{ debug | default('on') }}` with `debug=False` renders `False`, not
+        `on`.
+
+        To fall back on ANY falsy value -- empty string, zero, false, none --
+        pass the second positional argument true: `{{ x | default(d, true) }}`.
+        Use the two-argument `boolean=true` form whenever a blank-but-defined
+        value should also trigger the default; the one-argument form only covers
+        the undefined case.
+      scenarios: ["jinja2-default-filter-falsy-fallback-v1"]
+    - id: jinja2/autoescape-default-off
+      title: A bare `Environment()` does not autoescape
+      topics: ["security/autoescape"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `jinja2.Environment()` has `autoescape=False` by default; rendering
+        untrusted text into HTML requires explicitly enabling autoescaping.
+      body: |
+        A bare `jinja2.Environment()` has `autoescape=False` by default, so
+        `{{ value }}` is emitted verbatim and any HTML metacharacters in user
+        input render as live markup (an XSS vector). Standalone Jinja2 does NOT
+        escape by default the way Flask's `render_template` or Django templates
+        do, so the safe assumption that "templating escapes by default" is wrong
+        for raw Jinja2.
+
+        To safely render untrusted text into HTML, construct the environment
+        with `autoescape=True` (or `autoescape=select_autoescape([...])`). Never
+        assume a raw `Environment` escapes output.
+      scenarios: ["jinja2-autoescape-html-output-v1"]

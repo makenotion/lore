@@ -1,0 +1,622 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-contracts-v2
+description: >-
+  GitHub CLI command/output-contract longitudinal suite, batch 2. Phase B asks
+  for a concrete behavior whose non-inferable rule (an anchored qualifier-reject
+  regex with zero requests, an exit-code flip gated to a flag, a guard that must
+  sit inside a len(args) bound, an empty-object delete payload, a per-type
+  endpoint split with two-field dedup, a literal resolution token, an asymmetric
+  state-machine exit) is absent or wrong at the pinned SHA. Memory supplies the
+  contract; hidden verifiers gate on the contract tokens and a package go test
+  the agent must author.
+seededCorpus: ../vault-seeds/github-cli-contracts-v2.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: gh-cli-issue-list-reject-pr-search-qualifiers-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 628dea6e52252445cca76c2bd4f5672703800023
+    phaseA:
+      promptId: gh-cli-issue-list-reject-pr-search-qualifiers-v2-formation
+      prompt: >-
+        We will harden `gh issue list --search` in a later session so it refuses
+        pull-request-only search qualifiers before issuing any request. Inspect
+        `gh issue list`, the two search backends in
+        `pkg/cmd/issue/list/http.go` (`listIssues` non-search path versus
+        `searchIssues` advanced-search path), how `filters.Search` flows into
+        the search request, the httpmock-based package tests, and how sibling
+        commands reject invalid input early. Produce a durable implementation
+        plan only; do not edit files. The plan must resolve which qualifier
+        tokens count as pull-request-only, the exact shape of the matcher
+        (anchoring and case-sensitivity), which function the guard belongs in so
+        no request is issued when it fires, and the regressions that pin both
+        the rejection and the no-request guarantee.
+    phaseB:
+      promptId: gh-cli-issue-list-reject-pr-search-qualifiers-v2-use
+      prompt: >-
+        Make `gh issue list --search` reject pull-request-only search qualifiers
+        before any API call. Place the guard on the correct search path, match
+        the pull-request qualifier tokens precisely without tripping on
+        substrings, return the exact error that redirects the user to the
+        pull-request listing command, and issue zero requests when it fires.
+        Non-PR queries must still reach the search backend. Add focused package
+        regressions proving the rejection issues no requests and that a normal
+        query still hits the network.
+    expectedContext:
+      description: >-
+        Issue list must reject is:pr / type:pr / type:pull-request search
+        qualifiers in searchIssues with an anchored case-insensitive regex, the
+        exact gh-pr-list error, and zero API requests.
+      keywords:
+        - issue list
+        - search
+        - is:pr
+        - searchIssues
+        - regexp
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/issue-list-pr-qualifier-reject: `gh issue list --search` must reject pull-request-only search qualifiers BEFORE issuing any request. The guard lives in `searchIssues` in `pkg/cmd/issue/list/http.go` (the advanced-search path), not the non-search `listIssues` path. Match with the case-insensitive ANCHORED word-boundary regex `(?i)\b(?:is|type):(?:pr|pull-?request)\b` — it must reject `is:pr`, `type:pr`, `type:pull-request`, and `type:pullrequest` but must NOT trip on substrings such as `mispr` or `description:prologue`. When it matches, return the exact error `cannot use pull request search qualifiers with ` + "`" + `gh issue list` + "`" + `; use ` + "`" + `gh pr list` + "`" + ` instead` and perform ZERO API calls. Non-PR queries still hit the search backend normally. Use a `regexp.MustCompile` package var, not `strings.Contains`. Regressions should assert the exact error AND `assert.Len(reg.Requests, 0)` for `Search: "is:pr"`.
+      contextIds:
+        - gh-cli/issue-list-pr-qualifier-reject
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,26 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/issue/list';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/cannot use pull request search qualifiers/.test(impl), 'the exact pull-request-qualifier rejection message is missing');
+          +assert(/gh pr list/.test(impl), 'the rejection does not point the user at gh pr list');
+          +assert(/func searchIssues[\s\S]{0,400}(pull request search qualifiers|MatchString|pullRequestSearch)/.test(impl), 'the guard is not inside the searchIssues advanced-search path');
+          +assert(/regexp\.MustCompile\([^)]*(is\|type|is\)|\(\?i\))/.test(impl) || /\(\?i\)\\b\(\?:is\|type\):/.test(impl), 'a case-insensitive anchored qualifier regexp is not used');
+          +assert(!/strings\.Contains\([^)]*(is:pr|type:pr|pull)/.test(impl), 'an unanchored strings.Contains matcher over-rejects');
+          +assert(/is:pr|type:pr|pull-?request/.test(tests), 'tests do not exercise a pull-request qualifier');
+          +assert(/reg\.Requests|len\(reg\.Requests\)|assert\.Len\(\s*t\s*,\s*reg\.Requests|reg\.Verify/.test(tests), 'tests do not assert zero requests are issued when the guard fires');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/issue/list -count=1
+        timeoutMs: 300000
+  - id: gh-cli-cache-delete-succeed-on-no-caches-exit-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: b0cd1fb65523e818f23a42e9ee803ce6f4a5a8a7
+    phaseA:
+      promptId: gh-cli-cache-delete-succeed-on-no-caches-exit-v2-formation
+      prompt: >-
+        We will add a `--succeed-on-no-caches` flag to `gh cache delete --all` in
+        a later session. Inspect `gh cache delete`, the `--all` path in
+        `deleteRun`, how an empty cache set is currently surfaced (icon and exit
+        code), the existing flag-dependency guards (mutually-exclusive checks,
+        the must-provide-key check), the color-scheme success/failure icons, and
+        the cobra-level and run-level package tests. Produce a durable
+        implementation plan only; do not edit files. The plan must resolve which
+        exit code an empty `--all` run produces with and without the new flag,
+        the icon difference, which other inputs the flag is allowed with, and the
+        regressions that pin the exit-code flip and the flag dependency.
+    phaseB:
+      promptId: gh-cli-cache-delete-succeed-on-no-caches-exit-v2-use
+      prompt: >-
+        Add `--succeed-on-no-caches` to `gh cache delete`. Without the flag, an
+        empty cache set under `--all` must stay an error; with the flag it must
+        become a success. Match the project's existing convention for surfacing
+        the empty-set outcome (the notice and its visual indicator), keep the
+        flag scoped to the cases where it is meaningful, and reject it elsewhere
+        with the appropriate guard. Add focused package regressions covering the
+        flag-dependency rejection and the empty-set behavior with and without the
+        flag.
+    expectedContext:
+      description: >-
+        --succeed-on-no-caches flips the empty-cache-set exit from 1 to 0 with a
+        success icon and is rejected unless --all is set without a positional
+        arg.
+      keywords:
+        - cache delete
+        - succeed-on-no-caches
+        - exit code
+        - SuccessIcon
+        - --all
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/cache-delete-succeed-on-no-caches: `gh cache delete --succeed-on-no-caches` is an `--all`-only flag. Reject it with `--succeed-on-no-caches must be used in conjunction with --all` when `--all` is missing OR a single id/key positional arg is present (guard: `opts.SucceedOnNoCaches && (!opts.DeleteAll || len(args) == 1)`). Without the flag, `--all` over an EMPTY cache set returns `fmt.Errorf("%s No caches to delete", FailureIcon())` (exit 1). WITH the flag, print `No caches to delete` using the SUCCESS icon and return nil (exit 0); a `GetCaches` error is likewise swallowed to exit 0 when the flag is set. Do not fold the success case into the failure branch. Regressions: cobra-level reject of the flag without `--all` and with a positional arg, plus run-level empty-set returning nil (success icon) with the flag and an error without it.
+      contextIds:
+        - gh-cli/cache-delete-succeed-on-no-caches
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,25 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/cache/delete';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/succeed-on-no-caches/.test(impl), 'the --succeed-on-no-caches flag is not registered');
+          +assert(/SucceedOnNoCaches/.test(impl), 'a SucceedOnNoCaches option field is not threaded through');
+          +assert(/must be used in conjunction with --all/.test(impl), 'the --all-only dependency error is missing');
+          +assert(/SucceedOnNoCaches\s*&&\s*\(\s*!\s*opts\.DeleteAll\s*\|\|\s*len\(args\)\s*==\s*1\s*\)|!\s*opts\.DeleteAll\s*\|\|\s*len\(args\)\s*==\s*1/.test(impl), 'the flag dependency does not reject both no-all and single-arg cases');
+          +assert(/SucceedOnNoCaches[\s\S]{0,200}SuccessIcon|SuccessIcon[\s\S]{0,200}return nil/.test(impl), 'the empty-set success path does not use the success icon and return nil');
+          +assert(/succeed-on-no-caches|SucceedOnNoCaches/.test(tests), 'tests do not cover the new flag');
+          +assert(/must be used in conjunction with --all/.test(tests) && /(No caches to delete|wantErr|wantsErr|SuccessIcon|nil)/.test(tests), 'tests do not pin both the flag rejection and the empty-set exit behavior');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/cache/delete -count=1
+        timeoutMs: 300000
+  - id: gh-cli-cache-delete-ref-id-guard-ordering-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 1a1991858164faeeaa2bf8b9e8ed32a9b0a4f5d8
+    phaseA:
+      promptId: gh-cli-cache-delete-ref-id-guard-ordering-v2-formation
+      prompt: >-
+        We will fix a `gh cache delete --ref` validation bug in a later session.
+        Inspect `gh cache delete`, `parseCacheID`, how `--ref` is rejected for a
+        numeric cache ID, the ordering of the cobra `RunE` guards relative to the
+        first positional arg access, and what happens to `gh cache delete`
+        (no args) and `gh cache delete --all --ref ...`. Produce a durable
+        implementation plan only; do not edit files. The plan must resolve why
+        the current arg access is unsafe, where the id-vs-ref guard must sit so
+        that `--all --ref` reports the must-provide-key error rather than the
+        cache-ID error, and the regressions that pin the id-with-ref rejection
+        and the no-arg safety.
+    phaseB:
+      promptId: gh-cli-cache-delete-ref-id-guard-ordering-v2-use
+      prompt: >-
+        Fix `gh cache delete` so `--ref` is rejected only when a positional
+        argument is actually a numeric cache ID, with the exact `--ref cannot be
+        used with cache ID` error. Make the positional-argument inspection safe
+        when no positional is provided, so that `--all --ref` and a bare
+        `gh cache delete` each report their own existing errors rather than the
+        cache-ID error or a crash. Keep the existing key+ref DELETE query mapping
+        and the 404 not-found message unchanged. Add focused package regressions
+        for an id-with-ref rejection and the surrounding guard ordering.
+    expectedContext:
+      description: >-
+        The --ref-vs-cache-ID guard must be wrapped in len(args) > 0 so a bare
+        delete or --all --ref does not index args[0]; the ID rejection message
+        and key+ref query mapping are exact.
+      keywords:
+        - cache delete
+        - --ref
+        - parseCacheID
+        - cache ID
+        - len(args)
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/cache-delete-ref-id-guard: `gh cache delete <id-or-key> [--ref <ref>]` treats a purely numeric arg as a cache ID via `parseCacheID`. `--ref` is allowed with a cache KEY but rejected with the exact `--ref cannot be used with cache ID` when the arg is an ID. The bug to fix: the id detection accesses `args[0]` unconditionally, so it both panics on a bare `gh cache delete` and mis-reports for `--all --ref`. Wrap the detection AND the rejection inside `if len(args) > 0 { ... }` so the first positional is only read when present; then `--all --ref` falls through to `must provide a cache key` and a bare delete reports `must provide either cache id, cache key, or use --all`. Leave the key+ref deletion query `DELETE repos/{o}/{r}/actions/caches?key=<key>&ref=<ref>` and the 404 message `Could not find a cache matching <key> (with ref <ref>) in OWNER/REPO` unchanged. Regression: cobra-level `123 --ref refs/heads/main` -> `--ref cannot be used with cache ID`.
+      contextIds:
+        - gh-cli/cache-delete-ref-id-guard
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,24 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/cache/delete';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/--ref cannot be used with cache ID/.test(impl), 'the id-with-ref rejection message is missing');
+          +assert(/if\s+len\(args\)\s*>\s*0\s*\{[\s\S]{0,160}parseCacheID\(args\[0\]\)/.test(impl), 'the parseCacheID(args[0]) call is not wrapped inside an if len(args) > 0 bound');
+          +assert(/if\s+len\(args\)\s*>\s*0\s*\{[\s\S]{0,240}--ref cannot be used with cache ID/.test(impl), 'the id-with-ref rejection is not inside the len(args) > 0 bound');
+          +assert(/key=%s|url\.Values|QueryMatcher|actions\/caches\?key=/.test(impl) || /actions\/caches/.test(impl), 'the key+ref delete query mapping is missing');
+          +assert(/123\s+--ref|--ref[^\n]*123|cache id/i.test(tests) && /--ref cannot be used with cache ID/.test(tests), 'tests do not pin the id-with-ref rejection');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/cache/delete -count=1
+        timeoutMs: 300000
+  - id: gh-cli-pr-reopen-dry-run-state-exit-asymmetry-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-pr-reopen-dry-run-state-exit-asymmetry-v2-formation
+      prompt: >-
+        We will add a `--dry-run` mode to `gh pr reopen` in a later session.
+        Inspect `gh pr reopen`, how it fetches the PR state, the distinct
+        outcomes it already produces for a merged, an already-open, and a closed
+        PR (study the exact errors, exit codes, and which path runs the
+        `ReopenPullRequest` mutation), and the httpmock-based package tests.
+        Produce a durable implementation plan only; do not edit files. The plan
+        must resolve how a dry-run should treat each PR state so the existing
+        exit-code semantics are preserved exactly, where the dry-run branch must
+        sit relative to the state checks, that no mutation runs in dry-run, and
+        the regressions that pin each state's exit code and the no-mutation
+        guarantee.
+    phaseB:
+      promptId: gh-cli-pr-reopen-dry-run-state-exit-asymmetry-v2-use
+      prompt: >-
+        Add `gh pr reopen <pr> --dry-run` that plans the reopen without calling
+        the reopen mutation. The dry-run must preserve the existing per-state
+        exit asymmetry rather than collapsing it: a merged PR still fails, an
+        already-open PR is still a no-op success, and only a closed PR would
+        actually be reopened (printed as a plan in dry-run). No state runs a
+        mutation in dry-run. Add focused package regressions covering each PR
+        state under dry-run, pinning the exit code and zero API requests.
+    expectedContext:
+      description: >-
+        Dry-run pr reopen must preserve the merged-vs-open exit asymmetry
+        (SilentError vs nil) and run no mutation for any state, only printing a
+        plan for a closed PR.
+      keywords:
+        - pr reopen
+        - dry-run
+        - SilentError
+        - MERGED
+        - mutation
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-reopen-dry-run-state-exit: `gh pr reopen` fetches the PR `state` (Fields id/number/state/title) before doing anything. The exit semantics are ASYMMETRIC and must be preserved under `--dry-run`: a `MERGED` PR prints `can't be reopened because it was already merged` and returns `cmdutil.SilentError` (exit 1) running NO mutation; an already-OPEN PR prints `is already open` and returns `nil` (exit 0, no-op success) running NO mutation; only a `CLOSED` PR runs the `ReopenPullRequest` GraphQL mutation in normal mode. The new `--dry-run` branch belongs AFTER the merged and open state checks and BEFORE the http client / mutation, so merged still SilentErrors and open still nils; for a CLOSED PR dry-run prints a would-reopen plan and returns nil WITHOUT running the mutation. Do not unify the merged and open branches. Regressions: dry-run on MERGED returns SilentError with zero requests, dry-run on OPEN returns nil with zero requests, dry-run on CLOSED returns nil with zero requests (no `ReopenPullRequest` mutation).
+      contextIds:
+        - gh-cli/pr-reopen-dry-run-state-exit
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,26 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/pr/reopen';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/dry-run/.test(impl) && /DryRun/.test(impl), 'pr reopen does not add a --dry-run flag/option');
+          +assert(/MERGED[\s\S]{0,200}cmdutil\.SilentError/.test(impl), 'the merged branch no longer returns SilentError');
+          +assert(/IsOpen\(\)[\s\S]{0,160}return nil/.test(impl), 'the already-open branch no longer returns a nil no-op');
+          +assert(/DryRun[\s\S]{0,200}return nil/.test(impl), 'the dry-run branch does not short-circuit with a nil return before the mutation');
+          +assert(/MERGED[\s\S]*?cmdutil\.SilentError[\s\S]*?DryRun|IsOpen\(\)[\s\S]*?return nil[\s\S]*?DryRun/.test(impl), 'the dry-run branch is not placed after the merged/open state checks');
+          +assert(/DryRun|dry-run/.test(tests) && /(MERGED|SilentError)/.test(tests) && /(OPEN|already open)/.test(tests), 'tests do not cover dry-run across the merged and open states');
+          +assert(/(http\.Requests|reg\.Requests|\.Verify\(t\)|assert\.Len)/.test(tests), 'tests do not assert zero mutation requests during dry-run');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/pr/reopen -count=1
+        timeoutMs: 300000
+  - id: gh-cli-gist-rename-dry-run-empty-file-delete-payload-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-gist-rename-dry-run-empty-file-delete-payload-v2-formation
+      prompt: >-
+        We will add a `--dry-run` plan mode to `gh gist rename` in a later
+        session. Inspect `gh gist rename`, exactly how `renameRun` builds the
+        files map it sends to `POST gists/{id}`, how the OLD filename entry is
+        handled in that map versus the NEW entry, the owner/old/new guard order,
+        and the httpmock-based package tests. Produce a durable implementation
+        plan only; do not edit files. The plan must resolve the precise files-map
+        shape the rename sends (how the old key is represented so the API
+        deletes it, and what the new key carries), what the dry-run plan should
+        print, and the regressions that pin the payload shape and the no-upload
+        boundary.
+    phaseB:
+      promptId: gh-cli-gist-rename-dry-run-empty-file-delete-payload-v2-use
+      prompt: >-
+        Add `gh gist rename <id> <old> <new> --dry-run` that prints the planned
+        `POST gists/{id}` files map without calling the endpoint. The plan must
+        carry the same files map the real rename sends: the new filename entry
+        with its moved content and filename field, and the old filename entry
+        represented exactly the way the rename already represents it so the
+        server deletes that file. Keep the owner/not-found/already-exists guards
+        and the normal rename behavior unchanged. Dry-run must perform no update
+        POST. Add focused package regressions for the planned payload shape and
+        the no-upload boundary.
+    expectedContext:
+      description: >-
+        Gist rename deletes the old file by setting its files-map key to an empty
+        GistFile, never by removing the key; dry-run prints that same map and
+        performs no update POST.
+      keywords:
+        - gist rename
+        - files map
+        - empty GistFile
+        - dry-run
+        - delete
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/gist-rename-empty-file-delete: `gh gist rename <id> <old> <new>` renames a file via ONE `POST gists/{id}` whose `files` map carries the new key with the moved content (its `filename` field set to `<new>`) AND the OLD key set to an EMPTY `GistFile{}` value (`gist.Files[old] = &shared.GistFile{}`). Do NOT `delete(gist.Files, old)` — removing the map key leaves the file untouched on the server; the empty-object value is what triggers the delete. Guard order before the POST: `you do not own this gist` (login != owner), `File <old> not found in gist`, `File <new> already exists in gist`; only `description` and `files` go in the body. The new `--dry-run` prints that same planned files map (showing the new key with `filename` and the retained old key) and performs no update POST. Regressions: the plan/payload contains the old key as an empty entry (not removed) and the new key carrying `filename`, and dry-run issues no POST to `gists/{id}`.
+      contextIds:
+        - gh-cli/gist-rename-empty-file-delete
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,25 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/gist/rename';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/dry-run/.test(impl) && /DryRun/.test(impl), 'gist rename does not add a --dry-run flag/option');
+          +assert(/Files\[[^\]]*OldFileName[^\]]*\]\s*=\s*&?shared\.GistFile\{\}/.test(impl), 'the old filename is not set to an empty GistFile value (delete-by-empty)');
+          +assert(!/delete\(\s*gist\.Files/.test(impl), 'the old file is removed from the map with delete() instead of the empty-object delete');
+          +assert(/Files\[[^\]]*NewFileName[^\]]*\]\.Filename\s*=\s*opts\.NewFileName|Filename\s*=\s*opts\.NewFileName/.test(impl), 'the new entry does not carry the renamed filename field');
+          +assert(/DryRun[\s\S]{0,260}return nil/.test(impl), 'the dry-run branch does not short-circuit before the update POST');
+          +assert(/DryRun|dry-run/.test(tests) && /(old\.txt|OldFileName)/.test(tests) && /(new\.txt|NewFileName)/.test(tests), 'tests do not exercise the dry-run rename payload for both filenames');
+          +assert(/(POST|gists\/1234|reg\.Requests|\.Verify\(t\))/.test(tests), 'tests do not assert the no-update-POST boundary in dry-run');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/gist/rename -count=1
+        timeoutMs: 300000
+  - id: gh-cli-ssh-key-add-type-endpoint-routing-dry-run-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-ssh-key-add-type-endpoint-routing-dry-run-v2-formation
+      prompt: >-
+        We will add a `--dry-run` mode to `gh ssh-key add` in a later session.
+        Inspect `gh ssh-key add`, the `--type` enum, how `runAdd` chooses an
+        upload path per type, the two REST endpoints in the upload helpers, how
+        existing keys are deduplicated before upload, and the httpmock-based
+        package tests. Produce a durable implementation plan only; do not edit
+        files. The plan must resolve which REST endpoint each `--type` value
+        targets, how the type relates to the endpoint versus the payload, the
+        dedup comparison the upload path uses, what a dry-run should print, and
+        the regressions that pin the per-type endpoint and the no-upload
+        boundary.
+    phaseB:
+      promptId: gh-cli-ssh-key-add-type-endpoint-routing-dry-run-v2-use
+      prompt: >-
+        Add `gh ssh-key add <key-file> --dry-run` that reports the target REST
+        endpoint for the key without uploading it. The endpoint must be chosen
+        from `--type` exactly as the real upload chooses it: authentication keys
+        target one endpoint and signing keys target a different one (the type
+        selects the endpoint, it is not a payload field). Keep the normal upload
+        and its dedup behavior unchanged. Dry-run must issue no request. Add
+        focused package regressions for the default-type endpoint, the signing
+        endpoint, and zero requests in dry-run.
+    expectedContext:
+      description: >-
+        ssh-key add routes by --type to two distinct endpoints (user/keys vs
+        user/ssh_signing_keys); the type picks the endpoint, not a payload
+        field, and dry-run reports it with no upload.
+      keywords:
+        - ssh-key add
+        - --type
+        - user/keys
+        - ssh_signing_keys
+        - dry-run
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/ssh-key-add-type-endpoint-routing: `gh ssh-key add --type` is the enum `{authentication, signing}` (default `authentication`). The TYPE selects the REST ENDPOINT, not a payload field: authentication keys POST to `user/keys`; signing keys POST to `user/ssh_signing_keys`. The JSON body is `{title, key}` where `key` is the full key line, identical for both endpoints. Before uploading, the upload path lists the matching key set and dedups by ONLY the first two whitespace-separated fields (`splitKey[0] + " " + splitKey[1]`, i.e. algorithm + base64 body), IGNORING the trailing comment; an existing match returns no-upload with no error. The new `--dry-run` resolves the endpoint from `--type` exactly the same way and prints it WITHOUT issuing any request. Regressions: dry-run with the default type reports `user/keys`, dry-run with `--type signing` reports `user/ssh_signing_keys`, and dry-run issues zero requests.
+      contextIds:
+        - gh-cli/ssh-key-add-type-endpoint-routing
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,25 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/ssh-key/add';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/dry-run/.test(impl) && /DryRun/.test(impl), 'ssh-key add does not add a --dry-run flag/option');
+          +assert(/user\/keys/.test(impl) && /user\/ssh_signing_keys/.test(impl), 'the two per-type REST endpoints are not both present');
+          +assert(/DryRun[\s\S]{0,260}user\/ssh_signing_keys|SigningKey[\s\S]{0,120}user\/ssh_signing_keys/.test(impl), 'the dry-run endpoint is not routed from the signing type');
+          +assert(/DryRun[\s\S]{0,450}return nil/.test(impl), 'the dry-run branch does not short-circuit before the upload');
+          +assert(/splitKey\[0\]\s*\+\s*"\s"\s*\+\s*splitKey\[1\]|first two/.test(impl), 'the first-two-fields dedup comparison is no longer present');
+          +assert(/DryRun|dry-run/.test(tests) && /user\/ssh_signing_keys/.test(tests) && /user\/keys/.test(tests), 'tests do not pin both per-type endpoints under dry-run');
+          +assert(/(reg\.Requests|assert\.Len|\.Verify\(t\))/.test(tests), 'tests do not assert zero requests during dry-run');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/ssh-key/add -count=1
+        timeoutMs: 300000
+  - id: gh-cli-repo-set-default-dry-run-base-literal-resolution-v2
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-repo-set-default-dry-run-base-literal-resolution-v2-formation
+      prompt: >-
+        We will add a `--dry-run` mode to `gh repo set-default` in a later
+        session. Inspect `gh repo set-default`, how `setDefaultRun` computes the
+        value it writes to the `gh-resolved` git config key, when that value is a
+        special literal versus a full owner/name string, which git client calls
+        perform the write, and the `CommandStubber`/httpmock-based package tests.
+        Produce a durable implementation plan only; do not edit files. The plan
+        must resolve the exact value written for a repo that already matches a
+        remote versus one that does not, where the dry-run branch must sit so it
+        prints that planned value without writing git config, and the
+        regressions that pin both resolution forms with no git writes.
+    phaseB:
+      promptId: gh-cli-repo-set-default-dry-run-base-literal-resolution-v2-use
+      prompt: >-
+        Add `gh repo set-default <repo> --dry-run` that prints the planned
+        resolution value and target remote without writing any git config. The
+        planned value must match exactly what the real command would write into
+        the resolution config key, which differs depending on whether the
+        selected repo is one a remote already points at versus one that is not.
+        The dry-run branch must run after the resolution is computed and before
+        any git config write. Add focused package regressions for both the
+        matching-remote case and the non-remote case, asserting no git config
+        command runs in dry-run.
+    expectedContext:
+      description: >-
+        set-default writes the literal "base" to gh-resolved when the selected
+        repo matches a remote, otherwise OWNER/REPO; dry-run prints that planned
+        value and writes no git config.
+      keywords:
+        - repo set-default
+        - gh-resolved
+        - base
+        - dry-run
+        - RemoteForRepo
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/repo-set-default-base-literal: `gh repo set-default` records the chosen default by writing the git config key `remote.<name>.gh-resolved`. The value is the LITERAL string `base` when the selected repo IS the repo a remote already points at (`resolvedRemotes.RemoteForRepo(selectedRepo)` returns that remote); it is the full `OWNER/REPO` string only when the selected repo is NOT a direct remote (then it attaches to the first remote after a `sort.Stable`). Do not store `OWNER/REPO` unconditionally — the literal `base` is the in-band marker for self-resolution. The write uses `SetRemoteResolution`/`UnsetRemoteResolution` (git config `--add`/`--unset`). The new `--dry-run` computes the same `resolution` value and prints it (with the target remote name) AFTER the resolution branch and BEFORE any `SetRemoteResolution`/`UnsetRemoteResolution` call, then returns nil so no git config is written. Regressions: a repo matching a remote plans `base`; a repo not matching plans `OWNER/REPO`; neither dry-run runs a git config command.
+      contextIds:
+        - gh-cli/repo-set-default-base-literal
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,24 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/repo/setdefault';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/dry-run/.test(impl) && /DryRun/.test(impl), 'set-default does not add a --dry-run flag/option');
+          +assert(/resolution\s*:?=\s*"base"/.test(impl), 'the resolution no longer starts from the literal "base"');
+          +assert(/RemoteForRepo\([^)]*\)[\s\S]{0,200}ghrepo\.FullName\(selectedRepo\)/.test(impl), 'the OWNER/REPO resolution is no longer derived only when RemoteForRepo returns nil');
+          +assert(/DryRun[\s\S]{0,260}return nil/.test(impl), 'the dry-run branch does not short-circuit before the git config write');
+          +assert(/DryRun[\s\S]*?return nil[\s\S]*?SetRemoteResolution|SetRemoteResolution/.test(impl) && /DryRun[\s\S]{0,260}return nil/.test(impl), 'the dry-run branch is not placed before SetRemoteResolution');
+          +assert(/DryRun|dry-run/.test(tests) && /base/.test(tests) && /(OWNER2\/REPO2|OWNER\/REPO|FullName)/.test(tests), 'tests do not pin both the base and OWNER/REPO resolution forms under dry-run');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/repo/setdefault -count=1
+        timeoutMs: 300000

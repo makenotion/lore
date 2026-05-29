@@ -1,0 +1,46 @@
+version: 1
+id: httpx-modelhard-v1
+description: >-
+  Model-hard seed corpus for an HTTPX longitudinal suite. Entries model durable
+  protocol findings whose correct behavior is counterintuitive to a strong model
+  reasoning from safe defaults, pinned at HTTPX revisions before the matching
+  upstream fix.
+repository:
+  repo: encode/httpx
+  sha: 4f8068a7ade1f4d10403e325ed2354109df1724f
+vault:
+  project:
+    name: httpx
+    path: .
+    tags: ["python", "http", "client", "oss"]
+  topics:
+    - id: client/redirects
+      name: Client redirects
+      description: Redirect loops, request header rebuilding, auth interaction, and origin determination.
+    - id: auth/credentials
+      name: Credential handling
+      description: Authorization header lifecycle across redirects, origin changes, and transport upgrades.
+  memories:
+    - id: httpx/redirect-auth-https-upgrade
+      title: Authorization survives a same-host http-to-https upgrade redirect
+      topics: ["client/redirects", "auth/credentials"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Strip `Authorization` on cross-origin redirects, but preserve it for a
+        direct same-host http-to-https default-port upgrade.
+      body: |
+        When HTTPX follows a redirect, it must strip the `Authorization` header
+        whenever the redirect target is a different origin, so credentials are
+        not leaked to another host or downgraded onto cleartext transport.
+
+        There is one carve-out that a safe default implementation gets wrong: a
+        redirect that is only an `http`-to-`https` upgrade to the same host on
+        default ports (80 to 443) is the same logical origin moving to a more
+        secure transport, so `Authorization` must be preserved. Any host change,
+        a non-default port, or an https-to-http downgrade still strips.
+
+        Encode this as an explicit "is this an https upgrade of the current
+        URL?" check that runs before the cross-origin strip, and mirror it in
+        both the sync and async redirect-header construction paths.
+      scenarios: ["httpx-https-upgrade-auth-redirect-v1"]

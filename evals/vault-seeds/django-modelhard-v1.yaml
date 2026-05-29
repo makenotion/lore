@@ -1,0 +1,145 @@
+version: 1
+id: django-modelhard-v1
+description: >-
+  Focused seed corpus for a model-hard Django ORM longitudinal suite. Entries
+  capture durable, intrinsic Django ORM and ModelForm contracts whose correct
+  application is counterintuitive to a strong model reasoning from defaults, and
+  whose violation returns silently wrong data rather than raising. Pinned at a
+  stable Django revision.
+repository:
+  repo: django/django
+  sha: 5b3109329936e37432b1795f4b355ed60c4efd0a
+vault:
+  project:
+    name: django
+    path: .
+    tags: ["python", "orm", "web", "oss"]
+  topics:
+    - id: orm/querysets
+      name: QuerySet filtering semantics
+      description: Spanning multi-valued relations with filter/exclude, chaining, and duplicate rows.
+    - id: orm/aggregation
+      name: Aggregation and annotation
+      description: Combining Count/aggregate annotations, join fanout, and annotate/filter ordering.
+    - id: orm/persistence
+      name: Bulk persistence side effects
+      description: Which save()/signal/auto-field behaviors the bulk write paths bypass.
+    - id: forms/modelform
+      name: ModelForm save semantics
+      description: commit=False instances, deferred many-to-many persistence, and save_m2m().
+  memories:
+    - id: django/multivalued-filter-chaining
+      title: Chained filters span a multi-valued relation differently than one filter
+      topics: ["orm/querysets"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        One filter requires a single related row to match all conditions; chained filters allow different rows and can duplicate primary rows.
+      body: |
+        Spanning a multi-valued relation, a single `.filter(rel__a=x, rel__b=y)`
+        (both lookups in one filter) requires the SAME related row to satisfy both
+        conditions. Chaining `.filter(rel__a=x).filter(rel__b=y)` allows DIFFERENT
+        related rows to satisfy each condition and performs multiple joins, which can
+        return DUPLICATE primary rows.
+
+        Choose the single-filter form when both conditions must hold on the same
+        related row. Choose chained filters — and add `.distinct()` — when the
+        conditions may hold on different related rows. The two forms read identically
+        in intent but are not interchangeable, and the chained form silently duplicates
+        rows unless de-duplicated.
+      scenarios: ["django-filter-chained-vs-single-multivalued-v1"]
+    - id: django/multi-aggregate-join-fanout
+      title: Multiple aggregates over different relations multiply via join fanout
+      topics: ["orm/aggregation"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Two Count annotations over two multi-valued relations in one annotate() multiply each other unless each is distinct.
+      body: |
+        Two `Count()` (or any two aggregate) annotations over DIFFERENT
+        multi-valued relations in a single `annotate()` call are computed by JOINs, so
+        the counts MULTIPLY. A book with 2 authors and 3 stores reports 6 and 6, not 2
+        and 3 — silently inflated numbers, no error.
+
+        For `Count`, pass `distinct=True` to each annotation. For non-`Count`
+        aggregates there is no kwarg fix; compute each via a separate
+        `Subquery`/`OuterRef` annotation. Never combine multiple multi-valued
+        aggregates in one annotate without distinct or subqueries.
+      scenarios: ["django-annotate-multi-aggregate-fanout-v1"]
+    - id: django/annotate-filter-order
+      title: annotate() and filter() are not commutative
+      topics: ["orm/aggregation"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Annotate-then-filter counts all related rows; filter-then-annotate counts only matching rows.
+      body: |
+        `annotate()` and `filter()` are NOT commutative.
+        `annotate(n=Count('book')).filter(book__rating__gt=3)` counts ALL books (the
+        annotation is computed before the filter) and only uses the filter to pick which
+        parent rows appear. `filter(book__rating__gt=3).annotate(n=Count('book'))`
+        counts only the books matching the filter (the filter constrains the rows fed to
+        the aggregate).
+
+        Put the filter BEFORE the annotate when the aggregate should see only matching
+        rows; put it AFTER when it should see all rows. The annotate-first form still
+        needs `distinct=True` to avoid join fanout. Same clauses, different order,
+        different per-row numbers.
+      scenarios: ["django-annotate-filter-noncommutative-v1"]
+    - id: django/exclude-multivalued-relation
+      title: Multi-kwarg exclude() over a multi-valued relation is not a single-row negation
+      topics: ["orm/querysets"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        exclude(rel__a, rel__b) negates the conditions separately; matching one related row to both requires excluding a subquery.
+      body: |
+        `qs.exclude(rel__a=x, rel__b=y)` over a multi-valued relation does NOT
+        mean "exclude parents that have a single related row matching both conditions".
+        Django pushes each condition into the NOT logic separately, so it behaves
+        differently from negating the equivalent `filter` and silently drops parents it
+        should keep.
+
+        To express "no single related row matches both conditions", exclude a subquery of
+        the positive filter: `exclude(pk__in=Model.objects.filter(rel__a=x, rel__b=y))`
+        (or a single nested `Q`/`Exists`). The naive multi-kwarg `exclude` reads
+        identically to the `filter` form a developer just wrote but is wrong on
+        multi-valued relations (ticket #14645).
+      scenarios: ["django-exclude-multivalued-relation-v1"]
+    - id: django/bulk-create-bypasses-save
+      title: bulk_create() bypasses save() and signals
+      topics: ["orm/persistence"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        bulk_create issues raw inserts, skipping save() overrides and pre_save/post_save signals.
+      body: |
+        `QuerySet.bulk_create()` issues raw bulk INSERTs. It does NOT call
+        `Model.save()` and does NOT send `pre_save`/`post_save` signals, so any
+        normalization done in a `save()` override and any signal receivers are silently
+        skipped. Whether `auto_now_add` fields and primary keys are populated is
+        backend-dependent and not something to rely on.
+
+        When per-row `save()` behavior or signals must run, loop `obj.save()` instead
+        of `bulk_create`, or dispatch the required work explicitly. The fast path
+        trades correctness of side effects for speed.
+      scenarios: ["django-bulk-create-save-side-effects-v1"]
+    - id: django/modelform-commit-false-save-m2m
+      title: ModelForm.save(commit=False) defers M2M and requires save_m2m()
+      topics: ["forms/modelform"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        A commit=False instance cannot persist M2M data; save_m2m() must run after instance.save() or selections are dropped.
+      body: |
+        `form.save(commit=False)` returns an UNSAVED instance and CANNOT
+        persist `ManyToManyField` data, because the instance has no primary key yet. It
+        attaches a `save_m2m()` method to the form.
+
+        After you call `instance.save()`, you MUST call `form.save_m2m()` or every
+        M2M selection is silently dropped — the row saves, the join table stays empty,
+        and no exception is raised. `save_m2m()` is required only on the
+        `commit=False` path; a plain `form.save()` persists M2M data automatically.
+        The `commit=False` idiom is the standard way to set an extra field before
+        saving, which makes the dropped M2M an easy and silent mistake.
+      scenarios: ["django-modelform-commit-false-save-m2m-v1"]

@@ -1,0 +1,510 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-github-cli-contracts-v1
+description: >-
+  GitHub CLI command/output-contract longitudinal suite. Phase B asks for a
+  concrete behavior whose non-inferable rule (inverted payload field, unset
+  GraphQL defaults, exact URL anchors, host-split remotes, a magic exit code,
+  snake_case enum tokens) is absent or wrong at the pinned SHA. Memory supplies
+  the contract; hidden verifiers gate on the contract tokens and a package
+  go test the agent must author.
+seededCorpus: ../vault-seeds/github-cli-contracts-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: gh-cli-repo-deploy-key-add-dry-run-json-readonly-inversion-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+    phaseA:
+      promptId: gh-cli-repo-deploy-key-add-dry-run-json-readonly-inversion-v1-formation
+      prompt: >-
+        We will implement a follow-up feature in a later session: a dry-run
+        plan mode for adding a repository deploy key. Inspect
+        `gh repo deploy-key add`, its upload HTTP path, the keys REST endpoint
+        payload, the allow-write flag, stdin/file key input, and the package
+        tests. Produce a durable implementation plan only; do not edit files.
+        The plan must resolve the exact REST payload field names and their
+        relationship to the CLI flags, the JSON plan fields, and tests proving
+        no key upload happens during dry-run.
+    phaseB:
+      promptId: gh-cli-repo-deploy-key-add-dry-run-json-readonly-inversion-v1-use
+      prompt: >-
+        Add `gh repo deploy-key add <key-file> --dry-run --json` that prints the
+        planned keys POST body without calling the endpoint. The plan must carry
+        the same payload fields the real upload sends, the dry-run must perform
+        no key POST, and normal add behavior must stay unchanged. Add focused
+        package regressions covering the planned payload and the no-upload
+        boundary.
+    expectedContext:
+      description: >-
+        Deploy-key add dry-run should mirror the real keys POST payload exactly,
+        including the inverted read_only field derived from the allow-write
+        flag, and must perform no upload.
+      keywords:
+        - deploy-key
+        - dry-run
+        - read_only
+        - allow-write
+        - upload
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/deploy-key-add-readonly-inversion: Add `gh repo deploy-key add <key-file> --dry-run --json` that prints the planned `repos/{owner}/{repo}/keys` POST body without calling it. The REST body field is snake_case `read_only` equal to the NEGATION of the `--allow-write` flag (`read_only: !allowWrite`); the default with no `--allow-write` is a read-only key. The field is not `write`, `allow_write`, `readOnly`, nor `read_only` set to the flag value directly. Dry-run emits a JSON plan with `title`, `key`, and the already-inverted `read_only`, and performs no POST. Tests should prove a normal add posts `read_only` true without `--allow-write` and false with it, and that dry-run registers zero key POSTs.
+      contextIds:
+        - gh-cli/deploy-key-add-readonly-inversion
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,26 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/repo/deploy-key/add';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'deploy-key add lacks a dry-run mode');
+          +assert(/Exporter|AddJSON|--json|JSON/.test(impl), 'deploy-key add lacks JSON plan output');
+          +assert(/read_only/.test(all), 'plan/payload does not use the snake_case read_only field');
+          +assert(/!\s*(opts\.)?(isWritable|allowWrite|AllowWrite|Writable)|read_only["'`:\s]+.*!/.test(impl), 'read_only is not derived from the negation of the allow-write flag');
+          +assert(!/"write"|allow_write|readOnly/.test(impl), 'plan/payload uses a wrong field name instead of read_only');
+          +assert(/keys/.test(tests) && /(not called|no request|unexpected|Verify|len\(reg|pending mocks|RESTPayload|payload|Register)/i.test(tests), 'tests do not exercise the keys POST boundary');
+          +assert(/read_only/.test(tests) && /(true|false)/.test(tests), 'tests do not pin the read_only true/false polarity');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/repo/deploy-key/add -count=1
+        timeoutMs: 300000
+  - id: gh-cli-pr-revert-dry-run-json-merged-default-preservation-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 4f10a525bc966b405b7117435af4c47ada38da5b
+    phaseA:
+      promptId: gh-cli-pr-revert-dry-run-json-merged-default-preservation-v1-formation
+      prompt: >-
+        We will implement a follow-up feature in a later session: a dry-run plan
+        mode for reverting a pull request. Inspect `gh pr revert`, the
+        `RevertPullRequest` GraphQL mutation and its input struct, how the PR
+        state is fetched, how `--title`/`--body`/`--body-file` are read, and the
+        package tests. Produce a durable implementation plan only; do not edit
+        files. The plan must resolve which PR states permit a revert, exactly
+        when the mutation input title/body fields should and should not be set,
+        the JSON plan fields, and tests proving no revert mutation runs during
+        dry-run.
+    phaseB:
+      promptId: gh-cli-pr-revert-dry-run-json-merged-default-preservation-v1-use
+      prompt: >-
+        Add `gh pr revert <pr> --dry-run --json` planning the
+        `RevertPullRequest` mutation without executing it. Reject (or plan a
+        not-revertable result for) any PR that is not in the revertable state,
+        leave the mutation title/body inputs unset when the user did not pass
+        those flags so GitHub generates its defaults, and emit a JSON plan.
+        Dry-run must run no mutation. Add focused package regressions for the
+        state gate, the unset-default behavior, and the no-mutation boundary.
+    expectedContext:
+      description: >-
+        PR revert is valid only on merged PRs and the mutation input must omit
+        title/body unless the user passed the flags; dry-run plans without
+        mutating.
+      keywords:
+        - pr revert
+        - dry-run
+        - MERGED
+        - title
+        - body
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-revert-dry-run-merged-defaults: Add `gh pr revert <pr> --dry-run --json`. Revert is only valid when the PR `state` is `MERGED`; reject (or plan `canRevert=false`) before the mutation for open, closed, or draft PRs. The `RevertPullRequest` GraphQL input must leave `title`/`body` UNSET unless the user passed `--title`/`--body` — track flag-changed, not the empty value — so GitHub generates its default revert title and body; sending an empty string clobbers them. Dry-run JSON exposes number, state, draft, title, body, canRevert, and action=revert, and must run no `RevertPullRequest` mutation. Tests should assert the planned input omits title/body keys when flags are unset and includes them only when provided.
+      contextIds:
+        - gh-cli/pr-revert-dry-run-merged-defaults
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,26 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/pr/revert';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const all = impl + NL + tests;
+          +assert(/dry-run|DryRun/.test(impl), 'pr revert lacks a dry-run mode');
+          +assert(/Exporter|AddJSON|--json|JSON/.test(impl), 'pr revert lacks JSON plan output');
+          +assert(/MERGED/.test(impl), 'revert does not gate on the MERGED state');
+          +assert(/if\s+[\w.]*Set\b|if\s+[\w.]+\.(Title|Body)\s*!=\s*""|if\s+opts\.(Title|Body)\s*!=\s*""/.test(impl), 'mutation input does not conditionally guard title/body on flag-changed (it is set unconditionally)');
+          +assert(/(canRevert|action)/.test(all), 'plan does not report a revert action/eligibility field');
+          +assert(/RevertPullRequest|Revert/.test(tests) && /(not called|no request|unexpected|pending mocks|len\(|\.Verify\()/i.test(tests), 'tests do not prove dry-run runs no revert mutation');
+          +assert(/(not merged|MERGED|open|closed|draft)/i.test(tests), 'tests do not cover the non-merged state gate');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/pr/revert -count=1
+        timeoutMs: 300000
+  - id: gh-cli-browse-line-range-plain-anchor-url-contract-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 4ea9076d81e1d8b9804e96e5a15ba2e2316e6663
+    phaseA:
+      promptId: gh-cli-browse-line-range-plain-anchor-url-contract-v1-formation
+      prompt: >-
+        We will add a blame view to `gh browse` in a later session. Inspect
+        `gh browse`, how it parses a `file:start-end` argument, how it builds
+        the blob section URL today, the line-anchor format, the query parameter
+        it appends for line views, and how it escapes path segments. Produce a
+        durable implementation plan only; do not edit files. The plan must
+        resolve the exact URL shape a blame view should produce for a file line
+        range versus the existing blob view, including any query parameter
+        difference, the anchor format, and the path-escaping rule for slashes,
+        plus the regressions that pin them.
+    phaseB:
+      promptId: gh-cli-browse-line-range-plain-anchor-url-contract-v1-use
+      prompt: >-
+        Add a `--blame` flag to `gh browse` that opens the blame view for a
+        file, including for a `file:<start>-<end>` line range. The blame URL
+        shape differs from the existing blob view in its query parameter usage;
+        keep the existing blob line-range URL unchanged. Preserve literal
+        slashes in nested paths. Add focused package regressions for a blame
+        range, the existing blob range, a single line, and a nested path.
+    expectedContext:
+      description: >-
+        The blame view URL omits the plain=1 query param that the blob line
+        view requires; both keep capital-L anchors on both bounds and literal
+        slashes in nested paths.
+      keywords:
+        - browse
+        - blame
+        - plain=1
+        - line range
+        - escape
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/browse-line-range-url: `gh browse <file>:<start>-<end>` builds `blob/<ref>/<path>?plain=1#L<start>-L<end>`. The `?plain=1` query parameter is REQUIRED for the blob view whenever a line number is present (it forces the raw blob view so the anchor resolves), and the anchor uses a capital L on BOTH bounds (`L12-L20`, never `L12-20`); a single line uses `#L<n>`. The blame view differs: `gh browse --blame <file>:<a>-<b>` builds `blame/<ref>/<path>#L<a>-L<b>` with NO `?plain=1` (blame is already a non-rendered view). Path segments are URL-escaped but slashes stay literal (escape everything except `/`). Regressions should pin a blame range, the blob range, a single line, and a nested path.
+      contextIds:
+        - gh-cli/browse-line-range-url
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,23 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/browse';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/--?blame|BlameFlag/.test(impl), 'browse does not add a blame flag');
+          +assert(/plain=1/.test(impl), 'blob line-range URL is missing the plain=1 query parameter');
+          +assert(/blame\/%s\/%s|blame\/.+#|blame\/.+%s/.test(impl), 'blame view does not build a blame/<ref>/<path> URL');
+          +assert(!/blame[^\n]*plain=1/.test(impl), 'blame URL must omit plain=1');
+          +assert(/escapePath|%2F|PathEscape/.test(impl), 'path escaping that preserves literal slashes is missing');
+          +assert(/blame/i.test(tests) && /(L1|L2|L3|L4|L5|L6|L7|L8|L9)/.test(tests), 'tests do not pin the blame line-range URL anchor');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/browse -count=1
+        timeoutMs: 300000
+  - id: gh-cli-gist-clone-enterprise-subdomain-url-contract-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 0ecd424901427fa96e4b322290d480b5f1350baa
+    phaseA:
+      promptId: gh-cli-gist-clone-enterprise-subdomain-url-contract-v1-formation
+      prompt: >-
+        We will fix a gist clone remote-URL regression in a later session.
+        Inspect `gh gist clone`, how it formats the git remote URL from a gist
+        id, how it chooses ssh versus https, how it detects GitHub Enterprise
+        hosts, and the package tests including the git command stub. Produce a
+        durable implementation plan only; do not edit files. The plan must
+        resolve the exact remote URL shape for github.com versus an enterprise
+        host, across both protocols, and the regressions that pin all four
+        forms.
+    phaseB:
+      promptId: gh-cli-gist-clone-enterprise-subdomain-url-contract-v1-use
+      prompt: >-
+        Fix `gh gist clone <id>` so the computed git remote URL is correct on
+        both github.com and GitHub Enterprise hosts, across ssh and https. The
+        two deployments do not share a single uniform URL shape. Add focused
+        package regressions, using the git command stub, that assert the exact
+        clone URL for the matrix of {github.com, an enterprise host} times
+        {https, ssh}.
+    expectedContext:
+      description: >-
+        Gist clone remote URLs differ between github.com (gist subdomain) and
+        Enterprise (gist path on the bare host), across ssh and https.
+      keywords:
+        - gist clone
+        - enterprise
+        - gist subdomain
+        - remote url
+        - protocol
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/gist-clone-remote-url: `gh gist clone` remote URLs split by host. On github.com, gists live on the `gist.` SUBDOMAIN: `https://gist.github.com/<id>.git` and `git@gist.github.com:<id>.git`. On GitHub Enterprise the `gist.` subdomain is not guaranteed, so gists live under a `/gist/` PATH on the bare host: `https://<host>/gist/<id>.git` and `git@<host>:gist/<id>.git`. Choose between the shapes with `IsEnterprise(host)` and choose ssh versus https from the configured git protocol. Do not use one uniform URL format for both deployments. Regressions should use the git command stub and assert all four URL strings.
+      contextIds:
+        - gh-cli/gist-clone-remote-url
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,22 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/gist/clone';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +assert(/IsEnterprise/.test(impl), 'remote URL formatting does not branch on IsEnterprise');
+          +assert(/gist\./.test(impl), 'github.com remote URL does not use the gist. subdomain');
+          +assert(/\/gist\//.test(impl), 'enterprise remote URL does not use the /gist/ path segment');
+          +assert(/git@/.test(impl), 'ssh remote URL form is missing');
+          +assert(/gist\./.test(tests) && /\/gist\//.test(tests) && /git@/.test(tests), 'tests do not pin both the subdomain and path remote URL forms across protocols');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/gist/clone -count=1
+        timeoutMs: 300000
+  - id: gh-cli-pr-checks-watch-flag-precedence-pending-exit-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: 6f618b522c1e5ba8970e3afae3cfc6a6d252e246
+    phaseA:
+      promptId: gh-cli-pr-checks-watch-flag-precedence-pending-exit-v1-formation
+      prompt: >-
+        We will harden `gh pr checks` exit-code behavior in a later session.
+        Inspect `gh pr checks`, the watch/fail-fast/interval/json flag guards,
+        how it counts failed versus pending checks at the end of a run, the
+        sentinel errors it returns, and how the top-level command runner maps
+        those sentinels to process exit codes. Produce a durable implementation
+        plan only; do not edit files. The plan must resolve which exit code a
+        run with only pending checks should produce versus a run with failed
+        checks, and the regressions that pin that distinction.
+    phaseB:
+      promptId: gh-cli-pr-checks-watch-flag-precedence-pending-exit-v1-use
+      prompt: >-
+        Make `gh pr checks` return a distinct process exit code when checks are
+        still pending and none have failed, separate from the failed-checks exit
+        code. Preserve the existing watch/fail-fast/interval/json flag guards.
+        Add focused package regressions that distinguish a pending-only run from
+        a failed run, and that pin how the top-level runner maps each sentinel
+        error to its process exit code.
+    expectedContext:
+      description: >-
+        PR checks returns a distinct sentinel for pending-only runs that the
+        runner maps to exit 8, while failed checks map to exit 1; flag guards
+        are preserved.
+      keywords:
+        - pr checks
+        - pending
+        - exit code
+        - PendingError
+        - watch
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/pr-checks-watch-precedence-exit8: `gh pr checks` enforces `--watch` mutually exclusive with `--json`, and `--fail-fast`/`--interval` each require `--watch` (default interval 10s). The non-inferable rule is the exit code: when checks are still PENDING and none have failed, the command returns `cmdutil.PendingError`, which the top-level runner maps to process EXIT CODE 8 — not 1 and not 0. Failed checks return `cmdutil.SilentError`, which maps to exit 1; pending must not be folded into the failed branch. Preserve the guards and add a regression for the pending-vs-failed sentinel distinction plus the 8-vs-1 runner mapping.
+      contextIds:
+        - gh-cli/pr-checks-watch-precedence-exit8
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,24 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function exists(p) { return fs.existsSync(p); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/pr/checks';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +const errors = exists('pkg/cmdutil/errors.go') ? read('pkg/cmdutil/errors.go') : '';
+          +const runner = (exists('internal/ghcmd/cmd.go') ? read('internal/ghcmd/cmd.go') : '') + NL + (exists('cmd/gh/main.go') ? read('cmd/gh/main.go') : '');
+          +assert(/PendingError/.test(impl) && /PendingError/.test(errors), 'a distinct PendingError sentinel is not defined and returned');
+          +assert(/Pending\s*>\s*0/.test(impl) && /Failed\s*>\s*0/.test(impl), 'pending and failed counts are not branched separately');
+          +assert(/PendingError/.test(runner) && /exitCode\s*=\s*8|exitPending|return\s+8\b|\b8\b/.test(runner), 'the runner does not map PendingError to exit code 8');
+          +assert(/[Pp]ending/.test(tests) && /SilentError|PendingError|exit/i.test(tests), 'tests do not distinguish the pending sentinel from the failed sentinel');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/pr/checks -count=1
+        timeoutMs: 300000
+  - id: gh-cli-issue-pr-lock-reason-enum-snakecase-contract-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: cli/cli
+      sha: e019ff9f022ecc661aa96ce2fd4a1e7e7b46f1dd
+    phaseA:
+      promptId: gh-cli-issue-pr-lock-reason-enum-snakecase-contract-v1-formation
+      prompt: >-
+        We will harden the lock-reason contract shared by `gh issue lock` and
+        `gh pr lock` in a later session. Inspect the lock command, the accepted
+        `--reason` values, how they map to the GraphQL lock-reason enum, what is
+        sent when no reason is provided, and the package tests. Produce a
+        durable implementation plan only; do not edit files. The plan must
+        resolve the exact accepted reason tokens and their casing, the enum
+        members they map to, and what the mutation sends for an unset reason,
+        plus the regressions that pin them.
+    phaseB:
+      promptId: gh-cli-issue-pr-lock-reason-enum-snakecase-contract-v1-use
+      prompt: >-
+        Harden the `--reason` contract for `gh issue lock` / `gh pr lock`. Pin
+        the exact accepted reason tokens and their casing, their mapping to the
+        GraphQL lock-reason enum members, and that an unset reason sends a nil
+        lock reason rather than a default. Reject any other reason before the
+        mutation. Add focused package regressions covering a rejected
+        wrong-casing reason, an accepted reason mapping to its enum member, and
+        an unset reason sending nil.
+    expectedContext:
+      description: >-
+        Lock accepts exactly four snake_case reason tokens mapping to GraphQL
+        enum members, and an unset reason sends a nil lock reason, never a
+        default.
+      keywords:
+        - issue lock
+        - reason
+        - snake_case
+        - LockReason
+        - nil
+    seededContext:
+      renderedContext: |
+        - [memory] gh-cli/lock-reason-enum: `gh issue lock` / `gh pr lock` accept exactly four `--reason` values, all snake_case: `off_topic`, `resolved`, `spam`, `too_heated` (NOT hyphenated, spaced, run-together, or title-cased). They map to GraphQL `LockReason` members `OFF_TOPIC`/`RESOLVED`/`SPAM`/`TOO_HEATED`. An unset or empty reason sends a nil/omitted `lockReason` so the server records no reason; never substitute a default value. Any other reason is rejected before the mutation with a flag error listing the four. Regressions should prove a hyphenated reason is rejected, a snake_case reason maps to the matching enum member, and an unset reason sends nil.
+      contextIds:
+        - gh-cli/lock-reason-enum
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/.lore-hidden-verify.mjs b/.lore-hidden-verify.mjs
+          new file mode 100644
+          index 0000000..0000000
+          --- /dev/null
+          +++ b/.lore-hidden-verify.mjs
+          @@ -0,0 +1,24 @@
+          +import fs from 'node:fs';
+          +import path from 'node:path';
+          +const NL = String.fromCharCode(10);
+          +function read(p) { return fs.readFileSync(p, 'utf8'); }
+          +function assert(cond, msg) { if (!cond) throw new Error(msg); }
+          +function filesUnder(dir) {
+          +  const out = [];
+          +  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          +    const p = path.join(dir, ent.name);
+          +    if (ent.isDirectory()) out.push(...filesUnder(p));
+          +    else out.push(p);
+          +  }
+          +  return out;
+          +}
+          +const dir = 'pkg/cmd/issue/lock';
+          +const impl = filesUnder(dir).filter(f => f.endsWith('.go') && !f.endsWith('_test.go')).map(read).join(NL);
+          +const tests = filesUnder(dir).filter(f => f.endsWith('_test.go')).map(read).join(NL);
+          +for (const tok of ['off_topic', 'resolved', 'spam', 'too_heated']) assert(impl.includes(tok), 'accepted reasons are not the snake_case token ' + tok);
+          +assert(!/"off-topic"|"too-heated"/.test(impl), 'accepted reasons still use the hyphenated forms');
+          +assert(/LockReasonOffTopic|LockReasonTooHeated|LockReason/.test(impl), 'reasons do not map to the GraphQL LockReason enum');
+          +assert(/nil/.test(impl), 'an unset reason does not resolve to a nil lock reason');
+          +const hasReasonTests = /[Rr]eason/.test(tests) && /(off_topic|too_heated|off-topic|too-heated|OFF_TOPIC|TOO_HEATED|LockReason)/.test(tests);
+          +if (hasReasonTests) assert(/off-topic|too-heated|invalid|FlagError/i.test(tests) && /off_topic|too_heated|OFF_TOPIC|TOO_HEATED/.test(tests), 'reason tests do not pin the reject-wrong-casing and accept-snake_case behavior');
+        command: bash
+        args:
+          - -lc
+          - node .lore-hidden-verify.mjs && go test ./pkg/cmd/issue/lock -count=1
+        timeoutMs: 300000

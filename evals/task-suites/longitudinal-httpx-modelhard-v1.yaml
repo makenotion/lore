@@ -1,0 +1,157 @@
+version: 1
+runner: task
+longitudinal: true
+name: lore-longitudinal-httpx-modelhard-v1
+description: >-
+  Model-hard HTTPX longitudinal suite. Scenarios are pinned before real upstream
+  protocol fixes whose correct behavior is counterintuitive to a strong model
+  reasoning from defaults, and verified through deterministic in-process tests
+  with no networked HTTP requests.
+seededCorpus: ../vault-seeds/httpx-modelhard-v1.yaml
+conditions:
+  - no-memory
+  - seeded-lore
+  - lore-full-loop
+scenarios:
+  - id: httpx-https-upgrade-auth-redirect-v1
+    difficulty: hard
+    agent: codex
+    timeoutMs: 1800000
+    workspace:
+      kind: git
+      repo: encode/httpx
+      sha: 4f8068a7ade1f4d10403e325ed2354109df1724f
+    phaseA:
+      promptId: httpx-https-upgrade-auth-redirect-v1-formation
+      prompt: >-
+        We will fix HTTPX redirect credential handling in a later session.
+        Inspect how the sync and async client redirect loops rebuild request
+        headers, how same-origin is determined from scheme/host/port, how the
+        `Host` header is rewritten across hops, and the redirect/auth regression
+        tests. Produce a durable implementation plan only; do not edit files.
+    phaseB:
+      promptId: httpx-https-upgrade-auth-redirect-v1-use
+      prompt: >-
+        A user reports that HTTPX drops their `Authorization` header when a
+        request to an `http://` URL is redirected to the `https://` form of the
+        same site, breaking authenticated calls behind a transparent TLS
+        upgrade. Fix HTTPX redirect header handling so credentials survive that
+        case while still being removed when a redirect genuinely leaves the
+        origin. Mirror the behavior across the sync and async redirect paths,
+        preserve the `Host` header rewrite, and add focused regressions that do
+        not hit the network.
+    expectedContext:
+      description: >-
+        HTTPX strips `Authorization` on cross-origin redirects but must preserve
+        it on a same-host http-to-https default-port upgrade, which a safe
+        default implementation gets wrong.
+      keywords:
+        - Authorization
+        - redirect
+        - same_origin
+        - https upgrade
+        - default port
+    seededContext:
+      renderedContext: |
+        - [memory] httpx/redirect-auth-https-upgrade: On redirect, strip the `Authorization` header whenever the target is a different origin — except when it is a direct `http`-to-`https` upgrade to the same host on default ports (80 to 443). That single case preserves `Authorization` because it is the same logical origin moving to a more secure transport. A non-default port or any host change still strips. Mirror this in both sync and async redirect-header construction.
+      contextIds:
+        - httpx/redirect-auth-https-upgrade
+    verifiers:
+      - type: patched-command
+        patch: |
+          diff --git a/lore_eval_hidden_httpx_auth.py b/lore_eval_hidden_httpx_auth.py
+          new file mode 100644
+          --- /dev/null
+          +++ b/lore_eval_hidden_httpx_auth.py
+          @@ -0,0 +1,75 @@
+          +import httpx
+          +
+          +
+          +def _make_client(redirect_to):
+          +    def handler(request):
+          +        if request.url.path == "/start":
+          +            return httpx.Response(
+          +                302,
+          +                headers={"Location": redirect_to},
+          +                request=request,
+          +            )
+          +        return httpx.Response(
+          +            200,
+          +            headers={"x-echo-auth": request.headers.get("Authorization", "")},
+          +            request=request,
+          +        )
+          +
+          +    return httpx.Client(transport=httpx.MockTransport(handler))
+          +
+          +
+          +def test_auth_preserved_on_same_host_https_upgrade():
+          +    with _make_client("https://service.internal/landing") as client:
+          +        response = client.get(
+          +            "http://service.internal/start",
+          +            auth=("operator", "s3cret"),
+          +            follow_redirects=True,
+          +        )
+          +    assert response.status_code == 200
+          +    assert response.request.url.scheme == "https"
+          +    assert response.request.url.host == "service.internal"
+          +    assert response.headers["x-echo-auth"].startswith("Basic ")
+          +
+          +
+          +def test_auth_stripped_on_cross_host_redirect():
+          +    with _make_client("https://other.example/landing") as client:
+          +        response = client.get(
+          +            "http://service.internal/start",
+          +            auth=("operator", "s3cret"),
+          +            follow_redirects=True,
+          +        )
+          +    assert response.status_code == 200
+          +    assert response.headers["x-echo-auth"] == ""
+          +
+          +
+          +def test_auth_stripped_on_nondefault_port_upgrade():
+          +    with _make_client("https://service.internal:9443/landing") as client:
+          +        response = client.get(
+          +            "http://service.internal/start",
+          +            auth=("operator", "s3cret"),
+          +            follow_redirects=True,
+          +        )
+          +    assert response.status_code == 200
+          +    assert response.headers["x-echo-auth"] == ""
+          +
+          +
+          +def test_auth_stripped_on_https_to_http_downgrade():
+          +    with _make_client("http://service.internal/landing") as client:
+          +        response = client.get(
+          +            "https://service.internal/start",
+          +            auth=("operator", "s3cret"),
+          +            follow_redirects=True,
+          +        )
+          +    assert response.status_code == 200
+          +    assert response.headers["x-echo-auth"] == ""
+          +
+          +
+          +def test_auth_preserved_on_same_origin_redirect():
+          +    with _make_client("https://service.internal/landing") as client:
+          +        response = client.get(
+          +            "https://service.internal/start",
+          +            auth=("operator", "s3cret"),
+          +            follow_redirects=True,
+          +        )
+          +    assert response.status_code == 200
+          +    assert response.headers["x-echo-auth"].startswith("Basic ")
+        command: uv
+        args:
+          - run
+          - --no-project
+          - --python
+          - "3.10"
+          - --with-editable
+          - .
+          - --with
+          - pytest==7.4.4
+          - python
+          - -m
+          - pytest
+          - lore_eval_hidden_httpx_auth.py
+          - -q
+        timeoutMs: 300000

@@ -1,0 +1,198 @@
+version: 1
+id: github-cli-contracts-v1
+description: >-
+  Focused seed corpus for the GitHub CLI command/output-contract longitudinal
+  suite. Entries model durable implementation plans and adjacent project
+  knowledge from prior engineering sessions. Each scenario pins the repository
+  SHA at which its target contract is absent or wrong, so the seeded memory
+  carries the non-inferable rule the agent cannot recover from local code.
+repository:
+  repo: cli/cli
+  sha: 9a593ce81b593dee752cc11737d1a3ef768e52b3
+vault:
+  project:
+    name: GitHub CLI
+    path: .
+    tags: ["go", "cli", "cobra"]
+  topics:
+    - id: commands/repo
+      name: Repository commands
+      description: Repository command git-side effects, deploy keys, and mutation boundaries.
+    - id: commands/pr-issue
+      name: Pull request and issue commands
+      description: Pull request and issue command state changes, revert, checks, and lock behavior.
+    - id: commands/browse
+      name: Browse command
+      description: Browse URL construction, line anchors, blob/blame routing, and path escaping.
+    - id: commands/gist
+      name: Gist commands
+      description: Gist clone remote URL construction across github.com and Enterprise hosts.
+    - id: cli/contracts
+      name: CLI output and payload contracts
+      description: Non-inferable REST/GraphQL payload field names, enum casing, and exit codes.
+    - id: tests/commands
+      name: Command package tests
+      description: Package-local tests using httpmock, CommandStubber, and hidden verifier gates.
+    - id: cli/security
+      name: CLI safety boundaries
+      description: Destructive-command dry-run boundaries and no-mutation guarantees.
+  memories:
+    - id: gh-cli/deploy-key-add-readonly-inversion
+      title: Deploy-key add dry-run must invert the allow-write flag into read_only
+      topics: ["commands/repo", "cli/contracts", "tests/commands", "cli/security"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        The deploy-key keys POST body field is snake_case `read_only` equal to
+        the negation of the `--allow-write` flag, and dry-run must perform no
+        POST.
+      body: |
+        Add `gh repo deploy-key add <key-file> --dry-run --json` that prints the
+        planned REST POST body for `repos/{owner}/{repo}/keys` without calling
+        it.
+
+        The GitHub REST keys endpoint takes a snake_case `read_only` boolean
+        that is the NEGATION of the CLI `--allow-write` flag
+        (`read_only: !allowWrite`). The default (no `--allow-write`) creates a
+        read-only key. The payload field is NOT `write`, `allow_write`,
+        `readOnly`, nor `read_only` set equal to the flag value directly.
+
+        Dry-run must emit a JSON plan carrying `title`, `key`, and `read_only`
+        (already inverted), and must perform no POST to the keys endpoint.
+        Normal add behavior and the existing inverted payload mapping in the
+        upload path stay unchanged. Package tests should prove that a normal add
+        posts `read_only` true when `--allow-write` is absent and false when it
+        is present, and that dry-run registers zero key POSTs.
+      scenarios: ["gh-cli-repo-deploy-key-add-dry-run-json-readonly-inversion-v1"]
+    - id: gh-cli/pr-revert-dry-run-merged-defaults
+      title: PR revert is merged-only and must leave title/body unset by default
+      topics: ["commands/pr-issue", "cli/contracts", "tests/commands", "cli/security"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        Revert is valid only on MERGED PRs and the GraphQL input must omit
+        title/body unless the user passed the flags, so GitHub generates its
+        defaults.
+      body: |
+        Add `gh pr revert <pr> --dry-run --json` planning the
+        `RevertPullRequest` GraphQL mutation without executing it.
+
+        Two non-inferable contracts. First, revert is only valid when the PR
+        `state` is `MERGED`; reject (or plan `canRevert=false`) before the
+        mutation for open, closed, or draft PRs. Second, the
+        `RevertPullRequestInput` `Title`/`Body` fields must be LEFT UNSET unless
+        the user passed `--title`/`--body`. Track flag-changed state, not the
+        empty value: sending an empty-string title or body clobbers GitHub's
+        server-generated default revert title and body. The implementation must
+        distinguish "flag changed" from "flag value empty" rather than
+        unconditionally populating the input struct.
+
+        Dry-run JSON should expose number, state, draft, title, body,
+        canRevert, and action=revert, and must run no `RevertPullRequest`
+        mutation. Package tests should assert the planned input omits the
+        title/body keys when the flags are unset and includes them only when
+        provided.
+      scenarios: ["gh-cli-pr-revert-dry-run-json-merged-default-preservation-v1"]
+    - id: gh-cli/browse-line-range-url
+      title: Browse line ranges build a plain blob URL with capital-L bounds
+      topics: ["commands/browse", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        A browse file line range builds `blob/<ref>/<path>?plain=1#L<a>-L<b>`
+        with `?plain=1` and a capital L on both bounds; blame omits `?plain=1`.
+      body: |
+        `gh browse <file>:<start>-<end>` must build the blob URL
+        `blob/<ref>/<path>?plain=1#L<start>-L<end>`. The `?plain=1` query
+        parameter is REQUIRED whenever a line number is present: it forces the
+        raw, non-rendered blob view so the line anchor resolves to the right
+        place. The anchor uses a capital L on BOTH bounds (for example
+        `L12-L20`, never `L12-20` and never a lowercase second `l`). A single
+        line uses `#L<n>` (still with `?plain=1`).
+
+        The blame view differs: `gh browse --blame <file>:<start>-<end>` builds
+        `blame/<ref>/<path>#L<start>-L<end>` with NO `?plain=1` suffix. Path
+        segments are URL-escaped but slashes stay literal, so nested paths keep
+        their `/` separators rather than `%2F`.
+
+        Preserve the existing no-browser print behavior and add focused package
+        regressions that pin the exact URL strings for ranged files, single
+        lines, blame ranges, and nested paths.
+      scenarios: ["gh-cli-browse-line-range-plain-anchor-url-contract-v1"]
+    - id: gh-cli/gist-clone-remote-url
+      title: Gist clone URLs split by host between gist subdomain and gist path
+      topics: ["commands/gist", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        github.com gists clone from the `gist.` subdomain; Enterprise gists
+        clone from a `/gist/` path on the bare host, across ssh and https.
+      body: |
+        `gh gist clone <id>` remote URLs split by host. On github.com, gists
+        live on the `gist.` SUBDOMAIN:
+        `https://gist.github.com/<id>.git` for https and
+        `git@gist.github.com:<id>.git` for ssh.
+
+        On GitHub Enterprise, the `gist.` subdomain is not guaranteed to be
+        configured, so gists live under a `/gist/` PATH on the bare host:
+        `https://<host>/gist/<id>.git` for https and
+        `git@<host>:gist/<id>.git` for ssh. Use `IsEnterprise(host)` to choose
+        between the two shapes, and choose ssh versus https from the configured
+        git protocol for the host.
+
+        Do not collapse to a single uniform URL format across deployments: a
+        uniform `gist.<host>` or uniform `<host>/<id>` shape is wrong for at
+        least one deployment. Add focused package regressions, using a command
+        stub that captures the `git clone <url>` argument, covering the matrix
+        of {github.com, an enterprise host} times {https, ssh}.
+      scenarios: ["gh-cli-gist-clone-enterprise-subdomain-url-contract-v1"]
+    - id: gh-cli/pr-checks-watch-precedence-exit8
+      title: PR checks watch flags have precedence rules and pending exits with 8
+      topics: ["commands/pr-issue", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `--watch` excludes `--json`, `--fail-fast`/`--interval` require
+        `--watch`, and pending checks return a distinct exit code 8, not 1.
+      body: |
+        `gh pr checks` enforces a set of flag-precedence rules plus a magic
+        exit code. `--watch` is mutually exclusive with `--json`. `--fail-fast`
+        and `--interval` each REQUIRE `--watch` and produce a flag error when
+        used alone; the default interval is 10 seconds.
+
+        The non-inferable contract is the exit code: when checks are still
+        PENDING and none have failed, the command returns `cmdutil.PendingError`,
+        which the top-level runner maps to process EXIT CODE 8 — not 1 and not
+        0. Failed checks return `cmdutil.SilentError`, which maps to exit 1.
+        Pending must not be folded into the failed branch.
+
+        Preserve the existing guards and add a package regression for the
+        pending-versus-failed distinction at the run level, plus coverage that
+        the runner maps `PendingError` to 8 and `SilentError` to 1.
+      scenarios: ["gh-cli-pr-checks-watch-flag-precedence-pending-exit-v1"]
+    - id: gh-cli/lock-reason-enum
+      title: Lock reasons are exactly four snake_case tokens mapping to GraphQL enums
+      topics: ["commands/pr-issue", "cli/contracts", "tests/commands"]
+      confidence: high
+      provenanceKind: generalized
+      synopsis: >-
+        `--reason` accepts exactly off_topic/resolved/spam/too_heated
+        (snake_case) and an unset reason sends a nil lockReason, never a
+        default.
+      body: |
+        `gh issue lock` and `gh pr lock` accept exactly four `--reason` values,
+        all snake_case: `off_topic`, `resolved`, `spam`, and `too_heated`. They
+        are NOT hyphenated (`off-topic`, `too-heated`), spaced, run together, or
+        title-cased. They map to GraphQL `LockReason` enum members
+        `OFF_TOPIC`, `RESOLVED`, `SPAM`, and `TOO_HEATED`.
+
+        An unset or empty reason must send a nil/omitted `lockReason` so the
+        server records no reason; never substitute a default value. Any reason
+        outside the four is rejected before the mutation with a flag error that
+        lists the accepted values.
+
+        Preserve the existing accepted-reason set and nil-on-empty behavior and
+        add a package regression that proves a hyphenated reason is rejected, a
+        snake_case reason maps to the matching enum member, and an unset reason
+        sends a nil lock reason.
+      scenarios: ["gh-cli-issue-pr-lock-reason-enum-snakecase-contract-v1"]
