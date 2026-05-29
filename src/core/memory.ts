@@ -75,6 +75,7 @@ import { MemoryList, type ListMemoriesOptions } from "./memory-list.js"
 import { MemoryReview } from "./memory-review.js"
 import { MemoryUpdate } from "./memory-update.js"
 import { matchesDefaultScope } from "./memory-scope.js"
+import type { MemoryLister } from "./near-duplicate.js"
 
 export { matchesDefaultScope } from "./memory-scope.js"
 export {
@@ -323,12 +324,21 @@ export class MemoryService {
       },
       { synopsisMaxChars }
     )
+    const duplicateLister: MemoryLister = {
+      list: (opts) => this.lister.list(opts),
+    }
+    if (
+      (this.features.runTool.search && typeof client.request === "function") ||
+      typeof client.search === "function"
+    ) {
+      duplicateLister.search = (input) => this.searcher.search(input)
+    }
     this.creator = new MemoryCreate(
       client,
       db,
       this.features,
       {
-        duplicateLister: this.lister,
+        duplicateLister,
         preflightPinnedCreate: (input) => this.pinned.preflightCreate(input),
         invalidatePinnedCountCache: () => this.pinned.invalidateCountCache(),
         pageToMemory: (page, content) => this.pageToMemory(page, content),

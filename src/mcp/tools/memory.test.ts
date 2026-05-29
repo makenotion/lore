@@ -959,9 +959,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
   })
 
-  it("falls back to same-session dedup for an auto-resolved catch-all project", async () => {
+  it("dedups cross-session for an auto-resolved catch-all project", async () => {
     const mockServer = createMockServer()
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     const existing = makeMemory("mem-existing", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
@@ -970,15 +969,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       kind: "note",
       session: "session-1",
     })
-    const created = makeMemory("mem-created", {
-      title: "relation filters reject empty arrays",
-      content: "Notion dataSources.query rejects relation filters with empty arrays.",
-      projectIds: ["proj-catchall"],
-      source: "autosave_learning",
-      kind: "note",
-      session: "session-2",
-    })
-    const create = vi.fn().mockResolvedValue(created)
+    const create = vi.fn()
     const list = vi.fn(async (opts: { session?: string; includeContent?: boolean }) => {
       if (opts.includeContent && opts.session === "session-2") {
         return { items: [] }
@@ -1002,7 +993,6 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
-    vi.stubEnv("LORE_DEBUG", "1")
     try {
       registerMemoryTools(mockServer.server, services as never)
       registerQueryTools(mockServer.server, services as never)
@@ -1018,32 +1008,27 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       } as never)
 
       const text = (result as { content: Array<{ text: string }> }).content[0].text
-      expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
-      expect(text).not.toContain("Reused existing autosave learning")
-      expect(create).toHaveBeenCalledTimes(1)
+      expect(text).toContain("Reused existing autosave learning")
+      expect(text).toContain("cross-session duplicate")
+      expect(text).toContain("mem-existing")
+      expect(create).not.toHaveBeenCalled()
       expect(list).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "proj-catchall",
-          session: "session-2",
+          session: undefined,
           source: "autosave_learning",
           kind: "note",
           includeContent: true,
+          includeUnscoped: true,
         })
       )
-      const stderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("")
-      expect(stderr).toContain("autosave-learning-dedup-scope-downgrade")
-      expect(stderr).toContain("reason=catch-all-fallback")
-      expect(stderr).toContain('projectId="proj-catchall"')
-      expect(stderr).toContain('session="session-2"')
     } finally {
-      stderrSpy.mockRestore()
       vi.unstubAllEnvs()
     }
   })
 
   it("honors explicit project scope even when context is a catch-all fallback", async () => {
     const mockServer = createMockServer()
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     const existing = makeMemory("mem-existing", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
@@ -1072,7 +1057,6 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
-    vi.stubEnv("LORE_DEBUG", "1")
     try {
       registerMemoryTools(mockServer.server, services as never)
       registerQueryTools(mockServer.server, services as never)
@@ -1115,10 +1099,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
           includeContent: true,
         })
       )
-      const stderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("")
-      expect(stderr).not.toContain("autosave-learning-dedup-scope-downgrade")
     } finally {
-      stderrSpy.mockRestore()
       vi.unstubAllEnvs()
     }
   })
@@ -1193,6 +1174,8 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       contentSimilarity: 1,
       combinedSimilarity: 1,
       tokenSimilarity: 1,
+      tokenContainment: 1,
+      semanticRank: null,
     }
     const getOrCreate = vi.fn()
     const createWithResult = vi.fn(async () => ({
@@ -1300,7 +1283,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
       expect(createWithResult).toHaveBeenCalledWith(
         expect.objectContaining({
-          autosaveLearningDedupScope: "session",
+          autosaveLearningDedupScope: "vault",
           autosaveLearningScopeId: "vault-a",
         })
       )

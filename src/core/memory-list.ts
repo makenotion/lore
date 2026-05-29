@@ -127,6 +127,12 @@ export interface ListMemoriesOptions {
   until?: string
   includeContent?: boolean
   includeUnscoped?: boolean
+  /**
+   * Require rows whose Project relation is empty. Used by vault-scope write
+   * safety probes where broad project rows must not consume the candidate
+   * window before exact unscoped rows are considered.
+   */
+  unscopedOnly?: boolean
   includeProposed?: boolean
   /**
    * Controls the default source/kind hygiene filters. User-facing recall
@@ -328,7 +334,9 @@ export class MemoryList {
       opts?.recallPolicy ?? (opts?.includeRetiredSources === true ? "all" : "knowledge")
     const applyKnowledgeRecallFilters = recallPolicy === "knowledge"
 
-    if (opts?.projectId) {
+    if (opts?.unscopedOnly === true) {
+      filters.push({ property: MEMORY_PROPS.PROJECT, relation: { is_empty: true } })
+    } else if (opts?.projectId) {
       filters.push(
         opts.includeUnscoped === false
           ? { property: MEMORY_PROPS.PROJECT, relation: { contains: opts.projectId } }

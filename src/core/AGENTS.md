@@ -874,10 +874,11 @@ Scoping rules:
   `proposed`, trigram threshold `0.6`. Superseded / deprecated / rejected
   decisions are deliberately excluded — they are not valid supersession
   targets.
-- **Autosave atomic-learning path**: project scope when safely available
-  (falls back to same-session scope when no project resolves, or when the
-  only project is an auto-resolved monorepo catch-all) +
-  `Source = autosave_learning` + `Kind = note`, body-fetch enabled. Unlike
+- **Autosave atomic-learning path**: project scope when a project resolves,
+  including auto-resolved catch-all projects; vault scope over unscoped rows
+  when no project resolves; explicit session scope only for direct service
+  callers that request it. All scopes use `Source = autosave_learning` +
+  `Kind = note`, body-fetch enabled. Unlike
   the general probe, this is blocking:
   `MemoryService.createWithResult()` returns the existing row and creates
   nothing. `MemoryService.create()` also pays this gate and returns the
@@ -890,19 +891,19 @@ Scoping rules:
   safety net. MCP save passes topic creation as `prepareFreshCreate`,
   so a duplicate that appears between the preflight and the service
   recheck still returns without creating a topic.
-  It uses strict trigram checks for near-literal duplicate bodies plus a
-  lightly-stemmed token Jaccard check for reordered same-fact phrasing.
+  It uses strict trigram checks for near-literal duplicate bodies, a
+  lightly-stemmed token Jaccard check for reordered same-fact phrasing, and
+  semantic search for project/vault paraphrases when enough lexical support is
+  present.
   Project scope requires exact non-empty project-set equality for scoped
   rows, but it also queries with `includeUnscoped: true` and allows an
   unscoped legacy row to block a later scoped duplicate. That preserves
   cross-scope reuse without allowing an A-only row to suppress an A+B
-  save. The shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` kill switch or
+  save. Vault scope queries only rows with an empty Project relation, so
+  project-scoped rows cannot consume the candidate window. The shared
+  `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` kill switch or
   the narrower `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` switch disables
   reuse.
-  When `LORE_DEBUG=1`, an auto-resolved catch-all downgrade emits
-  `[lore] autosave-learning-dedup-scope-downgrade` with the project id and
-  session so operators can distinguish an intentional same-session fallback
-  from a missing duplicate.
   It deliberately does NOT use title-only similarity because two
   durable learnings can share a short title while carrying different
   facts. The client-side source/kind recheck duplicates the

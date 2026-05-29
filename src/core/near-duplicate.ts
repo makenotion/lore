@@ -20,6 +20,7 @@ import type {
   MemoryKind,
   MemorySource,
   MemoryStatus,
+  SearchMemoriesInput,
   TaskState,
   TaskSummary,
 } from "../types.js"
@@ -113,6 +114,7 @@ export interface MemoryLister {
     limit?: number
     includeContent?: boolean
     includeUnscoped?: boolean
+    unscopedOnly?: boolean
     includeProposed?: boolean
     // If you extend `findNearDuplicates` (or `findAutosaveLearning
     // Duplicate`) to pass another `MemoryService.list` parameter,
@@ -147,6 +149,13 @@ export interface MemoryLister {
     includeProposed?: boolean
     limit: number
   }): Promise<Memory[]>
+  /**
+   * Optional semantic candidate fetcher for autosave-learning dedup.
+   * Real `MemoryService` callers provide this via `search({ mode:
+   * "semantic" })`; lightweight tests can omit it and exercise the
+   * structural list-only path.
+   */
+  search?(opts: SearchMemoriesInput): Promise<Memory[]>
 }
 
 export interface FindNearDuplicatesOpts {
@@ -339,7 +348,13 @@ export interface AutosaveLearningDuplicateMatch extends NearDuplicateMatch {
   combinedSimilarity: number
   /** Token-set Jaccard over title + body after light stemming. Range `[0, 1]`. */
   tokenSimilarity: number
+  /** Containment over the smaller token set. Range `[0, 1]`. */
+  tokenContainment: number
+  /** 0-based semantic rank when the candidate came from semantic search. */
+  semanticRank: number | null
 }
+
+type AutosaveLearningDuplicateScope = "session" | "project" | "vault"
 
 export interface FindAutosaveLearningDuplicateOpts {
   /** Title of the atomic learning being written. */
@@ -359,8 +374,9 @@ export interface FindAutosaveLearningDuplicateOpts {
    * Duplicate search scope. Defaults to the historical same-session gate.
    * Project scope promotes cross-session autosave learnings to assertive reuse,
    * but requires a non-empty project set so the probe never becomes vault-wide.
+   * Vault scope is for projectless writes and compares only exact project sets.
    */
-  scope?: "session" | "project"
+  scope?: AutosaveLearningDuplicateScope
   /** Similarity threshold for blocking a duplicate create. */
   threshold?: number
   /** Max rows to scan in the candidate pool (default 50). */
@@ -387,6 +403,13 @@ export class AutosaveLearningDuplicateProbeError extends LoreError<"autosave-lea
 
 const AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD = 0.92
 const AUTOSAVE_LEARNING_TOKEN_DUPLICATE_THRESHOLD = 0.72
+const AUTOSAVE_LEARNING_SEMANTIC_TOKEN_DUPLICATE_THRESHOLD = 0.42
+const AUTOSAVE_LEARNING_SEMANTIC_TEXT_DUPLICATE_THRESHOLD = 0.55
+const AUTOSAVE_LEARNING_SEMANTIC_TOKEN_CONTAINMENT_THRESHOLD = 0.62
+const AUTOSAVE_LEARNING_SEMANTIC_TOKEN_CONTAINMENT_MIN_JACCARD = 0.25
+const AUTOSAVE_LEARNING_SEMANTIC_TOKEN_CONTAINMENT_MIN_SHARED = 4
+const AUTOSAVE_LEARNING_SEMANTIC_POOL_LIMIT = 10
+const AUTOSAVE_LEARNING_SEMANTIC_QUERY_MAX_CHARS = 600
 
 const LEARNING_TOKEN_STOPWORDS = new Set([
   "a",
@@ -452,15 +475,17 @@ function learningTokens(title: string, content: string): Set<string> {
   return tokens
 }
 
-function learningTokenSimilarity(
+function learningTokenOverlap(
   titleA: string,
   contentA: string,
   titleB: string,
   contentB: string
-): number {
+): { jaccard: number; containment: number; intersection: number } {
   const A = learningTokens(titleA, contentA)
   const B = learningTokens(titleB, contentB)
-  if (A.size === 0 || B.size === 0) return 0
+  if (A.size === 0 || B.size === 0) {
+    return { jaccard: 0, containment: 0, intersection: 0 }
+  }
 
   let intersection = 0
   const [smaller, larger] = A.size <= B.size ? [A, B] : [B, A]
@@ -468,7 +493,11 @@ function learningTokenSimilarity(
     if (larger.has(token)) intersection++
   }
   const union = A.size + B.size - intersection
-  return intersection / union
+  return {
+    jaccard: intersection / union,
+    containment: intersection / smaller.size,
+    intersection,
+  }
 }
 
 function normalizedProjectSet(ids: readonly string[] | undefined): string[] {
@@ -482,6 +511,144 @@ function projectSetsEqual(a: readonly string[], b: readonly string[]): boolean {
   return A.every((id, index) => id === B[index])
 }
 
+function autosaveLearningSemanticQuery(title: string, content: string): string {
+  const query = `${title}\n${content}`.replace(/\s+/g, " ").trim()
+  return query.length > AUTOSAVE_LEARNING_SEMANTIC_QUERY_MAX_CHARS
+    ? query.slice(0, AUTOSAVE_LEARNING_SEMANTIC_QUERY_MAX_CHARS).trimEnd()
+    : query
+}
+
+function scoreAutosaveLearningCandidate(
+  mem: Memory,
+  opts: FindAutosaveLearningDuplicateOpts,
+  scope: AutosaveLearningDuplicateScope,
+  requestedProjectIds: readonly string[],
+  semanticRank: number | null
+): AutosaveLearningDuplicateMatch | null {
+  // Defense in depth: the server-side list/search filters should already
+  // narrow to autosave-shaped notes. Keeping the client-side guard means a
+  // future filter regression cannot turn synopsis rows into blocking matches.
+  if (mem.source !== "autosave_learning" || mem.kind !== "note") {
+    return null
+  }
+  // Exclude resurfaced cleanup-orphans. Even though the autosave-learning
+  // probe's blocking contract is stronger than the advisory near-dup probe,
+  // an empty-body orphan resurrected from Notion's trash must NOT be returned
+  // as the reuse target; the caller would treat an empty shell as authoritative.
+  if (mem.keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) return null
+  // Project-scoped autosave dedup intentionally accepts legacy unscoped
+  // learning rows. Once a row has explicit project relations, though, it
+  // must match the full requested project set before it can block a write.
+  if (
+    scope === "project" &&
+    mem.projectIds.length > 0 &&
+    !projectSetsEqual(mem.projectIds, requestedProjectIds)
+  ) {
+    return null
+  }
+  // Vault-scoped dedup has no project anchor, so it must stay exact-set only.
+  if (scope === "vault" && !projectSetsEqual(mem.projectIds, requestedProjectIds)) {
+    return null
+  }
+
+  const titleSimilarity = trigramJaccard(opts.title, mem.title)
+  const contentSimilarity = learningContentSimilarity(opts.content, mem.content)
+  const combinedSimilarity = learningCombinedSimilarity(
+    opts.title,
+    opts.content,
+    mem.title,
+    mem.content
+  )
+  const tokenOverlap = learningTokenOverlap(
+    opts.title,
+    opts.content,
+    mem.title,
+    mem.content
+  )
+  const tokenSimilarity = tokenOverlap.jaccard
+  const tokenContainment = tokenOverlap.containment
+  const semanticContainmentDuplicate =
+    tokenContainment >= AUTOSAVE_LEARNING_SEMANTIC_TOKEN_CONTAINMENT_THRESHOLD &&
+    tokenSimilarity >= AUTOSAVE_LEARNING_SEMANTIC_TOKEN_CONTAINMENT_MIN_JACCARD &&
+    tokenOverlap.intersection >= AUTOSAVE_LEARNING_SEMANTIC_TOKEN_CONTAINMENT_MIN_SHARED
+
+  const semanticDuplicate =
+    semanticRank !== null &&
+    (combinedSimilarity >= AUTOSAVE_LEARNING_SEMANTIC_TEXT_DUPLICATE_THRESHOLD ||
+      contentSimilarity >= AUTOSAVE_LEARNING_SEMANTIC_TEXT_DUPLICATE_THRESHOLD ||
+      tokenSimilarity >= AUTOSAVE_LEARNING_SEMANTIC_TOKEN_DUPLICATE_THRESHOLD ||
+      semanticContainmentDuplicate)
+  const textThreshold = opts.threshold ?? AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD
+  const duplicate =
+    combinedSimilarity >= textThreshold ||
+    contentSimilarity >= textThreshold ||
+    tokenSimilarity >= AUTOSAVE_LEARNING_TOKEN_DUPLICATE_THRESHOLD ||
+    semanticDuplicate
+  if (!duplicate) return null
+
+  return {
+    id: mem.id,
+    title: mem.title,
+    titleSimilarity,
+    tagOverlap: 0,
+    decidedAt: mem.decidedAt,
+    status: mem.status,
+    memory: mem,
+    projectIds: mem.projectIds,
+    session: mem.session,
+    contentSimilarity,
+    combinedSimilarity,
+    tokenSimilarity,
+    tokenContainment,
+    semanticRank,
+  }
+}
+
+function bestAutosaveLearningMatch(
+  items: readonly Memory[],
+  opts: FindAutosaveLearningDuplicateOpts,
+  scope: AutosaveLearningDuplicateScope,
+  requestedProjectIds: readonly string[],
+  semanticRanks: ReadonlyMap<string, number>
+): AutosaveLearningDuplicateMatch | null {
+  const matches: AutosaveLearningDuplicateMatch[] = []
+  for (const mem of items) {
+    const match = scoreAutosaveLearningCandidate(
+      mem,
+      opts,
+      scope,
+      requestedProjectIds,
+      semanticRanks.get(mem.id) ?? null
+    )
+    if (match) matches.push(match)
+  }
+
+  matches.sort((a, b) => {
+    const aBest = Math.max(
+      a.titleSimilarity,
+      a.contentSimilarity,
+      a.combinedSimilarity,
+      a.tokenSimilarity,
+      a.tokenContainment
+    )
+    const bBest = Math.max(
+      b.titleSimilarity,
+      b.contentSimilarity,
+      b.combinedSimilarity,
+      b.tokenSimilarity,
+      b.tokenContainment
+    )
+    if (aBest !== bBest) return bBest - aBest
+    if (a.semanticRank !== b.semanticRank) {
+      if (a.semanticRank === null) return 1
+      if (b.semanticRank === null) return -1
+      return a.semanticRank - b.semanticRank
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+  return matches[0] ?? null
+}
+
 /**
  * Blocking duplicate finder for Stop-spawn atomic learnings.
  *
@@ -490,9 +657,12 @@ function projectSetsEqual(a: readonly string[], b: readonly string[]): boolean {
  * be processed more than once, and the same durable fact can reappear in later
  * sessions. This helper reads autosave-sourced notes and fetches bodies so a
  * duplicate body/combined-text pair returns the existing row instead of letting
- * the write path create another memory. Session scope preserves same-session
- * behavior; project scope is exact-set only and uses one project id as the
- * bounded query anchor.
+ * the write path create another memory. When a semantic searcher is available,
+ * project and vault scopes get a second candidate lane for paraphrased
+ * learnings that fall below the structural thresholds. Session scope preserves
+ * same-session behavior; project scope accepts legacy unscoped rows and uses
+ * one project id as the bounded query anchor. Vault scope has no project
+ * anchor, so candidate reuse is exact-set only.
  */
 export async function findAutosaveLearningDuplicate(
   memories: MemoryLister,
@@ -505,7 +675,7 @@ export async function findAutosaveLearningDuplicate(
   const scope = opts.scope ?? "session"
   const session = opts.session?.trim()
   const requestedProjectIds =
-    scope === "project"
+    scope === "project" || scope === "vault"
       ? normalizedProjectSet(
           opts.projectIds && opts.projectIds.length > 0
             ? opts.projectIds
@@ -534,13 +704,14 @@ export async function findAutosaveLearningDuplicate(
     const seen = new Set<string>()
     items = []
     const result = await memories.list({
-      projectId: queryProjectId,
+      projectId: scope === "vault" ? undefined : queryProjectId,
       session: scope === "session" ? session : undefined,
       source: "autosave_learning",
       kind: "note",
       limit: opts.limit ?? 50,
       includeContent: true,
       includeUnscoped: scope === "project" ? true : undefined,
+      unscopedOnly: scope === "vault" ? true : undefined,
       includeProposed: true,
     })
     for (const item of result.items) {
@@ -556,86 +727,51 @@ export async function findAutosaveLearningDuplicate(
     )
   }
 
-  const textThreshold = opts.threshold ?? AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD
-  const matches: AutosaveLearningDuplicateMatch[] = []
-  for (const mem of items) {
-    // Defense in depth: the server-side list filter above should already
-    // narrow to autosave-shaped notes. Keeping the client-side guard means a
-    // future list-filter regression cannot turn synopsis rows into blocking
-    // matches.
-    if (mem.source !== "autosave_learning" || mem.kind !== "note") {
-      continue
-    }
-    // Exclude resurfaced cleanup-orphans. Even though the
-    // autosave-learning probe's blocking contract is stronger than the
-    // advisory near-dup probe, an empty-body orphan resurrected from
-    // Notion's trash must NOT be returned as the reuse target — the
-    // caller would write a fresh row's content as a duplicate of an
-    // empty shell.
-    if (mem.keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) continue
-    // Project-scoped autosave dedup intentionally accepts legacy unscoped
-    // learning rows. Once a row has explicit project relations, though, it
-    // must match the full requested project set before it can block a write.
-    if (
-      scope === "project" &&
-      mem.projectIds.length > 0 &&
-      !projectSetsEqual(mem.projectIds, requestedProjectIds)
-    ) {
-      continue
-    }
-    const titleSimilarity = trigramJaccard(opts.title, mem.title)
-    const contentSimilarity = learningContentSimilarity(opts.content, mem.content)
-    const combinedSimilarity = learningCombinedSimilarity(
-      opts.title,
-      opts.content,
-      mem.title,
-      mem.content
-    )
-    const tokenSimilarity = learningTokenSimilarity(
-      opts.title,
-      opts.content,
-      mem.title,
-      mem.content
-    )
+  const structuralMatch = bestAutosaveLearningMatch(
+    items,
+    opts,
+    scope,
+    requestedProjectIds,
+    new Map()
+  )
+  if (structuralMatch) return structuralMatch
 
-    const duplicate =
-      combinedSimilarity >= textThreshold ||
-      contentSimilarity >= textThreshold ||
-      tokenSimilarity >= AUTOSAVE_LEARNING_TOKEN_DUPLICATE_THRESHOLD
-    if (!duplicate) continue
+  if (scope === "session" || memories.search === undefined) return null
 
-    matches.push({
-      id: mem.id,
-      title: mem.title,
-      titleSimilarity,
-      tagOverlap: 0,
-      decidedAt: mem.decidedAt,
-      status: mem.status,
-      memory: mem,
-      projectIds: mem.projectIds,
-      session: mem.session,
-      contentSimilarity,
-      combinedSimilarity,
-      tokenSimilarity,
+  const query = autosaveLearningSemanticQuery(opts.title, opts.content)
+  if (query.length === 0) return null
+
+  try {
+    const semanticItems = await memories.search({
+      query,
+      projectId: scope === "project" ? queryProjectId : undefined,
+      source: "autosave_learning",
+      kind: "note",
+      limit: AUTOSAVE_LEARNING_SEMANTIC_POOL_LIMIT,
+      includeContent: true,
+      includeProposed: true,
+      unscopedOnly: scope === "vault" ? true : undefined,
+      mode: "semantic",
     })
+    const semanticRanks = new Map<string, number>()
+    for (let rank = 0; rank < semanticItems.length; rank++) {
+      const item = semanticItems[rank]
+      if (item && !semanticRanks.has(item.id)) semanticRanks.set(item.id, rank)
+    }
+    return bestAutosaveLearningMatch(
+      semanticItems,
+      opts,
+      scope,
+      requestedProjectIds,
+      semanticRanks
+    )
+  } catch (err) {
+    opts.onError?.(err)
+    throw new AutosaveLearningDuplicateProbeError(
+      "Autosave learning duplicate probe failed; refusing to create a possible duplicate.",
+      err
+    )
   }
-
-  matches.sort((a, b) => {
-    const aBest = Math.max(
-      a.titleSimilarity,
-      a.contentSimilarity,
-      a.combinedSimilarity,
-      a.tokenSimilarity
-    )
-    const bBest = Math.max(
-      b.titleSimilarity,
-      b.contentSimilarity,
-      b.combinedSimilarity,
-      b.tokenSimilarity
-    )
-    return bBest - aBest
-  })
-  return matches[0] ?? null
 }
 
 /**

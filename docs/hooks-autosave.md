@@ -128,8 +128,11 @@ prompt-level search probe. The save path treats background
 `source: "autosave_learning"`, `kind: "note"` saves with a session id as
 atomic-learning-shaped and checks existing autosave-learning notes before
 creating a row. Explicit project saves and non-catch-all resolved projects use
-exact project-set reuse. Projectless and catch-all fallback saves use
-same-session reuse.
+exact project-set reuse across sessions; auto-resolved catch-all projects use
+the same project-scoped reuse rule. Projectless saves use vault-scope reuse
+across unscoped autosave-learning rows. When semantic search is available,
+project and vault scopes also check paraphrased candidates that have enough
+lexical overlap to avoid unrelated semantic hits.
 
 The service layer repeats the blocking check under a filesystem lock immediately
 before create, then keeps the lock through bounded post-create query-index
@@ -188,8 +191,8 @@ turning off extraction:
 - `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1`
 - `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
 
-Both disable same-session dedup and exact-project cross-session reuse for
-autosave learning rows.
+Both disable same-session, project-scoped, and vault-scoped reuse for autosave
+learning rows.
 
 ## Proposed Learning Routing
 

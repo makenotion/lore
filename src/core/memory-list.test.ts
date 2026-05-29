@@ -178,6 +178,25 @@ describe("MemoryList.list", () => {
     expect(serialized).not.toContain('"does_not_equal":"operational"')
   })
 
+  it("can restrict list results to rows without project relations", async () => {
+    const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
+    const lister = makeLister({
+      query,
+      getPropertiesById: async (id) => makeMemory(id),
+    })
+
+    await lister.list({ unscopedOnly: true, limit: 3 })
+
+    const calls = query.mock.calls as unknown as Array<[{ filter?: unknown }]>
+    const serialized = JSON.stringify(calls[0]?.[0].filter)
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.PROJECT,
+        relation: { is_empty: true },
+      })
+    )
+  })
+
   it("keeps includeRetiredSources as a full-vault compatibility opt-in", async () => {
     const query = vi.fn(async () => ({ results: [], has_more: false, next_cursor: null }))
     const lister = makeLister({

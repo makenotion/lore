@@ -100,7 +100,9 @@ function formatAutosaveLearningDuplicate(
     `Similarity: title ${match.titleSimilarity.toFixed(2)}, ` +
       `content ${match.contentSimilarity.toFixed(2)}, ` +
       `combined ${match.combinedSimilarity.toFixed(2)}, ` +
-      `token ${match.tokenSimilarity.toFixed(2)}`,
+      `token ${match.tokenSimilarity.toFixed(2)}, ` +
+      `token containment ${match.tokenContainment.toFixed(2)}` +
+      (match.semanticRank !== null ? `, semantic rank ${match.semanticRank + 1}` : ""),
     "No new memory was created. The existing memory stays available for this session.",
     "Recovery: set LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1 before autosave to force a separate row.",
   ]
@@ -129,26 +131,6 @@ function formatDroppedAutosaveLearningFields(args: SaveArgs): string | null {
   return dropped.length > 0
     ? `Dropped candidate metadata on reuse: ${dropped.join(", ")}.`
     : null
-}
-
-// eslint-disable-next-line no-control-regex -- preserving one-event-per-line logs
-const DEBUG_LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
-
-function debugLogField(value: string | undefined): string {
-  const normalized = value && value.trim().length > 0 ? value.trim() : "none"
-  return JSON.stringify(normalized.replace(DEBUG_LOG_CONTROL_CHARS, " "))
-}
-
-function debugLogAutosaveLearningScopeDowngrade(opts: {
-  projectId: string
-  session: string | undefined
-}): void {
-  if (process.env["LORE_DEBUG"] !== "1") return
-  process.stderr.write(
-    `[lore] autosave-learning-dedup-scope-downgrade: reason=catch-all-fallback ` +
-      `projectId=${debugLogField(opts.projectId)} session=${debugLogField(opts.session)} ` +
-      `source=lore-memory\n`
-  )
 }
 
 async function createMemoryWithResult(
@@ -352,35 +334,20 @@ export async function handleSave(
       resolvedKind,
       resolvedSource
     )
-    const hasExplicitProjectScope =
-      Boolean(args.projectName) || Boolean(args.projectNames?.length)
-    const canUseProjectAutosaveDedup =
-      Boolean(probeProjectId) &&
-      (hasExplicitProjectScope || !services.context.isCatchAllFallback)
-    const autosaveLearningDedupScope: "session" | "project" | "off" =
-      autosaveLearningSave && canUseProjectAutosaveDedup
+    const autosaveLearningDedupScope: "project" | "vault" | "off" =
+      autosaveLearningSave && probeProjectId
         ? "project"
         : autosaveLearningSave
-          ? "session"
+          ? "vault"
           : "off"
-    const autosaveLearningProbeScope: "session" | "project" | undefined =
-      autosaveLearningSave && canUseProjectAutosaveDedup
+    const autosaveLearningProbeScope: "project" | "vault" | undefined =
+      autosaveLearningSave && probeProjectId
         ? "project"
         : autosaveLearningSave
-          ? "session"
+          ? "vault"
           : undefined
 
     if (autosaveLearningSave) {
-      if (
-        probeProjectId &&
-        services.context.isCatchAllFallback &&
-        !hasExplicitProjectScope
-      ) {
-        debugLogAutosaveLearningScopeDowngrade({
-          projectId: probeProjectId,
-          session: args.session,
-        })
-      }
       // Two-probe contract: this MCP preflight runs before topic resolution
       // to keep already-visible duplicates side-effect-free, while
       // MemoryService.createWithResult repeats the blocking probe inside the

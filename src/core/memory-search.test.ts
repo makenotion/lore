@@ -36,6 +36,7 @@ function page(
     lastReferencedAt?: string | null
     source?: MemorySource
     kind?: MemoryKind
+    projectIds?: string[]
   } = {}
 ): PageObjectResponse {
   const title = options.title ?? id
@@ -54,7 +55,10 @@ function page(
         type: "title",
         title: [{ plain_text: title }],
       } as unknown,
-      [MEMORY_PROPS.PROJECT]: { type: "relation", relation: [] } as unknown,
+      [MEMORY_PROPS.PROJECT]: {
+        type: "relation",
+        relation: (options.projectIds ?? []).map((id) => ({ id })),
+      } as unknown,
       [MEMORY_PROPS.TOPIC]: { type: "relation", relation: [] } as unknown,
       [MEMORY_PROPS.SOURCE]: {
         type: "select",
@@ -211,6 +215,25 @@ describe("MemorySearch mode selection", () => {
     expect(serialized).not.toContain('"does_not_equal":"operational"')
   })
 
+  it("contains mode can restrict results to rows without project relations", async () => {
+    const { searcher, querySpy } = makeSubject()
+
+    await searcher.search({
+      query: "retry",
+      mode: "contains",
+      unscopedOnly: true,
+      limit: 3,
+    })
+
+    const serialized = JSON.stringify(querySpy.mock.calls[0]![0].filter)
+    expect(serialized).toContain(
+      JSON.stringify({
+        property: MEMORY_PROPS.PROJECT,
+        relation: { is_empty: true },
+      })
+    )
+  })
+
   it("semantic mode post-filters non-knowledge sources and kinds by default", async () => {
     const { searcher, materializeSpy } = makeSubject({
       semanticPages: [
@@ -258,6 +281,27 @@ describe("MemorySearch mode selection", () => {
 
     expect(digestMemories.map((memory) => memory.id)).toEqual(["digest"])
     expect(taskMemories.map((memory) => memory.id)).toEqual(["task"])
+  })
+
+  it("semantic mode can post-filter to rows without project relations", async () => {
+    const { searcher, materializeSpy } = makeSubject({
+      semanticPages: [
+        page("project-scoped", { projectIds: ["project-id"] }),
+        page("unscoped"),
+      ],
+    })
+
+    const memories = await searcher.search({
+      query: "retry",
+      mode: "semantic",
+      unscopedOnly: true,
+      limit: 2,
+    })
+
+    expect(memories.map((memory) => memory.id)).toEqual(["unscoped"])
+    expect(materializeSpy.mock.calls[0]![0].map((p: PageObjectResponse) => p.id)).toEqual(
+      ["unscoped"]
+    )
   })
 
   it("contains mode pushes excludePinned into the Notion filter", async () => {

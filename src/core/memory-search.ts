@@ -574,7 +574,9 @@ export class MemorySearch {
     const limit = Math.min(input.limit ?? 10, 100)
     const filters: Array<Record<string, unknown>> = []
 
-    if (input.projectId) {
+    if (input.unscopedOnly === true) {
+      filters.push({ property: MEMORY_PROPS.PROJECT, relation: { is_empty: true } })
+    } else if (input.projectId) {
       filters.push(projectOrUnscopedFilter(input.projectId))
     }
     if (input.topicId) {
@@ -1217,7 +1219,9 @@ export class MemorySearch {
     // Apply additional filters (project, topic, tags, source, kind, status). The
     // search API has no property-filter support, so these are post-filters.
     const filterRelationProperties: string[] = []
-    if (input.projectId) filterRelationProperties.push(MEMORY_PROPS.PROJECT)
+    if (input.unscopedOnly === true || input.projectId) {
+      filterRelationProperties.push(MEMORY_PROPS.PROJECT)
+    }
     if (input.topicId) filterRelationProperties.push(MEMORY_PROPS.TOPIC)
     if (filterRelationProperties.length > 0) {
       // Re-check the signal immediately before hydration. Hydration
@@ -1238,7 +1242,12 @@ export class MemorySearch {
       )
     }
 
-    if (input.projectId) {
+    if (input.unscopedOnly === true) {
+      filtered = filtered.filter((page) => {
+        const ids = extractRelationIds(page.properties[MEMORY_PROPS.PROJECT])
+        return ids.length === 0
+      })
+    } else if (input.projectId) {
       filtered = filtered.filter((page) => {
         const ids = extractRelationIds(page.properties[MEMORY_PROPS.PROJECT])
         return ids.length === 0 || ids.includes(input.projectId!)

@@ -30,6 +30,7 @@ const AUTOSAVE_LEARNING_POST_CREATE_POLL_MS = 50
 type AutosaveLearningDuplicateConfig =
   | { scope: "session"; session: string; projectIds: string[]; scopeId: string | null }
   | { scope: "project"; session: string; projectIds: string[]; scopeId: string | null }
+  | { scope: "vault"; session: string; projectIds: string[]; scopeId: string | null }
 
 type MemoryCreateDeps = {
   duplicateLister: MemoryLister
@@ -223,7 +224,9 @@ export class MemoryCreate {
       ? `autosave-learning:${duplicateConfig.scope}:` +
         (duplicateConfig.scope === "project"
           ? duplicateConfig.projectIds.join(",")
-          : `${duplicateConfig.scopeId ?? "global"}\0${duplicateConfig.session}`)
+          : duplicateConfig.scope === "vault"
+            ? (duplicateConfig.scopeId ?? "global")
+            : `${duplicateConfig.scopeId ?? "global"}\0${duplicateConfig.session}`)
       : null
 
     return await withAutosaveLearningLock(lockKey, async () => {
@@ -288,9 +291,13 @@ export class MemoryCreate {
 
     const projectIds = [...new Set(input.projectIds ?? [])].sort()
     const requestedScope =
-      input.autosaveLearningDedupScope ?? (projectIds.length > 0 ? "project" : "session")
+      input.autosaveLearningDedupScope ?? (projectIds.length > 0 ? "project" : "vault")
     const scope =
-      requestedScope === "project" && projectIds.length > 0 ? "project" : "session"
+      requestedScope === "session"
+        ? "session"
+        : requestedScope === "project" && projectIds.length > 0
+          ? "project"
+          : "vault"
     const scopeId = input.autosaveLearningScopeId?.trim() || null
 
     return { scope, session, projectIds, scopeId }

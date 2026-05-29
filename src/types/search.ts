@@ -36,6 +36,12 @@ export type SearchMode = "contains" | "semantic" | "hybrid"
 export interface SearchMemoriesInput {
   query: string
   projectId?: string
+  /**
+   * Require rows whose Project relation is empty. Internal write-safety probes
+   * use this for projectless autosave learnings so project-scoped rows do not
+   * fill the candidate window ahead of vault-scope rows.
+   */
+  unscopedOnly?: boolean
   topicId?: string
   /**
    * Search/read filters accept any tag string, not just the closed

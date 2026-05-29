@@ -188,10 +188,13 @@ Atomic learning saves are deduplicated more strictly than ordinary memory
 saves. In background-agent runs, a `source: "autosave_learning"`,
 `kind: "note"` save with a session id checks existing autosave-learning notes
 before creating a row. Project-scoped autosaves reuse same-project-set matches
-across sessions; projectless and catch-all fallback autosaves stay same-session
-scoped. If Lore cannot read the duplicate candidate set, the autosave learning
-save fails before creating a possible duplicate. To force a separate row during
-recovery or migration, set
+across sessions, including auto-resolved catch-all projects. Projectless
+autosaves reuse matching unscoped autosave-learning rows across the vault. The
+dedup gate uses strict structural checks first and, when semantic search is
+available, a paraphrase candidate lane with lexical support. If Lore cannot
+read the duplicate candidate set, the autosave learning save fails before
+creating a possible duplicate. To force a separate row during recovery or
+migration, set
 `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` for that autosave run.
 
 ## Procedures (Reusable Procedural Memories)

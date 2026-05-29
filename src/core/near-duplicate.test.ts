@@ -652,6 +652,72 @@ describe("findAutosaveLearningDuplicate", () => {
     })
   })
 
+  it("queries autosave-learning notes across unscoped vault rows when vault scope is requested", async () => {
+    const lister = makeLister([])
+
+    await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion relation filters reject empty arrays.",
+      projectIds: [],
+      session: "session-2",
+      scope: "vault",
+    })
+
+    expect(lister.listSpy).toHaveBeenCalledWith({
+      projectId: undefined,
+      session: undefined,
+      source: "autosave_learning",
+      kind: "note",
+      limit: 50,
+      includeContent: true,
+      includeUnscoped: undefined,
+      unscopedOnly: true,
+      includeProposed: true,
+    })
+  })
+
+  it("keeps unscoped vault matches from being hidden behind project-scoped recents", async () => {
+    const projectScopedRows = Array.from({ length: 50 }, (_, index) =>
+      makeMemory({
+        id: `mem-project-${index}`,
+        title: "Relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        projectIds: ["proj-a"],
+        session: "session-1",
+        source: "autosave_learning",
+        kind: "note",
+      })
+    )
+    const unscoped = makeMemory({
+      id: "mem-unscoped",
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: [],
+      session: "session-1",
+      source: "autosave_learning",
+      kind: "note",
+    })
+    const listSpy = vi.fn(async (opts: Parameters<MemoryLister["list"]>[0]) => ({
+      items: opts.unscopedOnly === true ? [unscoped] : projectScopedRows,
+    }))
+
+    const result = await findAutosaveLearningDuplicate(
+      { list: listSpy },
+      {
+        title: "Relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        projectIds: [],
+        session: "session-2",
+        scope: "vault",
+      }
+    )
+
+    expect(result?.id).toBe("mem-unscoped")
+    expect(listSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: undefined, unscopedOnly: true })
+    )
+  })
+
   it("returns the existing row for duplicate title/body pairs from overlapping transcript windows", async () => {
     const existing = makeMemory({
       id: "mem-existing",
@@ -779,6 +845,135 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(result?.id).toBe("mem-unscoped")
     expect(result?.projectIds).toEqual([])
     expect(result?.session).toBeNull()
+  })
+
+  it("uses semantic search to catch project-scoped paraphrases below structural thresholds", async () => {
+    const existing = makeMemory({
+      id: "mem-semantic",
+      title: "Gmail sent mail search uses in:sent",
+      content:
+        "Gmail search should use in:sent to find sent mail; the Sent label can miss messages.",
+      session: "session-1",
+      source: "autosave_learning",
+      kind: "note",
+    })
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    const searchSpy = vi.fn().mockResolvedValue([existing])
+
+    const result = await findAutosaveLearningDuplicate(
+      { list: listSpy, search: searchSpy },
+      {
+        title: "Find sent Gmail mail with in:sent",
+        content:
+          "When searching Gmail for sent mail, use in:sent because the Sent label can miss messages.",
+        projectId: "proj-a",
+        projectIds: ["proj-a"],
+        session: "session-2",
+        scope: "project",
+      }
+    )
+
+    expect(result?.id).toBe("mem-semantic")
+    expect(result?.semanticRank).toBe(0)
+    expect(result?.tokenSimilarity ?? 0).toBeLessThan(0.72)
+    expect(searchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        source: "autosave_learning",
+        kind: "note",
+        includeContent: true,
+        includeProposed: true,
+        unscopedOnly: undefined,
+        mode: "semantic",
+      })
+    )
+  })
+
+  it("does not let a semantic hit suppress an unrelated learning without lexical support", async () => {
+    const unrelated = makeMemory({
+      id: "mem-unrelated",
+      title: "Digest prompts use source digest",
+      content: "Background digest summaries save source=digest memories.",
+      session: "session-1",
+      source: "autosave_learning",
+      kind: "note",
+    })
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    const searchSpy = vi.fn().mockResolvedValue([unrelated])
+
+    const result = await findAutosaveLearningDuplicate(
+      { list: listSpy, search: searchSpy },
+      {
+        title: "Relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        projectId: "proj-a",
+        projectIds: ["proj-a"],
+        session: "session-2",
+        scope: "project",
+      }
+    )
+
+    expect(result).toBeNull()
+  })
+
+  it("does not let semantic containment by a tiny subset suppress a richer learning", async () => {
+    const shortSubset = makeMemory({
+      id: "mem-short-subset",
+      title: "Use pnpm",
+      content: "Use pnpm.",
+      session: "session-1",
+      source: "autosave_learning",
+      kind: "note",
+    })
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    const searchSpy = vi.fn().mockResolvedValue([shortSubset])
+
+    const result = await findAutosaveLearningDuplicate(
+      { list: listSpy, search: searchSpy },
+      {
+        title: "Choose the package manager from lockfiles",
+        content:
+          "Use pnpm install only when pnpm-lock.yaml is present; use npm install when package-lock.json is present.",
+        projectId: "proj-a",
+        projectIds: ["proj-a"],
+        session: "session-2",
+        scope: "project",
+      }
+    )
+
+    expect(result).toBeNull()
+  })
+
+  it("keeps vault-scoped semantic matches exact to unscoped rows", async () => {
+    const projectScoped = makeMemory({
+      id: "mem-project",
+      title: "Gmail sent mail lookup uses in:sent",
+      content:
+        "Use Gmail search with in:sent when checking outbound mail; label:sent can miss sent messages.",
+      projectIds: ["proj-a"],
+      session: "session-1",
+      source: "autosave_learning",
+      kind: "note",
+    })
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    const searchSpy = vi.fn().mockResolvedValue([projectScoped])
+
+    const result = await findAutosaveLearningDuplicate(
+      { list: listSpy, search: searchSpy },
+      {
+        title: "Find outgoing Gmail messages",
+        content:
+          "When looking for mail you sent in Gmail, search for in:sent instead of relying on the Sent label.",
+        projectIds: [],
+        session: "session-2",
+        scope: "vault",
+      }
+    )
+
+    expect(result).toBeNull()
+    expect(searchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: undefined, unscopedOnly: true })
+    )
   })
 
   it("catches reordered paraphrases of the same atomic learning", async () => {

@@ -520,15 +520,15 @@ export interface CreateMemoryInput {
   session?: string
   /**
    * Internal autosave-learning duplicate mode. Omitted lets the service use
-   * project scope when projectIds are present and session scope otherwise;
+   * project scope when projectIds are present and vault scope otherwise;
    * `off` bypasses the blocking reuse gate for callers that intentionally
    * materialize separate rows.
    */
-  autosaveLearningDedupScope?: "session" | "project" | "off"
+  autosaveLearningDedupScope?: "session" | "project" | "vault" | "off"
   /**
-   * Salt for session-scoped autosave-learning locks. MCP callers pass the
-   * vault page id (or config root fallback) so projectless and catch-all
-   * saves in different vaults cannot reuse each other's local lock.
+   * Salt for non-project autosave-learning locks. MCP callers pass the
+   * vault page id (or config root fallback) so projectless saves in
+   * different vaults cannot reuse each other's local lock.
    */
   autosaveLearningScopeId?: string
   /**
