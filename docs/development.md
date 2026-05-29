@@ -23,7 +23,7 @@ assistant hooks. `services.ts` is the shared initialization path for all three.
                        core/* and notion/*
 ```
 
-Build output has four entry points:
+Build output has five entry points:
 
 | Entry           | Source                 | Output                     |
 | --------------- | ---------------------- | -------------------------- |
@@ -31,6 +31,7 @@ Build output has four entry points:
 | `mcp`           | `src/mcp/server.ts`    | `dist/mcp.js`              |
 | `cli`           | `src/cli/index.ts`     | `dist/cli.js` with shebang |
 | `hooks/helpers` | `src/hooks/helpers.ts` | `dist/hooks/helpers.js`    |
+| `hooks/prompts` | `src/hooks/prompts.ts` | `dist/hooks/prompts.js`    |
 
 ## Data Model
 

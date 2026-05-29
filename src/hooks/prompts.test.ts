@@ -113,6 +113,25 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toContain("Do not paraphrase the session")
   })
 
+  it("applies inferability and precision gates to durable autosave", () => {
+    const prompt = buildBackgroundSavePrompt([], null, "")
+    expect(prompt).toContain("inferability test")
+    expect(prompt).toContain(
+      "could a competent agent reproduce this just by reading the code, docs, and types"
+    )
+    expect(prompt).toContain("learned by doing")
+    expect(prompt).toContain("exact trigger and the exact rule")
+    expect(prompt).toContain("vague or over-general memory")
+  })
+
+  it("adds experiential and non-inferable criteria to atomic learnings", () => {
+    const prompt = buildBackgroundSavePrompt([], null, "")
+    expect(prompt).toContain("Non-inferable / experiential")
+    expect(prompt).toContain("a failed approach and what worked")
+    expect(prompt).toContain("compatibility or version rule")
+    expect(prompt).toContain("If the precise rule is not clear")
+  })
+
   it("renders the session id and agent name when supplied", () => {
     const prompt = buildBackgroundSavePrompt([], null, "transcript", "sess-xyz", "Codex")
     expect(prompt).toContain("Session ID: sess-xyz")
@@ -558,6 +577,12 @@ describe("buildBackgroundSavePrompt", () => {
 
       Before saving, check whether a similar memory or decision already exists; if so, prefer lore-memory action='update' over creating a duplicate. Autosave fires every N messages in long sessions, so the same discovery can arrive twice.
 
+      Before saving, apply the inferability test: could a competent agent reproduce this just by reading the code, docs, and types in this repo — without having run it, failed at it, or made the decision? If yes, do not save it; the agent can re-derive it and storing it adds noise. Save only what was learned by doing — the thing not present in the code to read.
+
+      Strong experiential signals include: a failed approach and what actually worked; a gotcha found by running or testing; a compatibility or version rule discovered empirically; a decision whose alternatives were real; or a hidden invariant the code depends on but never states.
+
+      Precision bar: state the exact trigger and the exact rule, falsifiably — "binary-search variant XXXX needs \`<=\`, not \`<\`", never "be careful with comparisons." A vague or over-general memory can misdirect worse than no memory at all. If you cannot state the precise rule, do not save.
+
       If the session produced none of these, respond exactly "No Lore context to save." and stop. Do not paraphrase the session. Do not summarize what you did.
 
       When a save is warranted, call lore-* tools now. For each one, pick the project based on which files you actually read or edited — not where the session was launched.
@@ -668,6 +693,8 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toContain('source: "autosave_learning"')
     expect(prompt).not.toContain("required for autosave recall dedup")
     expect(prompt).not.toContain("A non-obvious discovery — gotcha")
+    expect(prompt).not.toContain("inferability test")
+    expect(prompt).not.toContain("Non-inferable / experiential")
   })
 
   it("conversational capture mode can explicitly suppress proposed status", () => {

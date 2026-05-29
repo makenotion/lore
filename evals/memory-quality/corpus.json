@@ -1,0 +1,86 @@
+{
+  "name": "memory-quality-redacted-mail-replay-v1",
+  "subProjects": ["Mail"],
+  "catchAllName": "Mail",
+  "description": "Redacted transcript excerpts from production Mail memory-quality review. Labels score whether buildBackgroundSavePrompt should keep or reject candidate autosave learnings.",
+  "cases": [
+    {
+      "id": "mail-worker-inferable-noise",
+      "source": "production Mail conversation/note review, inferable-noise bucket",
+      "transcript": "user: Please inspect the Mail background worker and summarize anything worth remembering.\nassistant: I read services/mail/worker/index.ts and queue.ts. The worker imports QueueProcessor, calls poll(), and passes jobs into handleJob(). I did not run the worker, hit a failure, or make a design decision; these relationships are visible from imports and type names.\nassistant: No code changes were made.",
+      "candidates": [
+        {
+          "id": "worker-queue-flow",
+          "expected": "reject",
+          "matchAny": ["queueprocessor poll", "worker calls queueprocessor"]
+        },
+        {
+          "id": "mail-worker-depends-on-queue",
+          "expected": "reject",
+          "matchAny": ["mail worker depends on queue"]
+        }
+      ],
+      "fixtureOutputs": {
+        "1": "No Lore context to save.",
+        "2": "No Lore context to save.",
+        "3": "lore-memory action='save' title: \"Mail worker calls QueueProcessor poll\" content: \"The Mail worker calls QueueProcessor poll before handling jobs.\" kind: \"note\" source: \"autosave_learning\""
+      }
+    },
+    {
+      "id": "mail-aborterror-version-gotcha",
+      "source": "production Mail conversation/note review, experiential precise bucket",
+      "transcript": "user: The Mail local dev hook is still failing on Node 20.\nassistant: I reproduced it with npm run test -- mail-auth. The retry matcher checked error.code, but Node 20 preserves AbortError.name and does not populate the same code shape as Node 22. The fix is to key the retry predicate on AbortError.name before consulting code.\nassistant: Verification passed on Node 20 and Node 22.",
+      "candidates": [
+        {
+          "id": "aborterror-name-rule",
+          "expected": "keep",
+          "matchAll": ["aborterror.name", "node 20"]
+        },
+        {
+          "id": "node-version-matters",
+          "expected": "reject",
+          "matchAny": ["node version matters"]
+        }
+      ],
+      "fixtureOutputs": {
+        "1": "lore-memory action='save' title: \"Mail retry matcher checks AbortError.name on Node 20\" content: \"Mail retry predicates should check AbortError.name before error.code because Node 20 does not expose the same abort code shape as Node 22.\" kind: \"note\" source: \"autosave_learning\"",
+        "2": "lore-memory action='save' title: \"Mail retry matcher checks AbortError.name on Node 20\" content: \"Mail retry predicates should check AbortError.name before error.code because Node 20 does not expose the same abort code shape as Node 22.\" kind: \"note\" source: \"autosave_learning\"",
+        "3": "lore-memory action='save' title: \"Mail retry matcher checks AbortError.name on Node 20\" content: \"Mail retry predicates should check AbortError.name before error.code because Node 20 does not expose the same abort code shape as Node 22.\" kind: \"note\" source: \"autosave_learning\"\nlore-memory action='save' title: \"Node version matters for abort behavior\" content: \"Node version matters for abort behavior.\" kind: \"note\" source: \"autosave_learning\""
+      }
+    },
+    {
+      "id": "mail-notion-sdk-duplicate",
+      "source": "production Mail duplicate-cluster review",
+      "transcript": "user: Did this session find anything new about the Notion SDK v5 relation filter behavior?\nassistant: No. lore-query search returned an existing memory covering dataSources.query relation filters with empty arrays. This session only confirmed that the existing row already covers the behavior.",
+      "candidates": [
+        {
+          "id": "duplicate-relation-filter-memory",
+          "expected": "reject",
+          "matchAny": ["relation filters with empty arrays"]
+        }
+      ],
+      "fixtureOutputs": {
+        "1": "No Lore context to save.",
+        "2": "No Lore context to save.",
+        "3": "No Lore context to save."
+      }
+    },
+    {
+      "id": "mail-outbound-retry-decision",
+      "source": "production Mail conversation/note review, durable decision bucket",
+      "transcript": "user: Choose the retry policy for outbound Mail sends.\nassistant: We compared per-recipient retry against message-level retry with idempotent recipient receipts. Per-recipient retry can duplicate sends when a later recipient succeeds after an earlier retry. Decision: use message-level retry and require idempotent recipient receipts to suppress duplicates.\nassistant: I updated the implementation notes and tests around the message-level retry path.",
+      "candidates": [
+        {
+          "id": "message-level-retry-decision",
+          "expected": "keep",
+          "matchAll": ["message-level retry", "idempotent recipient receipts"]
+        }
+      ],
+      "fixtureOutputs": {
+        "1": "lore-decision action='create' title: \"Use message-level retry for outbound Mail sends\" rationale: \"Per-recipient retry can duplicate sends; message-level retry with idempotent recipient receipts suppresses duplicate delivery.\"",
+        "2": "lore-decision action='create' title: \"Use message-level retry for outbound Mail sends\" rationale: \"Per-recipient retry can duplicate sends; message-level retry with idempotent recipient receipts suppresses duplicate delivery.\"",
+        "3": "No Lore context to save."
+      }
+    }
+  ]
+}

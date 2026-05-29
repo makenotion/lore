@@ -165,6 +165,12 @@ Save only if the session produced at least one of:
 
 Before saving, check whether a similar memory or decision already exists; if so, prefer lore-memory action='update' over creating a duplicate. Autosave fires every N messages in long sessions, so the same discovery can arrive twice.
 
+Before saving, apply the inferability test: could a competent agent reproduce this just by reading the code, docs, and types in this repo — without having run it, failed at it, or made the decision? If yes, do not save it; the agent can re-derive it and storing it adds noise. Save only what was learned by doing — the thing not present in the code to read.
+
+Strong experiential signals include: a failed approach and what actually worked; a gotcha found by running or testing; a compatibility or version rule discovered empirically; a decision whose alternatives were real; or a hidden invariant the code depends on but never states.
+
+Precision bar: state the exact trigger and the exact rule, falsifiably — "binary-search variant XXXX needs \`<=\`, not \`<\`", never "be careful with comparisons." A vague or over-general memory can misdirect worse than no memory at all. If you cannot state the precise rule, do not save.
+
 If the session produced none of these, respond exactly "No Lore context to save." and stop. Do not paraphrase the session. Do not summarize what you did.`
 }
 
@@ -351,8 +357,10 @@ For each atomic learning, call \`lore-memory action='save'\` with:
 
 A learning must be:
   1. **Atomic.** One fact, one memory. Compound observations split into multiple saves.
-  2. **Durable.** Useful beyond this specific bug or feature. "Fixed the off-by-one" is NOT durable; "binary-search variant XXXX needs <= comparison, not <" IS durable.
-  3. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly saved the memory via \`lore-memory action='save'\` or created the decision via \`lore-decision action='create'\` in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. If you save the same autosave learning twice in the same project, \`lore-memory action='save'\` will return the existing learning instead of creating another row. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
+  2. **Durable.** Useful beyond this specific bug or feature.
+  3. **Non-inferable / experiential.** Save learnings from doing: a failed approach and what worked; a gotcha found by running or testing; a compatibility or version rule discovered empirically; a decision whose alternatives were real; or a hidden invariant the code depends on but never states. If a competent agent could reproduce it just by reading the code, docs, and types, skip it.
+  4. **Precise.** State the exact trigger and the exact rule, falsifiably. "Fixed the off-by-one" is NOT durable or precise; "binary-search variant XXXX needs <= comparison, not <" IS. If the precise rule is not clear, do not save.
+  5. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly saved the memory via \`lore-memory action='save'\` or created the decision via \`lore-decision action='create'\` in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. If you save the same autosave learning twice in the same project, \`lore-memory action='save'\` will return the existing learning instead of creating another row. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
 
 **Per-spawn cap: at most ${PER_SPAWN_LEARNING_LIMIT} atomic learnings per autosave run.** A noisy session that surfaces 30 candidate facts must rank by durability and skip the long tail. Picking the top ${PER_SPAWN_LEARNING_LIMIT} high-signal learnings is better than flooding the vault with 30 marginal rows; the next session's autosave will pick up anything truly important that this run dropped (the transcript context overlaps).
 

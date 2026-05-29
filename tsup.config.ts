@@ -6,6 +6,7 @@ export default defineConfig({
     mcp: "src/mcp/server.ts",
     cli: "src/cli/index.ts",
     "hooks/helpers": "src/hooks/helpers.ts",
+    "hooks/prompts": "src/hooks/prompts.ts",
   },
   format: ["esm"],
   dts: { entry: { index: "src/index.ts" } },

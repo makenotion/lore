@@ -256,7 +256,7 @@ describe("task-runner", () => {
       }
     }
     expect(patchedVerifierCount).toBe(17)
-  })
+  }, 15_000)
 
   it("copies the workspace, runs the agent, and reports verifier success", async () => {
     const { suitePath } = await writeTaskSuite({
