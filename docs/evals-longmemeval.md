@@ -6,13 +6,16 @@ cleanup. Start with [`evals.md`](evals.md) for the runner overview and
 [`evals-suite-format.md`](evals-suite-format.md) for retrieval/task suite
 schema and baseline rules.
 
+LongMemEval remains a conversation-memory reference runner. It is not the
+comparison point for SkillRet/Lore read-only agent use, and it should not be
+used as the general quality benchmark for Lore's memory system.
+
 ## Temporal-Fidelity Caveat
 
-The LongMemEval bench published number on the `temporal-reasoning` and
-`knowledge-update` categories is **not apples-to-apples** with agent-memory
-systems that rank by session event time. Two facts about Lore's schema explain
-why, and the caveat must travel with every published number on those two
-categories.
+Any LongMemEval bench number on the `temporal-reasoning` and
+`knowledge-update` categories does not measure the same behavior as systems
+that rank by session event time. Two facts about Lore's schema explain why, and
+the caveat must travel with every reported number on those two categories.
 
 Lore's Memories schema has no caller-writable session-timestamp column.
 `Memory.createdAt` maps to Notion's `page.created_time` (server-set, not
@@ -26,25 +29,26 @@ agent recovers temporal context from the memory body's free text**, not whether
 Lore's retrieval ranks by event time. The agent can still answer correctly when
 the body's prose carries the session timestamp explicitly -- the bench is
 therefore a measurement of an agent capability composed with Lore's ingestion
-shape, not a direct comparison to systems that rank by event time. The
-comparison to Zep's `longmemeval_s` numbers on these two categories is not
-apples-to-apples on the temporal axis.
+shape, not a direct comparison to systems that rank by event time. Do not
+compare those category numbers directly against systems whose LongMemEval
+implementations preserve event-time ordering.
 
 The bench artifact's `summary.temporalFidelityCaveat` field carries this
 disclaimer verbatim so downstream consumers (CI logs, dashboards, public posts)
-cannot strip it from headline output. Adding a writable session-time column to
-the Memories schema would let retrieval rank by event time and convert this
-caveat into an honest apples-to-apples comparison; until then, the caveat
-applies.
+cannot strip it from artifact output. A different schema that preserved
+caller-supplied session event time would change what this LongMemEval runner
+measures, but the runner would still be conversation-memory evidence rather
+than the SkillRet/Lore read-only agent metric.
 
 ## LongMemEval Bench Runner
 
-The `bench` runner targets the publicly comparable LongMemEval `s_cleaned`
-corpus. Each example is a haystack of 30-40 multi-turn sessions plus one target
-question; the runner replays the haystack through Lore's production mining seam
+The `bench` runner targets the LongMemEval `s_cleaned` corpus. Each example is
+a haystack of 30-40 multi-turn sessions plus one target question; the runner
+replays the haystack through Lore's production mining seam
 (`runConversationMining`), invokes a Codex-driven agent to answer through
 `lore-context` / `lore-query` / `lore-memory`, and scores the answer with a
-snapshot-pinned OpenAI judge.
+snapshot-pinned OpenAI judge. Treat the output as LongMemEval-specific
+conversation-memory evidence, not as the representative Lore product metric.
 
 ### One-Time Setup
 
@@ -58,14 +62,14 @@ Re-running is idempotent (sha-matched file is left in place).
 
 ### Required Env Vars
 
-| Variable                          | Purpose                                                                                                                                                                                                                                                                                            |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LORE_EVAL_BENCH_REAL=1`          | Master gate -- without it every bench-mode adapter refuses to spawn.                                                                                                                                                                                                                               |
+| Variable                          | Purpose                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LORE_EVAL_BENCH_REAL=1`          | Master gate -- without it every bench-mode adapter refuses to spawn.                                                                                                                 |
 | `LORE_BENCH_NOTION_TOKEN`         | Per-run Notion token; the bench-runner keeps it in runner-owned process state for tool-driven retrieval. Use a revocable bench-scoped token, not your day-to-day `NOTION_API_TOKEN`. |
-| `LORE_BENCH_OPENAI_API_KEY`       | OpenAI key for both the agent (Codex shells out) and the judge.                                                                                                                                                                                                                                    |
-| `LORE_BENCH_CONFIG_ROOT`          | Path to a `.lore.yaml` directory targeting the sandbox vault.                                                                                                                                                                                                                                      |
-| `LORE_BENCH_SANDBOX_PROJECT_NAME` | Parent sandbox project name; per-example sub-projects are created under it.                                                                                                                                                                                                                        |
-| `LORE_EVAL_BENCH_MAX_USD`         | Optional cost cap (default 75). The runner aborts between examples if the projected total exceeds it.                                                                                                                                                                                              |
+| `LORE_BENCH_OPENAI_API_KEY`       | OpenAI key for both the agent (Codex shells out) and the judge.                                                                                                                      |
+| `LORE_BENCH_CONFIG_ROOT`          | Path to a `.lore.yaml` directory targeting the sandbox vault.                                                                                                                        |
+| `LORE_BENCH_SANDBOX_PROJECT_NAME` | Parent sandbox project name; per-example sub-projects are created under it.                                                                                                          |
+| `LORE_EVAL_BENCH_MAX_USD`         | Optional cost cap (default 75). The runner aborts between examples if the projected total exceeds it.                                                                                |
 
 ### Running
 
@@ -119,8 +123,8 @@ fields record which path produced the numbers.
   `lore-query` / `lore-context` retrieves transcript memories by question
   relevance and reads the body via `lore-memory action='expand'`. Bypasses
   `runConversationMining` entirely -- no `claude -p`, no autosave-prompt
-  filter. Apples-to-apples with Zep's published Graphiti baseline on
-  `longmemeval_s`.
+  filter. This is the lane for comparing full-fidelity LongMemEval ingestion
+  choices within that benchmark.
 - **`simulated-autosave`**
   ([`longmemeval-simulated-autosave.yaml`](../evals/bench-suites/longmemeval-simulated-autosave.yaml))
   -- each haystack session is sent through a deterministic structured
@@ -128,19 +132,17 @@ fields record which path produced the numbers.
   synopsis, keywords, closed-vocabulary tags, body content, and explicit
   `mentions` facts for extracted entities. This bypasses the production
   autosave durability filter, so it is not a measurement of what Lore writes
-  during normal Stop-hook autosave. It is the Zep-comparable enriched-ingestion
+  during normal Stop-hook autosave. It is an enriched-ingestion reference
   surface: the full conversational signal is retained, but the vault shape is
   closer to production Lore recall than raw transcript dumps.
 
 All strategies share the same per-example / per-suite write caps and the same
-retrieval surface (the agent does not know which path populated the vault).
-Publishing a number alongside a Zep-comparable headline means picking
-`raw-transcript`; publishing a number that reflects default Lore production
-autosave means picking `lore-mine`; publishing the opt-in conversational product
-path means picking `longmemeval-conversational-autosave.yaml`. Use
-`simulated-autosave` when comparing against systems that enrich conversation
-turns at ingest time, and report the production-filter bypass trade-off with
-the result.
+retrieval surface (the agent does not know which path populated the vault). If
+reporting LongMemEval numbers, choose `raw-transcript` for the full-fidelity
+corpus reference, `lore-mine` for default Lore production autosave, or
+`longmemeval-conversational-autosave.yaml` for the opt-in conversational
+product path. Use `simulated-autosave` when studying enriched conversation-turn
+ingestion, and report the production-filter bypass trade-off with the result.
 
 Manual comparison for `simulated-autosave`: run the simulated suite and the
 same-sample wake-up suite with the same `--limit` and artifact paths, then
@@ -214,7 +216,7 @@ The bench supports two retrieval surfaces, selected via the suite YAML's
 - **`wake-up-prefetch`**
   ([`longmemeval-wake-up.yaml`](../evals/bench-suites/longmemeval-wake-up.yaml))
   -- the bench-runner calls `loadWakeUpData({ mode: "task-only",
-  userQuery: <question>, includeMemoryContent: true })` BEFORE invoking the
+userQuery: <question>, includeMemoryContent: true })` BEFORE invoking the
   agent, then injects the top-10 matching memory bodies into the user prompt as
   a "Retrieved context" block. The agent answers from the injected context --
   no live tool calls required. This uses the same narrow wake-up shape as
@@ -232,14 +234,14 @@ artifact with a clear skip reason before creating per-example projects.
 
 The two strategies compose with `ingestion.strategy` independently:
 
-| `ingestion.strategy` | `agent.retrieval`  | What it measures                                                            | Currently runnable |
-| -------------------- | ------------------ | --------------------------------------------------------------------------- | ------------------ |
-| `lore-mine`          | `tool-driven`      | Production write path x agent tool-call propensity                          | Yes                |
-| `lore-mine`          | `wake-up-prefetch` | Production write path x isolated retrieval surface                          | Yes                |
-| `raw-transcript`     | `tool-driven`      | Full corpus fidelity x agent tool-call propensity (Zep-comparable headline) | Yes                |
-| `raw-transcript`     | `wake-up-prefetch` | Full corpus fidelity x isolated retrieval surface                           | Yes                |
-| `simulated-autosave` | `tool-driven`      | Enriched ingest x agent tool-call propensity (Zep-style enrichment surface) | Yes                |
-| `simulated-autosave` | `wake-up-prefetch` | Enriched ingest x isolated retrieval surface                                | Yes                |
+| `ingestion.strategy` | `agent.retrieval`  | What it measures                                   | Currently runnable |
+| -------------------- | ------------------ | -------------------------------------------------- | ------------------ |
+| `lore-mine`          | `tool-driven`      | Production write path x agent tool-call propensity | Yes                |
+| `lore-mine`          | `wake-up-prefetch` | Production write path x isolated retrieval surface | Yes                |
+| `raw-transcript`     | `tool-driven`      | Full corpus fidelity x agent tool-call propensity  | Yes                |
+| `raw-transcript`     | `wake-up-prefetch` | Full corpus fidelity x isolated retrieval surface  | Yes                |
+| `simulated-autosave` | `tool-driven`      | Enriched ingest x agent tool-call propensity       | Yes                |
+| `simulated-autosave` | `wake-up-prefetch` | Enriched ingest x isolated retrieval surface       | Yes                |
 
 Use tool-driven suites when measuring whether the agent chooses useful
 mid-session retrieval and expansion. Use wake-up-prefetch suites when isolating

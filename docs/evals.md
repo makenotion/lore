@@ -52,24 +52,25 @@ node dist/cli.js eval run evals/suites/lore-core.yaml \
 
 ## Runner Modes
 
-Eight runners ship today. `retrieval` and `notion` share the same suite YAML
+Nine runners ship today. `retrieval` and `notion` share the same suite YAML
 format and surface registry; `task`, `bench`, `profile`,
-`retrieval-quality`, `skill-retrieval`, and `skill-use` each have their own
-suite shape and scoring path because they score agent-produced workspace
-state, LongMemEval-style multi-session recall, profile taxonomy quality,
-ranked live-search quality, public corpus ranking, or context-enabled
-answerability rather than wake-up surfaced memory ids:
+`retrieval-quality`, `skill-retrieval`, `skill-use`, and `skill-agent` each
+have their own suite shape and scoring path because they score
+agent-produced workspace state, LongMemEval-style multi-session recall, profile
+taxonomy quality, ranked live-search quality, public corpus ranking, or
+context-enabled answerability rather than wake-up surfaced memory ids:
 
-| Runner                | What it exercises                                                                                                                                                                                                               | Where to use it                                                                                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls.                                                                                                                                       | Per-PR CI; the inner-loop fast feedback.                                                                                                                         |
-| `notion`              | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion.                                                                                                                                        | Nightly CI; PRs that touch retrieval composition or ranking.                                                                                                     |
-| `task`                | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`.                                                                                                              | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path.                                                                                              |
-| `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                                                                                                       | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0.                         |
-| `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls.                                                                             | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                                              |
-| `retrieval-quality`   | Labeled live-vault query → expected-memory checks through the real `MemoryService.searchWithExplain` path. Computes target rank, recall@1/5/10, NDCG@10, harmful@k, and MRR across product, RunTool AI, and REST keyword lanes. | PRs and release checks that touch search transport or ranking. Read-only but live-vault-backed, so run deliberately against an operator-approved vault.          |
-| `skill-retrieval`     | SkillRet memory-as-skill corpus ranking. The `keyword` lane is offline; the `notion-ai` lane imports SkillRet into a persistent Lore eval vault and scores Notion AI search through `MemoryService.searchWithExplain`.           | Public-scale retrieval pressure for memory-as-skill ranking. Does not measure agent task lift or autonomous memory formation.                                    |
-| `skill-use`           | Offline no-context / oracle-context / retrieved-context / harmful-context answerability over labeled support sets. Computes success, answer accuracy, context sufficiency, harmful context rate, and retrieval gap to oracle.   | Deterministic context-use proxy for memory-as-skill evidence. Does not measure live Notion behavior or a powered agent unless a separate answerer is plugged in. |
+| Runner                | What it exercises                                                                                                                                                                                                                          | Where to use it                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls.                                                                                                                                                  | Per-PR CI; the inner-loop fast feedback.                                                                                                                                |
+| `notion`              | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion.                                                                                                                                                   | Nightly CI; PRs that touch retrieval composition or ranking.                                                                                                            |
+| `task`                | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`.                                                                                                                         | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path.                                                                                                     |
+| `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                                                                                                                  | Operator-dispatched only (workflow_dispatch). A narrow conversation-memory reference, not the headline SkillRet/Lore or formation-transfer measurement.                 |
+| `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls.                                                                                        | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                                                     |
+| `retrieval-quality`   | Labeled live-vault query → expected-memory checks through the real `MemoryService.searchWithExplain` path. Computes target rank, recall@1/5/10, NDCG@10, harmful@k, and MRR across product, RunTool AI, and REST keyword lanes.            | PRs and release checks that touch search transport or ranking. Read-only but live-vault-backed, so run deliberately against an operator-approved vault.                 |
+| `skill-retrieval`     | SkillRet memory-as-skill corpus ranking. The `keyword` lane is offline; the `notion-ai` lane imports SkillRet into a persistent Lore eval vault and scores Notion AI search through `MemoryService.searchWithExplain`.                     | Public-scale substrate/candidate-recall diagnostic for memory-as-skill ranking. Does not measure representative Lore agent use.                                         |
+| `skill-use`           | Offline no-context / oracle-context / retrieved-context / harmful-context answerability over labeled support sets. Computes success, answer accuracy, context sufficiency, harmful context rate, and retrieval gap to oracle.              | Deterministic context-use proxy for memory-as-skill evidence. Does not measure live Notion behavior or a powered agent unless a separate answerer is plugged in.        |
+| `skill-agent`         | SkillRet tasks as read-only seeded-vault Lore use. The agent receives Lore read instructions plus read-only search/expand tools, writes are blocked, and scoring separates tool use, target surfaced, target selected, and answer applied. | Representative SkillRet/Lore eval for fixed vaults. It measures whether an instructed agent can use an existing Lore vault, not whether Lore forms or mutates memories. |
 
 The longitudinal `lore-full-loop` task condition is not a headline
 formation-transfer metric when Phase A only inspects a workspace. A defensible
@@ -95,9 +96,8 @@ don't exist in the live vault and the assertion silently passes.
 
 Suite syntax, task-mode verifier details, retrieval metrics, and baseline drift
 rules live in [`evals-suite-format.md`](evals-suite-format.md). LongMemEval
-bench operations and the temporal-fidelity caveat that must travel with
-published benchmark numbers live in
-[`evals-longmemeval.md`](evals-longmemeval.md).
+bench operations and the temporal-fidelity caveat that must travel with any
+reported LongMemEval numbers live in [`evals-longmemeval.md`](evals-longmemeval.md).
 
 ## Retrieval-Quality Runner
 
@@ -138,11 +138,13 @@ cutoff.
 SkillRet-shaped public corpora. The committed `skillret-smoke` suite uses a
 tiny in-repo corpus for deterministic checks; `skillret-test` targets the full
 public SkillRet test split fetched from the pinned checksum manifest. The
-`keyword` lane is an offline lexical control. The `notion-ai` lane is the Lore
-measurement lane: it imports each SkillRet skill as a `procedure` memory in a
+`keyword` lane is an offline lexical control. The `notion-ai` lane is a
+substrate recall diagnostic: it imports each SkillRet skill as a `procedure` memory in a
 persistent Notion-backed eval vault, adds SkillRet taxonomy topics, topic keys,
 tags, keywords, and body metadata, stores the skill-id to memory-id mapping in
 a local manifest, and then scores returned memories from Notion AI search.
+It does not measure an LLM agent deciding to use Lore or applying a retrieved
+memory.
 
 ```bash
 npm run build
@@ -225,9 +227,55 @@ retrieval:
 The `notion-ai` lane requires a retrieval window of at most 25, matching the
 RunTool search return cap. It also records a mechanism trace and counts
 mechanism failures when RunTool AI search did not dispatch as expected. Report
-this runner as public-scale memory-as-skill retrieval only; it does not show
-that the agent used the memory correctly or that Lore formed the memory
-autonomously.
+this runner as public-scale candidate recall only. It does not show that the
+agent used the memory correctly, that Lore formed the memory autonomously, or
+that the normal Lore instructions caused an agent to query the vault.
+
+## Skill-Agent Runner
+
+`skill-agent` suites live under `evals/skill-agent/`. They are the
+representative SkillRet/Lore eval path for fixed evaluation vaults. The vault is
+a read-only seeded fixture: agents may search, recall, and expand existing
+memories, but they may not create, update, archive, approve, reject, promote,
+mine, autosave, or otherwise mutate Lore state. Any write attempt is blocked by
+the harness and counted in the artifact.
+
+```bash
+npm run build
+NOTION_ENV=dev \
+LORE_CONFIG_ROOT=/tmp/lore-eval-vaults/skillret-dev-eval \
+LORE_EVAL_BENCH_REAL=1 \
+node dist/cli.js eval run evals/skill-agent/skillret-readonly-agent.yaml
+```
+
+The runner reuses the SkillRet import manifest declared by the linked
+`skill-retrieval` suite. It validates that the active Lore config points at the
+suite's registered vault, that the manifest covers every selected query's qrels,
+and that the selected agent conditions run against the same fixed corpus
+revision.
+
+The default committed suite uses:
+
+- `no-lore`: baseline model/task prior with no Lore tools.
+- `tool-driven-lore`: headline condition. The agent receives read-only Lore
+  instructions and read-only search/expand tools.
+- `oracle-context`: diagnostic ceiling where the target procedure body is
+  injected directly.
+
+Artifacts score separate layers so a retrieved-but-unused memory is not counted
+as Lore success:
+
+- `toolUse`: a successful read-only Lore tool call happened.
+- `targetSurfaced`: an expected SkillRet memory appeared in tool results.
+- `targetExpanded`: the agent read the expected memory body.
+- `targetSelected`: the final structured answer cited the expected memory or
+  SkillRet id.
+- `answerApplied`: the answer used the selected target evidence.
+- `writeAttemptsBlocked`: attempted write-path calls rejected by the harness.
+
+Keep `skill-agent` reports separate from `skill-retrieval` reports. Raw Notion
+search recall is useful for diagnosing the substrate, but the headline Lore
+claim is read-only agent use over a stable seeded vault.
 
 ## Skill-Use Runner
 

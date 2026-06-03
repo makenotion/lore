@@ -141,8 +141,11 @@ const TOOL_DRIVEN_SHELL_SHIM_INSTRUCTIONS = [
   "",
   '- `lore-query action=search query="<keywords>" limit=10 mode=hybrid`',
   "- `lore-query action=recall limit=10`",
-  '- `lore-memory action=expand ids="<id1>,<id2>"`',
+  "- `lore-memory action=expand ids=latest`",
+  "- `lore-memory action=expand ids=m1,m2,m3`",
   "",
+  "Search and recall output lists stable handles such as m1 and m2; after a search or recall, expand the latest result set or relevant handles before answering.",
+  "Do not abbreviate memory IDs; prefer ids=latest or listed handles.",
   "These commands are the live retrieval surface. Do not answer before using them.",
 ].join("\n")
 /**
@@ -866,7 +869,7 @@ export async function runBenchExample(input: {
    * — claude-p spawn → Lore MCP → autosave's durable-knowledge
    * filter. `raw-transcript` writes one verbatim memory per session
    * directly via the sandbox's `createMemoryInProject`, bypassing
-   * the autosave filter for Zep-comparable apples-to-apples.
+   * the autosave filter to preserve full transcript fidelity.
    */
   ingestionStrategy: BenchIngestionStrategy
   memoryCaptureMode?: MemoryCaptureMode

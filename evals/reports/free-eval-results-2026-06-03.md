@@ -3,44 +3,43 @@
 This report records the no-API-cost eval runs for the skill-retrieval work in
 PR #945. Keep the four result tracks separate: the SkillRet keyword run is an
 offline string-matching control, the SkillRet Notion AI run is a directional
-partial sample of the live Lore retrieval path, the skill-use run is a
+partial substrate-recall diagnostic, the skill-use run is a
 deterministic context sufficiency smoke gate, and the Mail run is a live-vault
 read-only retrieval quality check.
 
-The SkillRet keyword lane is not the meaningful Lore retrieval measurement.
-Lore's production path uses Notion-backed search, and even a keyword baseline
-that matters for Lore should run through Notion's Memories data source rather
-than an in-process string matcher. A valid SkillRet AI-search result requires
-importing the SkillRet corpus into an eval Notion vault, waiting for indexing,
-and scoring Notion AI search returns against a `skillId -> memoryId` import
-manifest. The Notion AI result below is intentionally labeled directional
-because the live run was paused after 13 of 20 shards once it had enough signal
-for product direction.
+The SkillRet keyword lane is not the meaningful Lore measurement. Lore is used
+by an instructed LLM agent against a Notion-backed memory vault, so raw query
+passes into a search API are only substrate diagnostics. A representative
+SkillRet/Lore result requires a stable seeded eval vault, read-only Lore tools,
+normal Lore instructions, and scoring that separates tool use, target surfaced,
+target selected, and answer/application success. The Notion AI result below is
+intentionally labeled directional because the live run was paused after 13 of
+20 shards once it had enough signal for product direction.
 
 ## Summary
 
-| Track                          | Raw artifact                                                   | Result                                                                                                                                 | Interpretation                                                                                                                                          |
-| ------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SkillRet keyword retrieval     | `evals/results/skillret-test-keyword-2026-06-03.json`          | 4,997 queries, 6,660 skills, 8,347 qrels. Recall@10 17.51%, NDCG@10 0.1092, MRR@10 0.1049, MAP@10 0.0790.                              | Offline string-matching control. This is not Lore retrieval, not Notion keyword retrieval, not Notion AI search, and not agent task lift.               |
-| SkillRet Notion AI directional | `evals/results/skillret-notion-ai-directional-2026-06-04.json` | 3,250/4,997 queries across 13/20 shards. Recall@10 23.08%, NDCG@10 0.1856, MRR@10 0.2167, MAP@10 0.1480; 0 mechanism failures.          | Live Notion-backed Lore retrieval sample. Better than the local keyword control, but well below dedicated SkillRet rankers; not a complete full run.    |
-| Skill-use smoke                | `evals/results/skill-use-smoke-2026-06-03.json`                | 4/4 required condition checks passed. No-context 0%, oracle 100%, retrieved 100%, retrieved gap to oracle 0.0 pp.                      | Harness sanity check for support-set/context-sufficiency logic. The default answerer is deterministic, not a powered agent.                             |
-| Mail retrieval-quality         | `evals/results/mail-retrieval-quality-2026-06-03.json`         | 6/6 required lane checks passed across 3 live-vault cases. Product and RunTool AI lanes recall@1 100%; REST keyword lane recall@10 0%. | Live Notion retrieval quality for three labeled Mail cases. Read-only, but raw artifact includes live-vault IDs, returned titles, and explain traces.   |
+| Track                          | Raw artifact                                                   | Result                                                                                                                                 | Interpretation                                                                                                                                           |
+| ------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SkillRet keyword retrieval     | `evals/results/skillret-test-keyword-2026-06-03.json`          | 4,997 queries, 6,660 skills, 8,347 qrels. Recall@10 17.51%, NDCG@10 0.1092, MRR@10 0.1049, MAP@10 0.0790.                              | Offline string-matching control. This is not Lore retrieval, not Notion keyword retrieval, not Notion AI search, and not agent task lift.                |
+| SkillRet Notion AI directional | `evals/results/skillret-notion-ai-directional-2026-06-04.json` | 3,250/4,997 queries across 13/20 shards. Recall@10 23.08%, NDCG@10 0.1856, MRR@10 0.2167, MAP@10 0.1480; 0 mechanism failures.         | Live Notion-backed substrate recall sample. Better than the local keyword control, but below dedicated SkillRet rankers and not representative Lore use. |
+| Skill-use smoke                | `evals/results/skill-use-smoke-2026-06-03.json`                | 4/4 required condition checks passed. No-context 0%, oracle 100%, retrieved 100%, retrieved gap to oracle 0.0 pp.                      | Harness sanity check for support-set/context-sufficiency logic. The default answerer is deterministic, not a powered agent.                              |
+| Mail retrieval-quality         | `evals/results/mail-retrieval-quality-2026-06-03.json`         | 6/6 required lane checks passed across 3 live-vault cases. Product and RunTool AI lanes recall@1 100%; REST keyword lane recall@10 0%. | Live Notion retrieval quality for three labeled Mail cases. Read-only, but raw artifact includes live-vault IDs, returned titles, and explain traces.    |
 
 ## Provenance
 
-| Field                            | Value                                                                                                                                                                                                                       |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Branch                           | `Iron-Ham/add-free-eval-results`                                                                                                                                                                                            |
-| Base commit before report update | `50ca2ed7d16601b5e59a15c0ade7468014a1fbdd`                                                                                                                                                                                  |
-| Run dates                        | 2026-06-03 and 2026-06-04                                                                                                                                                                                                    |
-| Working tree at run time         | SkillRet Notion AI import/run hardening was present in the working tree. The pre-existing untracked `evals/discordant-pairs-manifest.json` was not used. Temporary shard suite files were not committed.                    |
-| SkillRet Hugging Face revision   | `7cae7cfbad2b0e1ebc9170892f568993aae543b0`                                                                                                                                                                                  |
-| SkillRet manifest                | `evals/skill-retrieval/skillret-checksums.json`                                                                                                                                                                             |
-| SkillRet eval vault page         | `374b35e6-e67f-8108-beb4-dec11f2f5d28`                                                                                                                                                                                      |
-| SkillRet config root             | Operator-local `.lore.yaml` pointing at the registered SkillRet eval vault.                                                                                                                                                   |
+| Field                            | Value                                                                                                                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Branch                           | `Iron-Ham/add-free-eval-results`                                                                                                                                                                                          |
+| Base commit before report update | `50ca2ed7d16601b5e59a15c0ade7468014a1fbdd`                                                                                                                                                                                |
+| Run dates                        | 2026-06-03 and 2026-06-04                                                                                                                                                                                                 |
+| Working tree at run time         | SkillRet Notion AI import/run hardening was present in the working tree. The pre-existing untracked `evals/discordant-pairs-manifest.json` was not used. Temporary shard suite files were not committed.                  |
+| SkillRet Hugging Face revision   | `7cae7cfbad2b0e1ebc9170892f568993aae543b0`                                                                                                                                                                                |
+| SkillRet manifest                | `evals/skill-retrieval/skillret-checksums.json`                                                                                                                                                                           |
+| SkillRet eval vault page         | `374b35e6-e67f-8108-beb4-dec11f2f5d28`                                                                                                                                                                                    |
+| SkillRet config root             | Operator-local `.lore.yaml` pointing at the registered SkillRet eval vault.                                                                                                                                               |
 | SkillRet import manifest         | `evals/skill-retrieval/manifests/skillret-test-import.json` is ignored and operator-local because it contains live Notion page ids. The checked local manifest had 6,660 entries, transform v3, and 14 truncated entries. |
-| Mail config root                 | Operator-local production Mail vault.                                                                                                                                                                                        |
-| Mail Notion environment          | Dev Notion environment from the Mail `.lore.yaml`.                                                                                                                                                                           |
+| Mail config root                 | Operator-local production Mail vault.                                                                                                                                                                                     |
+| Mail Notion environment          | Dev Notion environment from the Mail `.lore.yaml`.                                                                                                                                                                        |
 
 ## Commands
 
@@ -85,16 +84,16 @@ of the committed artifact set.
 
 ## Artifact Inventory
 
-| Path                                                   |  Size | SHA-256                                                            |
-| ------------------------------------------------------ | ----: | ------------------------------------------------------------------ |
-| `evals/results/skillret-test-keyword-2026-06-03.json`  | 9.1 MB | `abcb509afe170ee7f26a2a552c8cc961ca3d36943d357b28df0d4f23dd88e820` |
-| `evals/results/skillret-notion-ai-directional-2026-06-04.json` | 11 MB | `dd69f60f04a1fb3667792b479fbf5fe1f7371cf46b63bc4e023b778b24e411f7` |
-| `evals/results/skill-use-smoke-2026-06-03.json`        | 11 KB | `2c5617316cb2aa4584533f65b27f3ad35cdad8a4940435ca2e3319d41012b09d` |
-| `evals/results/mail-retrieval-quality-2026-06-03.json` | 25 KB | `c753e74abe5a37a67e2be6759bdebe1329d458d174b3900523728b6983465d1e` |
-| `evals/skill-retrieval/skillret-test.yaml`             | suite | `ae30a61a574710e4305e0572e1da4dbd99ceef3e47f2273052c378134d058f8b` |
-| `evals/skill-retrieval/skillret-notion-ai.yaml`        | suite | `9a5cf3c65e05b9b9f5e2eb5ec04affa45ed883b45e3a2eebe851da84ac3350b2` |
-| `evals/skill-use/smoke.yaml`                           | suite | `ff345083b87bdc9d6bb0dbe513a3a8f2f4a4cad80b8b9960d20db0b07b98e523` |
-| `evals/retrieval-quality/mail.yaml`                    | suite | `d40cc7de206c2279b8846881e4fd4cec88fe058dbd07c98215f1632b18e3c794` |
+| Path                                                           |   Size | SHA-256                                                            |
+| -------------------------------------------------------------- | -----: | ------------------------------------------------------------------ |
+| `evals/results/skillret-test-keyword-2026-06-03.json`          | 9.1 MB | `abcb509afe170ee7f26a2a552c8cc961ca3d36943d357b28df0d4f23dd88e820` |
+| `evals/results/skillret-notion-ai-directional-2026-06-04.json` |  11 MB | `dd69f60f04a1fb3667792b479fbf5fe1f7371cf46b63bc4e023b778b24e411f7` |
+| `evals/results/skill-use-smoke-2026-06-03.json`                |  11 KB | `2c5617316cb2aa4584533f65b27f3ad35cdad8a4940435ca2e3319d41012b09d` |
+| `evals/results/mail-retrieval-quality-2026-06-03.json`         |  25 KB | `c753e74abe5a37a67e2be6759bdebe1329d458d174b3900523728b6983465d1e` |
+| `evals/skill-retrieval/skillret-test.yaml`                     |  suite | `ae30a61a574710e4305e0572e1da4dbd99ceef3e47f2273052c378134d058f8b` |
+| `evals/skill-retrieval/skillret-notion-ai.yaml`                |  suite | `9a5cf3c65e05b9b9f5e2eb5ec04affa45ed883b45e3a2eebe851da84ac3350b2` |
+| `evals/skill-use/smoke.yaml`                                   |  suite | `ff345083b87bdc9d6bb0dbe513a3a8f2f4a4cad80b8b9960d20db0b07b98e523` |
+| `evals/retrieval-quality/mail.yaml`                            |  suite | `d40cc7de206c2279b8846881e4fd4cec88fe058dbd07c98215f1632b18e3c794` |
 
 SkillRet corpus hashes matched the pinned manifest:
 
@@ -269,6 +268,8 @@ Notion ids with stable pseudonyms and redacts live-vault titles.
   not a SkillRet AI-search result.
 - The SkillRet Notion AI number is directional. It covers 13 of 20 shards, not
   the full public test split.
+- The SkillRet Notion AI number is raw search substrate recall, not an agent
+  using Lore under AGENTS.md-style instructions.
 - The SkillRet number is not a Notion-backed keyword result.
 - The skill-use smoke number is not powered-agent task performance.
 - The Mail retrieval-quality suite currently has only three labeled cases and
@@ -279,16 +280,20 @@ Notion ids with stable pseudonyms and redacts live-vault titles.
 
 ## Next Measurement Work
 
-1. Add a manifest-filtered over-fetch mode for SkillRet Notion AI runs so Lore
+1. Run the read-only SkillRet agent lane: reuse the stable imported eval vault,
+   expose only Lore read paths to the agent, block write attempts, and score
+   tool use, target surfaced, target selected, and answer/application success
+   separately from raw search recall.
+2. Add a manifest-filtered over-fetch mode for SkillRet Notion AI runs so Lore
    can request up to the RunTool cap, remove rows outside the active manifest,
    and score top-10 after filtering.
-2. Add a Lore-side skill reranker over over-fetched candidates using title,
+3. Add a Lore-side skill reranker over over-fetched candidates using title,
    topic key, tags, keywords, synopsis, and content overlap features.
-3. Add current-revision tags and stricter active-manifest isolation to the
+4. Add current-revision tags and stricter active-manifest isolation to the
    SkillRet import/run path.
-4. Add 30-50 more Mail retrieval-quality cases with domain, cluster,
+5. Add 30-50 more Mail retrieval-quality cases with domain, cluster,
    difficulty, and harmful near-miss labels.
-5. Adapt a larger SkillsBench-style context-use suite into `skill-use` support
+6. Adapt a larger SkillsBench-style context-use suite into `skill-use` support
    sets.
-6. Build a separate formation-transfer suite that gates prior-task success,
+7. Build a separate formation-transfer suite that gates prior-task success,
    formed-memory quality, retrieval, and later use independently.

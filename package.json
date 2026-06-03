@@ -23,6 +23,7 @@
     "CONTRIBUTING.md",
     "dist",
     "docs",
+    "evals/skill-agent",
     "evals/skill-retrieval",
     "evals/skill-use",
     "evals/vaults.yaml",

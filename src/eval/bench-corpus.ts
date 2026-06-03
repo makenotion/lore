@@ -10,7 +10,7 @@
  * The HuggingFace revision is pinned in `checksums.json`; the runner
  * recomputes sha256 on first read and aborts on mismatch so a
  * partially-downloaded or substituted corpus cannot silently change
- * the headline number.
+ * the reported LongMemEval number.
  */
 
 import { createHash } from "node:crypto"

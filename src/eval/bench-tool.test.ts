@@ -19,6 +19,7 @@ vi.mock("../core/ask.js", () => ({
 
 import {
   BENCH_TOOL_PROJECT_ID_ENV,
+  BENCH_TOOL_PROJECT_NAME_ENV,
   BENCH_TOOL_SOCKET_ENV,
   BENCH_TOOL_TRACE_ENV,
   runBenchToolCli,
@@ -252,6 +253,275 @@ describe("runBenchToolCli", () => {
       status: "success",
       surfacedMemoryIds: ["mem-project"],
     })
+  })
+
+  it("renders SkillRet search results as skill candidate cards", async () => {
+    const search = vi.fn(async () => [
+      testMemory({
+        id: "mem-skill-alpha",
+        title: "Alpha Skill",
+        source: "manual",
+        kind: "procedure",
+        synopsis:
+          "Skill: Alpha Skill. Use when: route tenant metadata requests. Category: architecture / routing.",
+        tags: [
+          "skillret",
+          "skillret-split-test",
+          "skillret-major-architecture",
+          "skillret-sub-routing",
+        ],
+        keywords:
+          "skillret skillret:fixture skillret:skill-alpha skillret/test/fixture/architecture/routing/skill-alpha",
+      }),
+    ])
+    mocks.initServices.mockResolvedValue({
+      memories: { search },
+    })
+
+    const exitCode = await runBenchToolCli(
+      "lore-query",
+      ["action=search", "query=tenant metadata routing"],
+      {
+        [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+        [BENCH_TOOL_PROJECT_NAME_ENV]: "SkillRet Eval",
+      }
+    )
+
+    expect(exitCode, stderrOutput.join("")).toBe(0)
+    const stdout = stdoutOutput.join("")
+    expect(stdout).toContain("### Skill Candidate: Alpha Skill")
+    expect(stdout).toContain("Skill Name: Alpha Skill")
+    expect(stdout).toContain("Short Summary: Skill: Alpha Skill.")
+    expect(stdout).toContain("SkillRet Tags: skillret, skillret-split-test")
+    expect(stdout).toContain("Compare Skill Name, Short Summary, and SkillRet Tags")
+  })
+
+  it("resolves listed memory handles when expanding search results", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-bench-tool-test-"))
+    tempDirs.push(workspace)
+    const traceFile = join(workspace, "trace.jsonl")
+    const memory = testMemory({ id: "mem-project", title: "Project color" })
+    const search = vi.fn(async () => [memory])
+    const getById = vi.fn(async (id: string) => {
+      expect(id).toBe("mem-project")
+      return memory
+    })
+    mocks.initServices.mockResolvedValue({
+      memories: { search, getById },
+    })
+    const env = {
+      [BENCH_TOOL_TRACE_ENV]: traceFile,
+      [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+    }
+
+    const searchExitCode = await runBenchToolCli(
+      "lore-query",
+      ["action=search", "query=blue"],
+      env
+    )
+    const expandExitCode = await runBenchToolCli(
+      "lore-memory",
+      ["action=expand", "ids=m1"],
+      env
+    )
+
+    expect(searchExitCode, stderrOutput.join("")).toBe(0)
+    expect(expandExitCode, stderrOutput.join("")).toBe(0)
+    expect(stdoutOutput.join("")).toContain("Handle: m1")
+    expect(stdoutOutput.join("")).toContain("Expanded 1 memory")
+    const trace = (await readFile(traceFile, "utf-8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as unknown)
+    expect(trace).toEqual([
+      expect.objectContaining({
+        tool: "lore-query",
+        action: "search",
+        surfacedMemoryIds: ["mem-project"],
+      }),
+      expect.objectContaining({
+        tool: "lore-memory",
+        action: "expand",
+        surfacedMemoryIds: ["mem-project"],
+        expandedMemoryIds: ["mem-project"],
+      }),
+    ])
+  })
+
+  it("keeps memory handles stable across multiple searches", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-bench-tool-test-"))
+    tempDirs.push(workspace)
+    const traceFile = join(workspace, "trace.jsonl")
+    const first = testMemory({ id: "mem-first", title: "First memory" })
+    const second = testMemory({ id: "mem-second", title: "Second memory" })
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce([first])
+      .mockResolvedValueOnce([second, first])
+    const getById = vi.fn(async (id: string) => (id === "mem-first" ? first : second))
+    mocks.initServices.mockResolvedValue({
+      memories: { search, getById },
+    })
+    const env = {
+      [BENCH_TOOL_TRACE_ENV]: traceFile,
+      [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+    }
+
+    expect(
+      await runBenchToolCli("lore-query", ["action=search", "query=first"], env)
+    ).toBe(0)
+    expect(
+      await runBenchToolCli("lore-query", ["action=search", "query=second"], env)
+    ).toBe(0)
+    expect(
+      await runBenchToolCli("lore-memory", ["action=expand", "ids=m1,m2"], env)
+    ).toBe(0)
+
+    const stdout = stdoutOutput.join("")
+    expect(stdout).toContain("### First memory\n*Handle: m1")
+    expect(stdout).toContain("### Second memory\n*Handle: m2")
+    expect(getById).toHaveBeenCalledWith("mem-first")
+    expect(getById).toHaveBeenCalledWith("mem-second")
+  })
+
+  it("expands the latest surfaced result set with the latest token", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-bench-tool-test-"))
+    tempDirs.push(workspace)
+    const traceFile = join(workspace, "trace.jsonl")
+    const first = testMemory({ id: "mem-first", title: "First memory" })
+    const second = testMemory({ id: "mem-second", title: "Second memory" })
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce([first])
+      .mockResolvedValueOnce([second, first])
+    const getById = vi.fn(async (id: string) => (id === "mem-first" ? first : second))
+    mocks.initServices.mockResolvedValue({
+      memories: { search, getById },
+    })
+    const env = {
+      [BENCH_TOOL_TRACE_ENV]: traceFile,
+      [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+    }
+
+    expect(
+      await runBenchToolCli("lore-query", ["action=search", "query=first"], env)
+    ).toBe(0)
+    expect(
+      await runBenchToolCli("lore-query", ["action=search", "query=second"], env)
+    ).toBe(0)
+    expect(
+      await runBenchToolCli("lore-memory", ["action=expand", "ids=latest"], env)
+    ).toBe(0)
+
+    expect(stdoutOutput.join("")).toContain("Expanded 2 memories")
+    expect(getById.mock.calls.map(([id]) => id)).toEqual(["mem-second", "mem-first"])
+    const trace = (await readFile(traceFile, "utf-8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as unknown)
+    expect(trace.at(-1)).toMatchObject({
+      tool: "lore-memory",
+      action: "expand",
+      surfacedMemoryIds: ["mem-second", "mem-first"],
+      expandedMemoryIds: ["mem-second", "mem-first"],
+    })
+  })
+
+  it("resolves recall handles and supports m2", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-bench-tool-test-"))
+    tempDirs.push(workspace)
+    const traceFile = join(workspace, "trace.jsonl")
+    const first = testMemory({ id: "mem-first", title: "First memory" })
+    const second = testMemory({ id: "mem-second", title: "Second memory" })
+    const list = vi.fn(async () => ({ items: [first, second] }))
+    const getById = vi.fn(async (id: string) => (id === "mem-first" ? first : second))
+    mocks.initServices.mockResolvedValue({
+      memories: { list, getById },
+    })
+    const env = {
+      [BENCH_TOOL_TRACE_ENV]: traceFile,
+      [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+    }
+
+    expect(await runBenchToolCli("lore-query", ["action=recall"], env)).toBe(0)
+    expect(await runBenchToolCli("lore-memory", ["action=expand", "ids=m2"], env)).toBe(0)
+
+    expect(stdoutOutput.join("")).toContain("### Second memory")
+    expect(getById).toHaveBeenCalledWith("mem-second")
+  })
+
+  it("rejects memory handles before any surfaced results exist", async () => {
+    mocks.initServices.mockResolvedValue({
+      memories: { getById: vi.fn() },
+    })
+
+    const exitCode = await runBenchToolCli("lore-memory", ["action=expand", "ids=m1"], {
+      [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stderrOutput.join("")).toContain("run lore-query search or recall first")
+  })
+
+  it("rejects the latest token before any surfaced results exist", async () => {
+    mocks.initServices.mockResolvedValue({
+      memories: { getById: vi.fn() },
+    })
+
+    const exitCode = await runBenchToolCli(
+      "lore-memory",
+      ["action=expand", "ids=latest"],
+      { [BENCH_TOOL_PROJECT_ID_ENV]: "project-1" }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stderrOutput.join("")).toContain("run lore-query search or recall first")
+  })
+
+  it("rejects memory handles outside the known handle range", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "lore-bench-tool-test-"))
+    tempDirs.push(workspace)
+    const traceFile = join(workspace, "trace.jsonl")
+    const memory = testMemory({ id: "mem-project", title: "Project color" })
+    mocks.initServices.mockResolvedValue({
+      memories: {
+        search: vi.fn(async () => [memory]),
+        getById: vi.fn(),
+      },
+    })
+    const env = {
+      [BENCH_TOOL_TRACE_ENV]: traceFile,
+      [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+    }
+
+    expect(
+      await runBenchToolCli("lore-query", ["action=search", "query=blue"], env)
+    ).toBe(0)
+    const exitCode = await runBenchToolCli(
+      "lore-memory",
+      ["action=expand", "ids=m2"],
+      env
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stderrOutput.join("")).toContain("known handles: m1..m1")
+  })
+
+  it("rejects abbreviated hex memory ids before expanding", async () => {
+    const getById = vi.fn()
+    mocks.initServices.mockResolvedValue({
+      memories: { getById },
+    })
+
+    const exitCode = await runBenchToolCli(
+      "lore-memory",
+      ["action=expand", "ids=27fa8a"],
+      { [BENCH_TOOL_PROJECT_ID_ENV]: "project-1" }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(getById).not.toHaveBeenCalled()
+    expect(stderrOutput.join("")).toContain("looks abbreviated")
   })
 
   it("recalls only scoped project memories and disables unscoped reads", async () => {

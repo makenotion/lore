@@ -29,6 +29,12 @@ interface BenchToolExecutionResult {
   stderr: string
 }
 
+type BenchMemoryHandleMap = Map<string, string>
+
+interface BenchToolRenderContext {
+  skillRet: boolean
+}
+
 interface BenchToolBrokerRequest {
   tool: string
   argv: string[]
@@ -379,8 +385,10 @@ async function dispatchBenchQuery(
         mode,
       })
       const memories = filterBenchProjectMemories(searched, projectId)
+      const handles = await assignBenchMemoryHandles(memories, env)
+      const renderContext = benchToolRenderContext(env)
       return {
-        text: renderBenchSearch(query, memories, includeContent),
+        text: renderBenchSearch(query, memories, includeContent, handles, renderContext),
         surfacedMemoryIds: memories.map((memory) => memory.id),
         expandedMemoryIds: [],
       }
@@ -396,8 +404,10 @@ async function dispatchBenchQuery(
         includeUnscoped: false,
       })
       const memories = filterBenchProjectMemories(listed.items, projectId)
+      const handles = await assignBenchMemoryHandles(memories, env)
+      const renderContext = benchToolRenderContext(env)
       return {
-        text: renderBenchRecall(memories, includeContent),
+        text: renderBenchRecall(memories, includeContent, handles, renderContext),
         surfacedMemoryIds: memories.map((memory) => memory.id),
         expandedMemoryIds: [],
       }
@@ -419,7 +429,7 @@ async function dispatchBenchMemory(
       `unsupported lore-memory action "${parsed.action ?? ""}"; supported actions: expand`
     )
   }
-  const ids = memoryIdsFromArgs(parsed)
+  const ids = await resolveBenchMemoryIds(memoryIdsFromArgs(parsed), env)
   if (ids.length === 0) {
     throw new Error("lore-memory action=expand requires ids=<id1,id2>")
   }
@@ -491,6 +501,164 @@ function memoryIdsFromArgs(parsed: ParsedBenchToolArgs): string[] {
     .filter((id) => id.length > 0)
 }
 
+async function resolveBenchMemoryIds(
+  ids: string[],
+  env: NodeJS.ProcessEnv
+): Promise<string[]> {
+  if (ids.length === 0) return []
+  let handles: BenchMemoryHandleMap | null = null
+  const resolved: string[] = []
+  for (const id of ids) {
+    if (isLatestBenchMemorySurfaceToken(id)) {
+      const latestSurface = await readLatestBenchMemorySurface(env)
+      if (!latestSurface || latestSurface.length === 0) {
+        throw new Error(
+          `memory set ${id} is not available; run lore-query search or recall first`
+        )
+      }
+      resolved.push(...latestSurface)
+      continue
+    }
+    const handleIndex = parseBenchMemoryHandle(id)
+    if (handleIndex === null) {
+      if (isLikelyAbbreviatedBenchMemoryId(id)) {
+        throw new Error(
+          `memory id ${id} looks abbreviated; use ids=latest, a listed handle such as m1, or a complete memory ID`
+        )
+      }
+      resolved.push(id)
+      continue
+    }
+    handles ??= await readBenchMemoryHandleMap(env)
+    if (handles.size === 0) {
+      throw new Error(
+        `memory handle ${id} is not available; run lore-query search or recall first`
+      )
+    }
+    const handle = `m${handleIndex + 1}`
+    const memoryId = memoryIdForBenchHandle(handles, handle)
+    if (!memoryId) {
+      throw new Error(
+        `memory handle ${id} is out of range; known handles: m1..m${handles.size}`
+      )
+    }
+    resolved.push(memoryId)
+  }
+  return uniqueBenchMemoryIds(resolved)
+}
+
+function isLatestBenchMemorySurfaceToken(value: string): boolean {
+  return value.trim().toLowerCase() === "latest"
+}
+
+function uniqueBenchMemoryIds(ids: readonly string[]): string[] {
+  return Array.from(new Set(ids))
+}
+
+function isLikelyAbbreviatedBenchMemoryId(value: string): boolean {
+  return /^[0-9a-f]{4,31}$/iu.test(value.trim())
+}
+
+function parseBenchMemoryHandle(value: string): number | null {
+  const trimmed = value.trim()
+  const match = /^m([1-9]\d*)$/iu.exec(trimmed)
+  if (!match) return null
+  return Number.parseInt(match[1]!, 10) - 1
+}
+
+async function assignBenchMemoryHandles(
+  memories: readonly Memory[],
+  env: NodeJS.ProcessEnv
+): Promise<BenchMemoryHandleMap> {
+  const handles = await readBenchMemoryHandleMap(env)
+  for (const memory of memories) {
+    if (handles.has(memory.id)) continue
+    handles.set(memory.id, `m${handles.size + 1}`)
+  }
+  return handles
+}
+
+async function readBenchMemoryHandleMap(
+  env: NodeJS.ProcessEnv
+): Promise<BenchMemoryHandleMap> {
+  const handles: BenchMemoryHandleMap = new Map()
+  const traceFile = env[BENCH_TOOL_TRACE_ENV]
+  if (!traceFile) return handles
+  let raw: string
+  try {
+    raw = await readFile(traceFile, "utf-8")
+  } catch {
+    return handles
+  }
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+  for (const line of lines) {
+    try {
+      const call = JSON.parse(line) as Partial<BenchRetrievalCall>
+      if (
+        call.tool === "lore-query" &&
+        call.status === "success" &&
+        Array.isArray(call.surfacedMemoryIds) &&
+        call.surfacedMemoryIds.every((id) => typeof id === "string")
+      ) {
+        for (const id of call.surfacedMemoryIds) {
+          if (handles.has(id)) continue
+          handles.set(id, `m${handles.size + 1}`)
+        }
+      }
+    } catch {
+      continue
+    }
+  }
+  return handles
+}
+
+async function readLatestBenchMemorySurface(
+  env: NodeJS.ProcessEnv
+): Promise<string[] | null> {
+  const traceFile = env[BENCH_TOOL_TRACE_ENV]
+  if (!traceFile) return null
+  let raw: string
+  try {
+    raw = await readFile(traceFile, "utf-8")
+  } catch {
+    return null
+  }
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const call = JSON.parse(lines[index]!) as Partial<BenchRetrievalCall>
+      if (
+        call.tool === "lore-query" &&
+        call.status === "success" &&
+        Array.isArray(call.surfacedMemoryIds) &&
+        call.surfacedMemoryIds.every((id) => typeof id === "string")
+      ) {
+        return call.surfacedMemoryIds
+      }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+function memoryIdForBenchHandle(
+  handles: BenchMemoryHandleMap,
+  handle: string
+): string | null {
+  const normalized = handle.toLowerCase()
+  for (const [memoryId, mappedHandle] of handles.entries()) {
+    if (mappedHandle.toLowerCase() === normalized) return memoryId
+  }
+  return null
+}
+
 function benchProjectId(env: NodeJS.ProcessEnv): string | undefined {
   const value = env[BENCH_TOOL_PROJECT_ID_ENV]
   return value && value.trim().length > 0 ? value.trim() : undefined
@@ -504,6 +672,11 @@ function requiredBenchProjectId(env: NodeJS.ProcessEnv): string {
   return value
 }
 
+function benchToolRenderContext(env: NodeJS.ProcessEnv): BenchToolRenderContext {
+  const projectName = env[BENCH_TOOL_PROJECT_NAME_ENV] ?? ""
+  return { skillRet: /\bskillret\b/iu.test(projectName) }
+}
+
 function filterBenchProjectMemories(
   memories: readonly Memory[],
   projectId: string
@@ -514,37 +687,61 @@ function filterBenchProjectMemories(
 function renderBenchSearch(
   query: string,
   memories: readonly Memory[],
-  includeContent: boolean
+  includeContent: boolean,
+  handles: BenchMemoryHandleMap,
+  context: BenchToolRenderContext
 ): string {
   if (memories.length === 0) return `No memories found for: "${query}"`
   return [
     `Found ${memories.length} memories for "${query}":`,
     "",
     memories
-      .map((memory) => renderBenchMemoryListItem(memory, includeContent))
+      .map((memory) =>
+        renderBenchMemoryListItem(memory, includeContent, handles, context)
+      )
       .join("\n\n---\n\n"),
-    includeContent
-      ? ""
-      : "\nBodies omitted. Run `lore-memory action=expand ids=<id>` for any relevant IDs.",
+    includeContent ? "" : benchMemoryExpansionHint(context),
   ].join("\n")
 }
 
-function renderBenchRecall(memories: readonly Memory[], includeContent: boolean): string {
+function renderBenchRecall(
+  memories: readonly Memory[],
+  includeContent: boolean,
+  handles: BenchMemoryHandleMap,
+  context: BenchToolRenderContext
+): string {
   if (memories.length === 0) return "No recent memories found."
   return [
     `${memories.length} recent memories:`,
     "",
     memories
-      .map((memory) => renderBenchMemoryListItem(memory, includeContent))
+      .map((memory) =>
+        renderBenchMemoryListItem(memory, includeContent, handles, context)
+      )
       .join("\n\n---\n\n"),
-    includeContent
-      ? ""
-      : "\nBodies omitted. Run `lore-memory action=expand ids=<id>` for any relevant IDs.",
+    includeContent ? "" : benchMemoryExpansionHint(context),
   ].join("\n")
 }
 
-function renderBenchMemoryListItem(memory: Memory, includeContent: boolean): string {
+function benchMemoryExpansionHint(context?: BenchToolRenderContext): string {
+  if (context?.skillRet) {
+    return "\nBodies omitted. Compare Skill Name, Short Summary, and SkillRet Tags, then run `lore-memory action=expand ids=latest` for the latest result set, `ids=m1` for a listed handle, or pass complete IDs copied exactly."
+  }
+  return "\nBodies omitted. Run `lore-memory action=expand ids=latest` for the latest result set, `ids=m1` for a listed handle, or pass complete IDs copied exactly."
+}
+
+function renderBenchMemoryListItem(
+  memory: Memory,
+  includeContent: boolean,
+  handles: BenchMemoryHandleMap,
+  context: BenchToolRenderContext
+): string {
+  if (isSkillRetMemory(memory, context)) {
+    return renderBenchSkillRetMemoryListItem(memory, includeContent, handles)
+  }
+  const handle = handles.get(memory.id)
   const meta = [
+    handle ? `Handle: ${handle}` : null,
     `ID: ${memory.id}`,
     memory.source,
     memory.kind !== "note" ? memory.kind : null,
@@ -556,6 +753,54 @@ function renderBenchMemoryListItem(memory: Memory, includeContent: boolean): str
   const synopsis = memory.synopsis.trim() ? `\n${memory.synopsis}` : ""
   const body = includeContent && memory.content ? `\n\n${memory.content}` : ""
   return `### ${memory.title}\n*${meta}*${synopsis}${body}`
+}
+
+function renderBenchSkillRetMemoryListItem(
+  memory: Memory,
+  includeContent: boolean,
+  handles: BenchMemoryHandleMap
+): string {
+  const handle = handles.get(memory.id)
+  const tags = benchMemoryTags(memory).filter((tag) => tag.trim().length > 0)
+  const keywords = benchMemoryKeywords(memory)
+  const meta = [
+    handle ? `Handle: ${handle}` : null,
+    `Memory ID: ${memory.id}`,
+    memory.source,
+    memory.kind !== "procedure" ? memory.kind : null,
+    memory.status !== "informational" ? memory.status : null,
+    memory.updatedAt.split("T")[0],
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" | ")
+  const lines = [
+    `### Skill Candidate: ${memory.title}`,
+    `*${meta}*`,
+    `Skill Name: ${memory.title}`,
+    `Short Summary: ${memory.synopsis.trim() || "No short summary available."}`,
+  ]
+  if (tags.length > 0) lines.push(`SkillRet Tags: ${tags.join(", ")}`)
+  if (keywords.length > 0) {
+    lines.push(`SkillRet Search Keys: ${keywords}`)
+  }
+  const body = includeContent && memory.content ? `\n\n${memory.content}` : ""
+  return `${lines.join("\n")}${body}`
+}
+
+function isSkillRetMemory(memory: Memory, context: BenchToolRenderContext): boolean {
+  if (context.skillRet) return true
+  if (benchMemoryTags(memory).some((tag) => tag.toLowerCase() === "skillret")) {
+    return true
+  }
+  return /\bskillret\b/iu.test(benchMemoryKeywords(memory))
+}
+
+function benchMemoryTags(memory: Memory): string[] {
+  return Array.isArray(memory.tags) ? memory.tags : []
+}
+
+function benchMemoryKeywords(memory: Memory): string {
+  return typeof memory.keywords === "string" ? memory.keywords.trim() : ""
 }
 
 function renderBenchExpandedMemories(memories: readonly Memory[]): string {

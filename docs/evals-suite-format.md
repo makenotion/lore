@@ -359,6 +359,69 @@ average estimated context tokens, elapsed time per lane, capped-result counts,
 and mechanism-failure counts. The committed `keyword` lane is a deterministic
 lexical baseline; `notion-ai` uses the same artifact shape so public ranker
 comparisons stay separate from agent task-lift and memory-formation results.
+Treat `notion-ai` as a candidate-recall diagnostic, not the representative
+Lore-as-agent measurement.
+
+## Skill-Agent Suites
+
+Skill-agent suites live under `evals/skill-agent/` and measure read-only
+seeded-vault Lore use on top of a SkillRet import. They link to a
+`skill-retrieval` suite so the agent runner can reuse the fixed SkillRet corpus,
+Notion vault binding, and local `skillId -> memoryId` import manifest.
+
+```yaml
+version: 1
+runner: skill-agent
+name: skillret-readonly-agent
+skillRetrievalSuite: ../skill-retrieval/skillret-notion-ai.yaml
+queries:
+  seed: skillret-readonly-agent-v1
+  limit: 200
+conditions:
+  - no-lore
+  - tool-driven-lore
+  - oracle-context
+requiredConditions:
+  - tool-driven-lore
+agent:
+  kind: codex
+  timeoutMs: 300000
+scoring:
+  k: [1, 5, 10]
+  requireLoreUse: true
+  requireExpandedEvidence: true
+```
+
+The read-only contract is enforced by the harness: `tool-driven-lore` exposes
+only read-oriented Lore commands (`lore-query search/recall` and
+`lore-memory expand`) through a brokered tool path. Unsupported write actions
+are rejected and counted as `writeAttemptsBlocked`. The agent also receives an
+`AGENTS.md` in the temporary workspace stating that the eval vault is read-only.
+
+Conditions:
+
+- `no-lore`: baseline prior. Lore tools are unavailable.
+- `tool-driven-lore`: headline condition. The agent must decide to search and
+  expand Lore before answering.
+- `oracle-context`: diagnostic ceiling. The required procedure body is injected
+  directly; Lore tools are unavailable.
+- `noisy-lore`: reserved for fixed-vault runs with near-miss or stale SkillRet
+  distractors.
+
+The final answer must be structured JSON with `answer`, `usedMemoryIds`,
+`usedSkillIds`, and `reason`. Artifacts score each trial in layers:
+
+- tool use: successful read-only Lore call.
+- retrieval: expected memory surfaced in tool results.
+- expansion: expected memory body expanded.
+- selection: final answer cited the expected memory id or SkillRet id.
+- application: final answer selected the target and produced non-empty task
+  output.
+- write attempts: blocked write-path calls.
+
+Do not mix `skill-agent` and `skill-retrieval` aggregates. The former measures
+an instructed agent using a fixed Lore vault; the latter measures candidate
+ranking before an agent sees or applies anything.
 
 ## Skill-Use Suites
 

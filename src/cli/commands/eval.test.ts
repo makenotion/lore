@@ -8,12 +8,14 @@ import {
   evalCommand,
   formatTaskProgressEvent,
   hasLongitudinalTaskGateFailures,
+  hasSkillAgentGateFailures,
   hasSkillRetrievalGateFailures,
   parseEvalRunCliOptions,
   validateBaselineRunnerSupport,
   validateEvalRunRunnerCompatibility,
 } from "./eval.js"
 import type { EvalRunArtifact } from "../../eval/runner.js"
+import type { SkillAgentArtifact } from "../../eval/skill-agent.js"
 import type { SkillRetrievalArtifact } from "../../eval/skill-retrieval.js"
 import type { LongitudinalTaskArtifact } from "../../eval/task-runner.js"
 import { runBenchCleanupOrphans } from "../../eval/bench-cleanup.js"
@@ -85,6 +87,12 @@ describe("parseEvalRunCliOptions", () => {
     const result = parseEvalRunCliOptions({ runner: "skill-use" })
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.value.runner).toBe("skill-use")
+  })
+
+  it("accepts skill-agent runner mode", () => {
+    const result = parseEvalRunCliOptions({ runner: "skill-agent" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.runner).toBe("skill-agent")
   })
 
   it("parses longitudinal segmentation and parallelism flags", () => {
@@ -219,6 +227,22 @@ describe("parseEvalRunCliOptions", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("not supported with --runner skill-use")
+    }
+  })
+
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Widget" },
+  ])("rejects --$flag with --runner skill-agent ($flag)", ({ flag, value }) => {
+    const result = parseEvalRunCliOptions({
+      runner: "skill-agent",
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner skill-agent")
     }
   })
 
@@ -694,6 +718,15 @@ describe("validateBaselineRunnerSupport", () => {
     }
   })
 
+  it("rejects --runner skill-agent with an actionable operator message", () => {
+    const result = validateBaselineRunnerSupport("skill-agent")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--runner skill-agent is not supported")
+      expect(result.message).toContain("baseline subcommand")
+    }
+  })
+
   it("accepts retrieval and notion runners", () => {
     expect(validateBaselineRunnerSupport("retrieval").ok).toBe(true)
     expect(validateBaselineRunnerSupport("notion").ok).toBe(true)
@@ -718,6 +751,16 @@ describe("hasSkillRetrievalGateFailures", () => {
         })
       )
     ).toBe(false)
+  })
+})
+
+describe("hasSkillAgentGateFailures", () => {
+  it("returns true when required read-only Lore trials fail", () => {
+    expect(hasSkillAgentGateFailures(skillAgentArtifact(1))).toBe(true)
+  })
+
+  it("returns false when required read-only Lore trials pass", () => {
+    expect(hasSkillAgentGateFailures(skillAgentArtifact(0))).toBe(false)
   })
 })
 
@@ -834,6 +877,65 @@ function skillRetrievalArtifact(input: {
           cappedResults: 0,
           mechanismFailures: input.mechanismPassed === false ? 1 : 0,
         },
+      },
+    },
+  }
+}
+
+function skillAgentArtifact(failedRequiredResults: number): SkillAgentArtifact {
+  return {
+    suite: "skillret-agent",
+    description: "",
+    startedAt: "2026-06-04T12:00:00.000Z",
+    runner: {
+      mode: "skill-agent",
+      readOnly: true,
+      conditions: ["tool-driven-lore"],
+      requiredConditions: ["tool-driven-lore"],
+      agent: { kind: "codex", timeoutMs: 300_000 },
+      scoring: {
+        k: [1, 5, 10],
+        requireLoreUse: true,
+        requireExpandedEvidence: true,
+      },
+      skillRetrievalSuite: "evals/skill-retrieval/skillret-notion-ai.yaml",
+    },
+    corpus: {
+      skills: 1,
+      queries: 1,
+      qrels: 1,
+      revision: "test",
+      importManifestPath: "manifest.json",
+      importManifestSha256: "0".repeat(64),
+    },
+    results: [],
+    summary: {
+      queries: 1,
+      totalResults: 1,
+      requiredResults: 1,
+      passedRequiredResults: failedRequiredResults === 0 ? 1 : 0,
+      failedRequiredResults,
+      writeAttemptsBlocked: 0,
+      conditions: {
+        "no-lore": null,
+        "tool-driven-lore": {
+          results: 1,
+          passed: failedRequiredResults === 0 ? 1 : 0,
+          failed: failedRequiredResults,
+          successRate: failedRequiredResults === 0 ? 1 : 0,
+          toolUseRate: 1,
+          targetSurfacedRate: 1,
+          targetExpandedRate: 1,
+          targetSelectedRate: 1,
+          answerAppliedRate: 1,
+          writeAttemptsBlocked: 0,
+          recallAt: { "1": 1, "5": 1, "10": 1 },
+          ndcgAt: { "1": 1, "5": 1, "10": 1 },
+          mrrAt: { "1": 1, "5": 1, "10": 1 },
+          mapAt: { "1": 1, "5": 1, "10": 1 },
+        },
+        "oracle-context": null,
+        "noisy-lore": null,
       },
     },
   }

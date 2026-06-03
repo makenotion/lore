@@ -20,6 +20,7 @@ export const EVAL_RUNNERS = [
   "retrieval-quality",
   "skill-retrieval",
   "skill-use",
+  "skill-agent",
 ] as const
 
 /**
@@ -239,15 +240,14 @@ export const evalMemoryScenarioSchema = z
  *   casual conversational facts, so mining produces ~1 memory per
  *   ~30-session haystack and the agent recalls little. The bench
  *   number measures "Lore's production filter against the LongMemEval
- *   workload" — honest but not Zep-comparable.
+ *   workload" -- honest but specific to this conversation-memory corpus.
  *
  * - `raw-transcript`: each session is stored verbatim as one memory
  *   (title `Session <i>`, body = the session transcript). Bypasses
  *   the autosave filter; the agent's `lore-query` / `lore-context`
- *   retrieves the transcript memory and answers from its body. This
- *   mirrors Zep's Graphiti-ingest baseline: every conversational
- *   token is stored, retrieval reads it back. Apples-to-apples with
- *   the published Zep LongMemEval numbers.
+ *   retrieves the transcript memory and answers from its body. Every
+ *   conversational token is stored, so this lane isolates retrieval
+ *   over full-fidelity LongMemEval transcripts.
  *
  * - `simulated-autosave`: each session is transformed by a structured
  *   extraction prompt into Lore-shaped memories plus explicit mention
@@ -257,7 +257,7 @@ export const evalMemoryScenarioSchema = z
  *
  * The strategies measure different things; suite YAML picks. The
  * committed `longmemeval.yaml` keeps `lore-mine`; sibling suites cover
- * raw transcript and simulated-autosave comparisons.
+ * raw transcript and simulated-autosave reference variants.
  */
 export const BENCH_INGESTION_STRATEGIES = [
   "lore-mine",

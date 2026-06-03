@@ -6,6 +6,7 @@ import {
   type EvalRunArtifact,
   type RunEvalOptions,
 } from "../../eval/runner.js"
+import type { SkillAgentArtifact } from "../../eval/skill-agent.js"
 import {
   buildEvalBaselineSnapshot,
   compareToEvalBaseline,
@@ -316,6 +317,26 @@ export function validateEvalRunRunnerCompatibility(
     }
   }
 
+  if (runner === "skill-agent") {
+    const skillAgentIncompatible: Array<{
+      flag: string
+      raw: string | undefined
+    }> = [
+      { flag: "--baseline", raw: raw.baseline },
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of skillAgentIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner skill-agent; skill-agent suites score read-only Lore tool use and skill application with runner-specific conditions.`,
+        }
+      }
+    }
+  }
+
   return { ok: true, value: undefined }
 }
 
@@ -360,6 +381,10 @@ export function hasSkillRetrievalGateFailures(artifact: SkillRetrievalArtifact):
   return artifact.results.some(
     (result) => result.mechanism !== undefined && !result.mechanism.passed
   )
+}
+
+export function hasSkillAgentGateFailures(artifact: SkillAgentArtifact): boolean {
+  return artifact.summary.failedRequiredResults > 0
 }
 
 function isEvalRunner(value: string): value is EvalRunner {
@@ -411,6 +436,13 @@ export function validateBaselineRunnerSupport(
       ok: false,
       message:
         "--runner skill-use is not supported by the baseline subcommand. Skill-use artifacts are gated by suite-declared thresholds, not generic retrieval drift snapshots.",
+    }
+  }
+  if (runner === "skill-agent") {
+    return {
+      ok: false,
+      message:
+        "--runner skill-agent is not supported by the baseline subcommand. Skill-agent artifacts score read-only Lore tool use and task application, not generic retrieval drift.",
     }
   }
   return { ok: true, value: undefined }
@@ -699,7 +731,7 @@ evalCommand.addCommand(
     .argument("<suite>", "Path to an eval suite YAML file")
     .option(
       "--runner <mode>",
-      "Runner mode (retrieval|notion|task|bench|profile|retrieval-quality|skill-retrieval|skill-use); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
+      "Runner mode (retrieval|notion|task|bench|profile|retrieval-quality|skill-retrieval|skill-use|skill-agent); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
     )
     .option("--trials <n>", "Trial count; retrieval mode requires 1")
     .option("--out <path>", "Write the JSON artifact to a specific path")
@@ -902,15 +934,18 @@ evalCommand.addCommand(
               console.log(JSON.stringify(artifact, null, 2))
             } else {
               console.log(
-                `Skill-retrieval eval completed: ${artifact.summary.queries} queries, ` +
-                  `${artifact.summary.skills} skills, ${artifact.summary.qrels} qrels.`
+                `Skill-retrieval candidate-recall diagnostic completed: ` +
+                  `${artifact.summary.queries} queries, ${artifact.summary.skills} skills, ` +
+                  `${artifact.summary.qrels} qrels. Not a representative Lore agent-use measurement.`
               )
               for (const lane of artifact.runner.lanes) {
                 const summary = artifact.summary.lanes[lane]
                 if (!summary) continue
                 const k = String(Math.max(...artifact.runner.k))
+                const laneLabel =
+                  lane === "notion-ai" ? `${lane} (substrate diagnostic)` : lane
                 console.log(
-                  `  ${lane}: recall@${k}=${formatPercent(summary.recallAt[k] ?? 0)}, ` +
+                  `  ${laneLabel}: recall@${k}=${formatPercent(summary.recallAt[k] ?? 0)}, ` +
                     `NDCG@${k}=${(summary.ndcgAt[k] ?? 0).toFixed(4)}, ` +
                     `MRR@${k}=${(summary.mrrAt[k] ?? 0).toFixed(4)}, ` +
                     `MAP@${k}=${(summary.mapAt[k] ?? 0).toFixed(4)}, ` +
@@ -982,6 +1017,49 @@ evalCommand.addCommand(
               artifact.summary.failedRequiredResults > 0 ||
               artifact.summary.thresholdFailures.length > 0
             ) {
+              process.exit(1)
+            }
+            return
+          }
+
+          if (parsed.value.runner === "skill-agent") {
+            const { runSkillAgentSuite } = await import("../../eval/skill-agent.js")
+            const { artifact, outPath } = await runSkillAgentSuite(suite, {
+              outPath: parsed.value.outPath,
+            })
+            if (parsed.value.json) {
+              console.log(JSON.stringify(artifact, null, 2))
+            } else {
+              const status = hasSkillAgentGateFailures(artifact) ? "failed" : "passed"
+              console.log(
+                `Skill-agent eval ${status}: ` +
+                  `${artifact.summary.passedRequiredResults}/${artifact.summary.requiredResults} required read-only Lore trials passed.`
+              )
+              for (const condition of artifact.runner.conditions) {
+                const summary = artifact.summary.conditions[condition]
+                if (!summary) continue
+                const k = String(Math.max(...artifact.runner.scoring.k))
+                console.log(
+                  `  ${condition}: success=${formatPercent(summary.successRate)}, ` +
+                    `tool=${formatPercent(summary.toolUseRate)}, ` +
+                    `surfaced=${formatPercent(summary.targetSurfacedRate)}, ` +
+                    `selected=${formatPercent(summary.targetSelectedRate)}, ` +
+                    `applied=${formatPercent(summary.answerAppliedRate)}, ` +
+                    `recall@${k}=${formatPercent(summary.recallAt[k] ?? 0)}, ` +
+                    `writes blocked=${summary.writeAttemptsBlocked}`
+                )
+              }
+              console.log(`Artifact: ${outPath}`)
+              const requiredConditions = new Set(artifact.runner.requiredConditions)
+              for (const result of artifact.results) {
+                if (!requiredConditions.has(result.condition) || result.success) continue
+                console.log(`  - ${result.queryId} [${result.condition}]:`)
+                for (const reason of result.failureReasons) {
+                  console.log(`    - ${reason}`)
+                }
+              }
+            }
+            if (hasSkillAgentGateFailures(artifact)) {
               process.exit(1)
             }
             return

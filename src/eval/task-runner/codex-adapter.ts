@@ -127,7 +127,12 @@ export function parseCodexConfigModel(source: string): string | undefined {
 }
 
 export async function removeIsolatedCodexHome(codexHome: string): Promise<void> {
-  await rm(codexHome, { recursive: true, force: true })
+  await rm(codexHome, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  })
 }
 
 export function buildCodexChildEnv(

@@ -232,6 +232,7 @@ tasks:
       "skill-retrieval"
     )
     expect(peekSuiteRunner("runner: skill-use\nname: skilluse\n")).toBe("skill-use")
+    expect(peekSuiteRunner("runner: skill-agent\nname: skillagent\n")).toBe("skill-agent")
     expect(peekSuiteRunner("runner: mystery\n")).toBeNull()
   })
 })

@@ -21,7 +21,7 @@ export type SkillRetrievalLane = (typeof SKILL_RETRIEVAL_LANES)[number]
 
 const skillRetrievalLaneSchema = z.enum(SKILL_RETRIEVAL_LANES)
 const SKILL_RETRIEVAL_IMPORT_ATTEMPTS = 4
-const SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION = 3
+const SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION = 4
 const SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT = 60_000
 const SKILL_RETRIEVAL_NOTION_SEARCH_ATTEMPTS = 5
 const SKILL_RETRIEVAL_NOTION_SEARCH_RETRY_BASE_MS = 1_000
@@ -359,6 +359,7 @@ export const skillRetrievalImportManifestSchema = z
     transformVersion: z.union([
       z.literal(1),
       z.literal(2),
+      z.literal(3),
       z.literal(SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION),
     ]),
     projectName: z.string().min(1),
@@ -599,7 +600,7 @@ export async function importSkillRetrievalCorpusToNotion(
         "repairing a legacy transform requires importing the full selected corpus without --limit."
     )
   }
-  manifest.transformVersion = SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION
+  const startingTransformVersion = manifest.transformVersion
 
   let manifestWrite = Promise.resolve()
   const queueManifestWrite = () => {
@@ -631,7 +632,6 @@ export async function importSkillRetrievalCorpusToNotion(
       })
     )
   )
-  await queueManifestWrite()
   await manifestWrite
   const outcomes: SkillRetrievalImportOutcome[] = []
   const failures: string[] = []
@@ -649,6 +649,11 @@ export async function importSkillRetrievalCorpusToNotion(
         `${failures.length} failed, ${outcomes.length} completed. ` +
         `First failure(s): ${firstFailures.join(" | ")}`
     )
+  }
+  if (startingTransformVersion !== SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION) {
+    manifest.transformVersion = SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION
+    await queueManifestWrite()
+    await manifestWrite
   }
 
   return {
@@ -833,7 +838,7 @@ function buildSkillRetrievalImportDraft(input: {
     tags,
   })
   const keywords = buildSkillRetKeywords(skill, revision, topicKey, tags)
-  const synopsis = truncateSynopsis(skill.description || skill.body || skill.skill_md)
+  const synopsis = truncateSynopsis(renderSkillRetSynopsis(skill))
   const truncatedFields = buildSkillRetTruncatedFields(skill, fields)
   return {
     title: skill.name,
@@ -1522,6 +1527,7 @@ function renderSkillRetMemoryContent(
   metadata?: { topicName: string; topicKey: string; tags: string[] }
 ): string {
   const sections: string[] = [`# ${skill.name}`, `SkillRet ID: ${skill.id}`]
+  sections.push(renderSkillRetSearchSummary(skill, metadata))
   if (metadata) {
     sections.push(
       [
@@ -1548,6 +1554,26 @@ function renderSkillRetMemoryContent(
   ].filter(Boolean)
   if (taxonomy.length > 0) sections.push(`## Taxonomy\n\n${taxonomy.join("\n")}`)
   return `${sections.join("\n\n")}\n`
+}
+
+function renderSkillRetSearchSummary(
+  skill: SkillRetSkill,
+  metadata?: { topicName: string; topicKey: string; tags: string[] }
+): string {
+  const lines = [
+    "## Search Summary",
+    "",
+    `Skill Name: ${skill.name}`,
+    `Short Summary: ${skillRetShortSummary(skill)}`,
+  ]
+  if (skill.major) lines.push(`Major: ${skill.major}`)
+  if (skill.sub) lines.push(`Sub: ${skill.sub}`)
+  if (metadata) {
+    lines.push(`Topic: ${metadata.topicName}`)
+    lines.push(`Topic Key: ${metadata.topicKey}`)
+    lines.push(`Tags: ${metadata.tags.join(", ")}`)
+  }
+  return lines.join("\n")
 }
 
 function renderSkillRetMemorySection(title: string, value: string): string {
@@ -1664,6 +1690,42 @@ function truncateTag(value: string): string {
   return value.length <= 100 ? value : value.slice(0, 100)
 }
 
+function renderSkillRetSynopsis(skill: SkillRetSkill): string {
+  return [
+    `Skill: ${skill.name}.`,
+    `Use when: ${skillRetShortSummary(skill)}`,
+    skill.major || skill.sub
+      ? `Category: ${[skill.major, skill.sub].filter(Boolean).join(" / ")}.`
+      : "",
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join(" ")
+}
+
+function skillRetShortSummary(skill: SkillRetSkill): string {
+  const summary =
+    skill.description.trim() ||
+    firstNonEmptySkillRetLine(skill.skill_md) ||
+    firstNonEmptySkillRetLine(skill.body) ||
+    "No short summary available."
+  return truncateSkillRetSearchSummaryField(summary)
+}
+
+function firstNonEmptySkillRetLine(value: string): string {
+  return (
+    value
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? ""
+  )
+}
+
+function truncateSkillRetSearchSummaryField(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, " ")
+  if (normalized.length <= 800) return normalized
+  return `${normalized.slice(0, 797).trimEnd()}...`
+}
+
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false
   return left.every((value, index) => value === right[index])
@@ -1778,7 +1840,7 @@ function assertUniqueIds(items: Array<{ id: string }>, label: string): Set<strin
   return ids
 }
 
-function selectSkillRetrievalQueries(
+export function selectSkillRetrievalQueries(
   queries: SkillRetQuery[],
   selection: SkillRetrievalSuite["queries"]
 ): SkillRetQuery[] {

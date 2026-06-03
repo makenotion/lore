@@ -410,7 +410,17 @@ retrieval:
         "skillret-sub-routing",
       ],
     })
-    expect(String(createInputs[0]?.["synopsis"] ?? "")).toHaveLength(150)
+    const alphaContent = String(createInputs[0]?.["content"] ?? "")
+    expect(alphaContent).toContain("## Search Summary")
+    expect(alphaContent).toContain("Skill Name: Alpha Skill")
+    expect(alphaContent).toContain("Short Summary: Use alpha routing")
+    expect(alphaContent).toContain("Major: architecture")
+    expect(alphaContent).toContain("Sub: routing")
+    expect(alphaContent).toContain("Tags: skillret, skillret-split-test")
+    const alphaSynopsis = String(createInputs[0]?.["synopsis"] ?? "")
+    expect(alphaSynopsis).toHaveLength(150)
+    expect(alphaSynopsis).toContain("Skill: Alpha Skill")
+    expect(alphaSynopsis).toContain("Use when: Use alpha routing")
     const betaCreate = createInputs.find((input) => input["title"] === "Beta Skill")
     const betaContent = String(betaCreate?.["content"] ?? "")
     expect(betaContent).toContain(
@@ -426,7 +436,7 @@ retrieval:
     expect(manifest.skills["skill-alpha"]?.topicKey).toBe(
       "skillret/test/unknown/architecture/routing/skill-alpha"
     )
-    expect(manifest.transformVersion).toBe(3)
+    expect(manifest.transformVersion).toBe(4)
     expect(manifest.skills["skill-beta"]?.truncatedFields).toEqual([
       {
         field: "skill_md",
@@ -476,7 +486,7 @@ retrieval:
 
     await writeFile(
       join(dir, "manifests/import.json"),
-      `${JSON.stringify({ ...manifest, transformVersion: 2 }, null, 2)}\n`,
+      `${JSON.stringify({ ...manifest, transformVersion: 3 }, null, 2)}\n`,
       "utf-8"
     )
     await expect(
@@ -486,7 +496,7 @@ retrieval:
         outPath: join(dir, "stale-result.json"),
         now: new Date("2026-06-03T12:09:00.000Z"),
       })
-    ).rejects.toThrow(/transformVersion 2 != 3/)
+    ).rejects.toThrow(/transformVersion 3 != 4/)
     await writeFile(
       join(dir, "manifests/import.json"),
       `${JSON.stringify(manifest, null, 2)}\n`,
@@ -773,6 +783,139 @@ retrieval:
 
     const manifest = await readSkillRetrievalImportManifest(manifestPath)
     expect(manifest.transformVersion).toBe(2)
+  })
+
+  it("does not mark a failed full legacy repair current", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lore-skill-retrieval-repair-fail-"))
+    await writeFile(
+      join(dir, "skills.jsonl"),
+      [
+        JSON.stringify({
+          id: "skill-alpha",
+          name: "Alpha Skill",
+          description: "Alpha description.",
+          skill_md: "Alpha body.",
+        }),
+        JSON.stringify({
+          id: "skill-beta",
+          name: "Beta Skill",
+          description: "Beta description.",
+          skill_md: "Beta body.",
+        }),
+      ].join("\n") + "\n",
+      "utf-8"
+    )
+    await writeFile(
+      join(dir, "queries.jsonl"),
+      '{"id":"q-beta","query":"beta","skill_ids":["skill-beta"]}\n',
+      "utf-8"
+    )
+    await writeFile(
+      join(dir, "qrels.jsonl"),
+      '{"query_id":"q-beta","skill_id":"skill-beta","relevance":1}\n',
+      "utf-8"
+    )
+    const suitePath = join(dir, "suite.yaml")
+    await writeFile(
+      suitePath,
+      `version: 1
+runner: skill-retrieval
+name: failed-legacy-repair
+corpus:
+  kind: skillret
+  root: .
+  skillsPath: skills.jsonl
+  queriesPath: queries.jsonl
+  qrelsPath: qrels.jsonl
+notion:
+  projectName: SkillRet Eval
+  topicName: SkillRet Test Split
+  importManifestPath: manifests/import.json
+lanes:
+  - notion-ai
+k:
+  - 1
+retrieval:
+  limit: 1
+`,
+      "utf-8"
+    )
+
+    const liveMemories = new Map<string, Memory>()
+    let failAlphaUpdate = false
+    const services = {
+      config: {
+        vault: {
+          pageId: "374b35e6-e67f-8108-beb4-dec11f2f5d28",
+        },
+      },
+      projects: {
+        findByName: async () => ({
+          id: "project-1",
+          name: "SkillRet Eval",
+          type: "project",
+          path: "",
+          status: "active",
+          description: "",
+        }),
+        create: async () => {
+          throw new Error("project should already exist")
+        },
+      },
+      topics: {
+        getOrCreate: async () => ({
+          id: "topic-1",
+          name: "SkillRet Test Split",
+          projectIds: ["project-1"],
+          description: "",
+        }),
+      },
+      memories: {
+        findByPromotionSourceKey: async (sourceKey: string) =>
+          liveMemories.get(sourceKey) ?? null,
+        findByTopicKey: async () => null,
+        create: async (input: Record<string, unknown>) => {
+          const sourceKey = String(input["promotionSourceKey"] ?? "")
+          const memory = testMemory(
+            `memory-${sourceKey.split(":").at(-1) ?? "unknown"}`,
+            String(input["title"] ?? "")
+          )
+          liveMemories.set(sourceKey, memory)
+          return memory
+        },
+        update: async (_memoryId: string, input: Record<string, unknown>) => {
+          if (failAlphaUpdate && input["title"] === "Alpha Skill") {
+            throw new Error("SkillRet topicKey is already held by memory mem-alpha")
+          }
+        },
+      },
+    } as unknown as LoreServices
+
+    await importSkillRetrievalCorpusToNotion(suitePath, {
+      servicesFactory: async () => services,
+      now: new Date("2026-06-03T12:00:00.000Z"),
+    })
+    const manifestPath = join(dir, "manifests/import.json")
+    const oldManifest = JSON.parse(await readFile(manifestPath, "utf-8")) as {
+      transformVersion: number
+      skills: Record<string, { contentSha256: string }>
+    }
+    oldManifest.transformVersion = 3
+    oldManifest.skills["skill-alpha"]!.contentSha256 = "0".repeat(64)
+    await writeFile(manifestPath, `${JSON.stringify(oldManifest, null, 2)}\n`, "utf-8")
+
+    failAlphaUpdate = true
+    await expect(
+      importSkillRetrievalCorpusToNotion(suitePath, {
+        servicesFactory: async () => services,
+        now: new Date("2026-06-03T12:05:00.000Z"),
+        parallelism: 2,
+      })
+    ).rejects.toThrow(/1 failed, 1 completed/)
+
+    const manifest = await readSkillRetrievalImportManifest(manifestPath)
+    expect(manifest.transformVersion).toBe(3)
+    expect(manifest.skills["skill-alpha"]?.contentSha256).toBe("0".repeat(64))
   })
 
   it("rejects fresh imports when another memory already owns the topic key", async () => {

@@ -1,0 +1,24 @@
+version: 1
+runner: skill-agent
+name: skillret-readonly-agent
+description: >
+  SkillRet tasks measured as read-only seeded-vault Lore use. The agent gets
+  normal Lore read instructions and read-only search/expand tools; writes are
+  blocked and counted as failures.
+skillRetrievalSuite: ../skill-retrieval/skillret-notion-ai.yaml
+queries:
+  seed: skillret-readonly-agent-v1
+  limit: 200
+conditions:
+  - no-lore
+  - tool-driven-lore
+  - oracle-context
+requiredConditions:
+  - tool-driven-lore
+agent:
+  kind: codex
+  timeoutMs: 300000
+scoring:
+  k: [1, 5, 10]
+  requireLoreUse: true
+  requireExpandedEvidence: true

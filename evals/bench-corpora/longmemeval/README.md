@@ -24,7 +24,7 @@ idempotent: a file whose sha256 already matches is not overwritten.
 The HuggingFace commit SHA + file sha256 live in `checksums.json`. The
 bench runner recomputes sha256 on first read and aborts on mismatch
 so a partially-downloaded or substituted corpus cannot silently change
-the headline number.
+the reported LongMemEval number.
 
 Updating the pin is deliberate work: a new HF revision changes the
 input distribution and forces a baseline re-capture under the new
@@ -34,9 +34,9 @@ sha. Don't bump without recording the rationale in the PR.
 
 The raw-transcript bench prompt
 (`evals/prompts/longmemeval-agent-system-raw-transcript.txt`)
-instructs the agent that *"every question in this benchmark has its
-answer stored verbatim somewhere in the vault"* and that
-*"abstention without retrieval is incorrect."* That framing is
+instructs the agent that _"every question in this benchmark has its
+answer stored verbatim somewhere in the vault"_ and that
+_"abstention without retrieval is incorrect."_ That framing is
 correct for the published `longmemeval_s_cleaned` corpus by
 construction — the upstream cleaning pass removed questions whose
 answers were absent from the haystack. If the pinned revision in

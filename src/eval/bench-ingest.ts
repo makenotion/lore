@@ -280,9 +280,8 @@ export async function runBenchIngest(
  * agent's `lore-query` retrieves transcript memories by question
  * relevance and reads the body via `lore-memory action='expand'`.
  *
- * Mirrors Zep's Graphiti-ingest baseline: every conversational token
- * is stored, retrieval reads it back. Apples-to-apples with the
- * published Zep `longmemeval_s` numbers.
+ * Every conversational token is stored, so this lane isolates retrieval
+ * over full-fidelity LongMemEval transcripts.
  *
  * The write-budget proxy is NOT installed in this path — there's no
  * MCP child process to wrap. The bench-runner enforces the
