@@ -73,6 +73,18 @@ describe("parseEvalRunCliOptions", () => {
     if (result.ok) expect(result.value.runner).toBe("retrieval-quality")
   })
 
+  it("accepts skill-retrieval runner mode", () => {
+    const result = parseEvalRunCliOptions({ runner: "skill-retrieval" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.runner).toBe("skill-retrieval")
+  })
+
+  it("accepts skill-use runner mode", () => {
+    const result = parseEvalRunCliOptions({ runner: "skill-use" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.runner).toBe("skill-use")
+  })
+
   it("parses longitudinal segmentation and parallelism flags", () => {
     const result = parseEvalRunCliOptions({
       runner: "task",
@@ -173,6 +185,38 @@ describe("parseEvalRunCliOptions", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("not supported with --runner task")
+    }
+  })
+
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Widget" },
+  ])("rejects --$flag with --runner skill-retrieval ($flag)", ({ flag, value }) => {
+    const result = parseEvalRunCliOptions({
+      runner: "skill-retrieval",
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner skill-retrieval")
+    }
+  })
+
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Widget" },
+  ])("rejects --$flag with --runner skill-use ($flag)", ({ flag, value }) => {
+    const result = parseEvalRunCliOptions({
+      runner: "skill-use",
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner skill-use")
     }
   })
 
@@ -626,6 +670,24 @@ describe("validateBaselineRunnerSupport", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.message).toContain("--runner retrieval-quality is not supported")
+      expect(result.message).toContain("baseline subcommand")
+    }
+  })
+
+  it("rejects --runner skill-retrieval with an actionable operator message", () => {
+    const result = validateBaselineRunnerSupport("skill-retrieval")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--runner skill-retrieval is not supported")
+      expect(result.message).toContain("baseline subcommand")
+    }
+  })
+
+  it("rejects --runner skill-use with an actionable operator message", () => {
+    const result = validateBaselineRunnerSupport("skill-use")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--runner skill-use is not supported")
       expect(result.message).toContain("baseline subcommand")
     }
   })

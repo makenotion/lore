@@ -52,21 +52,32 @@ node dist/cli.js eval run evals/suites/lore-core.yaml \
 
 ## Runner Modes
 
-Six runners ship today. `retrieval` and `notion` share the same suite YAML
-format and surface registry; `task`, `bench`, `profile`, and
-`retrieval-quality` each have their own suite shape and scoring path because
-they score agent-produced workspace state, LongMemEval-style multi-session
-recall, profile taxonomy quality, or ranked live-search quality rather than
-wake-up surfaced memory ids:
+Eight runners ship today. `retrieval` and `notion` share the same suite YAML
+format and surface registry; `task`, `bench`, `profile`,
+`retrieval-quality`, `skill-retrieval`, and `skill-use` each have their own
+suite shape and scoring path because they score agent-produced workspace
+state, LongMemEval-style multi-session recall, profile taxonomy quality,
+ranked live-search quality, public corpus ranking, or context-enabled
+answerability rather than wake-up surfaced memory ids:
 
-| Runner                | What it exercises                                                                                                                                                                                           | Where to use it                                                                                                                                         |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls.                                                                                                                   | Per-PR CI; the inner-loop fast feedback.                                                                                                                |
-| `notion`              | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion.                                                                                                                    | Nightly CI; PRs that touch retrieval composition or ranking.                                                                                            |
-| `task`                | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`.                                                                                          | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path.                                                                                     |
-| `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                                                                                   | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0.                |
-| `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls.                                                         | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                                     |
-| `retrieval-quality`   | Labeled live-vault query → expected-memory checks through the real `MemoryService.searchWithExplain` path. Computes target rank, recall@1/5/10, and MRR across product, RunTool AI, and REST keyword lanes. | PRs and release checks that touch search transport or ranking. Read-only but live-vault-backed, so run deliberately against an operator-approved vault. |
+| Runner                | What it exercises                                                                                                                                                                                                               | Where to use it                                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls.                                                                                                                                       | Per-PR CI; the inner-loop fast feedback.                                                                                                                         |
+| `notion`              | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion.                                                                                                                                        | Nightly CI; PRs that touch retrieval composition or ranking.                                                                                                     |
+| `task`                | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`.                                                                                                              | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path.                                                                                              |
+| `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                                                                                                       | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0.                         |
+| `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls.                                                                             | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                                              |
+| `retrieval-quality`   | Labeled live-vault query → expected-memory checks through the real `MemoryService.searchWithExplain` path. Computes target rank, recall@1/5/10, NDCG@10, harmful@k, and MRR across product, RunTool AI, and REST keyword lanes. | PRs and release checks that touch search transport or ranking. Read-only but live-vault-backed, so run deliberately against an operator-approved vault.          |
+| `skill-retrieval`     | Offline memory-as-skill corpus ranking over SkillRet-shaped JSONL files. Computes recall@k, precision@k, completeness@k, NDCG@k, MRR, MAP, latency, and estimated context-token footprint.                                      | Public-scale retrieval pressure for memory-as-skill ranking. Does not measure agent task lift, live Notion behavior, or autonomous memory formation.             |
+| `skill-use`           | Offline no-context / oracle-context / retrieved-context / harmful-context answerability over labeled support sets. Computes success, answer accuracy, context sufficiency, harmful context rate, and retrieval gap to oracle.   | Deterministic context-use proxy for memory-as-skill evidence. Does not measure live Notion behavior or a powered agent unless a separate answerer is plugged in. |
+
+The longitudinal `lore-full-loop` task condition is not a headline
+formation-transfer metric when Phase A only inspects a workspace. A defensible
+formation-transfer measurement needs separate gates for prior-task success,
+formed-memory quality, retrieval, and Phase B use. Keep public skill
+retrieval, verified skill use, production-vault retrieval, and
+formation-transfer reports separate so a strong ranker-only result cannot be
+misread as agent outcome lift.
 
 Pass `--runner notion --project <SandboxProject>` to route a run through the
 production retrieval stack (rate limiter, hybrid search, contains/semantic
@@ -92,9 +103,9 @@ published benchmark numbers live in
 
 `retrieval-quality` suites live under `evals/retrieval-quality/`. They are
 live-vault, read-only suites: each case labels a natural-language paraphrase,
-the expected memory id, and the project name that owns the memory. The runner
-resolves each project by name, runs the real search path, and emits one result
-per lane.
+the expected memory id or primary/acceptable memory id sets, optional harmful
+memory ids, and the project name that owns the memory. The runner resolves each
+project by name, runs the real search path, and emits one result per lane.
 
 ```bash
 npm run build
@@ -112,11 +123,115 @@ The default lanes are:
 
 `product` and `runtool-ai` are required lanes by default. A required result
 passes only when the target ranks #1 and the mechanism trace proves the
-expected transport fired. For AI lanes, `tools/run` search must fire and
-REST `client.search` must not fire. For `rest-keyword`, `dataSources.query`
-must fire and neither RunTool search nor `client.search` may fire.
+expected transport fired. For multi-target cases, a primary id must rank #1;
+acceptable ids contribute to NDCG but do not satisfy the rank #1 gate. Harmful
+ids surfaced in the top-10 fail the result and are reported as `harmful@k`. For
+AI lanes, `tools/run` search must fire and REST `client.search` must not fire.
+For `rest-keyword`, `dataSources.query` must fire and neither RunTool search
+nor `client.search` may fire.
 Suite `limit` must be at least `10`, matching the largest reported recall@k
 cutoff.
+
+## Skill-Retrieval Runner
+
+`skill-retrieval` suites live under `evals/skill-retrieval/` and target
+SkillRet-shaped public corpora. The runner is offline: it loads local JSONL
+skills, queries, and qrels, ranks the skill corpus for each query, and writes a
+JSON artifact. The committed `skillret-smoke` suite uses a tiny in-repo corpus
+for deterministic checks; `skillret-test` targets the full public SkillRet test
+split fetched from the pinned checksum manifest.
+
+```bash
+npm run build
+node dist/cli.js eval skill-retrieval fetch skillret
+node dist/cli.js eval run evals/skill-retrieval/skillret-test.yaml
+```
+
+Smoke-suite shape:
+
+```yaml
+version: 1
+runner: skill-retrieval
+name: skillret-smoke
+corpus:
+  kind: skillret
+  root: fixtures/skillret-mini
+  split: test
+document:
+  textFields: [name, description, skill_md]
+queries:
+  limit: 200
+  seed: smoke-v1
+lanes:
+  - keyword
+k: [1, 5, 10]
+retrieval:
+  limit: 10
+```
+
+The initial `keyword` lane is a deterministic lexical baseline. Future lanes
+can plug into the same artifact contract for Lore-backed or embedding-backed
+rankers. Report this runner as public-scale memory-as-skill retrieval only; it
+does not show that the agent used the memory correctly or that Lore formed the
+memory autonomously.
+
+## Skill-Use Runner
+
+`skill-use` suites live under `evals/skill-use/`. They measure whether selected
+memory evidence is sufficient to answer a task under explicit conditions:
+`no-context`, `oracle-context`, `retrieved-context`, and optionally
+`harmful-context`. Each task defines one or more support sets; satisfying any
+support set makes the context sufficient. Harmful evidence ids model stale or
+contradictory memories that should not enter retrieved context.
+
+```bash
+npm run build
+node dist/cli.js eval run evals/skill-use/smoke.yaml
+```
+
+Smoke-suite shape:
+
+```yaml
+version: 1
+runner: skill-use
+name: skill-use-smoke
+corpus:
+  documentsPath: fixtures/basic/documents.jsonl
+retrieval:
+  lane: keyword
+  limit: 1
+  k: [1]
+thresholds:
+  minOracleAccuracy: 1
+  maxNoContextAccuracy: 0
+  minRetrievedOracleRatio: 1
+  maxHarmfulContextRate: 0
+conditions:
+  - no-context
+  - oracle-context
+  - retrieved-context
+requiredConditions:
+  - oracle-context
+  - retrieved-context
+tasks:
+  - id: calendar-retention
+    prompt: What retention period should the calendar export use?
+    answer:
+      accepted: [30 days]
+      mode: contains
+    supportSets:
+      - id: primary
+        documentIds: [mem-calendar-retention]
+    harmfulEvidenceIds:
+      - mem-calendar-retention-stale
+```
+
+The default answerer is a deterministic evidence proxy: it answers only when
+the supplied context satisfies a support set and contains no harmful evidence.
+That makes the suite a stable context-sufficiency gate, not a powered-agent
+benchmark. A future powered answerer can reuse the same suite contract, but its
+results must be reported separately because model choice, prompting, retries,
+and judge behavior become part of the measurement.
 
 ## Sandbox Vault Discipline
 

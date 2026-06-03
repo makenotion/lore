@@ -1,0 +1,25 @@
+version: 1
+runner: skill-retrieval
+name: skillret-test
+description: >
+  SkillRet public test split for offline memory-as-skill retrieval ranking.
+  Run `lore eval skill-retrieval fetch skillret` before running this suite.
+corpus:
+  kind: skillret
+  root: corpora/skillret
+  split: test
+document:
+  textFields:
+    - name
+    - description
+    - skill_md
+queries:
+  seed: skillret-test-v1
+lanes:
+  - keyword
+k:
+  - 1
+  - 5
+  - 10
+retrieval:
+  limit: 10

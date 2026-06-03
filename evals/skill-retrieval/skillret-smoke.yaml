@@ -1,0 +1,26 @@
+version: 1
+runner: skill-retrieval
+name: skillret-smoke
+description: >
+  Tiny SkillRet-shaped fixture for exercising the offline memory-as-skill
+  retrieval runner without downloading the public corpus.
+corpus:
+  kind: skillret
+  root: fixtures/skillret-mini
+  split: test
+document:
+  textFields:
+    - name
+    - description
+    - skill_md
+queries:
+  ids:
+    - q-architecture
+    - q-typography
+lanes:
+  - keyword
+k:
+  - 1
+  - 2
+retrieval:
+  limit: 2

@@ -224,6 +224,16 @@ tasks:
     })
     expect(rejected.success).toBe(false)
   })
+
+  it("peeks special runner modes from YAML before suite-specific validation", async () => {
+    const { peekSuiteRunner } = await import("./schema.js")
+
+    expect(peekSuiteRunner("runner: skill-retrieval\nname: skillret\n")).toBe(
+      "skill-retrieval"
+    )
+    expect(peekSuiteRunner("runner: skill-use\nname: skilluse\n")).toBe("skill-use")
+    expect(peekSuiteRunner("runner: mystery\n")).toBeNull()
+  })
 })
 
 describe("bench suite schema ingestion extraction fields", () => {

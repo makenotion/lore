@@ -1,0 +1,3 @@
+{"id":"q-architecture","query":"Design service boundaries, choose a database, and write an architecture decision record for a backend API.","skill_ids":["skill-architect"],"skill_names":["senior-architect"],"k":1}
+{"id":"q-typography","query":"Fix the page typography so headings, bylines, body text, and pull quotes have a clear hierarchy.","skill_ids":["skill-typeset"],"skill_names":["typeset"],"k":1}
+{"id":"q-motion","query":"Add hover transitions and subtle motion to make the toolbar interactions feel responsive.","skill_ids":["skill-animation"],"skill_names":["animate"],"k":1}

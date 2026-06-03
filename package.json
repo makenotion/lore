@@ -23,6 +23,8 @@
     "CONTRIBUTING.md",
     "dist",
     "docs",
+    "evals/skill-retrieval",
+    "evals/skill-use",
     "evals/vaults.yaml",
     "hooks",
     "profiles",

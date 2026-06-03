@@ -101,6 +101,8 @@ function qualitySuite(): RetrievalQualitySuite {
         query: "paraphrased question",
         expectedMemoryId: TARGET_MEMORY_ID,
         expectedTitle: "Target memory",
+        harmful: { staleIds: [], nearMissIds: [], otherIds: [] },
+        labels: {},
         projectName: "Project",
       },
     ],
@@ -184,6 +186,7 @@ describe("retrieval-quality eval runner", () => {
       recallAt1: 0,
       recallAt5: 1,
       recallAt10: 1,
+      ndcgAt10: 0.6309,
       reciprocalRank: 0.5,
     })
     expect(scoreRetrievalQuality(["a", "b"], "target")).toEqual({
@@ -191,8 +194,55 @@ describe("retrieval-quality eval runner", () => {
       recallAt1: 0,
       recallAt5: 0,
       recallAt10: 0,
+      ndcgAt10: 0,
       reciprocalRank: 0,
     })
+  })
+
+  it("scores primary, acceptable, and harmful retrieval labels", () => {
+    const result = buildRetrievalQualityResult({
+      case: {
+        id: "multi-label-case",
+        query: "paraphrased question",
+        expected: {
+          primaryIds: ["primary"],
+          acceptableIds: ["acceptable"],
+        },
+        harmful: {
+          staleIds: ["stale"],
+          nearMissIds: [],
+          otherIds: [],
+        },
+        labels: { domain: "mail" },
+        projectName: "Project",
+      },
+      projectId: PROJECT_ID,
+      lane: "product",
+      returnedMemoryIds: ["acceptable", "primary", "stale"],
+      returnedTitles: ["Acceptable", "Primary", "Stale"],
+      capped: false,
+      explain: [],
+      mechanism: {
+        passed: true,
+        failures: [],
+        trace: createRetrievalQualityTransportTrace(),
+      },
+      elapsedMs: 1,
+    })
+
+    expect(result).toMatchObject({
+      expectedMemoryId: "primary",
+      expectedPrimaryMemoryIds: ["primary"],
+      acceptableMemoryIds: ["acceptable"],
+      harmfulMemoryIds: ["stale"],
+      labels: { domain: "mail" },
+      targetRank: 2,
+      recallAt10: 1,
+      harmfulAt10: 1,
+      harmfulMemoryIdsSurfaced: ["stale"],
+      success: false,
+    })
+    expect(result.ndcgAt10).toBeGreaterThan(0)
   })
 
   it("validates the expected transport mechanism per lane", () => {
@@ -304,6 +354,40 @@ cases:
     )
   })
 
+  it("rejects contradictory expected and harmful labels", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lore-retrieval-quality-labels-"))
+    const suitePath = join(dir, "suite.yaml")
+    await writeFile(
+      suitePath,
+      `version: 1
+name: quality-smoke
+runner: retrieval-quality
+limit: 10
+lanes:
+  - product
+requiredLanes:
+  - product
+cases:
+  - id: contradictory-case
+    query: "paraphrased question"
+    expected:
+      primaryIds:
+        - target
+      acceptableIds:
+        - target
+    harmful:
+      staleIds:
+        - target
+    projectName: "Project"
+`,
+      "utf-8"
+    )
+
+    await expect(loadRetrievalQualitySuite(suitePath)).rejects.toThrow(
+      /overlap primary ids|overlap expected ids/
+    )
+  })
+
   it("runs a suite and gates only required lanes", async () => {
     const dir = await mkdtemp(join(tmpdir(), "lore-retrieval-quality-"))
     const suitePath = join(dir, "suite.yaml")
@@ -392,6 +476,8 @@ cases:
       failedRequiredResults: 0,
     })
     expect(artifact.summary.lanes.product?.recallAt1).toBe(1)
+    expect(artifact.summary.lanes.product?.ndcgAt10).toBe(1)
+    expect(artifact.summary.lanes.product?.harmfulAt10).toBe(0)
     expect(artifact.summary.lanes["rest-keyword"]?.recallAt1).toBe(0)
 
     const persisted = JSON.parse(await readFile(outPath, "utf-8")) as {

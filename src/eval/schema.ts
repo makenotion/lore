@@ -18,6 +18,8 @@ export const EVAL_RUNNERS = [
   "bench",
   "profile",
   "retrieval-quality",
+  "skill-retrieval",
+  "skill-use",
 ] as const
 
 /**

@@ -1,0 +1,24 @@
+{
+  "source": "huggingface",
+  "repository": "ThakiCloud/SKILLRET",
+  "revision": "7cae7cfbad2b0e1ebc9170892f568993aae543b0",
+  "license": "Apache-2.0",
+  "files": {
+    "data/skills/test.jsonl": {
+      "sha256": "4b3db14f528b288077b77207343211dede58f11c15b95a4ced7f6e0f01cbcea9",
+      "path": "data/skills/test.jsonl"
+    },
+    "data/queries/test.jsonl": {
+      "sha256": "7475fc12e06c81acb256831dbe25b10cca3c489f23be5774ded034f3bb3877ea",
+      "path": "data/queries/test.jsonl"
+    },
+    "data/qrels/test.jsonl": {
+      "sha256": "12142c4433ffe6c6d6b2b98a277168d35c81338e1b50818eadd8a3c6bb2a6f44",
+      "path": "data/qrels/test.jsonl"
+    },
+    "data/taxonomy.json": {
+      "sha256": "8fb8e8e8eeb22b8781615d455350a1d9d03e7fe10ca26940993fc37b0cdacf48",
+      "path": "data/taxonomy.json"
+    }
+  }
+}

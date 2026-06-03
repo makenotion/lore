@@ -214,8 +214,8 @@ when checking deterministic regressions.
 
 Retrieval-quality suites live under `evals/retrieval-quality/` and use a
 live-vault schema distinct from wake-up retrieval suites. Each case names one
-paraphrased query, the expected memory id, and the project name that owns that
-memory:
+paraphrased query, expected memory labels, optional harmful memory labels, and
+the project name that owns that memory:
 
 ```yaml
 version: 1
@@ -232,25 +232,158 @@ requiredLanes:
 cases:
   - id: mail-ios-swipeactions-lazyvstack
     query: swipe actions do nothing inside a vertical scrolling stack
-    expectedMemoryId: 359b35e6-e67f-81bb-974f-f3bdb6dd3625
-    expectedTitle: .swipeActions silently no-ops inside LazyVStack -- use List
+    expected:
+      primaryIds:
+        - 359b35e6-e67f-81bb-974f-f3bdb6dd3625
+      acceptableIds: []
+    harmful:
+      staleIds: []
+      nearMissIds: []
+      otherIds: []
+    labels:
+      domain: ios
+      kind: gotcha
     projectName: Mail iOS
 ```
 
 The runner emits one row per case/lane. Each row records the target's 1-based
-rank (`null` when absent), recall@1/5/10, reciprocal rank, returned ids/titles,
-cap metadata, the search explain trace, and a transport mechanism trace.
+rank (`null` when absent), recall@1/5/10, NDCG@10, reciprocal rank,
+harmful@1/5/10, returned ids/titles, cap metadata, the search explain trace,
+and a transport mechanism trace.
 `limit` must be at least `10` so recall@10 is always measured against a full
 candidate window.
 `product` and `runtool-ai` are required lanes by default; `rest-keyword`
 quantifies the lexical baseline and may fail without failing the run. A required
-lane result passes only when the target ranks #1 and the expected mechanism
-fired.
+lane result passes only when a primary target ranks #1, no harmful id appears
+in the top-10, and the expected mechanism fired. For backward compatibility,
+cases may still use `expectedMemoryId` / `expectedTitle` for a single primary
+target.
 
 Mechanism checks are part of the contract. AI lanes must dispatch RunTool
 `tools/run` search and must not fall back to REST `client.search`. The
 REST-keyword lane must dispatch `dataSources.query` and must not touch RunTool
 search or `client.search`.
+
+## Skill-Retrieval Suites
+
+Skill-retrieval suites live under `evals/skill-retrieval/` and use a
+SkillRet-shaped offline corpus. They do not hit Notion and do not run an agent;
+they measure ranked retrieval over memory-as-skill documents.
+
+```yaml
+version: 1
+runner: skill-retrieval
+name: skillret-smoke
+corpus:
+  kind: skillret
+  root: fixtures/skillret-mini
+  split: test
+document:
+  textFields:
+    - name
+    - description
+    - skill_md
+queries:
+  ids:
+    - q-architecture
+    - q-typography
+lanes:
+  - keyword
+k:
+  - 1
+  - 2
+retrieval:
+  limit: 2
+```
+
+The corpus root must contain SkillRet-style JSONL files under
+`data/skills/<split>.jsonl`, `data/queries/<split>.jsonl`, and
+`data/qrels/<split>.jsonl`, unless the suite overrides `skillsPath`,
+`queriesPath`, or `qrelsPath`. Query selection may use explicit `ids`, a
+deterministic `seed`, and an optional prefix `limit`.
+
+The artifact reports recall@k, precision@k, completeness@k, NDCG@k, MRR, MAP,
+average estimated context tokens, and elapsed time per lane. The committed
+`keyword` lane is a deterministic lexical baseline; additional lanes should use
+the same artifact shape so public ranker comparisons stay separate from agent
+task-lift and memory-formation results.
+
+## Skill-Use Suites
+
+Skill-use suites are offline context-use suites. They compare no context,
+oracle context, retrieved context, and optional harmful context for labeled
+memory-as-skill evidence. They do not hit Notion and do not run a powered agent
+unless a caller plugs in a non-default answerer.
+
+```yaml
+version: 1
+runner: skill-use
+name: skill-use-smoke
+corpus:
+  documentsPath: fixtures/basic/documents.jsonl
+document:
+  textFields: [title, synopsis, content]
+retrieval:
+  lane: keyword
+  limit: 1
+  k: [1]
+thresholds:
+  minOracleAccuracy: 1
+  maxNoContextAccuracy: 0
+  minRetrievedOracleRatio: 1
+  maxHarmfulContextRate: 0
+conditions:
+  - no-context
+  - oracle-context
+  - retrieved-context
+  - harmful-context
+requiredConditions:
+  - oracle-context
+  - retrieved-context
+tasks:
+  - id: calendar-retention
+    prompt: What retention period should the calendar export use?
+    answer:
+      accepted: [30 days]
+      mode: contains
+    supportSets:
+      - id: primary
+        documentIds: [mem-calendar-retention]
+    harmfulEvidenceIds:
+      - mem-calendar-retention-stale
+```
+
+Corpus documents are JSONL rows with stable `id`, `title`, optional `synopsis`,
+optional `content`, and optional `body` fields. The artifact records the
+document file SHA-256 hash so archived results can be tied back to the exact
+evidence corpus.
+
+Each task has one or more `supportSets`. A context is sufficient when it
+contains every document id in at least one support set. `acceptableEvidenceIds`
+contribute to ranking metrics but do not satisfy the task by themselves.
+`harmfulEvidenceIds` represent stale, contradictory, or tempting near-miss
+evidence. Support and harmful ids must not overlap.
+
+The default answerer is deterministic: it emits the accepted answer only when
+the current context satisfies a support set and contains no harmful evidence.
+This gives CI a stable context-sufficiency gate. A powered answerer can reuse
+the same runner seam, but those runs should be reported separately from the
+deterministic smoke gate.
+
+The runner reports per-condition success rate, answer accuracy, context
+sufficiency, support-set satisfaction, harmful context rate, average context
+tokens, and retrieved-vs-oracle lift. `thresholds` control the non-zero exit
+gate:
+
+- `minOracleAccuracy`: oracle-context success-rate floor.
+- `maxNoContextAccuracy`: maximum answer accuracy allowed with no context;
+  this catches answer leakage from prompts or task labels.
+- `minRetrievedOracleRatio`: retrieved-context success divided by
+  oracle-context success.
+- `maxHarmfulContextRate`: maximum harmful-evidence rate in retrieved context.
+
+Generic retrieval baselines and `--min-lift` / `--max-harm` flags do not apply
+to skill-use suites; use YAML thresholds instead.
 
 ## Task-Eval Suites
 

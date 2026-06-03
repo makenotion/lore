@@ -275,6 +275,46 @@ export function validateEvalRunRunnerCompatibility(
     }
   }
 
+  if (runner === "skill-retrieval") {
+    const skillRetrievalIncompatible: Array<{
+      flag: string
+      raw: string | undefined
+    }> = [
+      { flag: "--baseline", raw: raw.baseline },
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of skillRetrievalIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner skill-retrieval; skill-retrieval suites are offline corpus-ranking benchmarks scored by recall@k / MRR / NDCG.`,
+        }
+      }
+    }
+  }
+
+  if (runner === "skill-use") {
+    const skillUseIncompatible: Array<{
+      flag: string
+      raw: string | undefined
+    }> = [
+      { flag: "--baseline", raw: raw.baseline },
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of skillUseIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner skill-use; skill-use suites declare context-use thresholds in YAML.`,
+        }
+      }
+    }
+  }
+
   return { ok: true, value: undefined }
 }
 
@@ -350,6 +390,20 @@ export function validateBaselineRunnerSupport(
       ok: false,
       message:
         "--runner retrieval-quality is not supported by the baseline subcommand. Retrieval-quality artifacts measure a live vault's ranked search behavior, so baseline comparisons do not apply.",
+    }
+  }
+  if (runner === "skill-retrieval") {
+    return {
+      ok: false,
+      message:
+        "--runner skill-retrieval is not supported by the baseline subcommand. Skill-retrieval artifacts measure offline corpus ranking and need a runner-specific drift snapshot.",
+    }
+  }
+  if (runner === "skill-use") {
+    return {
+      ok: false,
+      message:
+        "--runner skill-use is not supported by the baseline subcommand. Skill-use artifacts are gated by suite-declared thresholds, not generic retrieval drift snapshots.",
     }
   }
   return { ok: true, value: undefined }
@@ -638,7 +692,7 @@ evalCommand.addCommand(
     .argument("<suite>", "Path to an eval suite YAML file")
     .option(
       "--runner <mode>",
-      "Runner mode (retrieval|notion|task|bench|profile|retrieval-quality); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
+      "Runner mode (retrieval|notion|task|bench|profile|retrieval-quality|skill-retrieval|skill-use); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
     )
     .option("--trials <n>", "Trial count; retrieval mode requires 1")
     .option("--out <path>", "Write the JSON artifact to a specific path")
@@ -758,7 +812,7 @@ evalCommand.addCommand(
           // reject the legitimate YAML-routed bench-with-limit case.
           if (parsed.value.limit !== undefined && parsed.value.runner !== "bench") {
             console.error(
-              "Eval failed: --limit is only supported with --runner bench (or a suite YAML with `runner: bench`); retrieval / task / notion runners consume the whole suite."
+              "Eval failed: --limit is only supported with --runner bench (or a suite YAML with `runner: bench`); other runners consume the whole suite."
             )
             process.exit(1)
             return
@@ -826,6 +880,89 @@ evalCommand.addCommand(
               }
             }
             if (artifact.summary.failedRequiredResults > 0) {
+              process.exit(1)
+            }
+            return
+          }
+
+          if (parsed.value.runner === "skill-retrieval") {
+            const { runSkillRetrievalSuite } =
+              await import("../../eval/skill-retrieval.js")
+            const { artifact, outPath } = await runSkillRetrievalSuite(suite, {
+              outPath: parsed.value.outPath,
+            })
+            if (parsed.value.json) {
+              console.log(JSON.stringify(artifact, null, 2))
+            } else {
+              console.log(
+                `Skill-retrieval eval completed: ${artifact.summary.queries} queries, ` +
+                  `${artifact.summary.skills} skills, ${artifact.summary.qrels} qrels.`
+              )
+              for (const lane of artifact.runner.lanes) {
+                const summary = artifact.summary.lanes[lane]
+                if (!summary) continue
+                const k = String(Math.max(...artifact.runner.k))
+                console.log(
+                  `  ${lane}: recall@${k}=${formatPercent(summary.recallAt[k] ?? 0)}, ` +
+                    `NDCG@${k}=${(summary.ndcgAt[k] ?? 0).toFixed(4)}, ` +
+                    `MRR@${k}=${(summary.mrrAt[k] ?? 0).toFixed(4)}, ` +
+                    `MAP@${k}=${(summary.mapAt[k] ?? 0).toFixed(4)}, ` +
+                    `avg context tokens=${summary.estimatedContextTokens.toFixed(0)}`
+                )
+              }
+              console.log(`Artifact: ${outPath}`)
+            }
+            return
+          }
+
+          if (parsed.value.runner === "skill-use") {
+            const { runSkillUseSuite } = await import("../../eval/skill-use.js")
+            const { artifact, outPath } = await runSkillUseSuite(suite, {
+              outPath: parsed.value.outPath,
+            })
+            if (parsed.value.json) {
+              console.log(JSON.stringify(artifact, null, 2))
+            } else {
+              const failed =
+                artifact.summary.failedRequiredResults +
+                artifact.summary.thresholdFailures.length
+              const status = failed === 0 ? "passed" : "failed"
+              console.log(
+                `Skill-use eval ${status}: ` +
+                  `${artifact.summary.passedRequiredResults}/${artifact.summary.requiredResults} required condition checks passed.`
+              )
+              for (const condition of artifact.runner.conditions) {
+                const summary = artifact.summary.conditions[condition]
+                if (!summary) continue
+                console.log(
+                  `  ${condition}: success=${formatPercent(summary.successRate)}, ` +
+                    `answers=${formatPercent(summary.answerAccuracy)}, ` +
+                    `context=${formatPercent(summary.contextSufficiency)}, ` +
+                    `harmful=${formatPercent(summary.harmfulRate)}, ` +
+                    `avg context tokens=${summary.averageContextTokens.toFixed(0)}`
+                )
+              }
+              const ratio = artifact.summary.lift.retrievedGapToOracle
+              console.log(
+                `  retrieved gap to oracle: ${ratio === null ? "n/a" : formatPercentagePoints(ratio)}`
+              )
+              console.log(`Artifact: ${outPath}`)
+              for (const failure of artifact.summary.thresholdFailures) {
+                console.error(`Skill-use threshold failed: ${failure}`)
+              }
+              const requiredConditions = new Set(artifact.runner.requiredConditions)
+              for (const result of artifact.results) {
+                if (!requiredConditions.has(result.condition) || result.success) continue
+                console.log(`  - ${result.taskId} [${result.condition}]:`)
+                for (const reason of result.failureReasons) {
+                  console.log(`    - ${reason}`)
+                }
+              }
+            }
+            if (
+              artifact.summary.failedRequiredResults > 0 ||
+              artifact.summary.thresholdFailures.length > 0
+            ) {
               process.exit(1)
             }
             return
@@ -1135,7 +1272,10 @@ evalCommand.addCommand(
       "--out <path>",
       "Write the baseline snapshot to this path (typically evals/baselines/<suite>.json)"
     )
-    .option("--runner <mode>", "Runner mode (retrieval|notion|bench|retrieval-quality)")
+    .option(
+      "--runner <mode>",
+      "Runner mode (retrieval|notion|bench|retrieval-quality|skill-retrieval|skill-use)"
+    )
     .option(
       "--project <name>",
       "Sandbox project to scope retrieval against (required for --runner notion)"
@@ -1509,6 +1649,55 @@ function printEvalVaultSummary(vault: EvalVault): void {
 }
 
 evalCommand.addCommand(vaultsCommand)
+
+const skillRetrievalCommand = new Command("skill-retrieval").description(
+  "Skill-retrieval corpus helpers"
+)
+
+skillRetrievalCommand.addCommand(
+  new Command("fetch")
+    .description(
+      "Download the SkillRet test corpus files from the HuggingFace revision pinned by skillret-checksums.json."
+    )
+    .argument("<benchmark>", "Skill retrieval corpus name; currently only `skillret`")
+    .option(
+      "--out-root <path>",
+      "Directory to write the corpus layout into. Defaults to evals/skill-retrieval/corpora/skillret."
+    )
+    .action(async (benchmark: string, opts: { outRoot?: string }) => {
+      if (benchmark !== "skillret") {
+        console.error(
+          `lore eval skill-retrieval fetch: only "skillret" is supported (got "${benchmark}").`
+        )
+        process.exit(1)
+        return
+      }
+      try {
+        const { fetchSkillRetrievalCorpus } =
+          await import("../../eval/skill-retrieval-fetch.js")
+        const report = await fetchSkillRetrievalCorpus({ outRoot: opts.outRoot })
+        const written = report.files.filter((file) => !file.skipped).length
+        const skipped = report.files.length - written
+        console.log(
+          `SkillRet corpus ready: ${report.root}\n` +
+            `  HF revision: ${report.revision}\n` +
+            `  files written: ${written}\n` +
+            `  files already current: ${skipped}`
+        )
+        for (const file of report.files) {
+          console.log(`  - ${file.skipped ? "current" : "written"}: ${file.path}`)
+        }
+      } catch (err) {
+        console.error(
+          "lore eval skill-retrieval fetch failed:",
+          err instanceof Error ? err.message : err
+        )
+        process.exit(1)
+      }
+    })
+)
+
+evalCommand.addCommand(skillRetrievalCommand)
 
 // ---------------------------------------------------------------------------
 // `lore eval bench` — LongMemEval bench-runner CLI surface (issue #595).

@@ -9,6 +9,7 @@ import { resolveProjectByName } from "../core/project-scope.js"
 import { defaultFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { initServices, type LoreServices } from "../services.js"
 import type { SearchExplain } from "../types.js"
+import { scoreRanking } from "./rank-metrics.js"
 
 export const RETRIEVAL_QUALITY_RUNNER = "retrieval-quality" as const
 
@@ -28,11 +29,61 @@ const retrievalQualityCaseSchema = z
       .min(1)
       .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
     query: z.string().trim().min(1),
-    expectedMemoryId: z.string().trim().min(1),
+    expectedMemoryId: z.string().trim().min(1).optional(),
     expectedTitle: z.string().trim().min(1).optional(),
+    expected: z
+      .object({
+        primaryIds: z.array(z.string().trim().min(1)).min(1),
+        acceptableIds: z.array(z.string().trim().min(1)).default([]),
+      })
+      .strict()
+      .optional(),
+    harmful: z
+      .object({
+        staleIds: z.array(z.string().trim().min(1)).default([]),
+        nearMissIds: z.array(z.string().trim().min(1)).default([]),
+        otherIds: z.array(z.string().trim().min(1)).default([]),
+      })
+      .strict()
+      .default({ staleIds: [], nearMissIds: [], otherIds: [] }),
+    labels: z.record(z.string().trim().min(1), z.string().trim().min(1)).default({}),
     projectName: z.string().trim().min(1),
   })
   .strict()
+  .superRefine((item, ctx) => {
+    if (item.expectedMemoryId === undefined && item.expected === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["expectedMemoryId"],
+        message:
+          "retrieval-quality cases must define expectedMemoryId or expected.primaryIds",
+      })
+    }
+    const primaryIds =
+      item.expected?.primaryIds ?? [item.expectedMemoryId].filter(isString)
+    const acceptableIds = item.expected?.acceptableIds ?? []
+    const harmfulIds = [
+      ...item.harmful.staleIds,
+      ...item.harmful.nearMissIds,
+      ...item.harmful.otherIds,
+    ]
+    const acceptableOverlap = overlap(primaryIds, acceptableIds)
+    if (acceptableOverlap.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["expected", "acceptableIds"],
+        message: `acceptable ids overlap primary ids: ${acceptableOverlap.join(", ")}`,
+      })
+    }
+    const harmfulOverlap = overlap([...primaryIds, ...acceptableIds], harmfulIds)
+    if (harmfulOverlap.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["harmful"],
+        message: `harmful ids overlap expected ids: ${harmfulOverlap.join(", ")}`,
+      })
+    }
+  })
 
 export const retrievalQualitySuiteSchema = z
   .object({
@@ -130,13 +181,22 @@ export interface RetrievalQualityResult {
   projectId: string
   expectedMemoryId: string
   expectedTitle: string | null
+  expectedPrimaryMemoryIds: string[]
+  acceptableMemoryIds: string[]
+  harmfulMemoryIds: string[]
+  labels: Record<string, string>
   lane: RetrievalQualityLane
   success: boolean
   targetRank: number | null
   recallAt1: number
   recallAt5: number
   recallAt10: number
+  ndcgAt10: number
   reciprocalRank: number
+  harmfulAt1: number
+  harmfulAt5: number
+  harmfulAt10: number
+  harmfulMemoryIdsSurfaced: string[]
   returnedMemoryIds: string[]
   returnedTitles: string[]
   capped: boolean
@@ -154,7 +214,11 @@ export interface RetrievalQualityLaneSummary {
   recallAt1: number
   recallAt5: number
   recallAt10: number
+  ndcgAt10: number
   mrr: number
+  harmfulAt1: number
+  harmfulAt5: number
+  harmfulAt10: number
   mechanismFailures: number
 }
 
@@ -319,24 +383,36 @@ export function buildRetrievalQualityResult(input: {
   mechanism: RetrievalQualityMechanism
   elapsedMs: number
 }): RetrievalQualityResult {
-  const scored = scoreRetrievalQuality(
-    input.returnedMemoryIds,
-    input.case.expectedMemoryId
-  )
+  const expected = resolveRetrievalQualityExpected(input.case)
+  const harmfulMemoryIds = resolveRetrievalQualityHarmful(input.case)
+  const scored = scoreRetrievalQuality(input.returnedMemoryIds, expected.primaryIds, [
+    ...expected.acceptableIds,
+  ])
+  const harmful = scoreHarmfulRetrieval(input.returnedMemoryIds, harmfulMemoryIds)
   return {
     caseId: input.case.id,
     query: input.case.query,
     projectName: input.case.projectName,
     projectId: input.projectId,
-    expectedMemoryId: input.case.expectedMemoryId,
+    expectedMemoryId: expected.primaryIds[0]!,
     expectedTitle: input.case.expectedTitle ?? null,
+    expectedPrimaryMemoryIds: expected.primaryIds,
+    acceptableMemoryIds: expected.acceptableIds,
+    harmfulMemoryIds,
+    labels: input.case.labels,
     lane: input.lane,
-    success: scored.targetRank === 1 && input.mechanism.passed,
+    success:
+      scored.targetRank === 1 && harmful.harmfulAt10 === 0 && input.mechanism.passed,
     targetRank: scored.targetRank,
     recallAt1: scored.recallAt1,
     recallAt5: scored.recallAt5,
     recallAt10: scored.recallAt10,
+    ndcgAt10: scored.ndcgAt10,
     reciprocalRank: scored.reciprocalRank,
+    harmfulAt1: harmful.harmfulAt1,
+    harmfulAt5: harmful.harmfulAt5,
+    harmfulAt10: harmful.harmfulAt10,
+    harmfulMemoryIdsSurfaced: harmful.harmfulMemoryIdsSurfaced,
     returnedMemoryIds: input.returnedMemoryIds,
     returnedTitles: input.returnedTitles,
     capped: input.capped,
@@ -348,21 +424,34 @@ export function buildRetrievalQualityResult(input: {
 
 export function scoreRetrievalQuality(
   returnedMemoryIds: string[],
-  expectedMemoryId: string
+  primaryMemoryIds: string[] | string,
+  acceptableMemoryIds: string[] = []
 ): {
   targetRank: number | null
   recallAt1: number
   recallAt5: number
   recallAt10: number
+  ndcgAt10: number
   reciprocalRank: number
 } {
-  const index = returnedMemoryIds.indexOf(expectedMemoryId)
-  const targetRank = index === -1 ? null : index + 1
+  const primaryIds = Array.isArray(primaryMemoryIds)
+    ? primaryMemoryIds
+    : [primaryMemoryIds]
+  const targetRank = bestRank(returnedMemoryIds, primaryIds)
+  const ranking = scoreRanking({
+    returnedIds: returnedMemoryIds,
+    relevant: [
+      ...primaryIds.map((id) => ({ id, relevance: 2 })),
+      ...acceptableMemoryIds.map((id) => ({ id, relevance: 1 })),
+    ],
+    kValues: [10],
+  })
   return {
     targetRank,
     recallAt1: recallAtK(targetRank, 1),
     recallAt5: recallAtK(targetRank, 5),
     recallAt10: recallAtK(targetRank, 10),
+    ndcgAt10: ranking.ndcgAt["10"] ?? 0,
     reciprocalRank: targetRank === null ? 0 : roundMetric(1 / targetRank),
   }
 }
@@ -400,9 +489,88 @@ function summarizeRetrievalQualityLane(
     recallAt1: average(results.map((result) => result.recallAt1)),
     recallAt5: average(results.map((result) => result.recallAt5)),
     recallAt10: average(results.map((result) => result.recallAt10)),
+    ndcgAt10: average(results.map((result) => result.ndcgAt10)),
     mrr: average(results.map((result) => result.reciprocalRank)),
+    harmfulAt1: average(results.map((result) => result.harmfulAt1)),
+    harmfulAt5: average(results.map((result) => result.harmfulAt5)),
+    harmfulAt10: average(results.map((result) => result.harmfulAt10)),
     mechanismFailures: results.filter((result) => !result.mechanism.passed).length,
   }
+}
+
+function resolveRetrievalQualityExpected(caseItem: RetrievalQualityCase): {
+  primaryIds: string[]
+  acceptableIds: string[]
+} {
+  if (caseItem.expected) {
+    return {
+      primaryIds: uniqueStrings(caseItem.expected.primaryIds),
+      acceptableIds: uniqueStrings(caseItem.expected.acceptableIds),
+    }
+  }
+  return {
+    primaryIds: [caseItem.expectedMemoryId!],
+    acceptableIds: [],
+  }
+}
+
+function resolveRetrievalQualityHarmful(caseItem: RetrievalQualityCase): string[] {
+  return uniqueStrings([
+    ...caseItem.harmful.staleIds,
+    ...caseItem.harmful.nearMissIds,
+    ...caseItem.harmful.otherIds,
+  ])
+}
+
+function scoreHarmfulRetrieval(
+  returnedMemoryIds: string[],
+  harmfulMemoryIds: string[]
+): {
+  harmfulAt1: number
+  harmfulAt5: number
+  harmfulAt10: number
+  harmfulMemoryIdsSurfaced: string[]
+} {
+  const harmful = new Set(harmfulMemoryIds)
+  const surfaced = returnedMemoryIds.filter((id) => harmful.has(id))
+  return {
+    harmfulAt1: surfacedWithinK(returnedMemoryIds, harmful, 1),
+    harmfulAt5: surfacedWithinK(returnedMemoryIds, harmful, 5),
+    harmfulAt10: surfacedWithinK(returnedMemoryIds, harmful, 10),
+    harmfulMemoryIdsSurfaced: uniqueStrings(surfaced),
+  }
+}
+
+function surfacedWithinK(
+  returnedMemoryIds: string[],
+  ids: Set<string>,
+  k: RetrievalQualityK
+): number {
+  return returnedMemoryIds.slice(0, k).some((id) => ids.has(id)) ? 1 : 0
+}
+
+function bestRank(returnedMemoryIds: string[], ids: string[]): number | null {
+  let out: number | null = null
+  for (const id of ids) {
+    const index = returnedMemoryIds.indexOf(id)
+    if (index === -1) continue
+    const rank = index + 1
+    if (out === null || rank < out) out = rank
+  }
+  return out
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values))
+}
+
+function overlap(left: string[], right: string[]): string[] {
+  const rightIds = new Set(right)
+  return uniqueStrings(left.filter((id) => rightIds.has(id)))
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string"
 }
 
 export function createRetrievalQualityTransportTrace(): RetrievalQualityTransportTrace {

@@ -1,0 +1,56 @@
+version: 1
+runner: skill-use
+name: skill-use-smoke
+description: >
+  Tiny offline context-use suite for exercising no-context, oracle-context,
+  retrieved-context, and harmful-context conditions without a powered agent.
+corpus:
+  documentsPath: fixtures/basic/documents.jsonl
+document:
+  textFields:
+    - title
+    - synopsis
+    - content
+retrieval:
+  lane: keyword
+  limit: 1
+  k:
+    - 1
+thresholds:
+  minOracleAccuracy: 1
+  maxNoContextAccuracy: 0
+  minRetrievedOracleRatio: 1
+  maxHarmfulContextRate: 0
+conditions:
+  - no-context
+  - oracle-context
+  - retrieved-context
+  - harmful-context
+requiredConditions:
+  - oracle-context
+  - retrieved-context
+tasks:
+  - id: calendar-retention
+    prompt: What retention period should the calendar export use for event history?
+    answer:
+      accepted:
+        - 30 days
+      mode: contains
+    supportSets:
+      - id: primary
+        documentIds:
+          - mem-calendar-retention
+    harmfulEvidenceIds:
+      - mem-calendar-retention-stale
+  - id: invoice-rounding
+    prompt: For invoice reconciliation, should rounding happen before or after summing line-item cents?
+    answer:
+      accepted:
+        - sum line-item cents first
+      mode: contains
+    supportSets:
+      - id: primary
+        documentIds:
+          - mem-invoice-rounding
+    harmfulEvidenceIds:
+      - mem-invoice-rounding-stale
