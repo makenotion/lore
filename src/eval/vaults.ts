@@ -27,6 +27,10 @@ const requiredEnvSchema = z.record(
   nonEmptyStringSchema
 )
 
+const envVarNameSchema = z
+  .string()
+  .regex(/^[A-Z_][A-Z0-9_]*$/, "must be an environment variable name")
+
 const evalVaultSupportedRunSchema = z
   .object({
     id: vaultIdSchema,
@@ -71,6 +75,7 @@ export const evalVaultSchema = z
     notionWorkspaceId: z.string().uuid(),
     vaultPageId: pageIdSchema,
     defaultProjectName: nonEmptyStringSchema.optional(),
+    defaultProjectEnvVar: envVarNameSchema.optional(),
     supportedRuns: z.array(evalVaultSupportedRunSchema).default([]),
     lastValidation: evalVaultValidationSchema.optional(),
     notes: z.array(nonEmptyStringSchema).default([]),
@@ -163,8 +168,8 @@ export function evalVaultEnv(vault: EvalVault): Record<string, string> {
     NOTION_ENV: vault.notionEnv,
     NOTION_WORKSPACE_ID: vault.notionWorkspaceId,
   }
-  if (vault.defaultProjectName) {
-    env["LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT"] = vault.defaultProjectName
+  if (vault.defaultProjectName && vault.defaultProjectEnvVar) {
+    env[vault.defaultProjectEnvVar] = vault.defaultProjectName
   }
   return env
 }

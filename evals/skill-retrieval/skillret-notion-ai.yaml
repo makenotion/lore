@@ -1,0 +1,36 @@
+version: 1
+runner: skill-retrieval
+name: skillret-notion-ai
+description: >
+  SkillRet public test split scored through the persistent Notion-backed
+  SkillRet eval vault. Run `lore eval skill-retrieval fetch skillret`, then
+  `lore eval skill-retrieval import evals/skill-retrieval/skillret-notion-ai.yaml --yes --create-project`
+  against the registered SkillRet eval vault before running this suite.
+corpus:
+  kind: skillret
+  root: corpora/skillret
+  split: test
+document:
+  textFields:
+    - name
+    - description
+    - skill_md
+notion:
+  projectName: SkillRet Eval
+  topicName: SkillRet Test Split
+  importManifestPath: manifests/skillret-test-import.json
+  expectedVaultPageId: 374b35e6-e67f-8108-beb4-dec11f2f5d28
+  requireRunToolAi: true
+  taxonomyTopics: true
+  searchTopicScoped: false
+  queryDelayMs: 1000
+queries:
+  seed: skillret-notion-ai-v1
+lanes:
+  - notion-ai
+k:
+  - 1
+  - 5
+  - 10
+retrieval:
+  limit: 10

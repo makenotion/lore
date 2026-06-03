@@ -43,6 +43,7 @@ evals/results/
 # Downloaded public benchmark corpora are checksum-pinned but too large to
 # commit. Keep the manifest and tiny fixtures in version control.
 evals/skill-retrieval/corpora/
+evals/skill-retrieval/manifests/
 
 # Defensive: the autosave-learning dedup lock dir lives under
 # `LORE_HOOK_STATE_DIR` (default: tmpdir). An interim version of the dedup

@@ -267,8 +267,11 @@ search or `client.search`.
 ## Skill-Retrieval Suites
 
 Skill-retrieval suites live under `evals/skill-retrieval/` and use a
-SkillRet-shaped offline corpus. They do not hit Notion and do not run an agent;
-they measure ranked retrieval over memory-as-skill documents.
+SkillRet-shaped corpus. The `keyword` lane is offline and deterministic. The
+`notion-ai` lane requires a suite `notion` block, imports the corpus into a
+persistent Lore eval vault, and measures Notion AI search through Lore's
+`MemoryService.searchWithExplain` path. Skill-retrieval suites do not run an
+agent; they measure ranked retrieval over memory-as-skill documents.
 
 ```yaml
 version: 1
@@ -302,11 +305,60 @@ The corpus root must contain SkillRet-style JSONL files under
 `queriesPath`, or `qrelsPath`. Query selection may use explicit `ids`, a
 deterministic `seed`, and an optional prefix `limit`.
 
+Notion-backed suites add a `notion` block and use the `notion-ai` lane:
+
+```yaml
+version: 1
+runner: skill-retrieval
+name: skillret-notion-ai
+corpus:
+  kind: skillret
+  root: corpora/skillret
+  split: test
+document:
+  textFields: [name, description, skill_md]
+notion:
+  projectName: SkillRet Eval
+  topicName: SkillRet Test Split
+  importManifestPath: manifests/skillret-test-import.json
+  expectedVaultPageId: 374b35e6-e67f-8108-beb4-dec11f2f5d28
+  requireRunToolAi: true
+  taxonomyTopics: true
+  searchTopicScoped: false
+  queryDelayMs: 1000
+queries:
+  seed: skillret-notion-ai-v1
+lanes:
+  - notion-ai
+k: [1, 5, 10]
+retrieval:
+  limit: 10
+```
+
+The `notion-ai` lane requires `retrieval.limit <= 25`, matching the RunTool
+search return cap. `taxonomyTopics: true` imports each SkillRet row under a
+topic derived from the suite root topic plus the skill's major/sub taxonomy.
+`searchTopicScoped: false` leaves the live query project-scoped, which is the
+usual setting when taxonomy topics are enabled because otherwise every query is
+limited to the root topic. `queryDelayMs` adds pacing between live Notion AI
+queries so full-corpus runs do not intentionally saturate the Notion rate
+limit. The import manifest records corpus revision, split, document fields,
+root project/topic ids, per-skill content hashes, per-skill topic metadata,
+truncation metadata for oversized source fields, and the live Notion memory id
+for each imported SkillRet skill. Source fields longer than 60,000 characters
+are capped in the rendered Notion memory body with an explicit truncation
+marker; the manifest retains both the full-source hash and the rendered-content
+hash. The import path can repair older transforms, but the `notion-ai` run path
+requires the manifest to use the current transform before scoring. It is an
+operator-local artifact, not a committed fixture.
+When `expectedVaultPageId` is present, import and run fail before touching the
+corpus if the active `.lore.yaml` points at any other vault.
+
 The artifact reports recall@k, precision@k, completeness@k, NDCG@k, MRR, MAP,
-average estimated context tokens, and elapsed time per lane. The committed
-`keyword` lane is a deterministic lexical baseline; additional lanes should use
-the same artifact shape so public ranker comparisons stay separate from agent
-task-lift and memory-formation results.
+average estimated context tokens, elapsed time per lane, capped-result counts,
+and mechanism-failure counts. The committed `keyword` lane is a deterministic
+lexical baseline; `notion-ai` uses the same artifact shape so public ranker
+comparisons stay separate from agent task-lift and memory-formation results.
 
 ## Skill-Use Suites
 

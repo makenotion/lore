@@ -1,18 +1,30 @@
 import { createHash } from "node:crypto"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, parse, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
+import { setTimeout as sleep } from "node:timers/promises"
+import type { Client } from "@notionhq/client"
+import pLimit from "p-limit"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
+import { MemoryService } from "../core/memory.js"
+import { defaultFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
+import { initServices, type LoreServices } from "../services.js"
+import type { Memory, SearchExplain, Topic } from "../types.js"
 import { averageMetric, scoreRanking, type RankingMetrics } from "./rank-metrics.js"
 
 export const SKILL_RETRIEVAL_RUNNER = "skill-retrieval" as const
 
-export const SKILL_RETRIEVAL_LANES = ["keyword"] as const
+export const SKILL_RETRIEVAL_LANES = ["keyword", "notion-ai"] as const
 
 export type SkillRetrievalLane = (typeof SKILL_RETRIEVAL_LANES)[number]
 
 const skillRetrievalLaneSchema = z.enum(SKILL_RETRIEVAL_LANES)
+const SKILL_RETRIEVAL_IMPORT_ATTEMPTS = 4
+const SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION = 3
+const SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT = 60_000
+const SKILL_RETRIEVAL_NOTION_SEARCH_ATTEMPTS = 5
+const SKILL_RETRIEVAL_NOTION_SEARCH_RETRY_BASE_MS = 1_000
 
 const skillRetrievalCorpusSchema = z
   .object({
@@ -44,6 +56,28 @@ const skillRetrievalQuerySelectionSchema = z
   .strict()
   .default({})
 
+const skillRetrievalNotionSchema = z
+  .object({
+    projectName: z.string().trim().min(1),
+    topicName: z.string().trim().min(1),
+    importManifestPath: z.string().trim().min(1),
+    expectedVaultPageId: z.string().trim().min(1).optional(),
+    requireRunToolAi: z.boolean().default(true),
+    taxonomyTopics: z.boolean().default(false),
+    searchTopicScoped: z.boolean().default(true),
+    queryDelayMs: z.number().int().nonnegative().default(1000),
+  })
+  .strict()
+  .superRefine((notion, ctx) => {
+    if (notion.taxonomyTopics && notion.searchTopicScoped) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["searchTopicScoped"],
+        message: "taxonomyTopics requires searchTopicScoped: false",
+      })
+    }
+  })
+
 export const skillRetrievalSuiteSchema = z
   .object({
     version: z.literal(1),
@@ -56,10 +90,8 @@ export const skillRetrievalSuiteSchema = z
     corpus: skillRetrievalCorpusSchema,
     document: skillRetrievalDocumentSchema,
     queries: skillRetrievalQuerySelectionSchema,
-    lanes: z
-      .array(skillRetrievalLaneSchema)
-      .min(1)
-      .default([...SKILL_RETRIEVAL_LANES]),
+    notion: skillRetrievalNotionSchema.optional(),
+    lanes: z.array(skillRetrievalLaneSchema).min(1).default(["keyword"]),
     k: z.array(z.number().int().positive()).min(1).default([1, 5, 10]),
     retrieval: z
       .object({
@@ -99,6 +131,20 @@ export const skillRetrievalSuiteSchema = z
         message: "retrieval.limit must be at least the largest requested k value",
       })
     }
+    if (suite.lanes.includes("notion-ai") && suite.notion === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["notion"],
+        message: "notion config is required when skill-retrieval lanes include notion-ai",
+      })
+    }
+    if (suite.lanes.includes("notion-ai") && suite.retrieval.limit > 25) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["retrieval", "limit"],
+        message: "notion-ai uses RunTool search, whose current returned-window cap is 25",
+      })
+    }
   })
 
 const skillretSkillSchema = z
@@ -135,6 +181,7 @@ export type SkillRetrievalSuite = z.infer<typeof skillRetrievalSuiteSchema>
 export type SkillRetSkill = z.infer<typeof skillretSkillSchema>
 export type SkillRetQuery = z.infer<typeof skillretQuerySchema>
 export type SkillRetQrel = z.infer<typeof skillretQrelSchema>
+export type SkillRetrievalNotionConfig = z.infer<typeof skillRetrievalNotionSchema>
 
 export interface LoadedSkillRetrievalSuite {
   suite: SkillRetrievalSuite
@@ -160,10 +207,28 @@ export interface SkillRetrievalResult {
   expectedSkillIds: string[]
   returnedSkillIds: string[]
   returnedSkillNames: string[]
+  returnedMemoryIds?: string[]
+  capped?: boolean
+  explain?: SearchExplain[]
+  mechanism?: SkillRetrievalMechanism
   metrics: RankingMetrics & {
     estimatedContextTokens: number
     elapsedMs: number
   }
+}
+
+export interface SkillRetrievalTransportTrace {
+  toolsRunSearchCalls: number
+  toolsRunOtherCalls: number
+  clientSearchCalls: number
+  dataSourceQueryCalls: number
+  pagesRetrieveCalls: number
+}
+
+export interface SkillRetrievalMechanism {
+  passed: boolean
+  failures: string[]
+  trace: SkillRetrievalTransportTrace
 }
 
 export interface SkillRetrievalLaneSummary {
@@ -176,6 +241,8 @@ export interface SkillRetrievalLaneSummary {
   mapAt: Record<string, number>
   estimatedContextTokens: number
   elapsedMs: number
+  cappedResults: number
+  mechanismFailures: number
 }
 
 export interface SkillRetrievalRunSummary {
@@ -214,6 +281,9 @@ export interface SkillRetrievalLaneRunnerInput {
   corpus: SkillRetrievalCorpus
   queries: SkillRetQuery[]
   lane: SkillRetrievalLane
+  services?: LoreServices
+  loadedSuiteRoot: string
+  notionSearch?: SkillRetrievalNotionSearch
 }
 
 export type SkillRetrievalLaneRunner = (
@@ -224,7 +294,128 @@ export interface RunSkillRetrievalOptions {
   outPath?: string
   now?: Date
   laneRunner?: SkillRetrievalLaneRunner
+  servicesFactory?: () => Promise<LoreServices>
+  notionSearch?: SkillRetrievalNotionSearch
 }
+
+export interface SkillRetrievalNotionSearchInput {
+  services: LoreServices
+  query: SkillRetQuery
+  projectId: string
+  topicId?: string
+  limit: number
+  requireRunToolAi: boolean
+}
+
+export interface SkillRetrievalNotionSearchOutput {
+  memories: Memory[]
+  explain: SearchExplain[]
+  capped: boolean
+  mechanism: SkillRetrievalMechanism
+  elapsedMs: number
+}
+
+export type SkillRetrievalNotionSearch = (
+  input: SkillRetrievalNotionSearchInput
+) => Promise<SkillRetrievalNotionSearchOutput>
+
+const skillRetrievalImportManifestEntrySchema = z
+  .object({
+    skillId: z.string().min(1),
+    memoryId: z.string().min(1),
+    name: z.string().min(1),
+    contentSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    sourceSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    metadataSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
+    topicName: z.string().min(1).optional(),
+    topicId: z.string().min(1).optional(),
+    topicKey: z.string().min(1).optional(),
+    tags: z.array(z.string().min(1)).optional(),
+    truncatedFields: z
+      .array(
+        z
+          .object({
+            field: z.enum(["description", "skill_md", "body"]),
+            originalChars: z.number().int().nonnegative(),
+            importedChars: z.number().int().nonnegative(),
+          })
+          .strict()
+      )
+      .optional(),
+    importedAt: z.string().min(1),
+  })
+  .strict()
+
+export const skillRetrievalImportManifestSchema = z
+  .object({
+    version: z.literal(1),
+    corpusKind: z.literal("skillret"),
+    corpusRevision: z.string().min(1),
+    split: z.enum(["train", "test"]),
+    documentFields: z.array(z.enum(["name", "description", "skill_md", "body"])).min(1),
+    transformVersion: z.union([
+      z.literal(1),
+      z.literal(2),
+      z.literal(SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION),
+    ]),
+    projectName: z.string().min(1),
+    projectId: z.string().min(1),
+    topicName: z.string().min(1),
+    topicId: z.string().min(1),
+    importedAt: z.string().min(1),
+    skills: z.record(z.string().min(1), skillRetrievalImportManifestEntrySchema),
+  })
+  .strict()
+
+export type SkillRetrievalImportManifest = z.infer<
+  typeof skillRetrievalImportManifestSchema
+>
+
+export interface ImportSkillRetrievalOptions {
+  outPath?: string
+  now?: Date
+  limit?: number
+  parallelism?: number
+  createProject?: boolean
+  servicesFactory?: () => Promise<LoreServices>
+}
+
+export interface SkillRetrievalImportReport {
+  manifest: SkillRetrievalImportManifest
+  outPath: string
+  imported: number
+  updated: number
+  skipped: number
+  reconciled: number
+  selected: number
+}
+
+interface SkillRetrievalImportDraft {
+  title: string
+  content: string
+  contentSha256: string
+  sourceSha256: string
+  metadataSha256: string
+  promotionSourceKey: string
+  topicName: string
+  topicId: string
+  topicKey: string
+  tags: string[]
+  truncatedFields: SkillRetrievalTruncatedField[]
+  keywords: string
+  synopsis: string
+}
+
+interface SkillRetrievalTruncatedField {
+  field: "description" | "skill_md" | "body"
+  originalChars: number
+  importedChars: number
+}
+
+type SkillRetrievalImportOutcome = "imported" | "updated" | "skipped" | "reconciled"
 
 interface KeywordDocument {
   skill: SkillRetSkill
@@ -280,7 +471,11 @@ export async function runSkillRetrievalSuite(
   const startedAt = now.toISOString()
   const corpus = await loadSkillRetrievalCorpus(loaded)
   const queries = selectSkillRetrievalQueries(corpus.queries, loaded.suite.queries)
-  const laneRunner = options.laneRunner ?? runKeywordSkillRetrievalLane
+  const laneRunner = options.laneRunner ?? runSkillRetrievalLane
+  const needsServices = loaded.suite.lanes.includes("notion-ai")
+  const services = needsServices
+    ? await (options.servicesFactory ?? (() => initServices()))()
+    : undefined
   const results: SkillRetrievalResult[] = []
 
   for (const lane of loaded.suite.lanes) {
@@ -290,6 +485,9 @@ export async function runSkillRetrievalSuite(
         corpus,
         queries,
         lane,
+        services,
+        loadedSuiteRoot: loaded.root,
+        notionSearch: options.notionSearch,
       }))
     )
   }
@@ -323,6 +521,445 @@ export async function runSkillRetrievalSuite(
   await mkdir(dirname(outPath), { recursive: true })
   await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
   return { artifact, outPath }
+}
+
+export async function importSkillRetrievalCorpusToNotion(
+  suitePath: string,
+  options: ImportSkillRetrievalOptions = {}
+): Promise<SkillRetrievalImportReport> {
+  const loaded = await loadSkillRetrievalSuite(suitePath)
+  const notion = requireSkillRetrievalNotionConfig(loaded.suite)
+  const now = options.now ?? new Date()
+  const importedAt = now.toISOString()
+  const corpus = await loadSkillRetrievalCorpus(loaded)
+  const selectedSkills =
+    options.limit === undefined ? corpus.skills : corpus.skills.slice(0, options.limit)
+  const parallelism = Math.max(1, options.parallelism ?? 6)
+  const services = await (options.servicesFactory ?? (() => initServices()))()
+  assertSkillRetrievalVaultBinding(notion, services)
+  const corpusRevision = await readSkillRetPinnedRevision(loaded.root)
+  let project = await services.projects.findByName(notion.projectName)
+  if (!project) {
+    if (options.createProject !== true) {
+      throw new Error(
+        `SkillRet import project "${notion.projectName}" was not found. ` +
+          "Create it first or pass --create-project."
+      )
+    }
+    project = await services.projects.create({
+      name: notion.projectName,
+      type: "project",
+      description: "Persistent SkillRet corpus import for Lore retrieval evals.",
+    })
+  }
+  const topic = await services.topics.getOrCreate(notion.topicName, [project.id], {
+    forceNew: false,
+  })
+  const topicPromises = new Map<string, Promise<Topic>>()
+  const resolveSkillTopic = (skill: SkillRetSkill): Promise<Topic> => {
+    const topicName = notion.taxonomyTopics
+      ? skillRetTaxonomyTopicName(notion.topicName, skill)
+      : notion.topicName
+    const existing = topicPromises.get(topicName)
+    if (existing) return existing
+    const promise =
+      topicName === notion.topicName
+        ? Promise.resolve(topic)
+        : services.topics.getOrCreate(topicName, [project.id], { forceNew: false })
+    topicPromises.set(topicName, promise)
+    return promise
+  }
+  const outPath = resolve(
+    options.outPath ?? resolve(loaded.root, notion.importManifestPath)
+  )
+  const manifest = await readSkillRetrievalImportManifestIfPresent(outPath, {
+    corpusRevision,
+    split: loaded.suite.corpus.split,
+    documentFields: loaded.suite.document.textFields,
+    projectName: notion.projectName,
+    projectId: project.id,
+    topicName: notion.topicName,
+    topicId: topic.id,
+    importedAt,
+  })
+  assertSkillRetrievalManifestMatchesSuite(
+    manifest,
+    loaded.suite,
+    notion,
+    corpusRevision,
+    project.id,
+    topic.id
+  )
+  if (
+    manifest.transformVersion !== SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION &&
+    selectedSkills.length !== corpus.skills.length
+  ) {
+    throw new Error(
+      `SkillRet import manifest uses transformVersion ${manifest.transformVersion}; ` +
+        "repairing a legacy transform requires importing the full selected corpus without --limit."
+    )
+  }
+  manifest.transformVersion = SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION
+
+  let manifestWrite = Promise.resolve()
+  const queueManifestWrite = () => {
+    const snapshot = `${JSON.stringify(manifest, null, 2)}\n`
+    manifestWrite = manifestWrite.then(async () => {
+      await mkdir(dirname(outPath), { recursive: true })
+      await writeFile(outPath, snapshot, "utf-8")
+    })
+    return manifestWrite
+  }
+  const limit = pLimit(parallelism)
+  const settled = await Promise.allSettled(
+    selectedSkills.map((skill) =>
+      limit(async (): Promise<SkillRetrievalImportOutcome> => {
+        const skillTopic = await resolveSkillTopic(skill)
+        const outcome = await importSkillRetrievalMemoryWithRetry({
+          skill,
+          fields: loaded.suite.document.textFields,
+          services,
+          projectId: project.id,
+          topic: skillTopic,
+          importedAt,
+          manifest,
+        })
+        if (outcome !== "skipped") {
+          await queueManifestWrite()
+        }
+        return outcome
+      })
+    )
+  )
+  await queueManifestWrite()
+  await manifestWrite
+  const outcomes: SkillRetrievalImportOutcome[] = []
+  const failures: string[] = []
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      outcomes.push(result.value)
+    } else {
+      failures.push(errorMessage(result.reason))
+    }
+  }
+  if (failures.length > 0) {
+    const firstFailures = Array.from(new Set(failures)).slice(0, 3)
+    throw new Error(
+      `SkillRet import failed after draining in-flight writes: ` +
+        `${failures.length} failed, ${outcomes.length} completed. ` +
+        `First failure(s): ${firstFailures.join(" | ")}`
+    )
+  }
+
+  return {
+    manifest,
+    outPath,
+    imported: outcomes.filter((outcome) => outcome === "imported").length,
+    updated: outcomes.filter((outcome) => outcome === "updated").length,
+    skipped: outcomes.filter((outcome) => outcome === "skipped").length,
+    reconciled: outcomes.filter((outcome) => outcome === "reconciled").length,
+    selected: selectedSkills.length,
+  }
+}
+
+async function importSkillRetrievalMemoryWithRetry(input: {
+  skill: SkillRetSkill
+  fields: SkillRetrievalSuite["document"]["textFields"]
+  services: LoreServices
+  projectId: string
+  topic: Topic
+  importedAt: string
+  manifest: SkillRetrievalImportManifest
+}): Promise<SkillRetrievalImportOutcome> {
+  for (let attempt = 1; attempt <= SKILL_RETRIEVAL_IMPORT_ATTEMPTS; attempt += 1) {
+    try {
+      return await importSkillRetrievalMemory(input)
+    } catch (err) {
+      if (isNonRetryableSkillRetrievalImportError(err)) throw err
+      if (attempt === SKILL_RETRIEVAL_IMPORT_ATTEMPTS) throw err
+      await sleep(1000 * 2 ** (attempt - 1))
+    }
+  }
+  throw new Error("unreachable SkillRet import retry state")
+}
+
+function isNonRetryableSkillRetrievalImportError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return (
+    message.includes("different source hash") ||
+    message.includes("already held by memory")
+  )
+}
+
+async function importSkillRetrievalMemory(input: {
+  skill: SkillRetSkill
+  fields: SkillRetrievalSuite["document"]["textFields"]
+  services: LoreServices
+  projectId: string
+  topic: Topic
+  importedAt: string
+  manifest: SkillRetrievalImportManifest
+}): Promise<SkillRetrievalImportOutcome> {
+  const { skill, fields, services, projectId, topic, importedAt, manifest } = input
+  const draft = buildSkillRetrievalImportDraft({
+    skill,
+    fields,
+    revision: manifest.corpusRevision,
+    split: manifest.split,
+    topic,
+  })
+  const existing = manifest.skills[skill.id]
+  if (existing) {
+    if (existing.sourceSha256 !== draft.sourceSha256) {
+      throw new Error(
+        `SkillRet skill "${skill.id}" already exists in the import manifest with a different source hash. ` +
+          "Archive or repair the existing import before re-importing this corpus revision."
+      )
+    }
+    const entryMatches = skillRetrievalManifestEntryMatchesDraft(existing, draft)
+    const liveMemory = await services.memories.findByPromotionSourceKey(
+      draft.promotionSourceKey
+    )
+    if (
+      entryMatches &&
+      manifest.transformVersion === SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION &&
+      liveMemory?.id === existing.memoryId
+    ) {
+      return "skipped"
+    }
+    if (!liveMemory) {
+      const memory = await createSkillRetrievalMemory({
+        services,
+        projectId,
+        draft,
+      })
+      manifest.skills[skill.id] = skillRetrievalManifestEntry({
+        skill,
+        draft,
+        memoryId: memory.id,
+        importedAt,
+      })
+      return "imported"
+    }
+    if (liveMemory.id !== existing.memoryId || !entryMatches) {
+      await updateSkillRetrievalMemory({
+        memoryId: liveMemory.id,
+        services,
+        projectId,
+        draft,
+      })
+      manifest.skills[skill.id] = skillRetrievalManifestEntry({
+        skill,
+        draft,
+        memoryId: liveMemory.id,
+        importedAt,
+      })
+      return liveMemory.id === existing.memoryId ? "updated" : "reconciled"
+    }
+    return "skipped"
+  }
+  const existingMemory = await services.memories.findByPromotionSourceKey(
+    draft.promotionSourceKey
+  )
+  if (existingMemory) {
+    await updateSkillRetrievalMemory({
+      memoryId: existingMemory.id,
+      services,
+      projectId,
+      draft,
+    })
+    manifest.skills[skill.id] = skillRetrievalManifestEntry({
+      skill,
+      draft,
+      memoryId: existingMemory.id,
+      importedAt,
+    })
+    return "reconciled"
+  }
+  const memory = await createSkillRetrievalMemory({
+    services,
+    projectId,
+    draft,
+  })
+  manifest.skills[skill.id] = skillRetrievalManifestEntry({
+    skill,
+    draft,
+    memoryId: memory.id,
+    importedAt,
+  })
+  return "imported"
+}
+
+async function createSkillRetrievalMemory(input: {
+  services: LoreServices
+  projectId: string
+  draft: SkillRetrievalImportDraft
+}): Promise<Memory> {
+  const { services, projectId, draft } = input
+  await assertSkillRetrievalTopicKeyAvailable({
+    services,
+    projectId,
+    topicKey: draft.topicKey,
+  })
+  return await services.memories.create({
+    title: draft.title,
+    content: draft.content,
+    projectIds: [projectId],
+    topicId: draft.topicId,
+    topicKey: draft.topicKey,
+    source: "manual",
+    kind: "procedure",
+    status: "informational",
+    tags: draft.tags,
+    keywords: draft.keywords,
+    synopsis: draft.synopsis,
+    promotionSourceKey: draft.promotionSourceKey,
+  })
+}
+
+function buildSkillRetrievalImportDraft(input: {
+  skill: SkillRetSkill
+  fields: SkillRetrievalSuite["document"]["textFields"]
+  revision: string
+  split: SkillRetrievalSuite["corpus"]["split"]
+  topic: Topic
+}): SkillRetrievalImportDraft {
+  const { skill, fields, revision, split, topic } = input
+  const topicKey = skillRetTopicKey(skill, revision, split)
+  const tags = buildSkillRetTags(skill, split)
+  const content = renderSkillRetMemoryContent(skill, fields, {
+    topicName: topic.name,
+    topicKey,
+    tags,
+  })
+  const keywords = buildSkillRetKeywords(skill, revision, topicKey, tags)
+  const synopsis = truncateSynopsis(skill.description || skill.body || skill.skill_md)
+  const truncatedFields = buildSkillRetTruncatedFields(skill, fields)
+  return {
+    title: skill.name,
+    content,
+    contentSha256: stableHash(content),
+    sourceSha256: stableHash(JSON.stringify(skill)),
+    metadataSha256: stableHash(
+      JSON.stringify({
+        title: skill.name,
+        topicName: topic.name,
+        topicId: topic.id,
+        topicKey,
+        tags,
+        ...(truncatedFields.length > 0 ? { truncatedFields } : {}),
+        keywords,
+        synopsis,
+      })
+    ),
+    promotionSourceKey: skillRetPromotionSourceKey(revision, skill.id),
+    topicName: topic.name,
+    topicId: topic.id,
+    topicKey,
+    tags,
+    truncatedFields,
+    keywords,
+    synopsis,
+  }
+}
+
+function skillRetrievalManifestEntry(input: {
+  skill: SkillRetSkill
+  draft: SkillRetrievalImportDraft
+  memoryId: string
+  importedAt: string
+}): SkillRetrievalImportManifest["skills"][string] {
+  const { skill, draft, memoryId, importedAt } = input
+  return {
+    skillId: skill.id,
+    memoryId,
+    name: skill.name,
+    contentSha256: draft.contentSha256,
+    sourceSha256: draft.sourceSha256,
+    metadataSha256: draft.metadataSha256,
+    topicName: draft.topicName,
+    topicId: draft.topicId,
+    topicKey: draft.topicKey,
+    tags: draft.tags,
+    ...(draft.truncatedFields.length > 0
+      ? { truncatedFields: draft.truncatedFields }
+      : {}),
+    importedAt,
+  }
+}
+
+function skillRetrievalManifestEntryMatchesDraft(
+  entry: SkillRetrievalImportManifest["skills"][string],
+  draft: SkillRetrievalImportDraft
+): boolean {
+  return (
+    entry.contentSha256 === draft.contentSha256 &&
+    entry.metadataSha256 === draft.metadataSha256 &&
+    entry.topicName === draft.topicName &&
+    entry.topicId === draft.topicId &&
+    entry.topicKey === draft.topicKey &&
+    arraysEqual(entry.tags ?? [], draft.tags) &&
+    truncatedFieldsEqual(entry.truncatedFields ?? [], draft.truncatedFields)
+  )
+}
+
+async function updateSkillRetrievalMemory(input: {
+  memoryId: string
+  services: LoreServices
+  projectId: string
+  draft: SkillRetrievalImportDraft
+}): Promise<void> {
+  const { memoryId, services, projectId, draft } = input
+  await assertSkillRetrievalTopicKeyAvailable({
+    services,
+    projectId,
+    topicKey: draft.topicKey,
+    memoryId,
+  })
+  await services.memories.update(memoryId, {
+    title: draft.title,
+    content: draft.content,
+    projectIds: [projectId],
+    topicId: draft.topicId,
+    topicKey: draft.topicKey,
+    kind: "procedure",
+    status: "informational",
+    tags: draft.tags,
+    keywords: draft.keywords,
+    synopsis: draft.synopsis,
+  })
+}
+
+async function assertSkillRetrievalTopicKeyAvailable(input: {
+  services: LoreServices
+  projectId: string
+  topicKey: string
+  memoryId?: string
+}): Promise<void> {
+  const { services, projectId, topicKey, memoryId } = input
+  const collision = await services.memories.findByTopicKey({
+    topicKey,
+    projectIds: [projectId],
+  })
+  if (!collision || collision.id === memoryId) return
+  if (memoryId) {
+    throw new Error(
+      `SkillRet topicKey "${topicKey}" is already held by memory ${collision.id}; ` +
+        `cannot assign it to memory ${memoryId}.`
+    )
+  }
+  throw new Error(
+    `SkillRet topicKey "${topicKey}" is already held by memory ${collision.id}; ` +
+      "cannot create a duplicate SkillRet memory."
+  )
+}
+
+export async function runSkillRetrievalLane(
+  input: SkillRetrievalLaneRunnerInput
+): Promise<SkillRetrievalResult[]> {
+  if (input.lane === "keyword") return runKeywordSkillRetrievalLane(input)
+  if (input.lane === "notion-ai") return runNotionSkillRetrievalLane(input)
+  throw new Error(`Unsupported skill-retrieval lane "${input.lane}"`)
 }
 
 export async function runKeywordSkillRetrievalLane(
@@ -372,6 +1009,136 @@ export async function runKeywordSkillRetrievalLane(
   }
 
   return results
+}
+
+export async function runNotionSkillRetrievalLane(
+  input: SkillRetrievalLaneRunnerInput
+): Promise<SkillRetrievalResult[]> {
+  if (input.lane !== "notion-ai") {
+    throw new Error(`Unsupported skill-retrieval lane "${input.lane}"`)
+  }
+  if (!input.services) {
+    throw new Error("skill-retrieval notion-ai lane requires initialized Lore services")
+  }
+  const notion = requireSkillRetrievalNotionConfig(input.suite)
+  assertSkillRetrievalVaultBinding(notion, input.services)
+  const manifestPath = resolve(input.loadedSuiteRoot, notion.importManifestPath)
+  const manifest = await readSkillRetrievalImportManifest(manifestPath)
+  const corpusRevision = await readSkillRetPinnedRevision(input.loadedSuiteRoot)
+  assertSkillRetrievalManifestMatchesSuite(
+    manifest,
+    input.suite,
+    notion,
+    corpusRevision,
+    manifest.projectId,
+    manifest.topicId,
+    { requireCurrentTransform: true }
+  )
+  const qrelsByQuery = groupQrelsByQuery(input.corpus.qrels)
+  assertSkillRetrievalManifestCoversQueries({
+    manifest,
+    queries: input.queries,
+    qrelsByQuery,
+  })
+  const skillNamesById = new Map(
+    input.corpus.skills.map((skill) => [skill.id, skill.name])
+  )
+  const memoryIdToSkillId = new Map(
+    Object.values(manifest.skills).map((entry) => [entry.memoryId, entry.skillId])
+  )
+  const search = input.notionSearch ?? defaultSkillRetrievalNotionSearch
+  const results: SkillRetrievalResult[] = []
+
+  for (const [index, query] of input.queries.entries()) {
+    const out = await runSkillRetrievalNotionSearchWithRetry(search, {
+      services: input.services,
+      query,
+      projectId: manifest.projectId,
+      topicId: notion.searchTopicScoped ? manifest.topicId : undefined,
+      limit: input.suite.retrieval.limit,
+      requireRunToolAi: notion.requireRunToolAi,
+    })
+    const returnedSkillIds = out.memories.map((memory) => {
+      return memoryIdToSkillId.get(memory.id) ?? `unknown:${memory.id}`
+    })
+    const returnedSkillNames = returnedSkillIds.map((skillId, index) => {
+      return skillNamesById.get(skillId) ?? out.memories[index]?.title ?? skillId
+    })
+    const relevant = (qrelsByQuery.get(query.id) ?? []).map((qrel) => ({
+      id: qrel.skill_id,
+      relevance: qrel.relevance,
+    }))
+    const metrics = scoreRanking({
+      returnedIds: returnedSkillIds,
+      relevant,
+      kValues: input.suite.k,
+    })
+    results.push({
+      queryId: query.id,
+      query: query.query,
+      lane: input.lane,
+      expectedSkillIds: relevant.map((label) => label.id),
+      returnedSkillIds,
+      returnedSkillNames,
+      returnedMemoryIds: out.memories.map((memory) => memory.id),
+      capped: out.capped,
+      explain: out.explain,
+      mechanism: out.mechanism,
+      metrics: {
+        ...metrics,
+        estimatedContextTokens: estimateContextTokens(
+          out.memories.map((memory) =>
+            [memory.title, memory.synopsis].filter(Boolean).join("\n")
+          )
+        ),
+        elapsedMs: out.elapsedMs,
+      },
+    })
+    if (notion.queryDelayMs > 0 && index < input.queries.length - 1) {
+      await sleep(notion.queryDelayMs)
+    }
+  }
+
+  return results
+}
+
+async function runSkillRetrievalNotionSearchWithRetry(
+  search: SkillRetrievalNotionSearch,
+  input: SkillRetrievalNotionSearchInput
+): Promise<SkillRetrievalNotionSearchOutput> {
+  for (let attempt = 1; attempt <= SKILL_RETRIEVAL_NOTION_SEARCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await search(input)
+    } catch (err) {
+      if (
+        attempt === SKILL_RETRIEVAL_NOTION_SEARCH_ATTEMPTS ||
+        !isRetryableSkillRetrievalNotionSearchError(err)
+      ) {
+        throw err
+      }
+      await sleep(
+        Math.min(60_000, SKILL_RETRIEVAL_NOTION_SEARCH_RETRY_BASE_MS * 2 ** (attempt - 1))
+      )
+    }
+  }
+  throw new Error("unreachable SkillRet notion-ai search retry state")
+}
+
+function isRetryableSkillRetrievalNotionSearchError(err: unknown): boolean {
+  const message = errorMessage(err).toLowerCase()
+  return (
+    message.includes("rate_limited") ||
+    message.includes("rate limited") ||
+    message.includes("status: 429") ||
+    message.includes("status: 500") ||
+    message.includes("status: 502") ||
+    message.includes("status: 503") ||
+    message.includes("status: 504") ||
+    message.includes("timed out") ||
+    message.includes("timeout") ||
+    message.includes("econnreset") ||
+    message.includes("socket hang up")
+  )
 }
 
 export function summarizeSkillRetrieval(
@@ -435,7 +1202,493 @@ function summarizeSkillRetrievalLane(
       results.map((result) => result.metrics.estimatedContextTokens)
     ),
     elapsedMs: averageMetric(results.map((result) => result.metrics.elapsedMs)),
+    cappedResults: results.filter((result) => result.capped === true).length,
+    mechanismFailures: results.filter(
+      (result) => result.mechanism && !result.mechanism.passed
+    ).length,
   }
+}
+
+async function defaultSkillRetrievalNotionSearch(
+  input: SkillRetrievalNotionSearchInput
+): Promise<SkillRetrievalNotionSearchOutput> {
+  const trace = createSkillRetrievalTransportTrace()
+  const client = createSkillRetrievalTracingClient(input.services.client, trace)
+  const features = featuresForSkillRetrievalNotionAi(input.services.features)
+  const memories = new MemoryService(
+    client,
+    input.services.context.vault.databases.memories,
+    input.services.scopeContext,
+    { features }
+  )
+  const before = performance.now()
+  const searchInput: Parameters<MemoryService["searchWithExplain"]>[0] = {
+    query: input.query.query,
+    projectId: input.projectId,
+    kind: "procedure",
+    status: "informational",
+    limit: input.limit,
+    includeContent: false,
+    mode: "semantic",
+  }
+  if (input.topicId !== undefined) searchInput.topicId = input.topicId
+  const out = await memories.searchWithExplain(searchInput)
+  const elapsedMs = roundMs(performance.now() - before)
+  return {
+    memories: out.memories,
+    explain: out.explain,
+    capped: out.capped,
+    mechanism: validateSkillRetrievalNotionMechanism(trace, input.requireRunToolAi),
+    elapsedMs,
+  }
+}
+
+function featuresForSkillRetrievalNotionAi(
+  base: LoreFeatureFlags | undefined
+): LoreFeatureFlags {
+  const features = cloneFeatureFlags(base ?? defaultFeatureFlags())
+  features.runTool.enabled = true
+  features.runTool.search = true
+  return features
+}
+
+function cloneFeatureFlags(features: LoreFeatureFlags): LoreFeatureFlags {
+  return {
+    ...features,
+    runTool: { ...features.runTool },
+  }
+}
+
+function createSkillRetrievalTransportTrace(): SkillRetrievalTransportTrace {
+  return {
+    toolsRunSearchCalls: 0,
+    toolsRunOtherCalls: 0,
+    clientSearchCalls: 0,
+    dataSourceQueryCalls: 0,
+    pagesRetrieveCalls: 0,
+  }
+}
+
+function validateSkillRetrievalNotionMechanism(
+  trace: SkillRetrievalTransportTrace,
+  requireRunToolAi: boolean
+): SkillRetrievalMechanism {
+  const failures: string[] = []
+  if (requireRunToolAi) {
+    if (trace.toolsRunSearchCalls === 0) {
+      failures.push("expected RunTool AI search to dispatch through tools/run")
+    }
+    if (trace.clientSearchCalls !== 0) {
+      failures.push("expected no REST client.search fallback")
+    }
+  }
+  return {
+    passed: failures.length === 0,
+    failures,
+    trace: { ...trace },
+  }
+}
+
+function createSkillRetrievalTracingClient(
+  client: Client,
+  trace: SkillRetrievalTransportTrace
+): Client {
+  return new Proxy(client as Client & Record<PropertyKey, unknown>, {
+    get(target, prop, receiver) {
+      if (prop === "request") {
+        const request = Reflect.get(target, prop, receiver)
+        if (typeof request !== "function") return request
+        return (args: Record<string, unknown>) => {
+          if (args["path"] === "tools/run") {
+            const body = args["body"] as { type?: unknown } | undefined
+            if (body?.type === "search") {
+              trace.toolsRunSearchCalls += 1
+            } else {
+              trace.toolsRunOtherCalls += 1
+            }
+          }
+          return Reflect.apply(request, target, [args])
+        }
+      }
+      if (prop === "search") {
+        const search = Reflect.get(target, prop, receiver)
+        if (typeof search !== "function") return search
+        return (...args: unknown[]) => {
+          trace.clientSearchCalls += 1
+          return Reflect.apply(search, target, args)
+        }
+      }
+      if (prop === "dataSources") {
+        const dataSources = Reflect.get(target, prop, receiver)
+        return wrapNestedClientObject(dataSources, {
+          query: () => {
+            trace.dataSourceQueryCalls += 1
+          },
+        })
+      }
+      if (prop === "pages") {
+        const pages = Reflect.get(target, prop, receiver)
+        return wrapNestedClientObject(pages, {
+          retrieve: () => {
+            trace.pagesRetrieveCalls += 1
+          },
+        })
+      }
+      return Reflect.get(target, prop, receiver)
+    },
+  }) as Client
+}
+
+function wrapNestedClientObject(
+  value: unknown,
+  beforeCall: Record<string, () => void>
+): unknown {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    return value
+  }
+  return new Proxy(value as Record<PropertyKey, unknown>, {
+    get(target, prop, receiver) {
+      const member = Reflect.get(target, prop, receiver)
+      if (typeof prop !== "string" || typeof member !== "function") return member
+      const before = beforeCall[prop]
+      if (!before) return member
+      return (...args: unknown[]) => {
+        before()
+        return Reflect.apply(member, target, args)
+      }
+    },
+  })
+}
+
+function requireSkillRetrievalNotionConfig(
+  suite: SkillRetrievalSuite
+): SkillRetrievalNotionConfig {
+  if (!suite.notion) {
+    throw new Error("skill-retrieval notion config is required for this operation")
+  }
+  return suite.notion
+}
+
+function assertSkillRetrievalVaultBinding(
+  notion: SkillRetrievalNotionConfig,
+  services: LoreServices
+): void {
+  if (notion.expectedVaultPageId === undefined) return
+  const expected = normalizeNotionPageId(notion.expectedVaultPageId)
+  const actual = normalizeNotionPageId(services.config.vault.pageId)
+  if (expected !== actual) {
+    throw new Error(
+      `SkillRet suite is bound to vault ${notion.expectedVaultPageId}, ` +
+        `but the active Lore config points at ${services.config.vault.pageId}.`
+    )
+  }
+}
+
+function normalizeNotionPageId(value: string): string {
+  return value.trim().toLowerCase().replaceAll("-", "")
+}
+
+export async function readSkillRetrievalImportManifest(
+  path: string
+): Promise<SkillRetrievalImportManifest> {
+  const raw = await readFile(path, "utf-8")
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Could not parse skill-retrieval import manifest at ${path}: ${message}`,
+      {
+        cause: err,
+      }
+    )
+  }
+  return skillRetrievalImportManifestSchema.parse(parsed)
+}
+
+async function readSkillRetrievalImportManifestIfPresent(
+  path: string,
+  defaults: Omit<
+    SkillRetrievalImportManifest,
+    "version" | "corpusKind" | "transformVersion" | "skills"
+  >
+): Promise<SkillRetrievalImportManifest> {
+  try {
+    await access(path)
+  } catch {
+    return {
+      version: 1,
+      corpusKind: "skillret",
+      transformVersion: SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION,
+      skills: {},
+      ...defaults,
+    }
+  }
+  return readSkillRetrievalImportManifest(path)
+}
+
+function assertSkillRetrievalManifestMatchesSuite(
+  manifest: SkillRetrievalImportManifest,
+  suite: SkillRetrievalSuite,
+  notion: SkillRetrievalNotionConfig,
+  corpusRevision: string,
+  projectId: string,
+  topicId: string,
+  options: { requireCurrentTransform?: boolean } = {}
+): void {
+  const mismatches: string[] = []
+  if (
+    options.requireCurrentTransform === true &&
+    manifest.transformVersion !== SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION
+  ) {
+    mismatches.push(
+      `transformVersion ${manifest.transformVersion} != ${SKILL_RETRIEVAL_IMPORT_TRANSFORM_VERSION}`
+    )
+  }
+  if (manifest.corpusRevision !== corpusRevision) {
+    mismatches.push(`corpusRevision ${manifest.corpusRevision} != ${corpusRevision}`)
+  }
+  if (manifest.split !== suite.corpus.split) {
+    mismatches.push(`split ${manifest.split} != ${suite.corpus.split}`)
+  }
+  const manifestFields = manifest.documentFields.join(",")
+  const suiteFields = suite.document.textFields.join(",")
+  if (manifestFields !== suiteFields) {
+    mismatches.push(`documentFields ${manifestFields} != ${suiteFields}`)
+  }
+  if (manifest.projectName !== notion.projectName) {
+    mismatches.push(`projectName ${manifest.projectName} != ${notion.projectName}`)
+  }
+  if (manifest.projectId !== projectId) {
+    mismatches.push(`projectId ${manifest.projectId} != ${projectId}`)
+  }
+  if (manifest.topicName !== notion.topicName) {
+    mismatches.push(`topicName ${manifest.topicName} != ${notion.topicName}`)
+  }
+  if (manifest.topicId !== topicId) {
+    mismatches.push(`topicId ${manifest.topicId} != ${topicId}`)
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `SkillRet import manifest does not match the suite configuration: ${mismatches.join(", ")}`
+    )
+  }
+}
+
+function assertSkillRetrievalManifestCoversQueries(input: {
+  manifest: SkillRetrievalImportManifest
+  queries: SkillRetQuery[]
+  qrelsByQuery: Map<string, SkillRetQrel[]>
+}): void {
+  const importedSkillIds = new Set(
+    Object.values(input.manifest.skills).map((entry) => entry.skillId)
+  )
+  const missing = new Set<string>()
+  for (const query of input.queries) {
+    for (const qrel of input.qrelsByQuery.get(query.id) ?? []) {
+      if (!importedSkillIds.has(qrel.skill_id)) missing.add(qrel.skill_id)
+    }
+  }
+  if (missing.size === 0) return
+  const sample = Array.from(missing).sort().slice(0, 10)
+  const suffix =
+    missing.size > sample.length ? `, ... ${missing.size - sample.length} more` : ""
+  throw new Error(
+    `SkillRet import manifest is incomplete for the selected queries; ` +
+      `missing ${missing.size} required skill(s): ${sample.join(", ")}${suffix}. ` +
+      "Re-run the SkillRet Notion import before measuring the notion-ai lane."
+  )
+}
+
+async function readSkillRetPinnedRevision(root: string): Promise<string> {
+  const manifestPath = resolve(root, "skillret-checksums.json")
+  try {
+    const parsed = JSON.parse(await readFile(manifestPath, "utf-8")) as {
+      revision?: unknown
+    }
+    if (typeof parsed.revision === "string" && parsed.revision.trim().length > 0) {
+      return parsed.revision.trim()
+    }
+  } catch {
+    // Custom suites can still import; their manifest records an unknown revision.
+  }
+  return "unknown"
+}
+
+function renderSkillRetMemoryContent(
+  skill: SkillRetSkill,
+  fields: SkillRetrievalSuite["document"]["textFields"],
+  metadata?: { topicName: string; topicKey: string; tags: string[] }
+): string {
+  const sections: string[] = [`# ${skill.name}`, `SkillRet ID: ${skill.id}`]
+  if (metadata) {
+    sections.push(
+      [
+        "## Lore Metadata",
+        "",
+        `Topic: ${metadata.topicName}`,
+        `Topic Key: ${metadata.topicKey}`,
+        `Tags: ${metadata.tags.join(", ")}`,
+      ].join("\n")
+    )
+  }
+  if (fields.includes("description") && skill.description.trim().length > 0) {
+    sections.push(renderSkillRetMemorySection("Description", skill.description))
+  }
+  if (fields.includes("skill_md") && skill.skill_md.trim().length > 0) {
+    sections.push(renderSkillRetMemorySection("Skill", skill.skill_md))
+  }
+  if (fields.includes("body") && skill.body.trim().length > 0) {
+    sections.push(renderSkillRetMemorySection("Body", skill.body))
+  }
+  const taxonomy = [
+    skill.major ? `Major: ${skill.major}` : "",
+    skill.sub ? `Sub: ${skill.sub}` : "",
+  ].filter(Boolean)
+  if (taxonomy.length > 0) sections.push(`## Taxonomy\n\n${taxonomy.join("\n")}`)
+  return `${sections.join("\n\n")}\n`
+}
+
+function renderSkillRetMemorySection(title: string, value: string): string {
+  return `## ${title}\n\n${truncateSkillRetMemoryField(value)}`
+}
+
+function truncateSkillRetMemoryField(value: string): string {
+  const normalized = value.trim()
+  if (normalized.length <= SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT) {
+    return normalized
+  }
+  const kept = normalized.slice(0, SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT).trimEnd()
+  return [
+    kept,
+    "",
+    `[Content truncated at ${SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT.toLocaleString(
+      "en-US"
+    )} characters for stable Notion eval import; source length ${normalized.length.toLocaleString(
+      "en-US"
+    )} characters.]`,
+  ].join("\n")
+}
+
+function buildSkillRetTruncatedFields(
+  skill: SkillRetSkill,
+  fields: SkillRetrievalSuite["document"]["textFields"]
+): SkillRetrievalTruncatedField[] {
+  return fields.flatMap((field) => {
+    if (field === "name") return []
+    const normalized = skill[field].trim()
+    if (normalized.length <= SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT) return []
+    return [
+      {
+        field,
+        originalChars: normalized.length,
+        importedChars: SKILL_RETRIEVAL_IMPORT_FIELD_CHAR_LIMIT,
+      },
+    ]
+  })
+}
+
+function buildSkillRetKeywords(
+  skill: SkillRetSkill,
+  revision: string,
+  topicKey: string,
+  tags: string[]
+): string {
+  return [
+    "skillret",
+    `skillret:${revision}`,
+    `skillret:${revision}:${skill.id}`,
+    `skillret:${skill.id}`,
+    topicKey,
+    ...tags,
+    skill.major ?? "",
+    skill.sub ?? "",
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join(" ")
+}
+
+function skillRetPromotionSourceKey(revision: string, skillId: string): string {
+  return `skillret:${revision}:${skillId}`
+}
+
+function skillRetTopicKey(
+  skill: SkillRetSkill,
+  revision: string,
+  split: SkillRetrievalSuite["corpus"]["split"]
+): string {
+  return [
+    "skillret",
+    split,
+    slugPart(revision).slice(0, 24),
+    slugPart(skill.major ?? "uncategorized"),
+    slugPart(skill.sub ?? "general"),
+    slugPart(skill.id),
+  ].join("/")
+}
+
+function skillRetTaxonomyTopicName(baseTopicName: string, skill: SkillRetSkill): string {
+  return [
+    baseTopicName,
+    skill.major?.trim() || "Uncategorized",
+    skill.sub?.trim() || "General",
+  ].join(" / ")
+}
+
+function buildSkillRetTags(
+  skill: SkillRetSkill,
+  split: SkillRetrievalSuite["corpus"]["split"]
+): string[] {
+  const major = slugPart(skill.major ?? "uncategorized")
+  const sub = slugPart(skill.sub ?? "general")
+  return [
+    "skillret",
+    `skillret-split-${split}`,
+    "skillret-kind-procedure",
+    truncateTag(`skillret-major-${major}`),
+    truncateTag(`skillret-sub-${sub}`),
+  ]
+}
+
+function slugPart(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+  return slug || "unknown"
+}
+
+function truncateTag(value: string): string {
+  return value.length <= 100 ? value : value.slice(0, 100)
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+function truncatedFieldsEqual(
+  left: readonly SkillRetrievalTruncatedField[],
+  right: readonly SkillRetrievalTruncatedField[]
+): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => {
+    const other = right[index]
+    return (
+      other !== undefined &&
+      value.field === other.field &&
+      value.originalChars === other.originalChars &&
+      value.importedChars === other.importedChars
+    )
+  })
+}
+
+function truncateSynopsis(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, " ")
+  if (normalized.length <= 150) return normalized
+  return normalized.slice(0, 147).trimEnd() + "..."
 }
 
 function resolveSkillRetrievalCorpusPaths(
@@ -636,6 +1889,10 @@ function estimateContextTokens(chunks: string[]): number {
 
 function stableHash(value: string): string {
   return createHash("sha256").update(value).digest("hex")
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function roundMs(value: number): number {

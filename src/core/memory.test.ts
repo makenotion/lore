@@ -1240,6 +1240,7 @@ describe("MemoryService.update — rich_text metadata cap", () => {
     ["alternatives", (value: string) => ({ alternatives: value }), "Alternatives"],
     ["consequences", (value: string) => ({ consequences: value }), "Consequences"],
     ["keywords", (value: string) => ({ keywords: value }), "Keywords"],
+    ["topicKey", (value: string) => ({ topicKey: value }), "Topic Key"],
     ["blockedBy", (value: string) => ({ blockedBy: value }), "Blocked By"],
     ["entity", (value: string) => ({ entity: value }), "Entity"],
   ]

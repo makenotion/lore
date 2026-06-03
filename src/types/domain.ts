@@ -613,6 +613,13 @@ export interface UpdateMemoryInput {
   content?: string
   projectIds?: string[]
   topicId?: string
+  /**
+   * Service-layer repair field. User-facing re-key operations call
+   * `MemoryService.rekeyTopicKey`, which performs identity validation
+   * and audit rendering. Callers that pass this field must enforce the
+   * topic-key collision invariant before updating the row.
+   */
+  topicKey?: string
   tags?: string[]
   keywords?: string
   synopsis?: string

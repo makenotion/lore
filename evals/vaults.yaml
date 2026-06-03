@@ -9,6 +9,7 @@ vaults:
     notionWorkspaceId: 415fc269-e68f-4da0-b3e3-b1273b741a7f
     vaultPageId: 360b35e6-e67f-8156-aa0e-f3763246719d
     defaultProjectName: Eval Sandbox
+    defaultProjectEnvVar: LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT
     supportedRuns:
       - id: longitudinal-full-loop
         runner: task
@@ -35,3 +36,24 @@ vaults:
     notes:
       - Access is controlled by Notion; the committed page id is not a bearer secret.
       - Operators still need dev Notion auth and explicit access to the vault.
+  - id: skillret-dev-eval
+    label: SkillRet dev eval vault
+    description: >-
+      Persistent dev-environment vault for the imported SkillRet corpus used by
+      Notion-backed skill-retrieval evals.
+    notionEnv: dev
+    notionWorkspaceId: 415fc269-e68f-4da0-b3e3-b1273b741a7f
+    vaultPageId: 374b35e6-e67f-8108-beb4-dec11f2f5d28
+    defaultProjectName: SkillRet Eval
+    defaultProjectEnvVar: LORE_EVAL_SKILLRET_PROJECT
+    supportedRuns:
+      - id: skillret-notion-ai
+        runner: skill-retrieval
+        suite: evals/skill-retrieval/skillret-notion-ai.yaml
+        sandboxProjectName: SkillRet Eval
+        requiredEnv:
+          LORE_EVAL_SKILLRET_REAL: "1"
+    notes:
+      - Access is controlled by Notion; the committed page id is not a bearer secret.
+      - The SkillRet corpus is imported once into this vault and reused for repeated Notion AI search runs.
+      - The generated import manifest contains live Notion page ids and should stay local to the operator environment.

@@ -1,0 +1,967 @@
+{
+  "suite": "mail-retrieval-quality",
+  "description": "Live Mail vault retrieval-quality checks for paraphrased queries whose target memories should rank first through Notion AI search.\n",
+  "startedAt": "2026-06-03T18:29:09.598Z",
+  "runner": {
+    "mode": "retrieval-quality",
+    "lanes": [
+      "product",
+      "runtool-ai",
+      "rest-keyword"
+    ],
+    "requiredLanes": [
+      "product",
+      "runtool-ai"
+    ],
+    "k": [
+      1,
+      5,
+      10
+    ],
+    "limit": 10
+  },
+  "results": [
+    {
+      "caseId": "mail-ios-swipeactions-lazyvstack",
+      "query": "swipe actions do nothing inside a vertical scrolling stack",
+      "projectName": "Mail iOS",
+      "projectId": "project-1230a30f0d4e",
+      "expectedMemoryId": "memory-52d7fbafbdf2",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-52d7fbafbdf2"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "ios",
+        "kind": "gotcha"
+      },
+      "lane": "product",
+      "success": true,
+      "targetRank": 1,
+      "recallAt1": 1,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "ndcgAt10": 1,
+      "reciprocalRank": 1,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [
+        "memory-52d7fbafbdf2",
+        "memory-782c155a49f2",
+        "memory-a5fd052f2a1d",
+        "memory-443b3a8e63cd",
+        "memory-47561b5b3d14",
+        "memory-15e672407a33",
+        "memory-8b7c3d610eea",
+        "memory-95f115eb2f18",
+        "memory-2478dcc30149",
+        "memory-1bf5262c0112"
+      ],
+      "returnedTitles": [
+        "returned-title-1",
+        "returned-title-2",
+        "returned-title-3",
+        "returned-title-4",
+        "returned-title-5",
+        "returned-title-6",
+        "returned-title-7",
+        "returned-title-8",
+        "returned-title-9",
+        "returned-title-10"
+      ],
+      "capped": true,
+      "explain": [
+        {
+          "memoryId": "memory-52d7fbafbdf2",
+          "containsRank": null,
+          "semanticRank": 0,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-782c155a49f2",
+          "containsRank": null,
+          "semanticRank": 1,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-a5fd052f2a1d",
+          "containsRank": null,
+          "semanticRank": 2,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-443b3a8e63cd",
+          "containsRank": null,
+          "semanticRank": 3,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-47561b5b3d14",
+          "containsRank": null,
+          "semanticRank": 4,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-15e672407a33",
+          "containsRank": null,
+          "semanticRank": 5,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-8b7c3d610eea",
+          "containsRank": null,
+          "semanticRank": 6,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-95f115eb2f18",
+          "containsRank": null,
+          "semanticRank": 7,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-2478dcc30149",
+          "containsRank": null,
+          "semanticRank": 8,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-1bf5262c0112",
+          "containsRank": null,
+          "semanticRank": 9,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        }
+      ],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 1,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 0,
+          "pagesRetrieveCalls": 25
+        }
+      },
+      "metrics": {
+        "elapsedMs": 9578.3805
+      }
+    },
+    {
+      "caseId": "mail-ios-swipeactions-lazyvstack",
+      "query": "swipe actions do nothing inside a vertical scrolling stack",
+      "projectName": "Mail iOS",
+      "projectId": "project-1230a30f0d4e",
+      "expectedMemoryId": "memory-52d7fbafbdf2",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-52d7fbafbdf2"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "ios",
+        "kind": "gotcha"
+      },
+      "lane": "runtool-ai",
+      "success": true,
+      "targetRank": 1,
+      "recallAt1": 1,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "ndcgAt10": 1,
+      "reciprocalRank": 1,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [
+        "memory-52d7fbafbdf2",
+        "memory-782c155a49f2",
+        "memory-a5fd052f2a1d",
+        "memory-443b3a8e63cd",
+        "memory-8b7c3d610eea",
+        "memory-15e672407a33",
+        "memory-95f115eb2f18",
+        "memory-1bf5262c0112",
+        "memory-2478dcc30149",
+        "memory-b65b1ba602b8"
+      ],
+      "returnedTitles": [
+        "returned-title-1",
+        "returned-title-2",
+        "returned-title-3",
+        "returned-title-4",
+        "returned-title-5",
+        "returned-title-6",
+        "returned-title-7",
+        "returned-title-8",
+        "returned-title-9",
+        "returned-title-10"
+      ],
+      "capped": true,
+      "explain": [
+        {
+          "memoryId": "memory-52d7fbafbdf2",
+          "containsRank": null,
+          "semanticRank": 0,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-782c155a49f2",
+          "containsRank": null,
+          "semanticRank": 1,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-a5fd052f2a1d",
+          "containsRank": null,
+          "semanticRank": 2,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-443b3a8e63cd",
+          "containsRank": null,
+          "semanticRank": 3,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-8b7c3d610eea",
+          "containsRank": null,
+          "semanticRank": 4,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-15e672407a33",
+          "containsRank": null,
+          "semanticRank": 5,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-95f115eb2f18",
+          "containsRank": null,
+          "semanticRank": 6,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-1bf5262c0112",
+          "containsRank": null,
+          "semanticRank": 7,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-2478dcc30149",
+          "containsRank": null,
+          "semanticRank": 8,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-b65b1ba602b8",
+          "containsRank": null,
+          "semanticRank": 9,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        }
+      ],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 1,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 0,
+          "pagesRetrieveCalls": 25
+        }
+      },
+      "metrics": {
+        "elapsedMs": 10955.2823
+      }
+    },
+    {
+      "caseId": "mail-ios-swipeactions-lazyvstack",
+      "query": "swipe actions do nothing inside a vertical scrolling stack",
+      "projectName": "Mail iOS",
+      "projectId": "project-1230a30f0d4e",
+      "expectedMemoryId": "memory-52d7fbafbdf2",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-52d7fbafbdf2"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "ios",
+        "kind": "gotcha"
+      },
+      "lane": "rest-keyword",
+      "success": false,
+      "targetRank": null,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "ndcgAt10": 0,
+      "reciprocalRank": 0,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [],
+      "returnedTitles": [],
+      "capped": false,
+      "explain": [],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 0,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 1,
+          "pagesRetrieveCalls": 0
+        }
+      },
+      "metrics": {
+        "elapsedMs": 369.7166
+      }
+    },
+    {
+      "caseId": "mail-ios-webview-jsonencoder",
+      "query": "safely encode a Swift value before interpolating into an evaluateJavaScript string",
+      "projectName": "Mail iOS",
+      "projectId": "project-1230a30f0d4e",
+      "expectedMemoryId": "memory-b74f1d1d8a1b",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-b74f1d1d8a1b"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "ios",
+        "kind": "gotcha"
+      },
+      "lane": "product",
+      "success": true,
+      "targetRank": 1,
+      "recallAt1": 1,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "ndcgAt10": 1,
+      "reciprocalRank": 1,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [
+        "memory-b74f1d1d8a1b",
+        "memory-9338ab1dffa6",
+        "memory-070fc283b59d",
+        "memory-793cb83e54c0",
+        "memory-4cf19cce4cb9",
+        "memory-81362c003770",
+        "memory-d08996d4ab45",
+        "memory-22c63987f28c",
+        "memory-443b3a8e63cd",
+        "memory-6c174b75c432"
+      ],
+      "returnedTitles": [
+        "returned-title-1",
+        "returned-title-2",
+        "returned-title-3",
+        "returned-title-4",
+        "returned-title-5",
+        "returned-title-6",
+        "returned-title-7",
+        "returned-title-8",
+        "returned-title-9",
+        "returned-title-10"
+      ],
+      "capped": true,
+      "explain": [
+        {
+          "memoryId": "memory-b74f1d1d8a1b",
+          "containsRank": null,
+          "semanticRank": 0,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-9338ab1dffa6",
+          "containsRank": null,
+          "semanticRank": 1,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-070fc283b59d",
+          "containsRank": null,
+          "semanticRank": 2,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-793cb83e54c0",
+          "containsRank": null,
+          "semanticRank": 3,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-4cf19cce4cb9",
+          "containsRank": null,
+          "semanticRank": 4,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-81362c003770",
+          "containsRank": null,
+          "semanticRank": 5,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-d08996d4ab45",
+          "containsRank": null,
+          "semanticRank": 6,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-22c63987f28c",
+          "containsRank": null,
+          "semanticRank": 7,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-443b3a8e63cd",
+          "containsRank": null,
+          "semanticRank": 8,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-6c174b75c432",
+          "containsRank": null,
+          "semanticRank": 9,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        }
+      ],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 1,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 0,
+          "pagesRetrieveCalls": 25
+        }
+      },
+      "metrics": {
+        "elapsedMs": 9765.6486
+      }
+    },
+    {
+      "caseId": "mail-ios-webview-jsonencoder",
+      "query": "safely encode a Swift value before interpolating into an evaluateJavaScript string",
+      "projectName": "Mail iOS",
+      "projectId": "project-1230a30f0d4e",
+      "expectedMemoryId": "memory-b74f1d1d8a1b",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-b74f1d1d8a1b"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "ios",
+        "kind": "gotcha"
+      },
+      "lane": "runtool-ai",
+      "success": true,
+      "targetRank": 1,
+      "recallAt1": 1,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "ndcgAt10": 1,
+      "reciprocalRank": 1,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [
+        "memory-b74f1d1d8a1b",
+        "memory-9338ab1dffa6",
+        "memory-793cb83e54c0",
+        "memory-070fc283b59d",
+        "memory-4cf19cce4cb9",
+        "memory-81362c003770",
+        "memory-d08996d4ab45",
+        "memory-22c63987f28c",
+        "memory-443b3a8e63cd",
+        "memory-6c174b75c432"
+      ],
+      "returnedTitles": [
+        "returned-title-1",
+        "returned-title-2",
+        "returned-title-3",
+        "returned-title-4",
+        "returned-title-5",
+        "returned-title-6",
+        "returned-title-7",
+        "returned-title-8",
+        "returned-title-9",
+        "returned-title-10"
+      ],
+      "capped": true,
+      "explain": [
+        {
+          "memoryId": "memory-b74f1d1d8a1b",
+          "containsRank": null,
+          "semanticRank": 0,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-9338ab1dffa6",
+          "containsRank": null,
+          "semanticRank": 1,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-793cb83e54c0",
+          "containsRank": null,
+          "semanticRank": 2,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-070fc283b59d",
+          "containsRank": null,
+          "semanticRank": 3,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-4cf19cce4cb9",
+          "containsRank": null,
+          "semanticRank": 4,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-81362c003770",
+          "containsRank": null,
+          "semanticRank": 5,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-d08996d4ab45",
+          "containsRank": null,
+          "semanticRank": 6,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-22c63987f28c",
+          "containsRank": null,
+          "semanticRank": 7,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-443b3a8e63cd",
+          "containsRank": null,
+          "semanticRank": 8,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-6c174b75c432",
+          "containsRank": null,
+          "semanticRank": 9,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        }
+      ],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 1,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 0,
+          "pagesRetrieveCalls": 25
+        }
+      },
+      "metrics": {
+        "elapsedMs": 8776.3261
+      }
+    },
+    {
+      "caseId": "mail-ios-webview-jsonencoder",
+      "query": "safely encode a Swift value before interpolating into an evaluateJavaScript string",
+      "projectName": "Mail iOS",
+      "projectId": "project-1230a30f0d4e",
+      "expectedMemoryId": "memory-b74f1d1d8a1b",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-b74f1d1d8a1b"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "ios",
+        "kind": "gotcha"
+      },
+      "lane": "rest-keyword",
+      "success": false,
+      "targetRank": null,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "ndcgAt10": 0,
+      "reciprocalRank": 0,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [],
+      "returnedTitles": [],
+      "capped": false,
+      "explain": [],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 0,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 1,
+          "pagesRetrieveCalls": 0
+        }
+      },
+      "metrics": {
+        "elapsedMs": 430.3252
+      }
+    },
+    {
+      "caseId": "mail-notion-multiselect-limit",
+      "query": "Notion API silently rejects a multi_select update when there are too many options",
+      "projectName": "Mail",
+      "projectId": "project-b1751349a136",
+      "expectedMemoryId": "memory-57bffc6546af",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-57bffc6546af"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "notion-api",
+        "kind": "gotcha"
+      },
+      "lane": "product",
+      "success": true,
+      "targetRank": 1,
+      "recallAt1": 1,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "ndcgAt10": 1,
+      "reciprocalRank": 1,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [
+        "memory-57bffc6546af",
+        "memory-efa76a30122c",
+        "memory-384dec078ff9",
+        "memory-6a871249c086",
+        "memory-1f1c4a8a5719"
+      ],
+      "returnedTitles": [
+        "returned-title-1",
+        "returned-title-2",
+        "returned-title-3",
+        "returned-title-4",
+        "returned-title-5"
+      ],
+      "capped": true,
+      "explain": [
+        {
+          "memoryId": "memory-57bffc6546af",
+          "containsRank": null,
+          "semanticRank": 0,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-efa76a30122c",
+          "containsRank": null,
+          "semanticRank": 1,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-384dec078ff9",
+          "containsRank": null,
+          "semanticRank": 2,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-6a871249c086",
+          "containsRank": null,
+          "semanticRank": 3,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-1f1c4a8a5719",
+          "containsRank": null,
+          "semanticRank": 4,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        }
+      ],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 1,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 0,
+          "pagesRetrieveCalls": 25
+        }
+      },
+      "metrics": {
+        "elapsedMs": 10538.1252
+      }
+    },
+    {
+      "caseId": "mail-notion-multiselect-limit",
+      "query": "Notion API silently rejects a multi_select update when there are too many options",
+      "projectName": "Mail",
+      "projectId": "project-b1751349a136",
+      "expectedMemoryId": "memory-57bffc6546af",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-57bffc6546af"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "notion-api",
+        "kind": "gotcha"
+      },
+      "lane": "runtool-ai",
+      "success": true,
+      "targetRank": 1,
+      "recallAt1": 1,
+      "recallAt5": 1,
+      "recallAt10": 1,
+      "ndcgAt10": 1,
+      "reciprocalRank": 1,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [
+        "memory-57bffc6546af",
+        "memory-efa76a30122c",
+        "memory-384dec078ff9",
+        "memory-6a871249c086",
+        "memory-1f1c4a8a5719"
+      ],
+      "returnedTitles": [
+        "returned-title-1",
+        "returned-title-2",
+        "returned-title-3",
+        "returned-title-4",
+        "returned-title-5"
+      ],
+      "capped": true,
+      "explain": [
+        {
+          "memoryId": "memory-57bffc6546af",
+          "containsRank": null,
+          "semanticRank": 0,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-efa76a30122c",
+          "containsRank": null,
+          "semanticRank": 1,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-384dec078ff9",
+          "containsRank": null,
+          "semanticRank": 2,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-6a871249c086",
+          "containsRank": null,
+          "semanticRank": 3,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        },
+        {
+          "memoryId": "memory-1f1c4a8a5719",
+          "containsRank": null,
+          "semanticRank": 4,
+          "rrfScore": null,
+          "branch": "semantic-only"
+        }
+      ],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 1,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 0,
+          "pagesRetrieveCalls": 25
+        }
+      },
+      "metrics": {
+        "elapsedMs": 10239.249
+      }
+    },
+    {
+      "caseId": "mail-notion-multiselect-limit",
+      "query": "Notion API silently rejects a multi_select update when there are too many options",
+      "projectName": "Mail",
+      "projectId": "project-b1751349a136",
+      "expectedMemoryId": "memory-57bffc6546af",
+      "expectedTitle": "[redacted live-vault title]",
+      "expectedPrimaryMemoryIds": [
+        "memory-57bffc6546af"
+      ],
+      "acceptableMemoryIds": [],
+      "harmfulMemoryIds": [],
+      "labels": {
+        "domain": "notion-api",
+        "kind": "gotcha"
+      },
+      "lane": "rest-keyword",
+      "success": false,
+      "targetRank": null,
+      "recallAt1": 0,
+      "recallAt5": 0,
+      "recallAt10": 0,
+      "ndcgAt10": 0,
+      "reciprocalRank": 0,
+      "harmfulAt1": 0,
+      "harmfulAt5": 0,
+      "harmfulAt10": 0,
+      "harmfulMemoryIdsSurfaced": [],
+      "returnedMemoryIds": [],
+      "returnedTitles": [],
+      "capped": false,
+      "explain": [],
+      "mechanism": {
+        "passed": true,
+        "failures": [],
+        "trace": {
+          "toolsRunSearchCalls": 0,
+          "toolsRunOtherCalls": 0,
+          "clientSearchCalls": 0,
+          "dataSourceQueryCalls": 1,
+          "pagesRetrieveCalls": 0
+        }
+      },
+      "metrics": {
+        "elapsedMs": 505.6848
+      }
+    }
+  ],
+  "summary": {
+    "cases": 3,
+    "totalResults": 9,
+    "requiredResults": 6,
+    "passedRequiredResults": 6,
+    "failedRequiredResults": 0,
+    "lanes": {
+      "product": {
+        "cases": 3,
+        "passed": 3,
+        "failed": 0,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "ndcgAt10": 1,
+        "mrr": 1,
+        "harmfulAt1": 0,
+        "harmfulAt5": 0,
+        "harmfulAt10": 0,
+        "mechanismFailures": 0
+      },
+      "runtool-ai": {
+        "cases": 3,
+        "passed": 3,
+        "failed": 0,
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "recallAt10": 1,
+        "ndcgAt10": 1,
+        "mrr": 1,
+        "harmfulAt1": 0,
+        "harmfulAt5": 0,
+        "harmfulAt10": 0,
+        "mechanismFailures": 0
+      },
+      "rest-keyword": {
+        "cases": 3,
+        "passed": 0,
+        "failed": 3,
+        "recallAt1": 0,
+        "recallAt5": 0,
+        "recallAt10": 0,
+        "ndcgAt10": 0,
+        "mrr": 0,
+        "harmfulAt1": 0,
+        "harmfulAt5": 0,
+        "harmfulAt10": 0,
+        "mechanismFailures": 0
+      }
+    }
+  }
+}

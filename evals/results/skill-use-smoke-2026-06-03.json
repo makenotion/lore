@@ -1,0 +1,428 @@
+{
+  "suite": "skill-use-smoke",
+  "description": "Tiny offline context-use suite for exercising no-context, oracle-context, retrieved-context, and harmful-context conditions without a powered agent.\n",
+  "startedAt": "2026-06-03T18:26:47.279Z",
+  "runner": {
+    "mode": "skill-use",
+    "configHash": "ceec41f48caa1c98e696bf36ec0533dd55399b8de79968fff22ac52970dbf2fd",
+    "conditions": [
+      "no-context",
+      "oracle-context",
+      "retrieved-context",
+      "harmful-context"
+    ],
+    "requiredConditions": [
+      "oracle-context",
+      "retrieved-context"
+    ],
+    "retrieval": {
+      "lane": "keyword",
+      "limit": 1,
+      "k": [
+        1
+      ]
+    }
+  },
+  "corpus": {
+    "documentsPath": "evals/skill-use/fixtures/basic/documents.jsonl",
+    "documentsSha256": "8f04260dd62381728196e5c27082abc4feb1f21b7b767e9dbecdc110c8125378",
+    "documents": 4
+  },
+  "results": [
+    {
+      "taskId": "calendar-retention",
+      "prompt": "What retention period should the calendar export use for event history?",
+      "condition": "no-context",
+      "success": false,
+      "answer": "",
+      "citedDocumentIds": [],
+      "answerCorrect": false,
+      "contextSufficient": false,
+      "supportSetSatisfied": false,
+      "satisfiedSupportSetIds": [],
+      "harmfulContextIdsSurfaced": [],
+      "supportEvidenceIds": [
+        "mem-calendar-retention"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-calendar-retention-stale"
+      ],
+      "contextDocumentIds": [],
+      "returnedDocumentIds": [],
+      "ranking": null,
+      "failureReasons": [
+        "answer-incorrect",
+        "context-insufficient",
+        "support-set-missing"
+      ],
+      "metrics": {
+        "elapsedMs": 0.04,
+        "estimatedContextTokens": 0
+      }
+    },
+    {
+      "taskId": "calendar-retention",
+      "prompt": "What retention period should the calendar export use for event history?",
+      "condition": "oracle-context",
+      "success": true,
+      "answer": "30 days",
+      "citedDocumentIds": [
+        "mem-calendar-retention"
+      ],
+      "answerCorrect": true,
+      "contextSufficient": true,
+      "supportSetSatisfied": true,
+      "satisfiedSupportSetIds": [
+        "primary"
+      ],
+      "harmfulContextIdsSurfaced": [],
+      "supportEvidenceIds": [
+        "mem-calendar-retention"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-calendar-retention-stale"
+      ],
+      "contextDocumentIds": [
+        "mem-calendar-retention"
+      ],
+      "returnedDocumentIds": [],
+      "ranking": null,
+      "failureReasons": [],
+      "metrics": {
+        "elapsedMs": 0.01,
+        "estimatedContextTokens": 56
+      }
+    },
+    {
+      "taskId": "calendar-retention",
+      "prompt": "What retention period should the calendar export use for event history?",
+      "condition": "retrieved-context",
+      "success": true,
+      "answer": "30 days",
+      "citedDocumentIds": [
+        "mem-calendar-retention"
+      ],
+      "answerCorrect": true,
+      "contextSufficient": true,
+      "supportSetSatisfied": true,
+      "satisfiedSupportSetIds": [
+        "primary"
+      ],
+      "harmfulContextIdsSurfaced": [],
+      "supportEvidenceIds": [
+        "mem-calendar-retention"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-calendar-retention-stale"
+      ],
+      "contextDocumentIds": [
+        "mem-calendar-retention"
+      ],
+      "returnedDocumentIds": [
+        "mem-calendar-retention"
+      ],
+      "ranking": {
+        "relevantCount": 1,
+        "returnedRelevantCount": 1,
+        "firstRelevantRank": 1,
+        "ranksByRelevantId": {
+          "mem-calendar-retention": 1
+        },
+        "recallAt": {
+          "1": 1
+        },
+        "precisionAt": {
+          "1": 1
+        },
+        "completenessAt": {
+          "1": 1
+        },
+        "ndcgAt": {
+          "1": 1
+        },
+        "mrrAt": {
+          "1": 1
+        },
+        "averagePrecisionAt": {
+          "1": 1
+        }
+      },
+      "failureReasons": [],
+      "metrics": {
+        "elapsedMs": 0,
+        "estimatedContextTokens": 56
+      }
+    },
+    {
+      "taskId": "calendar-retention",
+      "prompt": "What retention period should the calendar export use for event history?",
+      "condition": "harmful-context",
+      "success": false,
+      "answer": "",
+      "citedDocumentIds": [],
+      "answerCorrect": false,
+      "contextSufficient": false,
+      "supportSetSatisfied": false,
+      "satisfiedSupportSetIds": [],
+      "harmfulContextIdsSurfaced": [
+        "mem-calendar-retention-stale"
+      ],
+      "supportEvidenceIds": [
+        "mem-calendar-retention"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-calendar-retention-stale"
+      ],
+      "contextDocumentIds": [
+        "mem-calendar-retention-stale"
+      ],
+      "returnedDocumentIds": [],
+      "ranking": null,
+      "failureReasons": [
+        "answer-incorrect",
+        "context-insufficient",
+        "support-set-missing",
+        "harmful-context"
+      ],
+      "metrics": {
+        "elapsedMs": 0,
+        "estimatedContextTokens": 54
+      }
+    },
+    {
+      "taskId": "invoice-rounding",
+      "prompt": "For invoice reconciliation, should rounding happen before or after summing line-item cents?",
+      "condition": "no-context",
+      "success": false,
+      "answer": "",
+      "citedDocumentIds": [],
+      "answerCorrect": false,
+      "contextSufficient": false,
+      "supportSetSatisfied": false,
+      "satisfiedSupportSetIds": [],
+      "harmfulContextIdsSurfaced": [],
+      "supportEvidenceIds": [
+        "mem-invoice-rounding"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-invoice-rounding-stale"
+      ],
+      "contextDocumentIds": [],
+      "returnedDocumentIds": [],
+      "ranking": null,
+      "failureReasons": [
+        "answer-incorrect",
+        "context-insufficient",
+        "support-set-missing"
+      ],
+      "metrics": {
+        "elapsedMs": 0,
+        "estimatedContextTokens": 0
+      }
+    },
+    {
+      "taskId": "invoice-rounding",
+      "prompt": "For invoice reconciliation, should rounding happen before or after summing line-item cents?",
+      "condition": "oracle-context",
+      "success": true,
+      "answer": "sum line-item cents first",
+      "citedDocumentIds": [
+        "mem-invoice-rounding"
+      ],
+      "answerCorrect": true,
+      "contextSufficient": true,
+      "supportSetSatisfied": true,
+      "satisfiedSupportSetIds": [
+        "primary"
+      ],
+      "harmfulContextIdsSurfaced": [],
+      "supportEvidenceIds": [
+        "mem-invoice-rounding"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-invoice-rounding-stale"
+      ],
+      "contextDocumentIds": [
+        "mem-invoice-rounding"
+      ],
+      "returnedDocumentIds": [],
+      "ranking": null,
+      "failureReasons": [],
+      "metrics": {
+        "elapsedMs": 0,
+        "estimatedContextTokens": 57
+      }
+    },
+    {
+      "taskId": "invoice-rounding",
+      "prompt": "For invoice reconciliation, should rounding happen before or after summing line-item cents?",
+      "condition": "retrieved-context",
+      "success": true,
+      "answer": "sum line-item cents first",
+      "citedDocumentIds": [
+        "mem-invoice-rounding"
+      ],
+      "answerCorrect": true,
+      "contextSufficient": true,
+      "supportSetSatisfied": true,
+      "satisfiedSupportSetIds": [
+        "primary"
+      ],
+      "harmfulContextIdsSurfaced": [],
+      "supportEvidenceIds": [
+        "mem-invoice-rounding"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-invoice-rounding-stale"
+      ],
+      "contextDocumentIds": [
+        "mem-invoice-rounding"
+      ],
+      "returnedDocumentIds": [
+        "mem-invoice-rounding"
+      ],
+      "ranking": {
+        "relevantCount": 1,
+        "returnedRelevantCount": 1,
+        "firstRelevantRank": 1,
+        "ranksByRelevantId": {
+          "mem-invoice-rounding": 1
+        },
+        "recallAt": {
+          "1": 1
+        },
+        "precisionAt": {
+          "1": 1
+        },
+        "completenessAt": {
+          "1": 1
+        },
+        "ndcgAt": {
+          "1": 1
+        },
+        "mrrAt": {
+          "1": 1
+        },
+        "averagePrecisionAt": {
+          "1": 1
+        }
+      },
+      "failureReasons": [],
+      "metrics": {
+        "elapsedMs": 0,
+        "estimatedContextTokens": 57
+      }
+    },
+    {
+      "taskId": "invoice-rounding",
+      "prompt": "For invoice reconciliation, should rounding happen before or after summing line-item cents?",
+      "condition": "harmful-context",
+      "success": false,
+      "answer": "",
+      "citedDocumentIds": [],
+      "answerCorrect": false,
+      "contextSufficient": false,
+      "supportSetSatisfied": false,
+      "satisfiedSupportSetIds": [],
+      "harmfulContextIdsSurfaced": [
+        "mem-invoice-rounding-stale"
+      ],
+      "supportEvidenceIds": [
+        "mem-invoice-rounding"
+      ],
+      "acceptableEvidenceIds": [],
+      "harmfulEvidenceIds": [
+        "mem-invoice-rounding-stale"
+      ],
+      "contextDocumentIds": [
+        "mem-invoice-rounding-stale"
+      ],
+      "returnedDocumentIds": [],
+      "ranking": null,
+      "failureReasons": [
+        "answer-incorrect",
+        "context-insufficient",
+        "support-set-missing",
+        "harmful-context"
+      ],
+      "metrics": {
+        "elapsedMs": 0,
+        "estimatedContextTokens": 53
+      }
+    }
+  ],
+  "summary": {
+    "tasks": 2,
+    "totalResults": 8,
+    "requiredResults": 4,
+    "passedRequiredResults": 4,
+    "failedRequiredResults": 0,
+    "thresholdFailures": [],
+    "conditions": {
+      "no-context": {
+        "results": 2,
+        "passed": 0,
+        "failed": 2,
+        "successRate": 0,
+        "answerAccuracy": 0,
+        "contextSufficiency": 0,
+        "supportSetSatisfaction": 0,
+        "harmfulRate": 0,
+        "averageContextTokens": 0
+      },
+      "oracle-context": {
+        "results": 2,
+        "passed": 2,
+        "failed": 0,
+        "successRate": 1,
+        "answerAccuracy": 1,
+        "contextSufficiency": 1,
+        "supportSetSatisfaction": 1,
+        "harmfulRate": 0,
+        "averageContextTokens": 56.5
+      },
+      "retrieved-context": {
+        "results": 2,
+        "passed": 2,
+        "failed": 0,
+        "successRate": 1,
+        "answerAccuracy": 1,
+        "contextSufficiency": 1,
+        "supportSetSatisfaction": 1,
+        "harmfulRate": 0,
+        "averageContextTokens": 56.5
+      },
+      "harmful-context": {
+        "results": 2,
+        "passed": 0,
+        "failed": 2,
+        "successRate": 0,
+        "answerAccuracy": 0,
+        "contextSufficiency": 0,
+        "supportSetSatisfaction": 0,
+        "harmfulRate": 1,
+        "averageContextTokens": 53.5
+      }
+    },
+    "lift": {
+      "retrievedVsNoContextAccuracyDelta": 1,
+      "retrievedGapToOracle": 0,
+      "contextDependentTaskIds": [
+        "calendar-retention",
+        "invoice-rounding"
+      ],
+      "retrievedLiftedTaskIds": [
+        "calendar-retention",
+        "invoice-rounding"
+      ],
+      "retrievedHarmedTaskIds": []
+    }
+  }
+}

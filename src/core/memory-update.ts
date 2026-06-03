@@ -104,6 +104,7 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
   consequences: string | undefined
   keywords: string | undefined
   synopsis: string | undefined
+  topicKey: string | undefined
   expiresOn: string | null | undefined
   blockedBy: string | undefined
   entity: string | undefined
@@ -123,6 +124,8 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
       input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
     synopsis:
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
+    topicKey:
+      input.topicKey !== undefined ? decodeTextEntities(input.topicKey) : undefined,
     expiresOn:
       input.expiresOn === null
         ? null
@@ -187,6 +190,11 @@ export class MemoryUpdate {
     if (decoded.synopsis !== undefined) {
       props[MEMORY_PROPS.SYNOPSIS] = {
         rich_text: [{ text: { content: decoded.synopsis } }],
+      }
+    }
+    if (decoded.topicKey !== undefined) {
+      props[MEMORY_PROPS.TOPIC_KEY] = {
+        rich_text: [{ text: { content: decoded.topicKey } }],
       }
     }
     if (decoded.expiresOn !== undefined) {

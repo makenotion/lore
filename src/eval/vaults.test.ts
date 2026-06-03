@@ -26,6 +26,7 @@ describe("eval vault registry", () => {
       notionWorkspaceId: "415fc269-e68f-4da0-b3e3-b1273b741a7f",
       vaultPageId: "360b35e6-e67f-8156-aa0e-f3763246719d",
       defaultProjectName: "Eval Sandbox",
+      defaultProjectEnvVar: "LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT",
       lastValidation: {
         kind: "smoke",
         scenarios: 4,
@@ -33,6 +34,30 @@ describe("eval vault registry", () => {
         successRateDelta: 0.25,
         liftedScenarioIds: ["convention-continuity-cache-prefix"],
       },
+    })
+  })
+
+  it("loads the committed SkillRet dev eval vault", async () => {
+    const registry = await loadEvalVaultRegistry()
+    const vault = findEvalVault(registry, "skillret-dev-eval")
+
+    expect(vault).toMatchObject({
+      notionEnv: "dev",
+      notionWorkspaceId: "415fc269-e68f-4da0-b3e3-b1273b741a7f",
+      vaultPageId: "374b35e6-e67f-8108-beb4-dec11f2f5d28",
+      defaultProjectName: "SkillRet Eval",
+      defaultProjectEnvVar: "LORE_EVAL_SKILLRET_PROJECT",
+      supportedRuns: [
+        {
+          id: "skillret-notion-ai",
+          runner: "skill-retrieval",
+          suite: "evals/skill-retrieval/skillret-notion-ai.yaml",
+          sandboxProjectName: "SkillRet Eval",
+          requiredEnv: {
+            LORE_EVAL_SKILLRET_REAL: "1",
+          },
+        },
+      ],
     })
   })
 
@@ -75,6 +100,21 @@ describe("eval vault registry", () => {
         "export NOTION_ENV='dev'",
         "export NOTION_WORKSPACE_ID='415fc269-e68f-4da0-b3e3-b1273b741a7f'",
         "export LORE_EVAL_LONGITUDINAL_SANDBOX_PROJECT='Eval Sandbox'",
+        "",
+      ].join("\n")
+    )
+  })
+
+  it("renders the environment selectors for the SkillRet vault", async () => {
+    const registry = await loadEvalVaultRegistry()
+    const vault = findEvalVault(registry, "skillret-dev-eval")
+    expect(vault).toBeDefined()
+
+    expect(renderEvalVaultEnv(vault!)).toBe(
+      [
+        "export NOTION_ENV='dev'",
+        "export NOTION_WORKSPACE_ID='415fc269-e68f-4da0-b3e3-b1273b741a7f'",
+        "export LORE_EVAL_SKILLRET_PROJECT='SkillRet Eval'",
         "",
       ].join("\n")
     )

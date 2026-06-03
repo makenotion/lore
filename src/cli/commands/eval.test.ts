@@ -8,11 +8,13 @@ import {
   evalCommand,
   formatTaskProgressEvent,
   hasLongitudinalTaskGateFailures,
+  hasSkillRetrievalGateFailures,
   parseEvalRunCliOptions,
   validateBaselineRunnerSupport,
   validateEvalRunRunnerCompatibility,
 } from "./eval.js"
 import type { EvalRunArtifact } from "../../eval/runner.js"
+import type { SkillRetrievalArtifact } from "../../eval/skill-retrieval.js"
 import type { LongitudinalTaskArtifact } from "../../eval/task-runner.js"
 import { runBenchCleanupOrphans } from "../../eval/bench-cleanup.js"
 import { trapProcessExit } from "../test-helpers.js"
@@ -698,6 +700,27 @@ describe("validateBaselineRunnerSupport", () => {
   })
 })
 
+describe("hasSkillRetrievalGateFailures", () => {
+  it("returns true when any result has a failed mechanism trace", () => {
+    const artifact = skillRetrievalArtifact({
+      mechanismPassed: false,
+    })
+
+    expect(hasSkillRetrievalGateFailures(artifact)).toBe(true)
+  })
+
+  it("returns false for keyword-only or passing-mechanism results", () => {
+    expect(hasSkillRetrievalGateFailures(skillRetrievalArtifact({}))).toBe(false)
+    expect(
+      hasSkillRetrievalGateFailures(
+        skillRetrievalArtifact({
+          mechanismPassed: true,
+        })
+      )
+    ).toBe(false)
+  })
+})
+
 function evalArtifact(input: {
   memoryLift: number | null
   memoryHarm: number | null
@@ -725,6 +748,92 @@ function evalArtifact(input: {
         averagePrecision: null,
         memoryLift: input.memoryLift,
         memoryHarm: input.memoryHarm,
+      },
+    },
+  }
+}
+
+function skillRetrievalArtifact(input: {
+  mechanismPassed?: boolean
+}): SkillRetrievalArtifact {
+  return {
+    suite: "skillret-test",
+    description: "",
+    startedAt: "2026-06-03T12:00:00.000Z",
+    runner: {
+      mode: "skill-retrieval",
+      corpusKind: "skillret",
+      lanes: ["notion-ai"],
+      k: [1],
+      limit: 1,
+    },
+    corpus: {
+      skillsPath: "skills.jsonl",
+      queriesPath: "queries.jsonl",
+      qrelsPath: "qrels.jsonl",
+      skills: 1,
+      queries: 1,
+      qrels: 1,
+    },
+    results: [
+      {
+        queryId: "q1",
+        query: "query",
+        lane: "notion-ai",
+        expectedSkillIds: ["skill-1"],
+        returnedSkillIds: ["skill-1"],
+        returnedSkillNames: ["Skill 1"],
+        ...(input.mechanismPassed === undefined
+          ? {}
+          : {
+              mechanism: {
+                passed: input.mechanismPassed,
+                failures: input.mechanismPassed ? [] : ["expected RunTool AI search"],
+                trace: {
+                  toolsRunSearchCalls: input.mechanismPassed ? 1 : 0,
+                  toolsRunOtherCalls: 0,
+                  clientSearchCalls: 0,
+                  dataSourceQueryCalls: 0,
+                  pagesRetrieveCalls: 0,
+                },
+              },
+            }),
+        metrics: {
+          relevantCount: 1,
+          returnedRelevantCount: 1,
+          firstRelevantRank: 1,
+          ranksByRelevantId: { "skill-1": 1 },
+          recallAt: { "1": 1 },
+          precisionAt: { "1": 1 },
+          completenessAt: { "1": 1 },
+          ndcgAt: { "1": 1 },
+          mrrAt: { "1": 1 },
+          averagePrecisionAt: { "1": 1 },
+          estimatedContextTokens: 1,
+          elapsedMs: 1,
+        },
+      },
+    ],
+    summary: {
+      skills: 1,
+      queries: 1,
+      qrels: 1,
+      totalResults: 1,
+      lanes: {
+        keyword: null,
+        "notion-ai": {
+          queries: 1,
+          recallAt: { "1": 1 },
+          precisionAt: { "1": 1 },
+          completenessAt: { "1": 1 },
+          ndcgAt: { "1": 1 },
+          mrrAt: { "1": 1 },
+          mapAt: { "1": 1 },
+          estimatedContextTokens: 1,
+          elapsedMs: 1,
+          cappedResults: 0,
+          mechanismFailures: input.mechanismPassed === false ? 1 : 0,
+        },
       },
     },
   }

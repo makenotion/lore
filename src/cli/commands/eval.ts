@@ -23,6 +23,7 @@ import {
   type LongitudinalScenarioDifficulty,
   type TaskEvalProgressEvent,
 } from "../../eval/task-runner.js"
+import type { SkillRetrievalArtifact } from "../../eval/skill-retrieval.js"
 import { buildLongitudinalBenchmarkPlan } from "../../eval/longitudinal-plan.js"
 import { resolveProjectByName } from "../../core/project-scope.js"
 import { EVAL_RUNNERS, peekSuiteRunner, type EvalRunner } from "../../eval/schema.js"
@@ -289,7 +290,7 @@ export function validateEvalRunRunnerCompatibility(
       if (value !== undefined) {
         return {
           ok: false,
-          message: `${flag} is not supported with --runner skill-retrieval; skill-retrieval suites are offline corpus-ranking benchmarks scored by recall@k / MRR / NDCG.`,
+          message: `${flag} is not supported with --runner skill-retrieval; skill-retrieval suites carry runner-specific corpus and lane configuration scored by recall@k / MRR / NDCG.`,
         }
       }
     }
@@ -355,6 +356,12 @@ export function hasLongitudinalTaskGateFailures(
   return artifact.summary.failedTrials > 0
 }
 
+export function hasSkillRetrievalGateFailures(artifact: SkillRetrievalArtifact): boolean {
+  return artifact.results.some(
+    (result) => result.mechanism !== undefined && !result.mechanism.passed
+  )
+}
+
 function isEvalRunner(value: string): value is EvalRunner {
   return (EVAL_RUNNERS as readonly string[]).includes(value)
 }
@@ -396,7 +403,7 @@ export function validateBaselineRunnerSupport(
     return {
       ok: false,
       message:
-        "--runner skill-retrieval is not supported by the baseline subcommand. Skill-retrieval artifacts measure offline corpus ranking and need a runner-specific drift snapshot.",
+        "--runner skill-retrieval is not supported by the baseline subcommand. Skill-retrieval artifacts measure runner-specific ranked retrieval and need a runner-specific drift snapshot.",
     }
   }
   if (runner === "skill-use") {
@@ -907,10 +914,22 @@ evalCommand.addCommand(
                     `NDCG@${k}=${(summary.ndcgAt[k] ?? 0).toFixed(4)}, ` +
                     `MRR@${k}=${(summary.mrrAt[k] ?? 0).toFixed(4)}, ` +
                     `MAP@${k}=${(summary.mapAt[k] ?? 0).toFixed(4)}, ` +
-                    `avg context tokens=${summary.estimatedContextTokens.toFixed(0)}`
+                    `avg context tokens=${summary.estimatedContextTokens.toFixed(0)}, ` +
+                    `capped=${summary.cappedResults}, ` +
+                    `mechanism failures=${summary.mechanismFailures}`
                 )
               }
               console.log(`Artifact: ${outPath}`)
+              for (const result of artifact.results) {
+                if (result.mechanism?.passed !== false) continue
+                console.log(`  - ${result.queryId} [${result.lane}]: mechanism failed`)
+                for (const failure of result.mechanism.failures) {
+                  console.log(`    - ${failure}`)
+                }
+              }
+            }
+            if (hasSkillRetrievalGateFailures(artifact)) {
+              process.exit(1)
             }
             return
           }
@@ -1695,6 +1714,101 @@ skillRetrievalCommand.addCommand(
         process.exit(1)
       }
     })
+)
+
+skillRetrievalCommand.addCommand(
+  new Command("import")
+    .description(
+      "Import the SkillRet corpus declared by a skill-retrieval suite into a persistent Lore eval vault."
+    )
+    .argument("<suite>", "Path to a skill-retrieval suite YAML file with notion config")
+    .option(
+      "--out-manifest <path>",
+      "Override the import manifest path. Defaults to suite.notion.importManifestPath."
+    )
+    .option(
+      "--limit <n>",
+      "Import only the first n skills from the corpus; useful for live smoke runs."
+    )
+    .option("--parallel <n>", "Maximum concurrent import tasks. Defaults to 6.")
+    .option(
+      "--create-project",
+      "Create suite.notion.projectName if it does not already exist."
+    )
+    .option("--yes", "Confirm this command may write persistent pages to Notion")
+    .action(
+      async (
+        suite: string,
+        opts: {
+          outManifest?: string
+          limit?: string
+          parallel?: string
+          createProject?: boolean
+          yes?: boolean
+        }
+      ) => {
+        if (opts.yes !== true) {
+          console.error(
+            "lore eval skill-retrieval import failed: pass --yes to confirm persistent Notion writes."
+          )
+          process.exit(1)
+          return
+        }
+        const parsedLimit =
+          opts.limit === undefined
+            ? { ok: true as const, value: undefined }
+            : parsePositiveDecimalInteger("--limit", opts.limit)
+        if (!parsedLimit.ok) {
+          console.error("lore eval skill-retrieval import failed:", parsedLimit.message)
+          process.exit(1)
+          return
+        }
+        const parsedParallel =
+          opts.parallel === undefined
+            ? { ok: true as const, value: undefined }
+            : parsePositiveDecimalInteger("--parallel", opts.parallel)
+        if (!parsedParallel.ok) {
+          console.error(
+            "lore eval skill-retrieval import failed:",
+            parsedParallel.message
+          )
+          process.exit(1)
+          return
+        }
+        try {
+          const { importSkillRetrievalCorpusToNotion, loadSkillRetrievalSuite } =
+            await import("../../eval/skill-retrieval.js")
+          const loaded = await loadSkillRetrievalSuite(suite)
+          if (!loaded.suite.notion) {
+            throw new Error("suite.notion config is required for SkillRet Notion imports")
+          }
+          assertSandboxProjectName(loaded.suite.notion.projectName)
+          const report = await importSkillRetrievalCorpusToNotion(suite, {
+            outPath: opts.outManifest,
+            limit: parsedLimit.value,
+            parallelism: parsedParallel.value,
+            createProject: opts.createProject === true,
+          })
+          console.log(
+            `SkillRet import complete: ${report.imported} imported, ` +
+              `${report.updated} updated, ${report.reconciled} reconciled, ` +
+              `${report.skipped} skipped, ` +
+              `${report.selected} selected.`
+          )
+          console.log(`Manifest: ${report.outPath}`)
+          console.log(
+            `Project: ${report.manifest.projectName} (${report.manifest.projectId})`
+          )
+          console.log(`Topic: ${report.manifest.topicName} (${report.manifest.topicId})`)
+        } catch (err) {
+          console.error(
+            "lore eval skill-retrieval import failed:",
+            err instanceof Error ? err.message : err
+          )
+          process.exit(1)
+        }
+      }
+    )
 )
 
 evalCommand.addCommand(skillRetrievalCommand)

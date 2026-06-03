@@ -68,7 +68,7 @@ answerability rather than wake-up surfaced memory ids:
 | `bench`               | End-to-end LongMemEval bench: per-example ingest + recall through Lore MCP + judge. Hits Notion + OpenAI.                                                                                                                       | Operator-dispatched only (workflow_dispatch). The most expensive runner; produces a number we can publish alongside Zep / MemGPT / Mem0.                         |
 | `profile`             | Deterministic profile-owned extraction artifacts scored against taxonomy, required-field, and hallucination expectations. No Notion or model calls.                                                                             | Per-profile support suites and PRs that change profile manifests, schemas, or extraction contracts.                                                              |
 | `retrieval-quality`   | Labeled live-vault query → expected-memory checks through the real `MemoryService.searchWithExplain` path. Computes target rank, recall@1/5/10, NDCG@10, harmful@k, and MRR across product, RunTool AI, and REST keyword lanes. | PRs and release checks that touch search transport or ranking. Read-only but live-vault-backed, so run deliberately against an operator-approved vault.          |
-| `skill-retrieval`     | Offline memory-as-skill corpus ranking over SkillRet-shaped JSONL files. Computes recall@k, precision@k, completeness@k, NDCG@k, MRR, MAP, latency, and estimated context-token footprint.                                      | Public-scale retrieval pressure for memory-as-skill ranking. Does not measure agent task lift, live Notion behavior, or autonomous memory formation.             |
+| `skill-retrieval`     | SkillRet memory-as-skill corpus ranking. The `keyword` lane is offline; the `notion-ai` lane imports SkillRet into a persistent Lore eval vault and scores Notion AI search through `MemoryService.searchWithExplain`.           | Public-scale retrieval pressure for memory-as-skill ranking. Does not measure agent task lift or autonomous memory formation.                                    |
 | `skill-use`           | Offline no-context / oracle-context / retrieved-context / harmful-context answerability over labeled support sets. Computes success, answer accuracy, context sufficiency, harmful context rate, and retrieval gap to oracle.   | Deterministic context-use proxy for memory-as-skill evidence. Does not measure live Notion behavior or a powered agent unless a separate answerer is plugged in. |
 
 The longitudinal `lore-full-loop` task condition is not a headline
@@ -135,17 +135,70 @@ cutoff.
 ## Skill-Retrieval Runner
 
 `skill-retrieval` suites live under `evals/skill-retrieval/` and target
-SkillRet-shaped public corpora. The runner is offline: it loads local JSONL
-skills, queries, and qrels, ranks the skill corpus for each query, and writes a
-JSON artifact. The committed `skillret-smoke` suite uses a tiny in-repo corpus
-for deterministic checks; `skillret-test` targets the full public SkillRet test
-split fetched from the pinned checksum manifest.
+SkillRet-shaped public corpora. The committed `skillret-smoke` suite uses a
+tiny in-repo corpus for deterministic checks; `skillret-test` targets the full
+public SkillRet test split fetched from the pinned checksum manifest. The
+`keyword` lane is an offline lexical control. The `notion-ai` lane is the Lore
+measurement lane: it imports each SkillRet skill as a `procedure` memory in a
+persistent Notion-backed eval vault, adds SkillRet taxonomy topics, topic keys,
+tags, keywords, and body metadata, stores the skill-id to memory-id mapping in
+a local manifest, and then scores returned memories from Notion AI search.
 
 ```bash
 npm run build
 node dist/cli.js eval skill-retrieval fetch skillret
 node dist/cli.js eval run evals/skill-retrieval/skillret-test.yaml
 ```
+
+Run the Notion AI lane against the registered persistent SkillRet eval vault:
+
+```bash
+npm run build
+node dist/cli.js eval skill-retrieval fetch skillret
+
+mkdir -p /tmp/lore-eval-vaults/skillret-dev-eval
+node dist/cli.js eval vaults show skillret-dev-eval --config \
+  > /tmp/lore-eval-vaults/skillret-dev-eval/.lore.yaml
+
+NOTION_ENV=dev \
+LORE_CONFIG_ROOT=/tmp/lore-eval-vaults/skillret-dev-eval \
+node dist/cli.js eval skill-retrieval import \
+  evals/skill-retrieval/skillret-notion-ai.yaml \
+  --yes \
+  --create-project \
+  --parallel 3
+
+NOTION_ENV=dev \
+LORE_CONFIG_ROOT=/tmp/lore-eval-vaults/skillret-dev-eval \
+LORE_EVAL_SKILLRET_REAL=1 \
+node dist/cli.js eval run evals/skill-retrieval/skillret-notion-ai.yaml
+```
+
+The committed `skillret-notion-ai` suite is bound to the registered
+`skillret-dev-eval` vault page id, so import and run fail if the active
+`.lore.yaml` points at a different vault. The suite imports rows into taxonomy
+topics while leaving search project-scoped (`searchTopicScoped: false`) so the
+AI lane can retrieve across the full SkillRet corpus. Full-corpus live runs are
+paced by `queryDelayMs` to avoid intentionally saturating the Notion rate
+limit. The import command is idempotent against both the generated manifest path
+declared by
+`suite.notion.importManifestPath` and the live vault's `Promotion Source Key`
+values. Re-running it skips already-imported skills whose content and metadata
+still match only after confirming the live Notion row still exists, repairs
+matching-source rows whose rendered metadata changed, and rebuilds entries from
+existing live memories before creating anything if the local manifest is
+missing. It fails if the suite points at a manifest for a different corpus
+revision, split, document field set, project, or root topic.
+The import path accepts older document transforms so it can repair them in
+place, but limited imports refuse to mark a legacy manifest current. The
+`notion-ai` run path requires the manifest to match the current transform and
+cover every skill required by the selected queries' qrels before scoring.
+SkillRet source fields longer than 60,000 characters are capped in the
+rendered Notion memory body with an explicit truncation marker. The manifest
+keeps the full-source hash, the rendered-content hash, and per-skill
+`truncatedFields` metadata so the fidelity tradeoff is auditable. The manifest
+contains live Notion page ids and stays under
+`evals/skill-retrieval/manifests/`, which is intentionally ignored.
 
 Smoke-suite shape:
 
@@ -169,11 +222,12 @@ retrieval:
   limit: 10
 ```
 
-The initial `keyword` lane is a deterministic lexical baseline. Future lanes
-can plug into the same artifact contract for Lore-backed or embedding-backed
-rankers. Report this runner as public-scale memory-as-skill retrieval only; it
-does not show that the agent used the memory correctly or that Lore formed the
-memory autonomously.
+The `notion-ai` lane requires a retrieval window of at most 25, matching the
+RunTool search return cap. It also records a mechanism trace and counts
+mechanism failures when RunTool AI search did not dispatch as expected. Report
+this runner as public-scale memory-as-skill retrieval only; it does not show
+that the agent used the memory correctly or that Lore formed the memory
+autonomously.
 
 ## Skill-Use Runner
 
