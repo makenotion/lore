@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, relative } from "node:path"
+import { afterEach } from "vitest"
 import { describe, expect, it } from "vitest"
 import type { LoreServices } from "../services.js"
 import {
@@ -14,6 +15,10 @@ import {
   type AgentRunInput,
   type AgentRunResult,
 } from "./task-runner.js"
+
+afterEach(() => {
+  delete process.env["LORE_EVAL_BENCH_AGENT_MODEL"]
+})
 
 describe("skill-agent runner", () => {
   it("scores read-only Lore tool use, selection, and application", async () => {
@@ -50,6 +55,7 @@ describe("skill-agent runner", () => {
     })
 
     expect(artifact.runner.readOnly).toBe(true)
+    expect(artifact.runner.agent.model).toBe("gpt-4o-mini-2024-07-18")
     expect(artifact.summary.failedRequiredResults).toBe(0)
     expect(artifact.summary.conditions["tool-driven-lore"]).toMatchObject({
       results: 1,
@@ -276,6 +282,232 @@ describe("skill-agent runner", () => {
     })
   })
 
+  it("prefers Codex final answer files over bench JSONL stdout", async () => {
+    const dir = await writeSkillAgentFixture()
+    const answer: SkillAgentAnswer = {
+      answer: "Use alpha routing for tenant metadata decisions.",
+      usedMemoryIds: ["memory-alpha"],
+      usedSkillIds: ["skill-alpha"],
+      reason: "Expanded the matching Lore procedure.",
+      toolTrace: [
+        {
+          tool: "lore-query",
+          action: "search",
+          status: "success",
+          surfacedMemoryIds: ["memory-alpha"],
+          expandedMemoryIds: [],
+          error: null,
+        },
+        {
+          tool: "lore-memory",
+          action: "expand",
+          status: "success",
+          surfacedMemoryIds: ["memory-alpha"],
+          expandedMemoryIds: ["memory-alpha"],
+          error: null,
+        },
+      ],
+    }
+    const adapter: AgentAdapter = {
+      id: "codex",
+      async run(input: AgentRunInput): Promise<AgentRunResult> {
+        await writeFile(
+          join(input.workspace, "answer.txt"),
+          `${JSON.stringify(answer)}\n`,
+          "utf-8"
+        )
+        await writeBrokerToolTrace(input.workspace, answer.toolTrace)
+        return {
+          exitCode: 0,
+          stdout: `${JSON.stringify({ type: "thread.started" })}\n${JSON.stringify({
+            type: "turn.completed",
+          })}\n`,
+          stderr: "",
+          timedOut: false,
+        }
+      },
+    }
+
+    const { artifact } = await runSkillAgentSuite(join(dir, "skill-agent.yaml"), {
+      agentAdapter: adapter,
+      servicesFactory: async () => testServices(),
+    })
+
+    expect(artifact.summary.failedRequiredResults).toBe(0)
+    expect(artifact.results[0]).toMatchObject({
+      success: true,
+      usedMemoryIds: ["memory-alpha"],
+      usedSkillIds: ["skill-alpha"],
+      failureReasons: [],
+    })
+  })
+
+  it("recovers citations from malformed structured final answers", async () => {
+    const dir = await writeSkillAgentFixture()
+    const toolTrace = [
+      {
+        tool: "lore-query",
+        action: "search",
+        status: "success",
+        surfacedMemoryIds: ["memory-alpha"],
+        expandedMemoryIds: [],
+        error: null,
+      },
+      {
+        tool: "lore-memory",
+        action: "expand",
+        status: "success",
+        surfacedMemoryIds: ["memory-alpha"],
+        expandedMemoryIds: ["memory-alpha"],
+        error: null,
+      },
+    ]
+    const adapter = mockSkillAgentStdoutAdapter(
+      '{"answer":"{"id":"skill-alpha","name":"Alpha Skill"}","usedMemoryIds":["memory-alpha"],"usedSkillIds":["skill-alpha"],"reason":"Selected alpha."}',
+      toolTrace
+    )
+
+    const { artifact } = await runSkillAgentSuite(join(dir, "skill-agent.yaml"), {
+      agentAdapter: adapter,
+      servicesFactory: async () => testServices(),
+    })
+
+    expect(artifact.summary.failedRequiredResults).toBe(0)
+    expect(artifact.results[0]).toMatchObject({
+      success: true,
+      usedMemoryIds: ["memory-alpha"],
+      usedSkillIds: ["skill-alpha"],
+      failureReasons: [],
+    })
+  })
+
+  it("recovers citations from nested structured answer fields", async () => {
+    const dir = await writeSkillAgentFixture()
+    const toolTrace = [
+      {
+        tool: "lore-query",
+        action: "search",
+        status: "success",
+        surfacedMemoryIds: ["memory-alpha"],
+        expandedMemoryIds: [],
+        error: null,
+      },
+      {
+        tool: "lore-memory",
+        action: "expand",
+        status: "success",
+        surfacedMemoryIds: ["memory-alpha"],
+        expandedMemoryIds: ["memory-alpha"],
+        error: null,
+      },
+    ]
+    const nested = {
+      answer: "Use alpha routing.",
+      usedMemoryIds: ["memory-alpha"],
+      usedSkillIds: ["skill-alpha"],
+      reason: "Selected alpha.",
+    }
+    const adapter = mockSkillAgentStdoutAdapter(
+      `${JSON.stringify({ answer: JSON.stringify(nested), reason: "wrapped" })}\n`,
+      toolTrace
+    )
+
+    const { artifact } = await runSkillAgentSuite(join(dir, "skill-agent.yaml"), {
+      agentAdapter: adapter,
+      servicesFactory: async () => testServices(),
+    })
+
+    expect(artifact.summary.failedRequiredResults).toBe(0)
+    expect(artifact.results[0]).toMatchObject({
+      success: true,
+      answer: "Use alpha routing.",
+      usedMemoryIds: ["memory-alpha"],
+      usedSkillIds: ["skill-alpha"],
+      failureReasons: [],
+    })
+  })
+
+  it("records the effective bench agent model override", async () => {
+    process.env["LORE_EVAL_BENCH_AGENT_MODEL"] = "gpt-5.5"
+    const dir = await writeSkillAgentFixture()
+    const adapter = mockSkillAgentAdapter({
+      answer: "Use alpha routing for tenant metadata decisions.",
+      usedMemoryIds: ["memory-alpha"],
+      usedSkillIds: ["skill-alpha"],
+      reason: "Expanded the matching Lore procedure.",
+      toolTrace: [
+        {
+          tool: "lore-query",
+          action: "search",
+          status: "success",
+          surfacedMemoryIds: ["memory-alpha"],
+          expandedMemoryIds: [],
+          error: null,
+        },
+        {
+          tool: "lore-memory",
+          action: "expand",
+          status: "success",
+          surfacedMemoryIds: ["memory-alpha"],
+          expandedMemoryIds: ["memory-alpha"],
+          error: null,
+        },
+      ],
+    })
+
+    const { artifact } = await runSkillAgentSuite(join(dir, "skill-agent.yaml"), {
+      agentAdapter: adapter,
+      servicesFactory: async () => testServices(),
+    })
+
+    expect(artifact.runner.agent.model).toBe("gpt-5.5")
+  })
+
+  it("records repo-relative paths for repo-local suites", async () => {
+    const dir = await writeSkillAgentFixture(join(process.cwd(), ".tmp-skill-agent-"))
+    try {
+      const { artifact } = await runSkillAgentSuite(join(dir, "skill-agent.yaml"), {
+        agentAdapter: mockSkillAgentAdapter({
+          answer: "Use alpha routing for tenant metadata decisions.",
+          usedMemoryIds: ["memory-alpha"],
+          usedSkillIds: ["skill-alpha"],
+          reason: "Expanded the matching Lore procedure.",
+          toolTrace: [
+            {
+              tool: "lore-query",
+              action: "search",
+              status: "success",
+              surfacedMemoryIds: ["memory-alpha"],
+              expandedMemoryIds: [],
+              error: null,
+            },
+            {
+              tool: "lore-memory",
+              action: "expand",
+              status: "success",
+              surfacedMemoryIds: ["memory-alpha"],
+              expandedMemoryIds: ["memory-alpha"],
+              error: null,
+            },
+          ],
+        }),
+        servicesFactory: async () => testServices(),
+        outPath: join(dir, "artifact.json"),
+      })
+
+      expect(artifact.runner.skillRetrievalSuite).toBe(
+        relative(process.cwd(), join(dir, "skillret.yaml"))
+      )
+      expect(isAbsolute(artifact.runner.skillRetrievalSuite)).toBe(false)
+      expect(artifact.corpus.importManifestPath).toBe(
+        relative(process.cwd(), join(dir, "manifests", "import.json"))
+      )
+      expect(isAbsolute(artifact.corpus.importManifestPath)).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it("rejects required conditions that are not listed", () => {
     const parsed = skillAgentSuiteSchema.safeParse({
       version: 1,
@@ -295,8 +527,10 @@ describe("skill-agent runner", () => {
   })
 })
 
-async function writeSkillAgentFixture(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "lore-skill-agent-"))
+async function writeSkillAgentFixture(
+  prefix = join(tmpdir(), "lore-skill-agent-")
+): Promise<string> {
+  const dir = await mkdtemp(prefix)
   await writeFile(
     join(dir, "skills.jsonl"),
     `${JSON.stringify({
@@ -335,7 +569,7 @@ async function writeSkillAgentFixture(): Promise<string> {
         corpusRevision: "fixture",
         split: "test",
         documentFields: ["name", "description", "skill_md"],
-        transformVersion: 4,
+        transformVersion: 3,
         projectName: "SkillRet Eval",
         projectId: "project-1",
         topicName: "SkillRet Test Split",
@@ -419,15 +653,20 @@ function mockSkillAgentStdoutAdapter(
       const agents = await readFile(join(input.workspace, "AGENTS.md"), "utf-8")
       expect(agents).toContain("read-only")
       expect(agents).toContain("exact SkillRet ID UUIDs")
-      expect(input.prompt).toContain("Return only JSON")
+      expect(input.prompt).toContain("Return exactly one valid JSON object")
+      expect(input.prompt).toContain("skill-selection task")
       expect(input.prompt).toContain("ids=latest")
       expect(input.prompt).toContain("SkillRet ID")
       expect(input.prompt).toContain(
         "capability, framework/tool, and action-intent facets"
       )
       expect(input.prompt).toContain(
-        "Compare Skill Name, Short Summary, and SkillRet Tags"
+        "Compare rank, Skill Name, Short Summary, category, and tags"
       )
+      expect(input.prompt).toContain("`latest` token changes after every search")
+      expect(input.prompt).toContain("Never pass SkillRet ID UUIDs")
+      expect(input.prompt).toContain("Cite only IDs shown in expanded memory output")
+      expect(input.prompt).toContain("answer field must be plain text")
       await writeBrokerToolTrace(input.workspace, brokerTrace)
       return {
         exitCode: 0,

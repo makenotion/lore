@@ -56,6 +56,7 @@ export type {
 } from "./task-runner/lore-adapter.js"
 export {
   BENCH_AGENT_MODEL,
+  BENCH_AGENT_MODEL_ENV,
   BENCH_CHILD_CLEARED_ENV_KEYS,
   BENCH_MODE_SENTINEL,
   BENCH_RUNTIME_CONFIG_ROOT_ENV,
@@ -66,6 +67,7 @@ export {
   BENCH_TOOL_NODE_ENV,
   BENCH_TOOL_SHIM_DIR,
   BENCH_TOOL_TRACE_FILE,
+  benchAgentModel,
   buildBenchCodexChildEnv,
   buildBenchSpawnArgs,
   buildTaskSpawnArgs,

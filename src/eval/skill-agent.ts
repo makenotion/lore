@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
@@ -14,6 +14,7 @@ import {
   BENCH_TOOL_SHIM_DIR,
   BENCH_TOOL_TRACE_FILE,
   CodexAgentAdapter,
+  benchAgentModel,
 } from "./task-runner/codex-adapter.js"
 import type { AgentAdapter, AgentRunResult, AgentRunUsage } from "./task-runner/schema.js"
 import { defaultArtifactPath } from "./task-runner/shared.js"
@@ -216,7 +217,7 @@ export interface SkillAgentArtifact {
     readOnly: true
     conditions: SkillAgentCondition[]
     requiredConditions: SkillAgentCondition[]
-    agent: SkillAgentSuite["agent"]
+    agent: SkillAgentSuite["agent"] & { model?: string }
     scoring: SkillAgentSuite["scoring"]
     skillRetrievalSuite: string
   }
@@ -326,16 +327,16 @@ export async function runSkillAgentSuite(
       readOnly: true,
       conditions: [...loaded.suite.conditions],
       requiredConditions: [...loaded.suite.requiredConditions],
-      agent: loaded.suite.agent,
+      agent: { ...loaded.suite.agent, model: benchAgentModel(process.env) },
       scoring: loaded.suite.scoring,
-      skillRetrievalSuite: prepared.skillSuitePath,
+      skillRetrievalSuite: artifactDisplayPath(prepared.skillSuitePath),
     },
     corpus: {
       skills: prepared.skills.length,
       queries: prepared.selectedQueries.length,
       qrels: prepared.qrels.length,
       revision: prepared.revision,
-      importManifestPath: prepared.manifestPath,
+      importManifestPath: artifactDisplayPath(prepared.manifestPath),
       importManifestSha256: prepared.manifestSha256,
     },
     results,
@@ -348,6 +349,14 @@ export async function runSkillAgentSuite(
   await mkdir(dirname(outPath), { recursive: true })
   await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
   return { artifact, outPath }
+}
+
+function artifactDisplayPath(path: string): string {
+  const repoRelative = relative(process.cwd(), path)
+  if (repoRelative && !repoRelative.startsWith("..") && !isAbsolute(repoRelative)) {
+    return repoRelative
+  }
+  return path
 }
 
 async function prepareSkillAgentCorpus(
@@ -429,7 +438,8 @@ async function runSkillAgentTrial(input: {
       transcriptPath,
       extraEnv,
     })
-    const parsed = parseSkillAgentAnswer(agentRun.stdout)
+    const answerText = await readSkillAgentAnswerText(workspace, agentRun.stdout)
+    const parsed = parseSkillAgentAnswer(answerText)
     const toolTrace = await readToolTrace(traceFile)
     return scoreSkillAgentTrial({
       suite: input.suite,
@@ -669,12 +679,15 @@ function renderSkillAgentPrompt(input: {
         "First split the task into capability, framework/tool, and action-intent facets; use those facets to choose search queries.",
         '`lore-query action=search query="<skill or task paraphrase>" limit=10 mode=semantic` searches the seeded SkillRet vault.',
         "For multi-part tasks, run separate searches for the distinct capabilities instead of relying on one broad query.",
-        "Search results are skill candidates. Compare Skill Name, Short Summary, and SkillRet Tags before choosing what to expand.",
+        "Search results are skill candidates. Compare rank, Skill Name, Short Summary, category, and tags before choosing what to expand.",
+        "Expand plausible top-ranked candidates immediately after each search. The `latest` token changes after every search; use listed handles such as m1 if you search again.",
         "After a search or recall, `lore-memory action=expand ids=latest` reads every memory body from that latest result set.",
         "`lore-memory action=expand ids=m1` reads one listed memory body using its search-result handle.",
         "Prefer ids=latest or handles such as m1 and m2; only pass a memory ID if you copy the complete ID exactly.",
         "Never abbreviate memory IDs or pass short hex fragments.",
+        "Never pass SkillRet ID UUIDs to lore-memory expand; SkillRet IDs are only for usedSkillIds after expansion.",
         "Expand every plausible candidate before answering; when unsure, expand the latest result set or several listed handles in one call.",
+        "Do not cite IDs from search results. Cite only IDs shown in expanded memory output.",
         "Use usedMemoryIds for the exact expanded memory IDs that materially support the answer.",
         "Use usedSkillIds only for exact UUID values copied from `SkillRet ID:` lines in expanded memory bodies; do not use slugs, titles, or topic keys.",
         "For multi-part tasks, include a relevant stored skill for each part when the expanded evidence supports it.",
@@ -686,12 +699,16 @@ function renderSkillAgentPrompt(input: {
   return [
     "You are completing a SkillRet read-only Lore evaluation task.",
     "The eval measures whether an agent can use an existing Lore vault, not whether it can write memories.",
+    "This is a skill-selection task, not a task-completion task. Do not implement the requested project, write code, or produce long deliverables.",
+    "Select the stored skills that best match the task, and keep the answer field to a concise explanation of those choices.",
     toolInstructions,
     "",
     "Task:",
     input.query.query,
     "",
-    "Return only JSON with this shape:",
+    "Return exactly one valid JSON object, with no markdown fences, no code blocks, and no extra text. Keep JSON string values short enough to remain valid JSON.",
+    "The answer field must be plain text, not nested JSON, arrays, or objects.",
+    "Use this shape:",
     '{"answer":"...","usedMemoryIds":["..."],"usedSkillIds":["..."],"reason":"..."}',
   ].join("\n")
 }
@@ -804,10 +821,15 @@ function parseSkillAgentAnswer(stdout: string): SkillAgentAnswer {
     return { answer: "", usedMemoryIds: [], usedSkillIds: [], reason: "", toolTrace: [] }
   const parsed = parseStructuredSkillAgentAnswer(trimmed)
   if (parsed) return parsed
+  const loose = parseLooseSkillAgentAnswer(trimmed)
+  if (loose) return loose
   const agentMessage = extractCodexAgentMessage(trimmed)
   if (agentMessage) {
-    const parsedMessage = parseStructuredSkillAgentAnswer(agentMessage.trim())
+    const messageText = agentMessage.trim()
+    const parsedMessage = parseStructuredSkillAgentAnswer(messageText)
     if (parsedMessage) return parsedMessage
+    const looseMessage = parseLooseSkillAgentAnswer(messageText)
+    if (looseMessage) return looseMessage
   }
   return {
     answer: trimmed,
@@ -818,17 +840,84 @@ function parseSkillAgentAnswer(stdout: string): SkillAgentAnswer {
   }
 }
 
-function parseStructuredSkillAgentAnswer(value: string): SkillAgentAnswer | null {
+async function readSkillAgentAnswerText(
+  workspace: string,
+  fallbackStdout: string
+): Promise<string> {
+  try {
+    return await readFile(join(workspace, "answer.txt"), "utf-8")
+  } catch {
+    return fallbackStdout
+  }
+}
+
+function parseStructuredSkillAgentAnswer(
+  value: string,
+  depth = 0
+): SkillAgentAnswer | null {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/u.exec(value)
   const start = value.indexOf("{")
   const end = value.lastIndexOf("}")
   if (!fenced && (start < 0 || end < start)) return null
   const candidate = fenced?.[1] ?? value.slice(start, end + 1)
   try {
-    return skillAgentAnswerSchema.parse(JSON.parse(candidate))
+    const parsed = skillAgentAnswerSchema.parse(JSON.parse(candidate))
+    return unwrapNestedSkillAgentAnswer(parsed, depth)
   } catch {
     return null
   }
+}
+
+function unwrapNestedSkillAgentAnswer(
+  parsed: SkillAgentAnswer,
+  depth: number
+): SkillAgentAnswer {
+  if (depth > 0) return parsed
+  if (parsed.usedMemoryIds.length > 0 || parsed.usedSkillIds.length > 0) {
+    return parsed
+  }
+  const nestedText = parsed.answer.trim()
+  if (!nestedText.includes("usedMemoryIds") && !nestedText.includes("usedSkillIds")) {
+    return parsed
+  }
+  const nested =
+    parseStructuredSkillAgentAnswer(nestedText, depth + 1) ??
+    parseLooseSkillAgentAnswer(nestedText)
+  if (!nested) return parsed
+  if (nested.usedMemoryIds.length === 0 && nested.usedSkillIds.length === 0) {
+    return parsed
+  }
+  return {
+    ...nested,
+    reason: parsed.reason || nested.reason,
+    toolTrace: parsed.toolTrace.length > 0 ? parsed.toolTrace : nested.toolTrace,
+  }
+}
+
+function parseLooseSkillAgentAnswer(value: string): SkillAgentAnswer | null {
+  const usedMemoryIds = extractStringArrayProperty(value, "usedMemoryIds")
+  const usedSkillIds = extractStringArrayProperty(value, "usedSkillIds")
+  if (usedMemoryIds.length === 0 && usedSkillIds.length === 0) return null
+  return skillAgentAnswerSchema.parse({
+    answer: value,
+    usedMemoryIds,
+    usedSkillIds,
+    reason: "agent returned malformed structured JSON",
+  })
+}
+
+function extractStringArrayProperty(value: string, key: string): string[] {
+  const match = new RegExp(`"${key}"\\s*:\\s*\\[([^\\]]*)\\]`, "u").exec(value)
+  if (!match?.[1]) return []
+  const out: string[] = []
+  for (const item of match[1].matchAll(/"((?:\\.|[^"\\])*)"/gu)) {
+    try {
+      out.push(JSON.parse(`"${item[1]}"`) as string)
+    } catch {
+      out.push(item[1])
+    }
+  }
+  return uniqueInOrder(out.filter((item) => item.trim().length > 0))
 }
 
 function extractCodexAgentMessage(stdout: string): string | null {

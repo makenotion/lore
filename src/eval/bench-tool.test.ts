@@ -267,6 +267,7 @@ describe("runBenchToolCli", () => {
         tags: [
           "skillret",
           "skillret-split-test",
+          "skillret-kind-procedure",
           "skillret-major-architecture",
           "skillret-sub-routing",
         ],
@@ -290,10 +291,17 @@ describe("runBenchToolCli", () => {
     expect(exitCode, stderrOutput.join("")).toBe(0)
     const stdout = stdoutOutput.join("")
     expect(stdout).toContain("### Skill Candidate: Alpha Skill")
+    expect(stdout).toContain("Rank: 1")
+    expect(stdout).toContain("Expand Candidate: lore-memory action=expand ids=m1")
+    expect(stdout).toContain("Cite IDs from expanded output only.")
     expect(stdout).toContain("Skill Name: Alpha Skill")
     expect(stdout).toContain("Short Summary: Skill: Alpha Skill.")
-    expect(stdout).toContain("SkillRet Tags: skillret, skillret-split-test")
-    expect(stdout).toContain("Compare Skill Name, Short Summary, and SkillRet Tags")
+    expect(stdout).toContain("SkillRet Category: Architecture / Routing")
+    expect(stdout).not.toContain("Memory ID:")
+    expect(stdout).not.toContain("skillret-kind-procedure")
+    expect(stdout).not.toContain("SkillRet Search Keys:")
+    expect(stdout).toContain("Compare rank, Skill Name, Short Summary, category")
+    expect(stdout).toContain("latest` is replaced by every search")
   })
 
   it("resolves listed memory handles when expanding search results", async () => {
@@ -346,6 +354,46 @@ describe("runBenchToolCli", () => {
         expandedMemoryIds: ["mem-project"],
       }),
     ])
+  })
+
+  it("renders expanded SkillRet memories with memory-id and skill-id guidance", async () => {
+    const memory = testMemory({
+      id: "mem-skill-alpha",
+      title: "Alpha Skill",
+      source: "manual",
+      kind: "procedure",
+      tags: ["skillret", "skillret-kind-procedure"],
+      content: [
+        "# Alpha Skill",
+        "",
+        "SkillRet ID: f6986dea-bb4c-4442-b0d0-3c960e732767",
+        "",
+        "## Skill",
+        "",
+        "Prefer alpha routing when tenant metadata is authoritative.",
+      ].join("\n"),
+    })
+    const getById = vi.fn(async () => memory)
+    mocks.initServices.mockResolvedValue({
+      memories: { getById },
+    })
+
+    const exitCode = await runBenchToolCli(
+      "lore-memory",
+      ["action=expand", "ids=mem-skill-alpha"],
+      { [BENCH_TOOL_PROJECT_ID_ENV]: "project-1" }
+    )
+
+    expect(exitCode, stderrOutput.join("")).toBe(0)
+    const stdout = stdoutOutput.join("")
+    expect(stdout).toContain("### Skill Candidate Expanded: Alpha Skill")
+    expect(stdout).toContain(
+      "Use in usedMemoryIds and lore-memory expand: mem-skill-alpha"
+    )
+    expect(stdout).toContain(
+      "Use in usedSkillIds only: f6986dea-bb4c-4442-b0d0-3c960e732767"
+    )
+    expect(stdout).toContain("Do not pass SkillRet IDs to lore-memory expand.")
   })
 
   it("keeps memory handles stable across multiple searches", async () => {

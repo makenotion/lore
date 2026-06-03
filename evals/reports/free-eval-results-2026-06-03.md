@@ -16,14 +16,19 @@ target selected, and answer/application success. The Notion AI result below is
 intentionally labeled directional because the live run was paused after 13 of
 20 shards once it had enough signal for product direction.
 
+The SkillRet read-only agent sample is the closer measurement for Lore as an
+agent tool. It reuses the existing SkillRet eval vault and import manifest; it
+does not reimport the corpus into Notion.
+
 ## Summary
 
-| Track                          | Raw artifact                                                   | Result                                                                                                                                 | Interpretation                                                                                                                                           |
-| ------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SkillRet keyword retrieval     | `evals/results/skillret-test-keyword-2026-06-03.json`          | 4,997 queries, 6,660 skills, 8,347 qrels. Recall@10 17.51%, NDCG@10 0.1092, MRR@10 0.1049, MAP@10 0.0790.                              | Offline string-matching control. This is not Lore retrieval, not Notion keyword retrieval, not Notion AI search, and not agent task lift.                |
-| SkillRet Notion AI directional | `evals/results/skillret-notion-ai-directional-2026-06-04.json` | 3,250/4,997 queries across 13/20 shards. Recall@10 23.08%, NDCG@10 0.1856, MRR@10 0.2167, MAP@10 0.1480; 0 mechanism failures.         | Live Notion-backed substrate recall sample. Better than the local keyword control, but below dedicated SkillRet rankers and not representative Lore use. |
-| Skill-use smoke                | `evals/results/skill-use-smoke-2026-06-03.json`                | 4/4 required condition checks passed. No-context 0%, oracle 100%, retrieved 100%, retrieved gap to oracle 0.0 pp.                      | Harness sanity check for support-set/context-sufficiency logic. The default answerer is deterministic, not a powered agent.                              |
-| Mail retrieval-quality         | `evals/results/mail-retrieval-quality-2026-06-03.json`         | 6/6 required lane checks passed across 3 live-vault cases. Product and RunTool AI lanes recall@1 100%; REST keyword lane recall@10 0%. | Live Notion retrieval quality for three labeled Mail cases. Read-only, but raw artifact includes live-vault IDs, returned titles, and explain traces.    |
+| Track                          | Raw artifact                                                     | Result                                                                                                                                                  | Interpretation                                                                                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| SkillRet keyword retrieval     | `evals/results/skillret-test-keyword-2026-06-03.json`            | 4,997 queries, 6,660 skills, 8,347 qrels. Recall@10 17.51%, NDCG@10 0.1092, MRR@10 0.1049, MAP@10 0.0790.                                               | Offline string-matching control. This is not Lore retrieval, not Notion keyword retrieval, not Notion AI search, and not agent task lift.                                      |
+| SkillRet Notion AI directional | `evals/results/skillret-notion-ai-directional-2026-06-04.json`   | 3,250/4,997 queries across 13/20 shards. Recall@10 23.08%, NDCG@10 0.1856, MRR@10 0.2167, MAP@10 0.1480; 0 mechanism failures.                          | Live Notion-backed substrate recall sample. Better than the local keyword control, but below dedicated SkillRet rankers and not representative Lore use.                       |
+| SkillRet read-only agent       | `evals/results/skillret-agent-existing-vault-30-2026-06-04.json` | 30 queries against the existing seeded vault. Success 23.33%, tool use 96.67%, target surfaced 73.33%, target expanded 60.00%, selected/applied 23.33%. | Agent-level Lore sample. The agent usually uses Lore and often sees the target, but usually fails to select/apply it. Directional only; the live run hit repeated Notion 429s. |
+| Skill-use smoke                | `evals/results/skill-use-smoke-2026-06-03.json`                  | 4/4 required condition checks passed. No-context 0%, oracle 100%, retrieved 100%, retrieved gap to oracle 0.0 pp.                                       | Harness sanity check for support-set/context-sufficiency logic. The default answerer is deterministic, not a powered agent.                                                    |
+| Mail retrieval-quality         | `evals/results/mail-retrieval-quality-2026-06-03.json`           | 6/6 required lane checks passed across 3 live-vault cases. Product and RunTool AI lanes recall@1 100%; REST keyword lane recall@10 0%.                  | Live Notion retrieval quality for three labeled Mail cases. Read-only, but raw artifact includes live-vault IDs, returned titles, and explain traces.                          |
 
 ## Provenance
 
@@ -69,6 +74,13 @@ LORE_CONFIG_ROOT=<operator-local-skillret-eval-config> \
 LORE_EVAL_SKILLRET_REAL=1 \
 node dist/cli.js eval run evals/skill-retrieval/.tmp-skillret-notion-ai-shard-XX.yaml \
   --out <operator-local-shard-results>/.tmp-skillret-notion-ai-shard-XX.json
+
+NOTION_ENV=dev \
+NOTION_API_TOKEN="$NOTION_DEV_PAT" \
+LORE_CONFIG_ROOT=<operator-local-skillret-eval-config> \
+LORE_EVAL_BENCH_REAL=1 \
+node dist/cli.js eval run <operator-local-skill-agent-suite> \
+  --out <operator-local-skill-agent-result>
 ```
 
 The first Mail run attempt hit a Notion `429` rate limit and did not produce an
@@ -84,16 +96,17 @@ of the committed artifact set.
 
 ## Artifact Inventory
 
-| Path                                                           |   Size | SHA-256                                                            |
-| -------------------------------------------------------------- | -----: | ------------------------------------------------------------------ |
-| `evals/results/skillret-test-keyword-2026-06-03.json`          | 9.1 MB | `abcb509afe170ee7f26a2a552c8cc961ca3d36943d357b28df0d4f23dd88e820` |
-| `evals/results/skillret-notion-ai-directional-2026-06-04.json` |  11 MB | `dd69f60f04a1fb3667792b479fbf5fe1f7371cf46b63bc4e023b778b24e411f7` |
-| `evals/results/skill-use-smoke-2026-06-03.json`                |  11 KB | `2c5617316cb2aa4584533f65b27f3ad35cdad8a4940435ca2e3319d41012b09d` |
-| `evals/results/mail-retrieval-quality-2026-06-03.json`         |  25 KB | `c753e74abe5a37a67e2be6759bdebe1329d458d174b3900523728b6983465d1e` |
-| `evals/skill-retrieval/skillret-test.yaml`                     |  suite | `ae30a61a574710e4305e0572e1da4dbd99ceef3e47f2273052c378134d058f8b` |
-| `evals/skill-retrieval/skillret-notion-ai.yaml`                |  suite | `9a5cf3c65e05b9b9f5e2eb5ec04affa45ed883b45e3a2eebe851da84ac3350b2` |
-| `evals/skill-use/smoke.yaml`                                   |  suite | `ff345083b87bdc9d6bb0dbe513a3a8f2f4a4cad80b8b9960d20db0b07b98e523` |
-| `evals/retrieval-quality/mail.yaml`                            |  suite | `d40cc7de206c2279b8846881e4fd4cec88fe058dbd07c98215f1632b18e3c794` |
+| Path                                                             |   Size | SHA-256                                                            |
+| ---------------------------------------------------------------- | -----: | ------------------------------------------------------------------ |
+| `evals/results/skillret-test-keyword-2026-06-03.json`            | 9.1 MB | `abcb509afe170ee7f26a2a552c8cc961ca3d36943d357b28df0d4f23dd88e820` |
+| `evals/results/skillret-notion-ai-directional-2026-06-04.json`   |  11 MB | `dd69f60f04a1fb3667792b479fbf5fe1f7371cf46b63bc4e023b778b24e411f7` |
+| `evals/results/skillret-agent-existing-vault-30-2026-06-04.json` | 234 KB | `70d438518e992f067e21a5e3b7f4f9889ce69aea6365519c38f259b0f0232f3d` |
+| `evals/results/skill-use-smoke-2026-06-03.json`                  |  11 KB | `2c5617316cb2aa4584533f65b27f3ad35cdad8a4940435ca2e3319d41012b09d` |
+| `evals/results/mail-retrieval-quality-2026-06-03.json`           |  25 KB | `c753e74abe5a37a67e2be6759bdebe1329d458d174b3900523728b6983465d1e` |
+| `evals/skill-retrieval/skillret-test.yaml`                       |  suite | `ae30a61a574710e4305e0572e1da4dbd99ceef3e47f2273052c378134d058f8b` |
+| `evals/skill-retrieval/skillret-notion-ai.yaml`                  |  suite | `621218eb2efed0c5a734ab477d857f1b1284d59ca4a8d3e8bee477f89db6edfd` |
+| `evals/skill-use/smoke.yaml`                                     |  suite | `ff345083b87bdc9d6bb0dbe513a3a8f2f4a4cad80b8b9960d20db0b07b98e523` |
+| `evals/retrieval-quality/mail.yaml`                              |  suite | `d40cc7de206c2279b8846881e4fd4cec88fe058dbd07c98215f1632b18e3c794` |
 
 SkillRet corpus hashes matched the pinned manifest:
 
@@ -103,13 +116,16 @@ SkillRet corpus hashes matched the pinned manifest:
 | `data/queries/test.jsonl` | `7475fc12e06c81acb256831dbe25b10cca3c489f23be5774ded034f3bb3877ea` |
 | `data/qrels/test.jsonl`   | `12142c4433ffe6c6d6b2b98a277168d35c81338e1b50818eadd8a3c6bb2a6f44` |
 
-Privacy note: committed artifacts are sanitized for review. SkillRet result
+Privacy note: committed artifacts are sanitized for review. SkillRet retrieval
 artifacts redact raw `results[].query` text while preserving query ids,
 expected skill ids, returned skill ids, returned names, returned memory ids,
-metrics, summaries, and corpus checksums. The full query text is recoverable
-from the pinned public corpus outside the committed artifact. Live Mail result
-artifacts replace Notion page/project ids with stable pseudonyms and redact
-live-vault titles. Corpus paths are repo-relative rather than machine-local.
+metrics, summaries, and corpus checksums. The SkillRet agent artifact also
+redacts agent answers and replaces Notion memory ids with stable pseudonyms
+while preserving scoring fields and tool-trace shapes. The full query text is
+recoverable from the pinned public corpus outside the committed artifact. Live
+Mail result artifacts replace Notion page/project ids with stable pseudonyms
+and redact live-vault titles. Corpus paths are repo-relative rather than
+machine-local.
 
 ## SkillRet Keyword Retrieval
 
@@ -214,6 +230,61 @@ The likely Lore-side improvements, without changing Notion search itself, are:
    contains leg can only search title, keywords, and synopsis, not the full
    page body.
 
+## SkillRet Read-Only Agent Existing-Vault Sample
+
+Suite: `evals/skill-agent/skillret-readonly-agent.yaml`, with a 30-query
+temporary limit and only the required `tool-driven-lore` condition enabled.
+
+This run used the existing registered SkillRet eval vault and
+`evals/skill-retrieval/manifests/skillret-test-import.json`. It did not import
+or update the SkillRet corpus.
+
+| Metric          |  Value |
+| --------------- | -----: |
+| Queries         |     30 |
+| Passed          |      7 |
+| Failed          |     23 |
+| Success         | 23.33% |
+| Lore tool use   | 96.67% |
+| Target surfaced | 73.33% |
+| Target expanded | 60.00% |
+| Target selected | 23.33% |
+| Answer applied  | 23.33% |
+| Write attempts  |      0 |
+
+Ranking metrics:
+
+| Metric |     @1 |     @5 |    @10 |
+| ------ | -----: | -----: | -----: |
+| Recall | 0.1611 | 0.2722 | 0.3056 |
+| NDCG   | 0.2000 | 0.2390 | 0.2495 |
+| MRR    | 0.2000 | 0.2733 | 0.2775 |
+| MAP    | 0.1611 | 0.2067 | 0.2108 |
+
+Failure reasons:
+
+| Failure reason                | Count |
+| ----------------------------- | ----: |
+| `target-not-selected`         |    23 |
+| `answer-did-not-apply-target` |    23 |
+| `target-not-expanded`         |    12 |
+| `target-not-surfaced`         |     8 |
+| `lore-tool-not-used`          |     1 |
+
+The main failure is not that the eval agent refuses to use Lore. It used Lore
+in 29 of 30 trials, and the target skill reached the visible candidate set in
+22 of 30 trials. The main failure is selection and application after retrieval:
+when the target is present, the agent still often chooses a nearby but wrong
+skill or returns an answer that does not cite/apply the target skill.
+
+The run was live against Notion and emitted repeated `429` rate-limit warnings,
+so the elapsed-time behavior should not be treated as clean throughput data.
+The quality signal is still directionally useful: candidate presentation alone
+is not enough. The next likely improvements are over-fetch plus manifest
+post-filtering, explicit candidate comparison/reranking, and stronger
+activation-card content inside the existing SkillRet memories after a deliberate
+vault update plan.
+
 ## Skill-Use Smoke
 
 Suite: `evals/skill-use/smoke.yaml`
@@ -270,6 +341,8 @@ Notion ids with stable pseudonyms and redacts live-vault titles.
   the full public test split.
 - The SkillRet Notion AI number is raw search substrate recall, not an agent
   using Lore under AGENTS.md-style instructions.
+- The SkillRet read-only agent sample is a 30-query live-vault sample, not a
+  full 4,997-query agent benchmark.
 - The SkillRet number is not a Notion-backed keyword result.
 - The skill-use smoke number is not powered-agent task performance.
 - The Mail retrieval-quality suite currently has only three labeled cases and
@@ -280,10 +353,9 @@ Notion ids with stable pseudonyms and redacts live-vault titles.
 
 ## Next Measurement Work
 
-1. Run the read-only SkillRet agent lane: reuse the stable imported eval vault,
-   expose only Lore read paths to the agent, block write attempts, and score
-   tool use, target surfaced, target selected, and answer/application success
-   separately from raw search recall.
+1. Scale the read-only SkillRet agent lane beyond the 30-query directional
+   sample once the candidate-selection surface improves enough to justify more
+   live Notion traffic.
 2. Add a manifest-filtered over-fetch mode for SkillRet Notion AI runs so Lore
    can request up to the RunTool cap, remove rows outside the active manifest,
    and score top-10 after filtering.

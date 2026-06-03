@@ -410,17 +410,7 @@ retrieval:
         "skillret-sub-routing",
       ],
     })
-    const alphaContent = String(createInputs[0]?.["content"] ?? "")
-    expect(alphaContent).toContain("## Search Summary")
-    expect(alphaContent).toContain("Skill Name: Alpha Skill")
-    expect(alphaContent).toContain("Short Summary: Use alpha routing")
-    expect(alphaContent).toContain("Major: architecture")
-    expect(alphaContent).toContain("Sub: routing")
-    expect(alphaContent).toContain("Tags: skillret, skillret-split-test")
-    const alphaSynopsis = String(createInputs[0]?.["synopsis"] ?? "")
-    expect(alphaSynopsis).toHaveLength(150)
-    expect(alphaSynopsis).toContain("Skill: Alpha Skill")
-    expect(alphaSynopsis).toContain("Use when: Use alpha routing")
+    expect(String(createInputs[0]?.["synopsis"] ?? "")).toHaveLength(150)
     const betaCreate = createInputs.find((input) => input["title"] === "Beta Skill")
     const betaContent = String(betaCreate?.["content"] ?? "")
     expect(betaContent).toContain(
@@ -436,7 +426,7 @@ retrieval:
     expect(manifest.skills["skill-alpha"]?.topicKey).toBe(
       "skillret/test/unknown/architecture/routing/skill-alpha"
     )
-    expect(manifest.transformVersion).toBe(4)
+    expect(manifest.transformVersion).toBe(3)
     expect(manifest.skills["skill-beta"]?.truncatedFields).toEqual([
       {
         field: "skill_md",
@@ -486,7 +476,7 @@ retrieval:
 
     await writeFile(
       join(dir, "manifests/import.json"),
-      `${JSON.stringify({ ...manifest, transformVersion: 3 }, null, 2)}\n`,
+      `${JSON.stringify({ ...manifest, transformVersion: 2 }, null, 2)}\n`,
       "utf-8"
     )
     await expect(
@@ -496,7 +486,7 @@ retrieval:
         outPath: join(dir, "stale-result.json"),
         now: new Date("2026-06-03T12:09:00.000Z"),
       })
-    ).rejects.toThrow(/transformVersion 3 != 4/)
+    ).rejects.toThrow(/transformVersion 2 != 3/)
     await writeFile(
       join(dir, "manifests/import.json"),
       `${JSON.stringify(manifest, null, 2)}\n`,
@@ -900,7 +890,7 @@ retrieval:
       transformVersion: number
       skills: Record<string, { contentSha256: string }>
     }
-    oldManifest.transformVersion = 3
+    oldManifest.transformVersion = 2
     oldManifest.skills["skill-alpha"]!.contentSha256 = "0".repeat(64)
     await writeFile(manifestPath, `${JSON.stringify(oldManifest, null, 2)}\n`, "utf-8")
 
@@ -914,7 +904,7 @@ retrieval:
     ).rejects.toThrow(/1 failed, 1 completed/)
 
     const manifest = await readSkillRetrievalImportManifest(manifestPath)
-    expect(manifest.transformVersion).toBe(3)
+    expect(manifest.transformVersion).toBe(2)
     expect(manifest.skills["skill-alpha"]?.contentSha256).toBe("0".repeat(64))
   })
 

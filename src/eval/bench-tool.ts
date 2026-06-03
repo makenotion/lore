@@ -696,8 +696,8 @@ function renderBenchSearch(
     `Found ${memories.length} memories for "${query}":`,
     "",
     memories
-      .map((memory) =>
-        renderBenchMemoryListItem(memory, includeContent, handles, context)
+      .map((memory, index) =>
+        renderBenchMemoryListItem(memory, includeContent, handles, context, index)
       )
       .join("\n\n---\n\n"),
     includeContent ? "" : benchMemoryExpansionHint(context),
@@ -715,8 +715,8 @@ function renderBenchRecall(
     `${memories.length} recent memories:`,
     "",
     memories
-      .map((memory) =>
-        renderBenchMemoryListItem(memory, includeContent, handles, context)
+      .map((memory, index) =>
+        renderBenchMemoryListItem(memory, includeContent, handles, context, index)
       )
       .join("\n\n---\n\n"),
     includeContent ? "" : benchMemoryExpansionHint(context),
@@ -725,7 +725,7 @@ function renderBenchRecall(
 
 function benchMemoryExpansionHint(context?: BenchToolRenderContext): string {
   if (context?.skillRet) {
-    return "\nBodies omitted. Compare Skill Name, Short Summary, and SkillRet Tags, then run `lore-memory action=expand ids=latest` for the latest result set, `ids=m1` for a listed handle, or pass complete IDs copied exactly."
+    return "\nBodies omitted. Compare rank, Skill Name, Short Summary, category, and tags. Expand plausible top-ranked candidates before issuing another search. `latest` is replaced by every search; use listed handles such as `ids=m1` to expand earlier candidates."
   }
   return "\nBodies omitted. Run `lore-memory action=expand ids=latest` for the latest result set, `ids=m1` for a listed handle, or pass complete IDs copied exactly."
 }
@@ -734,10 +734,11 @@ function renderBenchMemoryListItem(
   memory: Memory,
   includeContent: boolean,
   handles: BenchMemoryHandleMap,
-  context: BenchToolRenderContext
+  context: BenchToolRenderContext,
+  index?: number
 ): string {
   if (isSkillRetMemory(memory, context)) {
-    return renderBenchSkillRetMemoryListItem(memory, includeContent, handles)
+    return renderBenchSkillRetMemoryListItem(memory, includeContent, handles, index)
   }
   const handle = handles.get(memory.id)
   const meta = [
@@ -758,14 +759,15 @@ function renderBenchMemoryListItem(
 function renderBenchSkillRetMemoryListItem(
   memory: Memory,
   includeContent: boolean,
-  handles: BenchMemoryHandleMap
+  handles: BenchMemoryHandleMap,
+  index?: number
 ): string {
   const handle = handles.get(memory.id)
   const tags = benchMemoryTags(memory).filter((tag) => tag.trim().length > 0)
-  const keywords = benchMemoryKeywords(memory)
+  const category = skillRetCategory(tags)
+  const displayTags = skillRetDisplayTags(tags)
   const meta = [
     handle ? `Handle: ${handle}` : null,
-    `Memory ID: ${memory.id}`,
     memory.source,
     memory.kind !== "procedure" ? memory.kind : null,
     memory.status !== "informational" ? memory.status : null,
@@ -776,15 +778,16 @@ function renderBenchSkillRetMemoryListItem(
   const lines = [
     `### Skill Candidate: ${memory.title}`,
     `*${meta}*`,
+    index !== undefined ? `Rank: ${index + 1}` : "",
+    handle ? `Expand Candidate: lore-memory action=expand ids=${handle}` : "",
+    "Cite IDs from expanded output only.",
     `Skill Name: ${memory.title}`,
     `Short Summary: ${memory.synopsis.trim() || "No short summary available."}`,
   ]
-  if (tags.length > 0) lines.push(`SkillRet Tags: ${tags.join(", ")}`)
-  if (keywords.length > 0) {
-    lines.push(`SkillRet Search Keys: ${keywords}`)
-  }
+  if (category) lines.push(`SkillRet Category: ${category}`)
+  if (displayTags.length > 0) lines.push(`SkillRet Tags: ${displayTags.join(", ")}`)
   const body = includeContent && memory.content ? `\n\n${memory.content}` : ""
-  return `${lines.join("\n")}${body}`
+  return `${lines.filter((line) => line.length > 0).join("\n")}${body}`
 }
 
 function isSkillRetMemory(memory: Memory, context: BenchToolRenderContext): boolean {
@@ -803,6 +806,38 @@ function benchMemoryKeywords(memory: Memory): string {
   return typeof memory.keywords === "string" ? memory.keywords.trim() : ""
 }
 
+function skillRetCategory(tags: readonly string[]): string {
+  const major = skillRetTaggedValue(tags, "skillret-major-")
+  const sub = skillRetTaggedValue(tags, "skillret-sub-")
+  return [major, sub].filter(Boolean).join(" / ")
+}
+
+function skillRetTaggedValue(tags: readonly string[], prefix: string): string {
+  const tag = tags.find((value) => value.toLowerCase().startsWith(prefix))
+  return tag ? humanizeSkillRetTag(tag.slice(prefix.length)) : ""
+}
+
+function humanizeSkillRetTag(value: string): string {
+  return value
+    .split("-")
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ")
+}
+
+function skillRetDisplayTags(tags: readonly string[]): string[] {
+  return tags.filter((tag) => {
+    const normalized = tag.toLowerCase()
+    return (
+      normalized !== "skillret" &&
+      normalized !== "skillret-split-test" &&
+      !normalized.startsWith("skillret-kind-") &&
+      !normalized.startsWith("skillret-major-") &&
+      !normalized.startsWith("skillret-sub-")
+    )
+  })
+}
+
 function renderBenchExpandedMemories(memories: readonly Memory[]): string {
   if (memories.length === 0) return "Expanded 0 memories."
   const label = memories.length === 1 ? "memory" : "memories"
@@ -814,6 +849,9 @@ function renderBenchExpandedMemories(memories: readonly Memory[]): string {
 }
 
 function renderBenchExpandedMemory(memory: Memory): string {
+  if (isSkillRetMemory(memory, { skillRet: false })) {
+    return renderBenchExpandedSkillRetMemory(memory)
+  }
   const meta = [
     `ID: ${memory.id}`,
     memory.source,
@@ -825,6 +863,34 @@ function renderBenchExpandedMemory(memory: Memory): string {
     .join(" | ")
   const body = memory.content ? `\n\n${memory.content}` : ""
   return `### ${memory.title}\n*${meta}*${body}`
+}
+
+function renderBenchExpandedSkillRetMemory(memory: Memory): string {
+  const skillRetId = extractSkillRetId(memory.content)
+  const meta = [
+    `Lore Memory ID: ${memory.id}`,
+    skillRetId ? `SkillRet ID: ${skillRetId}` : null,
+    memory.source,
+    memory.kind !== "procedure" ? memory.kind : null,
+    memory.status !== "informational" ? memory.status : null,
+    memory.updatedAt.split("T")[0],
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" | ")
+  const usage = [
+    `Use in usedMemoryIds and lore-memory expand: ${memory.id}`,
+    skillRetId ? `Use in usedSkillIds only: ${skillRetId}` : null,
+    skillRetId ? "Do not pass SkillRet IDs to lore-memory expand." : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n")
+  const body = memory.content ? `\n\n${memory.content}` : ""
+  return `### Skill Candidate Expanded: ${memory.title}\n*${meta}*\n${usage}${body}`
+}
+
+function extractSkillRetId(content: string | null | undefined): string {
+  const match = /^SkillRet ID:\s*([0-9a-f-]{36})\s*$/imu.exec(content ?? "")
+  return match?.[1] ?? ""
 }
 
 async function appendBenchToolTrace(

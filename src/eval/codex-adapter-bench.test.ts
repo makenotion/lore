@@ -21,6 +21,7 @@ let tempDirs: string[] = []
 const savedEnv: Record<string, string | undefined> = {}
 const envKeys = [
   "LORE_EVAL_BENCH_REAL",
+  "LORE_EVAL_BENCH_AGENT_MODEL",
   "LORE_EVAL_TASK_REAL",
   "LORE_EVAL_TASK_TIMEOUT_KILL_GRACE_MS",
   "LORE_BENCH_OPENAI_API_KEY",
@@ -39,6 +40,7 @@ afterEach(async () => {
     else process.env[key] = value
   }
   savedEnv["LORE_EVAL_BENCH_REAL"] = undefined
+  savedEnv["LORE_EVAL_BENCH_AGENT_MODEL"] = undefined
   savedEnv["LORE_EVAL_TASK_REAL"] = undefined
   savedEnv["LORE_EVAL_TASK_TIMEOUT_KILL_GRACE_MS"] = undefined
   savedEnv["LORE_BENCH_OPENAI_API_KEY"] = undefined
@@ -70,6 +72,53 @@ describe("CodexAgentAdapter bench isolation", () => {
     expect(result.exitCode).toBe(0)
     expect(codexHome).toBeDefined()
     expect(existsSync(codexHome!)).toBe(false)
+  })
+
+  it("keeps the bench Codex JSONL stdout when the final answer file exists", async () => {
+    const { workspace } = await setupBenchRunEnv()
+    const child = fakeChild()
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from('{"type":"thread.started"}\n'))
+        void writeFile(
+          join(workspace, "answer.txt"),
+          '{"answer":"final","usedMemoryIds":["m1"],"usedSkillIds":["s1"]}\n',
+          "utf-8"
+        ).then(() => child.emit("close", 0))
+      })
+      return child
+    })
+
+    const result = await new CodexAgentAdapter().run({
+      workspace,
+      prompt: "Answer from Lore.",
+      timeoutMs: 1_000,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe('{"type":"thread.started"}\n')
+  })
+
+  it("uses the bench agent model override when spawning Codex", async () => {
+    const { workspace } = await setupBenchRunEnv()
+    const child = fakeChild()
+    process.env["LORE_EVAL_BENCH_AGENT_MODEL"] = "gpt-5.5"
+    let spawnedArgs: string[] = []
+    spawnMock.mockImplementation((_cmd, args) => {
+      spawnedArgs = args as string[]
+      setImmediate(() => child.emit("close", 0))
+      return child
+    })
+
+    const result = await new CodexAgentAdapter().run({
+      workspace,
+      prompt: "Answer from Lore.",
+      timeoutMs: 1_000,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(spawnedArgs).toContain("-m")
+    expect(spawnedArgs[spawnedArgs.indexOf("-m") + 1]).toBe("gpt-5.5")
   })
 
   it("removes the isolated Codex home after a bench child spawn error", async () => {

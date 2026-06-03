@@ -3,9 +3,9 @@ runner: skill-retrieval
 name: skillret-notion-ai
 description: >
   SkillRet public test split scored through the persistent Notion-backed
-  SkillRet eval vault. Run `lore eval skill-retrieval fetch skillret`, then
-  `lore eval skill-retrieval import evals/skill-retrieval/skillret-notion-ai.yaml --yes --create-project`
-  against the registered SkillRet eval vault before running this suite.
+  SkillRet eval vault. The suite expects the registered vault and
+  `manifests/skillret-test-import.json` to already exist. Import is a one-time
+  vault setup step, not part of routine eval runs.
 corpus:
   kind: skillret
   root: corpora/skillret

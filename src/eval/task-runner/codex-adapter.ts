@@ -263,6 +263,12 @@ function isBenchWorkspace(workspace: string): boolean {
  * socket rather than a workspace-readable bearer.
  */
 export const BENCH_AGENT_MODEL = "gpt-4o-mini-2024-07-18"
+export const BENCH_AGENT_MODEL_ENV = "LORE_EVAL_BENCH_AGENT_MODEL"
+
+export function benchAgentModel(env: NodeJS.ProcessEnv = process.env): string {
+  const model = env[BENCH_AGENT_MODEL_ENV]?.trim()
+  return model && model.length > 0 ? model : BENCH_AGENT_MODEL
+}
 
 /**
  * Env vars the bench-runner reads to configure live Notion access.
@@ -375,14 +381,18 @@ function resolveBenchToolCliJs(): string | null {
  * contains no bearer-shaped substring." The invariant: token
  * routing never happens via Codex argv.
  */
-export function buildBenchSpawnArgs(workspace: string, prompt: string): string[] {
+export function buildBenchSpawnArgs(
+  workspace: string,
+  prompt: string,
+  model = BENCH_AGENT_MODEL
+): string[] {
   return [
     "exec",
     "--json",
     "--output-last-message",
     join(workspace, "answer.txt"),
     "-m",
-    BENCH_AGENT_MODEL,
+    model,
     "-c",
     "sandbox_workspace_write.network_access=true",
     "-c",
@@ -636,7 +646,11 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
     }
     const codexHome = await createIsolatedCodexHome()
-    const args = buildBenchSpawnArgs(input.workspace, input.prompt)
+    const args = buildBenchSpawnArgs(
+      input.workspace,
+      input.prompt,
+      benchAgentModel(process.env)
+    )
     return new Promise<AgentRunResult>((resolveRun) => {
       const child = spawn(codexExecutable, args, {
         stdio: ["ignore", "pipe", "pipe"],
