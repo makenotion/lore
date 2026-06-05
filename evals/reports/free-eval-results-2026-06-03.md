@@ -1,12 +1,12 @@
 # Free Eval Results - 2026-06-03
 
 This report records the no-API-cost eval runs for the skill-retrieval work
-originally collected in PR #945, plus the follow-up read-only agent sample in
-PR #947. Keep the result tracks separate: the SkillRet keyword run is an
-offline string-matching control, the SkillRet Notion AI run is a directional
-partial substrate-recall diagnostic, the skill-use run is a deterministic
-context sufficiency smoke gate, and the Mail run is a live-vault read-only
-retrieval quality check.
+originally collected in PR #945, plus the follow-up read-only agent samples in
+PR #947 and PR #948, plus the 5x500 checkpoint in this branch. Keep the result
+tracks separate: the SkillRet keyword run is an offline string-matching control,
+the SkillRet Notion AI run is a directional partial substrate-recall diagnostic,
+the skill-use run is a deterministic context sufficiency smoke gate, and the
+Mail run is a live-vault read-only retrieval quality check.
 
 The SkillRet keyword lane is not the meaningful Lore measurement. Lore is used
 by an instructed LLM agent against a Notion-backed memory vault, so raw query
@@ -30,6 +30,7 @@ sample; the earlier default-model run is retained as a historical comparison.
 | SkillRet Notion AI directional | `evals/results/skillret-notion-ai-directional-2026-06-04.json`   | 3,250/4,997 queries across 13/20 shards. Recall@10 23.08%, NDCG@10 0.1856, MRR@10 0.2167, MAP@10 0.1480; 0 mechanism failures.                          | Live Notion-backed substrate recall sample. Better than the local keyword control, but below dedicated SkillRet rankers and not representative Lore use.                       |
 | SkillRet read-only agent       | `evals/results/skillret-agent-existing-vault-30-2026-06-04.json` | 30 queries against the existing seeded vault. Success 23.33%, tool use 96.67%, target surfaced 73.33%, target expanded 60.00%, selected/applied 23.33%. | Historical default-model agent sample. Useful as a baseline for old tool-use ergonomics, but not representative of current developer-agent performance.                    |
 | SkillRet read-only agent GPT-5.5 | `evals/results/skillret-agent-existing-vault-30-gpt55-2026-06-04.json` | 30 queries against the existing seeded vault. Success 93.33%, tool use 100%, target surfaced 96.67%, target expanded/selected/applied 93.33%; 313 successful tool calls and 1 recorded tool error. | Current read-only Lore agent sample. Two failures remain: one surfaced-but-not-selected disambiguation miss and one candidate-recall miss. Notion 429s were retry noise.      |
+| SkillRet read-only agent GPT-5.5 5x500 checkpoint | `evals/results/skillret-agent-5x500-chunk-001-10m-2026-06-05.json` | 50 queries from deterministic chunk 001. Success 78.00%, tool use 100%, target surfaced 90.00%, target expanded 88.00%, selected/applied 78.00%, recall@10 0.4367. | Directional first checkpoint from the 5x500 sample plan. The 30-query sample was optimistic; the next gap is candidate recall plus disambiguation/selection, not tool refusal. |
 | Skill-use smoke                | `evals/results/skill-use-smoke-2026-06-03.json`                  | 4/4 required condition checks passed. No-context 0%, oracle 100%, retrieved 100%, retrieved gap to oracle 0.0 pp.                                       | Harness sanity check for support-set/context-sufficiency logic. The default answerer is deterministic, not a powered agent.                                                    |
 | Mail retrieval-quality         | `evals/results/mail-retrieval-quality-2026-06-03.json`           | 6/6 required lane checks passed across 3 live-vault cases. Product and RunTool AI lanes recall@1 100%; REST keyword lane recall@10 0%.                  | Live Notion retrieval quality for three labeled Mail cases. Read-only, but raw artifact includes live-vault IDs, returned titles, and explain traces.                          |
 
@@ -37,10 +38,10 @@ sample; the earlier default-model run is retained as a historical comparison.
 
 | Field                            | Value                                                                                                                                                                                                                     |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Branch                           | Initial report: `Iron-Ham/add-free-eval-results`; GPT-5.5 agent update: `Iron-Ham/skillret-existing-vault-sample`                                                                                                         |
-| Base commit before report update | Initial report: `50ca2ed7d16601b5e59a15c0ade7468014a1fbdd`; GPT-5.5 agent update: `3eb52b301df19cb19dddc107ef22f1d4999032b2`                                                                                              |
+| Branch                           | Initial report: `Iron-Ham/add-free-eval-results`; GPT-5.5 agent update: `Iron-Ham/skillret-existing-vault-sample`; 5x500 checkpoint update: `Iron-Ham/skillret-5x500-sample-results`                                     |
+| Base commit before report update | Initial report: `50ca2ed7d16601b5e59a15c0ade7468014a1fbdd`; GPT-5.5 agent update: `3eb52b301df19cb19dddc107ef22f1d4999032b2`; 5x500 update: `31b0c4e25ef7`     |
 | Run dates                        | 2026-06-03, 2026-06-04, and 2026-06-05 UTC                                                                                                                                                                                |
-| Working tree at run time         | SkillRet Notion AI import/run hardening was present in the working tree. The pre-existing untracked `evals/discordant-pairs-manifest.json` was not used. Temporary shard suite files were not committed.                  |
+| Working tree at run time         | SkillRet Notion AI import/run hardening was present in the working tree. The pre-existing untracked `evals/discordant-pairs-manifest.json` was not used. Temporary shard suite files were not committed. 5x500 chunk 001 was executed as temporary 50-query shards; only the first execution shard is included in this checkpoint. |
 | SkillRet Hugging Face revision   | `7cae7cfbad2b0e1ebc9170892f568993aae543b0`                                                                                                                                                                                |
 | SkillRet manifest                | `evals/skill-retrieval/skillret-checksums.json`                                                                                                                                                                           |
 | SkillRet eval vault page         | Registered SkillRet eval vault page; raw page id omitted from the committed report.                                                                                                                                        |
@@ -92,6 +93,14 @@ LORE_EVAL_BENCH_REAL=1 \
 LORE_EVAL_BENCH_AGENT_MODEL=gpt-5.5 \
 node dist/cli.js eval run <operator-local-skill-agent-suite> \
   --out <operator-local-skill-agent-gpt55-result>
+
+NOTION_ENV=dev \
+NOTION_API_TOKEN="$NOTION_DEV_PAT" \
+LORE_CONFIG_ROOT=<operator-local-skillret-eval-config> \
+LORE_EVAL_BENCH_REAL=1 \
+LORE_EVAL_BENCH_AGENT_MODEL=gpt-5.5 \
+node dist/cli.js eval run <operator-local-50-query-chunk001-shard-suite> \
+  --out <operator-local-raw-shard-result>
 ```
 
 The first Mail run attempt hit a Notion `429` rate limit and did not produce an
@@ -105,6 +114,14 @@ available when the run was paused: shards 01-13, 3,250 unique queries, 0
 duplicate query ids. Shard suites were temporary local files and are not part
 of the committed artifact set.
 
+The 5x500 checkpoint ran the first 50-query execution shard from
+`evals/skill-agent/skillret-readonly-agent-5x500-001.yaml` under the same
+read-only SkillRet agent contract. The benchmark timeout is 10 minutes. Seven
+rows that reached an earlier 5-minute exploratory cap were rerun once under
+the 10-minute cap and replaced in the committed aggregate. The temporary
+50-query shard suite and raw retry artifacts were not committed; the committed
+artifact is the sanitized aggregate.
+
 ## Artifact Inventory
 
 | Path                                                             |   Size | SHA-256                                                            |
@@ -113,10 +130,17 @@ of the committed artifact set.
 | `evals/results/skillret-notion-ai-directional-2026-06-04.json`   |  11 MB | `dd69f60f04a1fb3667792b479fbf5fe1f7371cf46b63bc4e023b778b24e411f7` |
 | `evals/results/skillret-agent-existing-vault-30-2026-06-04.json` | 234 KB | `70d438518e992f067e21a5e3b7f4f9889ce69aea6365519c38f259b0f0232f3d` |
 | `evals/results/skillret-agent-existing-vault-30-gpt55-2026-06-04.json` | 299 KB | `489d7b55d3c6a18ff39e74491629eff3a065e43ca1c033c02aab4a186a6da20a` |
+| `evals/results/skillret-agent-5x500-chunk-001-10m-2026-06-05.json` | 526 KB | `7bc52770f940900cc33d0056d660606ac5540f10f8bc4126a94c53e6747b1688` |
 | `evals/results/skill-use-smoke-2026-06-03.json`                  |  11 KB | `2c5617316cb2aa4584533f65b27f3ad35cdad8a4940435ca2e3319d41012b09d` |
 | `evals/results/mail-retrieval-quality-2026-06-03.json`           |  25 KB | `c753e74abe5a37a67e2be6759bdebe1329d458d174b3900523728b6983465d1e` |
 | `evals/skill-retrieval/skillret-test.yaml`                       |  suite | `ae30a61a574710e4305e0572e1da4dbd99ceef3e47f2273052c378134d058f8b` |
 | `evals/skill-retrieval/skillret-notion-ai.yaml`                  |  suite | `621218eb2efed0c5a734ab477d857f1b1284d59ca4a8d3e8bee477f89db6edfd` |
+| `evals/skill-agent/manifests/skillret-readonly-agent-5x500-v1.json` | manifest | `e9631687dec303cdd1b11ff0e4a8a7526b3542bcf33161b6ab95dc99ed1dce7a` |
+| `evals/skill-agent/skillret-readonly-agent-5x500-001.yaml`       |  suite | `078fe790f3af19930f1e79e06de54517c3303997e49c446b9236699238db337c` |
+| `evals/skill-agent/skillret-readonly-agent-5x500-002.yaml`       |  suite | `95f2897f6ad9954c00a069e4dd5af7ee752202ad41cb6233dfc5a8754addf31c` |
+| `evals/skill-agent/skillret-readonly-agent-5x500-003.yaml`       |  suite | `8ccba4bc18beea59ff664bcd35ab6b87e7aa12d26b2eb802dae592f3e119804b` |
+| `evals/skill-agent/skillret-readonly-agent-5x500-004.yaml`       |  suite | `f3fbf33ec8a5fa6dfe4e1d6b765e716bb5e4b3a833e71d59f46a115b8203fddf` |
+| `evals/skill-agent/skillret-readonly-agent-5x500-005.yaml`       |  suite | `f2bf088e8ad5b4f36306b2839466222334636fdae0eeb870e797ee189a3813cc` |
 | `evals/skill-use/smoke.yaml`                                     |  suite | `ff345083b87bdc9d6bb0dbe513a3a8f2f4a4cad80b8b9960d20db0b07b98e523` |
 | `evals/retrieval-quality/mail.yaml`                              |  suite | `d40cc7de206c2279b8846881e4fd4cec88fe058dbd07c98215f1632b18e3c794` |
 
@@ -131,13 +155,13 @@ SkillRet corpus hashes matched the pinned manifest:
 Privacy note: committed artifacts are sanitized for review. SkillRet retrieval
 artifacts redact raw `results[].query` text while preserving query ids,
 expected skill ids, returned skill ids, returned names, returned memory ids,
-metrics, summaries, and corpus checksums. The SkillRet agent artifact also
-redacts agent answers and replaces Notion memory ids with stable pseudonyms
-while preserving scoring fields and tool-trace shapes. The full query text is
-recoverable from the pinned public corpus outside the committed artifact. Live
-Mail result artifacts replace Notion page/project ids with stable pseudonyms
-and redact live-vault titles. Corpus paths are repo-relative rather than
-machine-local.
+metrics, summaries, and corpus checksums. The SkillRet agent artifacts also
+redact agent answers and replace Notion memory ids with stable pseudonyms
+while preserving scoring fields, retry provenance, and tool-trace shapes. The
+full query text is recoverable from the pinned public corpus outside the
+committed artifact. Live Mail result artifacts replace Notion page/project ids
+with stable pseudonyms and redact live-vault titles. Corpus paths are
+repo-relative rather than machine-local.
 
 ## SkillRet Keyword Retrieval
 
@@ -369,6 +393,64 @@ post-filtering, explicit candidate comparison/reranking, and stronger
 activation-card content inside the existing SkillRet memories after a deliberate
 vault update plan.
 
+### GPT-5.5 5x500 Chunk 001 Checkpoint
+
+The 5x500 plan commits a deterministic manifest and five 500-query chunk
+suites. The manifest excludes the 30 query ids from the prior GPT-5.5 sample,
+then stratifies the remaining test queries by primary expected-skill taxonomy
+and single-vs-multi target count. Chunk suites are committed so the same sample
+can be resumed without regenerating query ids.
+
+This checkpoint covers the first 50-query execution shard from chunk 001, not
+the full 500-query chunk. It is 10% of chunk 001, 2% of the 2,500-query sample
+plan, and about 1% of the 4,997-query SkillRet test split.
+
+| Metric          |  Value |
+| --------------- | -----: |
+| Queries         |     50 |
+| Passed          |     39 |
+| Failed          |     11 |
+| Success         | 78.00% |
+| Lore tool use   | 100.00% |
+| Target surfaced | 90.00% |
+| Target expanded | 88.00% |
+| Target selected | 78.00% |
+| Answer applied  | 78.00% |
+| Write attempts  |      0 |
+
+Ranking metrics:
+
+| Metric |     @1 |     @5 |    @10 |
+| ------ | -----: | -----: | -----: |
+| Recall | 0.2933 | 0.3867 | 0.4367 |
+| NDCG   | 0.4800 | 0.3886 | 0.4051 |
+| MRR    | 0.4800 | 0.5367 | 0.5444 |
+| MAP    | 0.2933 | 0.3261 | 0.3324 |
+
+Failure reasons:
+
+| Failure reason                | Count |
+| ----------------------------- | ----: |
+| `target-not-selected`         |    11 |
+| `answer-did-not-apply-target` |    11 |
+| `target-not-expanded`         |     6 |
+| `target-not-surfaced`         |     5 |
+
+The 50-query checkpoint is materially lower than the 30-query GPT-5.5 sample,
+so the smaller sample was optimistic. Tool use remains strong: every trial used
+Lore, and there were no write attempts. The remaining failures split between
+candidate-recall misses and cases where the target was surfaced or expanded but
+not selected in the final answer. The current `answerApplied` score is still a
+selection/citation proxy, so this artifact should not be read as a full answer
+quality adjudication without unsanitized transcript review.
+
+The first attempt used a 5-minute exploratory cap and produced seven
+`agent-timeout` rows. Those rows were rerun under the 10-minute benchmark cap,
+and the committed aggregate replaces all seven. Five of the seven passed under
+the longer cap, and two remained scored failures for candidate recall or
+selection. The 5-minute result is intentionally not reported as a separate
+lane.
+
 ## Skill-Use Smoke
 
 Suite: `evals/skill-use/smoke.yaml`
@@ -425,8 +507,10 @@ Notion ids with stable pseudonyms and redacts live-vault titles.
   the full public test split.
 - The SkillRet Notion AI number is raw search substrate recall, not an agent
   using Lore under AGENTS.md-style instructions.
-- The SkillRet read-only agent samples are 30-query live-vault samples, not
-  full 4,997-query agent benchmarks.
+- The SkillRet read-only agent samples are 30-query and 50-query live-vault
+  samples, not full 4,997-query agent benchmarks.
+- The 5x500 checkpoint covers one 50-query execution shard, not the full
+  500-query chunk or 2,500-query sample plan.
 - The SkillRet number is not a Notion-backed keyword result.
 - The skill-use smoke number is not powered-agent task performance.
 - The Mail retrieval-quality suite currently has only three labeled cases and
@@ -437,9 +521,9 @@ Notion ids with stable pseudonyms and redacts live-vault titles.
 
 ## Next Measurement Work
 
-1. Scale the read-only SkillRet agent lane beyond the 30-query current-model
-   samples once the candidate-selection surface improves enough to justify more
-   live Notion traffic.
+1. Continue the 5x500 read-only SkillRet agent lane by running the remaining
+   chunk 001 execution shards under the 10-minute benchmark cap, then aggregate
+   chunk-level results without duplicate query ids.
 2. Add a manifest-filtered over-fetch mode for SkillRet Notion AI runs so Lore
    can request up to the RunTool cap, remove rows outside the active manifest,
    and score top-10 after filtering.

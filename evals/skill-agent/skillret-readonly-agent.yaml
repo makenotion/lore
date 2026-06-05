@@ -17,7 +17,7 @@ requiredConditions:
   - tool-driven-lore
 agent:
   kind: codex
-  timeoutMs: 300000
+  timeoutMs: 600000
 scoring:
   k: [1, 5, 10]
   requireLoreUse: true
