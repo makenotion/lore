@@ -2,7 +2,7 @@ import { access, appendFile, readFile, unlink } from "node:fs/promises"
 import { createConnection, createServer, type Server, type Socket } from "node:net"
 import { dirname, join, resolve } from "node:path"
 import { initServices, type LoreServices } from "../services.js"
-import type { Memory, SearchMode } from "../types.js"
+import type { Memory, SearchMode, SearchQueryPlan, SearchStrategy } from "../types.js"
 import type { BenchRetrievalCall } from "./bench-runner-types.js"
 import { redactBearerTokens } from "./bench-redaction.js"
 
@@ -375,20 +375,38 @@ async function dispatchBenchQuery(
       const query = requiredString(parsed, "query")
       const limit = optionalPositiveInteger(parsed, "limit") ?? 10
       const mode = optionalSearchMode(parsed)
+      const strategy = optionalSearchStrategy(parsed) ?? "planned"
       const includeContent = optionalBoolean(parsed, "includeContent") === true
       const projectId = requiredBenchProjectId(env)
-      const searched = await services.memories.search({
+      const searchInput = {
         query,
         projectId,
         limit,
         includeContent,
         mode,
-      })
+        strategy,
+      }
+      let searched: Memory[]
+      let queryPlan: SearchQueryPlan | undefined
+      if (typeof services.memories.searchWithMeta === "function") {
+        const out = await services.memories.searchWithMeta(searchInput)
+        searched = out.memories
+        queryPlan = out.queryPlan
+      } else {
+        searched = await services.memories.search(searchInput)
+      }
       const memories = filterBenchProjectMemories(searched, projectId)
       const handles = await assignBenchMemoryHandles(memories, env)
       const renderContext = benchToolRenderContext(env)
       return {
-        text: renderBenchSearch(query, memories, includeContent, handles, renderContext),
+        text: renderBenchSearch(
+          query,
+          memories,
+          includeContent,
+          handles,
+          renderContext,
+          queryPlan
+        ),
         surfacedMemoryIds: memories.map((memory) => memory.id),
         expandedMemoryIds: [],
       }
@@ -486,6 +504,13 @@ function optionalSearchMode(parsed: ParsedBenchToolArgs): SearchMode | undefined
     return value
   }
   throw new Error("mode must be contains, semantic, or hybrid")
+}
+
+function optionalSearchStrategy(parsed: ParsedBenchToolArgs): SearchStrategy | undefined {
+  const value = parsed.values["strategy"]
+  if (value === undefined) return undefined
+  if (value === "direct" || value === "planned") return value
+  throw new Error("strategy must be direct or planned")
 }
 
 function memoryIdsFromArgs(parsed: ParsedBenchToolArgs): string[] {
@@ -689,11 +714,16 @@ function renderBenchSearch(
   memories: readonly Memory[],
   includeContent: boolean,
   handles: BenchMemoryHandleMap,
-  context: BenchToolRenderContext
+  context: BenchToolRenderContext,
+  queryPlan?: SearchQueryPlan
 ): string {
-  if (memories.length === 0) return `No memories found for: "${query}"`
+  const queryPlanBlock = renderBenchQueryPlan(queryPlan)
+  const displayQuery = redactBearerTokens(query)
+  if (memories.length === 0) {
+    return `No memories found for: "${displayQuery}"${queryPlanBlock}`
+  }
   return [
-    `Found ${memories.length} memories for "${query}":`,
+    `Found ${memories.length} memories for "${displayQuery}":${queryPlanBlock}`,
     "",
     memories
       .map((memory, index) =>
@@ -702,6 +732,15 @@ function renderBenchSearch(
       .join("\n\n---\n\n"),
     includeContent ? "" : benchMemoryExpansionHint(context),
   ].join("\n")
+}
+
+function renderBenchQueryPlan(queryPlan: SearchQueryPlan | undefined): string {
+  if (!queryPlan || queryPlan.variants.length === 0) return ""
+  const lines = queryPlan.variants.map(
+    (variant, index) =>
+      `${index + 1}. ${variant.kind}: ${redactBearerTokens(variant.query)}`
+  )
+  return `\n\n## Query plan\n\n${lines.join("\n")}`
 }
 
 function renderBenchRecall(

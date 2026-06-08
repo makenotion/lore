@@ -2,6 +2,7 @@ import { fireTouchOnRead, paginationFooter, toolError } from "../../helpers.js"
 import { resolveReadProjectScope } from "../../resolve.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../../render.js"
 import type { LoreServices } from "../../server.js"
+import { redactDebugMessage } from "../../../debug-redact.js"
 import type { MemoryResultSetRegistration } from "../../../memory-result-handles.js"
 import type {
   Memory,
@@ -10,6 +11,9 @@ import type {
   MemoryStatus,
   SearchExplain,
   SearchMode,
+  SearchPlanResultTrace,
+  SearchQueryPlan,
+  SearchStrategy,
 } from "../../../types.js"
 import type { ToolResult } from "./types.js"
 import { KINDS, READABLE_SOURCES, STATUSES } from "./types.js"
@@ -130,6 +134,7 @@ export interface SearchArgs {
   includeContent?: boolean
   includeSynopsis?: boolean
   mode?: SearchMode
+  strategy?: SearchStrategy
   explain?: boolean
   intent?: string
 }
@@ -159,6 +164,7 @@ export async function handleSearch(
 
     const withContent = args.includeContent === true
     const resolvedMode: SearchMode = args.mode ?? "semantic"
+    const resolvedStrategy: SearchStrategy = args.strategy ?? "planned"
     const wantExplain = args.explain === true
     const searchInput = {
       query: args.query,
@@ -171,21 +177,28 @@ export async function handleSearch(
       limit: args.limit ?? 10,
       includeContent: withContent,
       mode: resolvedMode,
+      strategy: resolvedStrategy,
       intent: args.intent,
     }
 
     let searchResults: Memory[]
     let explain: SearchExplain[] = []
     let searchCapped = false
+    let queryPlan: SearchQueryPlan | undefined
+    let planTrace: SearchPlanResultTrace[] | undefined
     if (wantExplain && typeof services.memories.searchWithExplain === "function") {
       const out = await services.memories.searchWithExplain(searchInput)
       searchResults = out.memories
       explain = out.explain
       searchCapped = out.capped ?? false
+      queryPlan = out.queryPlan
+      planTrace = out.planTrace
     } else if (typeof services.memories.searchWithMeta === "function") {
       const out = await services.memories.searchWithMeta(searchInput)
       searchResults = out.memories
       searchCapped = out.capped ?? false
+      queryPlan = out.queryPlan
+      planTrace = out.planTrace
     } else {
       searchResults = await services.memories.search(searchInput)
     }
@@ -205,13 +218,15 @@ export async function handleSearch(
     }
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
     const cappedFooter = paginationFooter(undefined, { truncated: searchCapped })
+    const displayQuery = redactSearchDisplayText(args.query)
 
     if (results.length === 0) {
+      const queryPlanBlock = formatQueryPlan(queryPlan)
       return {
         content: [
           {
             type: "text",
-            text: `No memories found for: "${args.query}"${warn}${cappedFooter}`,
+            text: `No memories found for: "${displayQuery}"${queryPlanBlock}${warn}${cappedFooter}`,
           },
         ],
         costOutputs: { memoriesReturned: 0 },
@@ -233,15 +248,18 @@ export async function handleSearch(
       .join("\n\n---\n\n")
 
     const resultSetHeader = formatResultSetHeader(resultSet)
+    const queryPlanBlock = formatQueryPlan(queryPlan)
     const bodiesFooter = formatBodiesFooter(withContent, resultSet)
 
-    const explainFooter = wantExplain ? formatScoreTrace(explainSlice) : ""
+    const explainFooter = wantExplain
+      ? `${formatScoreTrace(explainSlice)}${formatQueryPlanTrace(planTrace)}`
+      : ""
 
     const response: ToolResult = {
       content: [
         {
           type: "text",
-          text: `Found ${results.length} memories for "${args.query}":\n\n${resultSetHeader}${text}${bodiesFooter}${explainFooter}${warn}${cappedFooter}`,
+          text: `Found ${results.length} memories for "${displayQuery}":${queryPlanBlock}\n\n${resultSetHeader}${text}${bodiesFooter}${explainFooter}${warn}${cappedFooter}`,
         },
       ],
       costOutputs: { memoriesReturned: results.length },
@@ -298,6 +316,30 @@ function formatBodiesFooter(
     `\`lore-memory action='expand' ids=["${firstHandle}"]\`, ` +
     "or re-call with `includeContent: true` when you need every body._"
   )
+}
+
+function formatQueryPlan(queryPlan: SearchQueryPlan | undefined): string {
+  if (!queryPlan || queryPlan.variants.length === 0) return ""
+  const lines = queryPlan.variants.map(
+    (variant, index) =>
+      `${index + 1}. ${variant.kind}: ${redactSearchDisplayText(variant.query)}`
+  )
+  return `\n\n## Query plan\n\n${lines.join("\n")}`
+}
+
+function redactSearchDisplayText(value: string): string {
+  return redactDebugMessage(value, { truncate: false })
+}
+
+function formatQueryPlanTrace(planTrace: SearchPlanResultTrace[] | undefined): string {
+  if (!planTrace || planTrace.length === 0) return ""
+  const lines = planTrace.map((trace) => {
+    const hits = trace.variantHits
+      .map((hit) => `v${hit.variantIndex + 1}@${hit.rank + 1}`)
+      .join(",")
+    return `${trace.memoryId} plannedScore=${trace.score.toFixed(6)} bestRank=${trace.bestRank + 1} variants=${hits}`
+  })
+  return `\n\n## Query plan trace\n\n${lines.join("\n")}`
 }
 
 /**

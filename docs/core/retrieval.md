@@ -67,6 +67,35 @@ occupy a result slot a live row would otherwise fill.
 
 ### `mode: "semantic"` (default relevance path)
 
+`strategy` controls how the semantic lane is executed. Core service callers
+default to `strategy: "direct"`; agent-facing MCP and eval tool shims default
+to `strategy: "planned"` unless the caller opts out with `strategy: "direct"`.
+
+`strategy: "direct"` issues one semantic query. `strategy: "planned"` builds
+up to three sanitized variants from the composed query (`query` plus optional
+`intent`): the original query, a keyword/facet query, and a generic
+capability-shaped `Use when ...` synopsis derived from action, exact, and
+subject terms. The original variant preserves the caller's text with a larger
+cap so late specific terms are not dropped; extracted variants stay concise.
+Secret-shaped tokens are stripped before any planned variant is sent to
+Notion. If stripping collapses the plan to one or zero variants, the fallback
+still searches only the sanitized query with `intent` cleared, never the raw
+input.
+
+Planned semantic search runs each variant through the same transport described
+below. With RunTool, each planned variant requests a smaller page window
+(currently 10) before hydrating hits, bounding the fanout cost. With REST,
+each planned variant inherits the same pagination cap as direct semantic
+search. Variant failures are partial: one failed variant is logged only under
+`LORE_DEBUG=1` and the surviving variants are rank-fused; if every variant
+fails, the first failure is thrown.
+
+Planned merge order uses Reciprocal Rank Fusion over the variant result sets.
+The first/original variant is also anchored by inclusion: roughly the top half
+of the caller's requested `limit` from that lane is preserved in the final
+candidate set. This lets extracted variants add recall without evicting normal
+direct semantic hits the agent would otherwise have seen.
+
 Uses RunTool `search` when `LORE_USE_RUNTOOL_SEARCH` is enabled and the
 composed query is non-empty. RunTool search is scoped to the Memories data
 source and returns Notion's relevance order over titles and bodies. The raw
@@ -446,7 +475,7 @@ search path applies only the mode-specific ordering contract:
 | Fetch  | `fetchContainsPages(input)`            | Raw Notion result                            |
 | Fetch  | `fetchSemanticPages(input, intent)`    | Raw Notion result                            |
 | Public | `searchByContainsPages(input)`         | Contains result order                        |
-| Public | `searchBySemanticPages(input, intent)` | Notion relevance order is authoritative      |
+| Public | `searchBySemanticPages(input, intent)` | Direct relevance or planned RRF rank         |
 | Public | `searchByHybridPages(...)`             | Contains saturation or RRF-fused branch rank |
 
 Hybrid composes the raw fetch helpers so the saturation branch can preserve

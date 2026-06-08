@@ -676,9 +676,11 @@ function renderSkillAgentPrompt(input: {
   const toolInstructions = conditionUsesReadOnlyTools(input.condition)
     ? [
         "Use the read-only Lore tools before answering.",
-        "First split the task into capability, framework/tool, and action-intent facets; use those facets to choose search queries.",
-        '`lore-query action=search query="<skill or task paraphrase>" limit=10 mode=semantic` searches the seeded SkillRet vault.',
-        "For multi-part tasks, run separate searches for the distinct capabilities instead of relying on one broad query.",
+        "Run a planned semantic search with the full task text first, preserving the user's wording and concrete details.",
+        'Then run a planned semantic search with a short capability synopsis shaped like: "Use when ...". Include the capability, key tools/frameworks, and action intent; do not include guessed skill names.',
+        "After those two searches, split the task into capability, framework/tool, and action-intent facets; use those facets for any additional narrower searches.",
+        '`lore-query action=search query="<skill or task paraphrase>" limit=10 mode=semantic strategy=planned` searches the seeded SkillRet vault through the same planned read path used by agent-facing Lore search.',
+        "For multi-part tasks, run separate synopsis/facet searches for the distinct capabilities after the full-task search.",
         "Search results are skill candidates. Compare rank, Skill Name, Short Summary, category, and tags before choosing what to expand.",
         "Expand plausible top-ranked candidates immediately after each search. The `latest` token changes after every search; use listed handles such as m1 if you search again.",
         "After a search or recall, `lore-memory action=expand ids=latest` reads every memory body from that latest result set.",
@@ -725,6 +727,7 @@ async function writeSkillAgentWorkspace(input: {
     "",
     "This evaluation vault is read-only.",
     "Use Lore only to search, recall, and expand existing memories.",
+    "For search, start with the full task text, then a concise `Use when ...` capability synopsis, then narrower facet queries.",
     "Select stored skills from expanded memories, and cite exact memory IDs plus exact SkillRet ID UUIDs from those memory bodies.",
     "Do not cite skill slugs, topic keys, titles, or guessed IDs as SkillRet IDs.",
     "Do not write, update, archive, approve, reject, promote, or create Lore entries.",

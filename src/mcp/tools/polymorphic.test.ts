@@ -1009,6 +1009,18 @@ describe("lore-query polymorphic dispatcher", () => {
     expect(parsed.data).toHaveProperty("source", "agent_diary")
   })
 
+  it("queryDispatchSchema preserves strategy on action='search'", () => {
+    const parsed = queryDispatchSchema.safeParse({
+      action: "search",
+      query: "auth",
+      strategy: "planned",
+    })
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(parsed.data.action).toBe("search")
+    expect(parsed.data).toHaveProperty("strategy", "planned")
+  })
+
   it("dispatches action='search' with explain:true through searchWithExplain", async () => {
     // The dispatcher must route to searchWithExplain (not search) when
     // explain is set, so callers that opt in get the trace.

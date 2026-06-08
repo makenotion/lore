@@ -33,6 +33,38 @@ import type { MemoryKind, MemorySource, MemoryStatus } from "./domain.js"
  */
 export type SearchMode = "contains" | "semantic" | "hybrid"
 
+export type SearchStrategy = "direct" | "planned"
+
+export type SearchPlanVariantKind =
+  | "facets"
+  | "exact"
+  | "action"
+  | "clause"
+  | "original"
+  | "capability"
+
+export interface SearchPlanVariant {
+  kind: SearchPlanVariantKind
+  query: string
+}
+
+export interface SearchQueryPlan {
+  originalQuery: string
+  variants: SearchPlanVariant[]
+}
+
+export interface SearchPlanVariantHit {
+  variantIndex: number
+  rank: number
+}
+
+export interface SearchPlanResultTrace {
+  memoryId: string
+  score: number
+  bestRank: number
+  variantHits: SearchPlanVariantHit[]
+}
+
 export interface SearchMemoriesInput {
   query: string
   projectId?: string
@@ -99,6 +131,14 @@ export interface SearchMemoriesInput {
    * tradeoffs between scope precision and ranking quality.
    */
   mode?: SearchMode
+  /**
+   * Search execution strategy. Defaults to `"direct"`. `"planned"` keeps the
+   * caller-facing mode semantics but splits the semantic lane into extracted
+   * query variants, unions the result sets, and rank-fuses them before final
+   * materialization. Applies to `"semantic"` and the semantic branch of
+   * `"hybrid"`; `"contains"` remains a single exact-property lookup.
+   */
+  strategy?: SearchStrategy
   /**
    * Optional disambiguator. Threaded into the semantic branch's
    * relevance query as context, NEVER into the contains branch's

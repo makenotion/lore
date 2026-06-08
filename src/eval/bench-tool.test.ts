@@ -304,6 +304,83 @@ describe("runBenchToolCli", () => {
     expect(stdout).toContain("latest` is replaced by every search")
   })
 
+  it("mirrors planned search metadata from the Lore search service", async () => {
+    const searchWithMeta = vi.fn(async () => ({
+      memories: [
+        testMemory({
+          id: "mem-skill-alpha",
+          title: "Alpha Skill",
+          source: "manual",
+          kind: "procedure",
+          synopsis: "Skill: Alpha Skill. Use when: route tenant metadata requests.",
+          tags: ["skillret", "skillret-major-architecture"],
+        }),
+      ],
+      capped: false,
+      queryPlan: {
+        originalQuery: "tenant metadata routing",
+        variants: [
+          { kind: "original", query: "tenant metadata routing" },
+          { kind: "facets", query: "routing tenant metadata" },
+        ],
+      },
+    }))
+    mocks.initServices.mockResolvedValue({
+      memories: { search: vi.fn(), searchWithMeta },
+    })
+
+    const exitCode = await runBenchToolCli(
+      "lore-query",
+      ["action=search", "query=tenant metadata routing"],
+      {
+        [BENCH_TOOL_PROJECT_ID_ENV]: "project-1",
+        [BENCH_TOOL_PROJECT_NAME_ENV]: "SkillRet Eval",
+      }
+    )
+
+    expect(exitCode, stderrOutput.join("")).toBe(0)
+    expect(searchWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ strategy: "planned" })
+    )
+    const stdout = stdoutOutput.join("")
+    expect(stdout).toContain("## Query plan")
+    expect(stdout).toContain("1. original: tenant metadata routing")
+    expect(stdout).toContain("### Skill Candidate: Alpha Skill")
+  })
+
+  it("redacts bearer-shaped query text from rendered search output", async () => {
+    const token = "ntn_abcdefghijklmnopqrstuvwxyz1234567890"
+    const searchWithMeta = vi.fn(async () => ({
+      memories: [],
+      capped: false,
+      queryPlan: {
+        originalQuery: `debug ${token}`,
+        variants: [
+          { kind: "original", query: `debug ${token}` },
+          { kind: "facets", query: `debug token ${token}` },
+        ],
+      },
+    }))
+    mocks.initServices.mockResolvedValue({
+      memories: { search: vi.fn(), searchWithMeta },
+    })
+
+    const exitCode = await runBenchToolCli(
+      "lore-query",
+      ["action=search", `query=debug ${token}`],
+      { [BENCH_TOOL_PROJECT_ID_ENV]: "project-1" }
+    )
+
+    expect(exitCode, stderrOutput.join("")).toBe(0)
+    expect(searchWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ query: `debug ${token}` })
+    )
+    const stdout = stdoutOutput.join("")
+    expect(stdout).not.toContain(token)
+    expect(stdout).toContain("<redacted-token>")
+    expect(stdout).toContain("## Query plan")
+  })
+
   it("resolves listed memory handles when expanding search results", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "lore-bench-tool-test-"))
     tempDirs.push(workspace)

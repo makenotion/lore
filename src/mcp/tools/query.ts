@@ -64,6 +64,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     includeContent: z.boolean().optional(),
     includeSynopsis: z.boolean().optional(),
     mode: z.enum(["contains", "semantic", "hybrid"]).optional(),
+    strategy: z.enum(["direct", "planned"]).optional(),
     explain: z.boolean().optional(),
     intent: z.string().optional(),
   }),
@@ -107,7 +108,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         "**Call this BEFORE answering factual questions about stored conversation or recorded knowledge** — the vault is authoritative; abstain only after `action: 'search'` (and `action: 'ask'` when the question names an entity) return nothing. " +
         "Action-dispatched:\n\n" +
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows return expand handles; `includeContent: true` fetches every body. Cursor-paginated.\n" +
-        "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `semantic`). `contains` is DS-scoped substring with server-side filters; `semantic` uses Notion relevance over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier rows return expand handles.\n" +
+        "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `semantic`), `strategy: planned | direct` (default `planned`). `planned` splits semantic search into extracted query variants and rank-fuses candidates; `contains` remains a DS-scoped substring lookup. Title-tier rows return expand handles.\n" +
         "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`). Prepends a project framing block by default (`includeContext: false` to suppress). Pass `asOf: 'YYYY-MM-DD'` for a transaction-time as-of recall (what Lore knew at that date) or `includeHistory: true` to surface invalidated facts inline.\n" +
         "- `action: 'audit'` — list facts, decisions, and tasks past their review-by date.\n\n" +
         "For tracked work (open / blocked / done), use `lore-task action='list'` rather than `lore-query`.",
@@ -186,6 +187,16 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
               "matching with server-side property filters; `semantic` for Notion relevance " +
               "over titles AND bodies; `hybrid` fires both in parallel and uses contains " +
               "alone when it saturates (≥ 3 hits) or RRF-fuses both branches when it doesn't."
+          ),
+        // search only
+        strategy: z
+          .enum(["direct", "planned"])
+          .optional()
+          .describe(
+            "(action='search') Search strategy (default `planned` for agent-facing search). " +
+              "`planned` extracts concise query variants, runs them through the semantic lane, " +
+              "and rank-fuses the union before rendering candidates. `direct` sends the query as-is. " +
+              "Contains mode ignores this field."
           ),
         // search only
         explain: z

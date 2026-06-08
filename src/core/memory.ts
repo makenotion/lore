@@ -23,6 +23,8 @@ import type {
   UpdateMemoryInput,
   SearchMemoriesInput,
   SearchExplain,
+  SearchPlanResultTrace,
+  SearchQueryPlan,
   MemoryKind,
   MemoryStatus,
   MemoryScopeContext,
@@ -1314,6 +1316,8 @@ export class MemoryService {
   async searchWithMeta(input: SearchMemoriesInput): Promise<{
     memories: Memory[]
     capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
   }> {
     return this.searcher.searchWithMeta(input)
   }
@@ -1322,13 +1326,19 @@ export class MemoryService {
     memories: Memory[]
     explain: SearchExplain[]
     capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
   }> {
     return this.searcher.searchWithExplain(input)
   }
 
-  private async runSearch(
-    input: SearchMemoriesInput
-  ): Promise<{ memories: Memory[]; explain: SearchExplain[]; capped: boolean }> {
+  private async runSearch(input: SearchMemoriesInput): Promise<{
+    memories: Memory[]
+    explain: SearchExplain[]
+    capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
+  }> {
     return this.searcher.runSearch(input)
   }
 

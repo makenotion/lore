@@ -218,6 +218,7 @@ vault:
 features:
   nearDuplicateProbe: false
   autoMentions: false
+  queryPlanning: false
   forceSemanticSearch: true
   runTool:
     enabled: false
@@ -229,6 +230,7 @@ features:
     expect(config.features).toEqual({
       nearDuplicateProbe: false,
       autoMentions: false,
+      queryPlanning: false,
       forceSemanticSearch: true,
       runTool: {
         enabled: false,

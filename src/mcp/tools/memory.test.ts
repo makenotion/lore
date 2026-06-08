@@ -2313,6 +2313,31 @@ describe("lore-search mode parameter", () => {
     )
   })
 
+  it("defaults strategy to planned and allows direct search opt-out", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([])
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    await search({ query: "q" } as never)
+    expect(memoriesSearch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ strategy: "planned" })
+    )
+
+    await search({ query: "q", strategy: "direct" } as never)
+    expect(memoriesSearch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ strategy: "direct" })
+    )
+  })
+
   it("threads mode: contains through to the service and forwards kind/status as server-side filters", async () => {
     // Acceptance criterion: contains mode applies kind/status server-side.
     // The MCP tool forwards them rather than swallowing them at the
@@ -5585,6 +5610,17 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
           branch: "contains-only",
         },
       ],
+      planTrace: [
+        {
+          memoryId: "mem-1",
+          score: 0.0322,
+          bestRank: 0,
+          variantHits: [
+            { variantIndex: 0, rank: 0 },
+            { variantIndex: 1, rank: 1 },
+          ],
+        },
+      ],
     })
     const services = {
       projects: { findByName: vi.fn() },
@@ -5610,6 +5646,90 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     expect(synopsisIdx).toBeGreaterThan(-1)
     expect(traceIdx).toBeGreaterThan(synopsisIdx)
     expect(text).toContain("mem-1 branch=contains-only contains=0 semantic=— rrf=—")
+    expect(text).toContain("## Query plan trace")
+    expect(text).toContain("mem-1 plannedScore=0.032200 bestRank=1 variants=v1@1,v2@2")
+  })
+
+  it("renders the query plan returned by planned search", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearchWithMeta = vi.fn().mockResolvedValue({
+      memories: [
+        makeMemory("mem-1", {
+          title: "Search hit",
+          synopsis: "synopsis line",
+        }),
+      ],
+      capped: false,
+      queryPlan: {
+        originalQuery: "auth middleware",
+        variants: [
+          { kind: "original", query: "auth middleware" },
+          { kind: "facets", query: "auth middleware redis" },
+        ],
+      },
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn(),
+        searchWithMeta: memoriesSearchWithMeta,
+        list: vi.fn(),
+      },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "auth middleware" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## Query plan")
+    expect(text).toContain("1. original: auth middleware")
+    expect(text).toContain("2. facets: auth middleware redis")
+    expect(text).toContain("### Search hit")
+  })
+
+  it("redacts bearer-shaped query text from rendered search output", async () => {
+    const mockServer = createMockServer()
+    const token = "ntn_abcdefghijklmnopqrstuvwxyz1234567890"
+    const memoriesSearchWithMeta = vi.fn().mockResolvedValue({
+      memories: [],
+      capped: false,
+      queryPlan: {
+        originalQuery: `debug ${token}`,
+        variants: [
+          { kind: "original", query: `debug ${token}` },
+          { kind: "facets", query: `debug token ${token}` },
+        ],
+      },
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn(),
+        searchWithMeta: memoriesSearchWithMeta,
+        list: vi.fn(),
+      },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: `debug ${token}` } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(memoriesSearchWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ query: `debug ${token}` })
+    )
+    expect(text).not.toContain(token)
+    expect(text).toContain("<redacted-token>")
+    expect(text).toContain("## Query plan")
   })
 
   it("surfaces truncated contains-search windows even when no rows were returned", async () => {

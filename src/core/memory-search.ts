@@ -15,6 +15,9 @@ import type {
   SearchExplain,
   SearchMemoriesInput,
   SearchMode,
+  SearchPlanResultTrace,
+  SearchPlanVariant,
+  SearchQueryPlan,
 } from "../types.js"
 import type { LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
@@ -46,6 +49,7 @@ import {
   isNotReviewTerminalStatus,
   reviewTerminalStatusExclusionFilters,
 } from "./memory-review-state.js"
+import { mergePlannedSearchResults, planSearchQueries } from "./search-plan.js"
 
 type MaterializeMemories = (
   pages: PageObjectResponse[],
@@ -136,6 +140,24 @@ function shouldUseSaturationCutoff(
  */
 export const SEMANTIC_SEARCH_MAX_PAGES = 5
 
+const PLANNED_RUNTOOL_MIN_PAGE_SIZE = 5
+const PLANNED_RUNTOOL_MAX_PAGE_SIZE = 10
+
+function plannedRunToolPageSize(limit: number): number {
+  if (!Number.isFinite(limit)) return PLANNED_RUNTOOL_MAX_PAGE_SIZE
+  return Math.min(
+    PLANNED_RUNTOOL_MAX_PAGE_SIZE,
+    Math.max(PLANNED_RUNTOOL_MIN_PAGE_SIZE, Math.trunc(limit))
+  )
+}
+
+function plannedFirstSetPreserveCount(limit: number): number {
+  if (!Number.isFinite(limit)) return 5
+  const normalizedLimit = Math.max(0, Math.trunc(limit))
+  if (normalizedLimit === 0) return 0
+  return Math.max(1, Math.ceil(normalizedLimit / 2))
+}
+
 /**
  * Reciprocal Rank Fusion damping constant. Score for a row at 0-based
  * `rank` in a branch is `1 / (RRF_K + rank + 1)`. Across both branches
@@ -182,6 +204,8 @@ type HybridTraceEntry = {
 export type SearchPagesResult = {
   pages: PageObjectResponse[]
   capped: boolean
+  queryPlan?: SearchQueryPlan
+  planTrace?: SearchPlanResultTrace[]
 }
 
 /**
@@ -338,6 +362,17 @@ function debugLogHybridBranchFailure(
   )
 }
 
+function debugLogPlannedVariantFailure(
+  variantIndex: number,
+  variant: SearchPlanVariant,
+  reason: unknown
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] partial-failure: variant=${variantIndex} kind=${variant.kind} error=${rejectionToLogLine(reason)} source=planned-search\n`
+  )
+}
+
 /**
  * Operator observability for the semantic-search **cap-fired** case.
  * Fires when `fetchSemanticPages` exhausts `SEMANTIC_SEARCH_MAX_PAGES`
@@ -445,9 +480,11 @@ export class MemorySearch {
   async searchWithMeta(input: SearchMemoriesInput): Promise<{
     memories: Memory[]
     capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
   }> {
-    const { memories, capped } = await this.runSearch(input)
-    return { memories, capped }
+    const { memories, capped, queryPlan, planTrace } = await this.runSearch(input)
+    return { memories, capped, queryPlan, planTrace }
   }
 
   /**
@@ -470,6 +507,8 @@ export class MemorySearch {
     memories: Memory[]
     explain: SearchExplain[]
     capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
   }> {
     return this.runSearch(input)
   }
@@ -480,9 +519,13 @@ export class MemorySearch {
    * explain trace. Both `search` and `searchWithExplain` go through this
    * one method so the row order is identical between the two surfaces.
    */
-  async runSearch(
-    input: SearchMemoriesInput
-  ): Promise<{ memories: Memory[]; explain: SearchExplain[]; capped: boolean }> {
+  async runSearch(input: SearchMemoriesInput): Promise<{
+    memories: Memory[]
+    explain: SearchExplain[]
+    capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
+  }> {
     const requested: SearchMode = input.mode ?? "semantic"
     const mode: SearchMode = this.features.forceSemanticSearch ? "semantic" : requested
     const limit = input.limit ?? 10
@@ -501,6 +544,8 @@ export class MemorySearch {
     let explainBranch: SearchExplain["branch"]
     let hybridTrace: Map<string, HybridTraceEntry> | null = null
     let capped: boolean
+    let queryPlan: SearchQueryPlan | undefined
+    let planTrace: SearchPlanResultTrace[] | undefined
 
     if (mode === "contains") {
       // `searchByContainsPages` deliberately ignores `input.intent`; it
@@ -515,6 +560,8 @@ export class MemorySearch {
       const result = await this.searchBySemanticPages(input, intent)
       pages = result.pages
       capped = result.capped
+      queryPlan = result.queryPlan
+      planTrace = result.planTrace
       explainBranch = "semantic-only"
     } else {
       const hybrid = await this.searchByHybridPages(input, limit, intent)
@@ -522,6 +569,8 @@ export class MemorySearch {
       explainBranch = hybrid.branch
       hybridTrace = hybrid.trace
       capped = hybrid.capped
+      queryPlan = hybrid.queryPlan
+      planTrace = hybrid.planTrace
     }
 
     const selectedPages = pages.slice(0, limit)
@@ -554,7 +603,7 @@ export class MemorySearch {
         branch: explainBranch,
       }
     })
-    return { memories, explain, capped }
+    return { memories, explain, capped, queryPlan, planTrace }
   }
 
   /**
@@ -828,7 +877,8 @@ export class MemorySearch {
   async fetchSemanticPages(
     input: SearchMemoriesInput,
     intent: string | null,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    runToolPageSize?: number
   ): Promise<SearchPagesResult> {
     // Compose the semantic relevance query from the caller's `query` plus
     // any normalized intent. The `[query.trim(), intent].filter(Boolean)`
@@ -846,7 +896,12 @@ export class MemorySearch {
 
     const trimmedComposedQuery = composedQuery.trim()
     if (this.features.runTool.search && trimmedComposedQuery.length > 0) {
-      return this.fetchSemanticPagesViaRunTool(input, trimmedComposedQuery, signal)
+      return this.fetchSemanticPagesViaRunTool(
+        input,
+        trimmedComposedQuery,
+        signal,
+        runToolPageSize
+      )
     }
 
     // Empty semantic queries are recall/list-shaped rather than relevance-shaped:
@@ -1040,12 +1095,11 @@ export class MemorySearch {
    * `PageObjectResponse` shapes (parent, properties, archived flag).
    * The wrapper hydrates each hit through `pages.retrieve`, which is
    * proxied by `createLimitedClient` so the per-token rate-limit
-   * gate paces the fan-out. The wrapper requests
-   * `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25) regardless of caller limit so
-   * `applySemanticPostFilters` has the most headroom; production callers omit
-   * `pageSize` to get this default. 25 retrieves is therefore both the cap and
-   * the typical case. A saturated response is accepted as the semantic answer
-   * and surfaced through `capped: true`; the caller does not switch to REST.
+   * gate paces the fan-out. Direct semantic requests omit `pageSize` so the
+   * wrapper uses `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25). Planned search variants
+   * pass a smaller per-variant window to keep fan-out bounded. A saturated
+   * response is accepted as the semantic answer and surfaced through
+   * `capped: true`; the caller does not switch to REST.
    *
    * **Error classification.** 403 / 401 / 429 / 5xx / 400 / malformed
    * propagate verbatim. The service-layer auth preflight rejects
@@ -1054,7 +1108,8 @@ export class MemorySearch {
   async fetchSemanticPagesViaRunTool(
     input: SearchMemoriesInput,
     composedQuery: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    pageSize?: number
   ): Promise<SearchPagesResult> {
     if (signal?.aborted) {
       throw buildAbortError(signal)
@@ -1063,15 +1118,7 @@ export class MemorySearch {
     const outcome = await searchViaRunTool(this.client, {
       query: composedQuery,
       dataSourceId: this.db.dataSourceId,
-      // `pageSize` is omitted so the wrapper applies its default
-      // (`RUNTOOL_SEARCH_MAX_PAGE_SIZE`). We always want the
-      // server cap regardless of caller `limit`:
-      // `applySemanticPostFilters` is the authoritative cap and
-      // the post-filter narrows aggressively (project / kind /
-      // status / scope / archived / cleanup-orphan). Maxing out
-      // the raw window gives the semantic lane the largest
-      // RunTool-backed candidate set without changing the final
-      // shape of the result.
+      pageSize,
     })
 
     // Cooperative abort check between the network call and the
@@ -1336,7 +1383,74 @@ export class MemorySearch {
     input: SearchMemoriesInput,
     intent: string | null
   ): Promise<SearchPagesResult> {
+    if (input.strategy === "planned" && this.features.queryPlanning) {
+      return this.searchByPlannedSemanticPages(input, intent)
+    }
     return this.fetchSemanticPages(input, intent)
+  }
+
+  async searchByPlannedSemanticPages(
+    input: SearchMemoriesInput,
+    intent: string | null,
+    signal?: AbortSignal
+  ): Promise<SearchPagesResult> {
+    const composedQuery =
+      intent !== null
+        ? [input.query.trim(), intent].filter(Boolean).join(" ")
+        : input.query
+    const plan = planSearchQueries(composedQuery)
+    if (plan.originalQuery.length === 0) {
+      return { pages: [], capped: false, queryPlan: plan, planTrace: [] }
+    }
+    if (plan.variants.length <= 1) {
+      const result = await this.fetchSemanticPages(
+        { ...input, query: plan.variants[0]?.query ?? plan.originalQuery },
+        null,
+        signal
+      )
+      return { ...result, queryPlan: plan }
+    }
+
+    const resultSets: PageObjectResponse[][] = []
+    const failures: unknown[] = []
+    let capped = false
+    const runToolPageSize = plannedRunToolPageSize(input.limit ?? 10)
+    for (const [variantIndex, variant] of plan.variants.entries()) {
+      if (signal?.aborted) {
+        throw buildAbortError(signal)
+      }
+      try {
+        const result = await this.fetchSemanticPages(
+          { ...input, query: variant.query },
+          null,
+          signal,
+          runToolPageSize
+        )
+        resultSets.push(result.pages)
+        capped ||= result.capped
+      } catch (err) {
+        if (isAbortRejection(err)) throw err
+        failures.push(err)
+        resultSets.push([])
+        debugLogPlannedVariantFailure(variantIndex, variant, err)
+      }
+    }
+
+    if (failures.length === plan.variants.length) {
+      throw failures[0]
+    }
+
+    const merged = mergePlannedSearchResults(resultSets, {
+      getId: (page) => page.id,
+      limit: input.limit ?? 10,
+      preserveFirstSetCount: plannedFirstSetPreserveCount(input.limit ?? 10),
+    })
+    return {
+      pages: merged.items,
+      capped,
+      queryPlan: plan,
+      planTrace: merged.trace,
+    }
   }
 
   /**
@@ -1415,6 +1529,8 @@ export class MemorySearch {
     branch: "contains-saturated" | "rrf"
     trace: Map<string, HybridTraceEntry>
     capped: boolean
+    queryPlan?: SearchQueryPlan
+    planTrace?: SearchPlanResultTrace[]
   }> {
     // The controller drives the saturation-triggered cancellation of
     // the in-flight semantic pagination loop. Both
@@ -1424,7 +1540,10 @@ export class MemorySearch {
     // and is checked between `client.search` pages.
     const controller = new AbortController()
     const containsPromise = this.fetchContainsPages(input)
-    const semanticPromise = this.fetchSemanticPages(input, intent, controller.signal)
+    const semanticPromise =
+      input.strategy === "planned" && this.features.queryPlanning
+        ? this.searchByPlannedSemanticPages(input, intent, controller.signal)
+        : this.fetchSemanticPages(input, intent, controller.signal)
 
     // Side-effect handler: as soon as contains lands fulfilled, decide
     // whether to abort. The handler is attached BEFORE the
@@ -1512,6 +1631,14 @@ export class MemorySearch {
       semanticEffective.status === "fulfilled" ? semanticEffective.value.pages : []
     const semanticCapped =
       semanticEffective.status === "fulfilled" ? semanticEffective.value.capped : false
+    const semanticQueryPlan =
+      semanticEffective.status === "fulfilled"
+        ? semanticEffective.value.queryPlan
+        : undefined
+    const semanticPlanTrace =
+      semanticEffective.status === "fulfilled"
+        ? semanticEffective.value.planTrace
+        : undefined
 
     if (containsResult.status === "rejected") {
       debugLogHybridBranchFailure("contains", containsResult.reason)
@@ -1544,6 +1671,8 @@ export class MemorySearch {
         branch: "contains-saturated",
         trace,
         capped: containsCapped,
+        queryPlan: semanticQueryPlan,
+        planTrace: semanticPlanTrace,
       }
     }
 
@@ -1609,6 +1738,8 @@ export class MemorySearch {
       branch: "rrf",
       trace,
       capped: containsCapped || semanticCapped,
+      queryPlan: semanticQueryPlan,
+      planTrace: semanticPlanTrace,
     }
   }
 }

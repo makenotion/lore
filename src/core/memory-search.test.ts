@@ -1,21 +1,35 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
+import { searchViaRunTool } from "../notion/runtool/index.js"
 import { defaultFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import type { DatabaseRef, Memory, MemoryKind, MemorySource } from "../types.js"
 import {
   HYBRID_FALLBACK_THRESHOLD,
   MemorySearch,
+  SEMANTIC_SEARCH_MAX_PAGES,
   tieBreakingRrfCompare,
   type RrfEntry,
 } from "./memory-search.js"
+
+vi.mock("../notion/runtool/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../notion/runtool/index.js")>()
+  return {
+    ...actual,
+    searchViaRunTool: vi.fn(),
+  }
+})
 
 const DB: DatabaseRef = {
   databaseId: "memories-db",
   dataSourceId: "memories-ds",
 }
 
-function features(overrides: Partial<LoreFeatureFlags> = {}): LoreFeatureFlags {
+type FeatureOverrides = Partial<Omit<LoreFeatureFlags, "runTool">> & {
+  runTool?: Partial<LoreFeatureFlags["runTool"]>
+}
+
+function features(overrides: FeatureOverrides = {}): LoreFeatureFlags {
   const defaults = defaultFeatureFlags()
   return {
     ...defaults,
@@ -107,12 +121,13 @@ function makeSubject(
   args: {
     containsPages?: PageObjectResponse[]
     semanticPages?: PageObjectResponse[]
-    featureOverrides?: Partial<LoreFeatureFlags>
+    featureOverrides?: FeatureOverrides
   } = {}
 ): {
   searcher: MemorySearch
   querySpy: ReturnType<typeof vi.fn>
   searchSpy: ReturnType<typeof vi.fn>
+  retrieveSpy: ReturnType<typeof vi.fn>
   materializeSpy: ReturnType<typeof vi.fn>
 } {
   const querySpy = vi.fn(async () => ({
@@ -125,11 +140,13 @@ function makeSubject(
     has_more: false,
     next_cursor: null,
   }))
+  const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => page(page_id))
   const materializeSpy = vi.fn(async (pages: PageObjectResponse[]) =>
     pages.map(memoryForPage)
   )
   const client = {
     dataSources: { query: querySpy },
+    pages: { retrieve: retrieveSpy },
     search: searchSpy,
   } as unknown as Client
 
@@ -144,6 +161,7 @@ function makeSubject(
     ),
     querySpy,
     searchSpy,
+    retrieveSpy,
     materializeSpy,
   }
 }
@@ -430,6 +448,217 @@ describe("MemorySearch mode selection", () => {
     ])
   })
 
+  it("planned semantic search fans out query variants and rank-fuses candidates", async () => {
+    const { searcher, querySpy, searchSpy } = makeSubject()
+    const resultSets = [
+      [page("variant-b"), page("variant-a")],
+      [page("variant-a"), page("variant-c")],
+    ]
+    let callIndex = 0
+    searchSpy.mockImplementation(async () => ({
+      results: resultSets[callIndex++] ?? [],
+      has_more: false,
+      next_cursor: null,
+    }))
+
+    const { memories, explain, queryPlan, planTrace } = await searcher.searchWithExplain({
+      query: "Fix `Next.js` edge middleware auth and Redis session refresh",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+      limit: 3,
+    })
+
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(searchSpy.mock.calls.length).toBeGreaterThan(1)
+    expect(searchSpy.mock.calls[0]![0].query).toContain("Next.js")
+    expect(queryPlan?.variants[0]).toMatchObject({ kind: "original" })
+    expect(memories.map((m) => m.id)).toEqual(["variant-a", "variant-b", "variant-c"])
+    expect(explain.map((entry) => entry.semanticRank)).toEqual([0, 1, 2])
+    expect(planTrace?.[0]).toMatchObject({
+      memoryId: "variant-a",
+      variantHits: [
+        { variantIndex: 0, rank: 1 },
+        { variantIndex: 1, rank: 0 },
+      ],
+    })
+  })
+
+  it("planned semantic search fallback does not send stripped query tokens", async () => {
+    const { searcher, searchSpy } = makeSubject({
+      semanticPages: [page("sanitized-hit")],
+    })
+
+    const { memories, queryPlan } = await searcher.searchWithExplain({
+      query: "debug ntn_SECRET_VALUE_SHOULD_NOT_LEAK_1234567890",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+    })
+
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy.mock.calls[0]![0]).toMatchObject({ query: "debug" })
+    expect(JSON.stringify(searchSpy.mock.calls[0]![0])).not.toContain("SECRET")
+    expect(JSON.stringify(queryPlan)).not.toContain("SECRET")
+    expect(memories.map((memory) => memory.id)).toEqual(["sanitized-hit"])
+  })
+
+  it("planned semantic search returns no results when sanitization removes the whole query", async () => {
+    const { searcher, searchSpy } = makeSubject({
+      semanticPages: [page("should-not-search")],
+    })
+
+    const { memories, queryPlan } = await searcher.searchWithExplain({
+      query: "ntn_SECRET_VALUE_SHOULD_NOT_LEAK_1234567890",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+    })
+
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(queryPlan).toMatchObject({ originalQuery: "", variants: [] })
+    expect(memories).toEqual([])
+  })
+
+  it("planned RunTool fallback does not send stripped intent tokens", async () => {
+    const { searcher } = makeSubject({
+      featureOverrides: { runTool: { search: true } },
+    })
+    const runToolSearchSpy = vi.mocked(searchViaRunTool)
+    runToolSearchSpy.mockReset()
+    runToolSearchSpy.mockResolvedValue({
+      hits: [
+        { id: "intent-hit", title: "intent-hit", url: "intent-hit", isArchived: false },
+      ],
+      saturated: false,
+      searchType: "ai_search",
+    })
+
+    const { memories, queryPlan } = await searcher.searchWithExplain({
+      query: "debug",
+      intent: "ntn_SECRET_VALUE_SHOULD_NOT_LEAK_1234567890",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+    })
+
+    expect(runToolSearchSpy).toHaveBeenCalledTimes(1)
+    expect(runToolSearchSpy.mock.calls[0]![1]).toMatchObject({ query: "debug" })
+    expect(JSON.stringify(runToolSearchSpy.mock.calls[0]![1])).not.toContain("SECRET")
+    expect(JSON.stringify(queryPlan)).not.toContain("SECRET")
+    expect(memories.map((memory) => memory.id)).toEqual(["intent-hit"])
+  })
+
+  it("planned semantic search caps each RunTool variant window", async () => {
+    const { searcher, searchSpy, retrieveSpy } = makeSubject({
+      featureOverrides: { runTool: { search: true } },
+    })
+    const runToolSearchSpy = vi.mocked(searchViaRunTool)
+    runToolSearchSpy.mockReset()
+    let runToolCallIndex = 0
+    runToolSearchSpy.mockImplementation(async () => {
+      const id = `runtool-hit-${runToolCallIndex++}`
+      return {
+        hits: [{ id, title: id, url: id, isArchived: false }],
+        saturated: false,
+        searchType: "ai_search",
+      }
+    })
+
+    const { memories } = await searcher.searchWithExplain({
+      query: "Fix `Next.js` edge middleware auth and Redis session refresh",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+      limit: 25,
+    })
+
+    expect(searchSpy).not.toHaveBeenCalled()
+    expect(runToolSearchSpy.mock.calls.length).toBeGreaterThan(1)
+    expect(
+      new Set(runToolSearchSpy.mock.calls.map(([, params]) => params.pageSize))
+    ).toEqual(new Set([10]))
+    expect(retrieveSpy).toHaveBeenCalledTimes(runToolSearchSpy.mock.calls.length)
+    expect(memories.map((memory) => memory.id)).toContain("runtool-hit-0")
+  })
+
+  it("planned REST semantic search keeps the variant fanout envelope bounded", async () => {
+    const { searcher, searchSpy } = makeSubject()
+    searchSpy.mockImplementation(async () => ({
+      results: [],
+      has_more: true,
+      next_cursor: "next",
+    }))
+
+    const { queryPlan } = await searcher.searchWithExplain({
+      query: "Fix `Next.js` edge middleware auth and Redis session refresh",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+      limit: 10,
+    })
+
+    expect(queryPlan?.variants).toHaveLength(3)
+    expect(searchSpy).toHaveBeenCalledTimes(
+      queryPlan!.variants.length * SEMANTIC_SEARCH_MAX_PAGES
+    )
+  })
+
+  it("planned semantic search continues when one variant fails", async () => {
+    const { searcher, searchSpy } = makeSubject()
+    const outcomes: (
+      | { results: PageObjectResponse[]; has_more: false; next_cursor: null }
+      | Error
+    )[] = [
+      { results: [page("original-hit")], has_more: false, next_cursor: null },
+      new Error("variant 503"),
+      { results: [page("exact-hit")], has_more: false, next_cursor: null },
+    ]
+    let callIndex = 0
+    searchSpy.mockImplementation(async () => {
+      const outcome = outcomes[callIndex++] ?? {
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    })
+
+    const { memories, queryPlan } = await searcher.searchWithExplain({
+      query: "Fix `Next.js` edge middleware auth and Redis session refresh",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+      limit: 3,
+    })
+
+    expect(queryPlan).toBeDefined()
+    expect(searchSpy).toHaveBeenCalledTimes(queryPlan!.variants.length)
+    expect(memories.map((memory) => memory.id)).toEqual(["original-hit", "exact-hit"])
+  })
+
+  it("planned semantic search falls back to direct search when query planning is disabled", async () => {
+    const { searcher, searchSpy } = makeSubject({
+      semanticPages: [page("direct-hit")],
+      featureOverrides: { queryPlanning: false },
+    })
+
+    const { memories, queryPlan } = await searcher.searchWithExplain({
+      query: "Fix `Next.js` edge middleware auth",
+      mode: "semantic",
+      strategy: "planned",
+      includeContent: false,
+    })
+
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy.mock.calls[0]![0]).toMatchObject({
+      query: "Fix `Next.js` edge middleware auth",
+    })
+    expect(memories.map((m) => m.id)).toEqual(["direct-hit"])
+    expect(queryPlan).toBeUndefined()
+  })
+
   it("hybrid mode runs both search branches before RRF ranking", async () => {
     const { searcher, querySpy, searchSpy } = makeSubject({
       containsPages: [page("contains-hit")],
@@ -445,6 +674,36 @@ describe("MemorySearch mode selection", () => {
     expect(querySpy).toHaveBeenCalledTimes(1)
     expect(searchSpy).toHaveBeenCalledTimes(1)
     expect(explain.every((entry) => entry.branch === "rrf")).toBe(true)
+  })
+
+  it("hybrid keeps the contains leg raw while planning the semantic leg", async () => {
+    const { searcher, querySpy, searchSpy } = makeSubject({
+      containsPages: [page("contains-hit")],
+    })
+    const resultSets = [[page("semantic-hit")], [page("contains-hit")]]
+    let callIndex = 0
+    searchSpy.mockImplementation(async () => ({
+      results: resultSets[callIndex++] ?? [],
+      has_more: false,
+      next_cursor: null,
+    }))
+
+    const { memories, queryPlan } = await searcher.searchWithExplain({
+      query: "Fix `Next.js` edge middleware auth",
+      mode: "hybrid",
+      strategy: "planned",
+      includeContent: false,
+      limit: 3,
+    })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(querySpy.mock.calls[0]![0].filter)).toContain(
+      "Fix `Next.js` edge middleware auth"
+    )
+    expect(searchSpy.mock.calls.length).toBeGreaterThan(1)
+    expect(queryPlan?.variants[0]).toMatchObject({ kind: "original" })
+    expect(memories.map((m) => m.id)).toContain("contains-hit")
+    expect(memories.map((m) => m.id)).toContain("semantic-hit")
   })
 
   it("forceSemanticSearch routes even an explicit contains request through semantic mode", async () => {

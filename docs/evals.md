@@ -258,7 +258,9 @@ The default committed suite uses:
 
 - `no-lore`: baseline model/task prior with no Lore tools.
 - `tool-driven-lore`: headline condition. The agent receives read-only Lore
-  instructions and read-only search/expand tools.
+  instructions and read-only search/expand tools. Search uses the agent-facing
+  `lore-query action='search'` behavior, including planned semantic query
+  variants unless query planning is disabled.
 - `oracle-context`: diagnostic ceiling where the target procedure body is
   injected directly.
 

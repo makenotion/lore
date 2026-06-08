@@ -91,6 +91,7 @@ const featuresConfigSchema = z
     taskCrossref: z.boolean().optional(),
     learningExtraction: z.boolean().optional(),
     confidenceFactor: z.boolean().optional(),
+    queryPlanning: z.boolean().optional(),
     forceSemanticSearch: z.boolean().optional(),
     runTool: z
       .object({

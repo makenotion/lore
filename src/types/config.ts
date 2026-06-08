@@ -109,6 +109,12 @@ export interface LoreFeatureConfig {
    */
   confidenceFactor?: boolean
   /**
+   * Query planning for callers that opt into planned memory search. Default:
+   * true. `LORE_DISABLE_QUERY_PLANNING=1` forces planned requests through the
+   * direct semantic path.
+   */
+  queryPlanning?: boolean
+  /**
    * Force every memory search request through semantic mode instead of
    * contains/hybrid modes. This does not disable RunTool search; use
    * `LORE_USE_RUNTOOL_SEARCH=0` or `LORE_USE_RUNTOOL=0` to bypass the

@@ -11,6 +11,7 @@ describe("resolveFeatureFlags", () => {
       taskCrossref: true,
       learningExtraction: true,
       confidenceFactor: true,
+      queryPlanning: true,
       forceSemanticSearch: false,
       runTool: {
         enabled: true,
@@ -61,6 +62,7 @@ describe("resolveFeatureFlags", () => {
         LORE_DISABLE_AUTO_MENTIONS: "1",
         LORE_DISABLE_NEAR_DUPLICATE_PROBE: "1",
         LORE_DISABLE_LEARNING_EXTRACTION: "1",
+        LORE_DISABLE_QUERY_PLANNING: "1",
         LORE_FORCE_SEMANTIC_SEARCH: "1",
       },
       {
@@ -68,6 +70,7 @@ describe("resolveFeatureFlags", () => {
           autoMentions: true,
           nearDuplicateProbe: true,
           learningExtraction: true,
+          queryPlanning: true,
           forceSemanticSearch: false,
         },
       }
@@ -76,6 +79,7 @@ describe("resolveFeatureFlags", () => {
     expect(flags.autoMentions).toBe(false)
     expect(flags.nearDuplicateProbe).toBe(false)
     expect(flags.learningExtraction).toBe(false)
+    expect(flags.queryPlanning).toBe(false)
     expect(flags.forceSemanticSearch).toBe(true)
   })
 
