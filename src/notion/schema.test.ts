@@ -112,11 +112,8 @@ describe("memoriesProperties — Last Referenced At column (0.8.0/02)", () => {
   })
 
   it("places Last Referenced At immediately after Decided At so insertion order matches the spec's date-cluster contract", () => {
-    // Pin insertion point so a parallel late-merger landing #01
-    // (`Confidence Score`) on top of #02 — or vice versa — does a one-line
-    // rebase rather than guessing where the column belongs. The spec
-    // groups Last Referenced At with the other date columns (Review By /
-    // Done At / Decided At).
+    // Pin insertion point so citation-recency stays grouped with the other
+    // date columns (Review By / Done At / Decided At).
     const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
     const decidedAtIdx = keys.indexOf("Decided At")
     const lastReferencedAtIdx = keys.indexOf("Last Referenced At")
@@ -181,26 +178,17 @@ describe("memoriesProperties — Done At column (#07)", () => {
   })
 })
 
-describe("memoriesProperties — deprecated Confidence Score column", () => {
-  it("continues declaring Confidence Score as a number column on a fresh-vault config", () => {
+describe("memoriesProperties — compatibility-only confidence columns", () => {
+  it("does not declare dead confidence columns on a fresh-vault config", () => {
     const props = memoriesProperties("p-ds", "t-ds", "m-ds")
-    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
+    expect(props).not.toHaveProperty(MEMORY_PROPS.CONFIDENCE)
+    expect(props).not.toHaveProperty(MEMORY_PROPS.CONFIDENCE_SCORE)
   })
 
-  it("continues declaring Confidence Score on the legacy-vault shape too", () => {
-    // `verifyVaultDatabases` + `migrateVaultSchema` use the two-arg
-    // overload on a vault that pre-dates self-relations. The deprecated
-    // column remains in the schema until a major-version migration can
-    // remove it deliberately.
+  it("does not declare dead confidence columns on the legacy-vault shape", () => {
     const props = memoriesProperties("p-ds", "t-ds")
-    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
-  })
-
-  it("keeps Confidence Score immediately after the deprecated Confidence column", () => {
-    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
-    const confidenceIdx = keys.indexOf("Confidence")
-    const confidenceScoreIdx = keys.indexOf("Confidence Score")
-    expect(confidenceScoreIdx).toBe(confidenceIdx + 1)
+    expect(props).not.toHaveProperty(MEMORY_PROPS.CONFIDENCE)
+    expect(props).not.toHaveProperty(MEMORY_PROPS.CONFIDENCE_SCORE)
   })
 })
 
@@ -227,20 +215,14 @@ describe("buildMemoryProps — doneAt emission", () => {
   })
 })
 
-describe("memoriesProperties — retained Confidence Score + Last Referenced At columns", () => {
-  it("continues declaring Confidence Score as a numeric column", () => {
-    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
-    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
-  })
-
+describe("memoriesProperties — Last Referenced At compatibility with retained constants", () => {
   it("declares Last Referenced At as a date column", () => {
     const props = memoriesProperties("p-ds", "t-ds", "m-ds")
     expect(props["Last Referenced At"]).toEqual({ date: {} })
   })
 
-  it("includes both columns on the legacy two-arg overload", () => {
+  it("declares Last Referenced At on the legacy two-arg overload", () => {
     const props = memoriesProperties("p-ds", "t-ds")
-    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
     expect(props["Last Referenced At"]).toEqual({ date: {} })
   })
 })
@@ -292,17 +274,13 @@ describe("memoriesProperties — Topic Key + Revision Count columns (0.9.0/01)",
     expect(props["Revision Count"]).toEqual({ number: { format: "number" } })
   })
 
-  it("places Topic Key immediately after Confidence Score so insertion order matches the spec", () => {
-    // The spec (0.9.0/#01) pins the insertion point so a parallel
-    // late-merger landing #02 (Compared With) on top of #01 — or vice
-    // versa — does a one-line rebase rather than guessing where the
-    // column belongs. Topic Key + Revision Count cluster between the
-    // numeric Confidence Score and the Review By date column,
-    // keeping scalar properties grouped together.
+  it("places Topic Key before Revision Count in the scalar cluster", () => {
+    // Topic Key and Revision Count are a coupled scalar pair. Their relative
+    // order stays stable even if the surrounding scalar block grows.
     const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
-    const confidenceScoreIdx = keys.indexOf("Confidence Score")
     const topicKeyIdx = keys.indexOf("Topic Key")
-    expect(topicKeyIdx).toBe(confidenceScoreIdx + 1)
+    const revisionCountIdx = keys.indexOf("Revision Count")
+    expect(topicKeyIdx).toBeLessThan(revisionCountIdx)
   })
 
   it("places Revision Count immediately after Topic Key", () => {
@@ -313,16 +291,9 @@ describe("memoriesProperties — Topic Key + Revision Count columns (0.9.0/01)",
   })
 
   it("places Revision Count before Review By so the date columns stay clustered", () => {
-    // SOFT pin (precedes, not adjacency) — distinct from the two pins
-    // above. PR #161 (issue 0.9.0/02) inserts `Compare Notes` between
-    // `Revision Count` and `Review By` in the same scalar block, so
-    // whichever PR lands second would fail a `reviewByIdx ===
-    // revisionCountIdx + 1` adjacency check. The Topic Key /
-    // Revision Count adjacency above stays rigid (those are paired by
-    // this issue and never separated by future inserts); the
-    // Revision Count → Review By relationship loosens to "precedes"
-    // because Phase 1 explicitly contemplates additional scalars
-    // landing between them.
+    // Scalar metadata belongs before review-date metadata. This assertion
+    // avoids exact adjacency because unrelated scalar columns can live in
+    // the same block.
     const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
     const revisionCountIdx = keys.indexOf("Revision Count")
     const reviewByIdx = keys.indexOf("Review By")
@@ -412,21 +383,15 @@ describe("memoriesProperties — Compare Notes column (0.9.0/02)", () => {
     expect(props["Compare Notes"]).toEqual({ rich_text: {} })
   })
 
-  it("places Compare Notes between Confidence Score and Review By", () => {
-    // The 0.9.0 spec orders the scalar cluster as `Confidence Score →
-    // Topic Key → Revision Count → Compare Notes → Review By`. #01
-    // (Topic Key + Revision Count) and #02 (Compare Notes) are
-    // independent PRs against the same scalar block; this test pins
-    // the boundaries (after Confidence Score, before Review By) but
-    // not the exact `+1` adjacency, so a #160-vs-#161 merge order
-    // doesn't churn whichever PR lands second. The schema comment in
-    // `schema.ts` documents the full cluster ordering for the
-    // late-merger.
+  it("places Compare Notes between Revision Count and Review By", () => {
+    // Compare Notes lives in the scalar block after Topic Key / Revision Count
+    // and before the review-date columns. The assertion avoids exact adjacency
+    // so related scalar additions can land without order churn.
     const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
-    const confidenceScoreIdx = keys.indexOf("Confidence Score")
+    const revisionCountIdx = keys.indexOf("Revision Count")
     const compareNotesIdx = keys.indexOf("Compare Notes")
     const reviewByIdx = keys.indexOf("Review By")
-    expect(compareNotesIdx).toBeGreaterThan(confidenceScoreIdx)
+    expect(compareNotesIdx).toBeGreaterThan(revisionCountIdx)
     expect(compareNotesIdx).toBeLessThan(reviewByIdx)
   })
 })
@@ -720,19 +685,21 @@ describe("*_PROPS constants match the schema-builder definitions (issue #482)", 
   // (without updating the schema shape) would leave both halves silently
   // disagreeing — the very failure mode the PR exists to prevent. These
   // tests turn that drift from impossible-to-mistype into impossible-to-
-  // merge. Compare every constant value against the keys the corresponding
-  // builder writes, in BOTH directions: every constant maps to a real
-  // schema column AND every schema column has a constant.
+  // merge. Generated schema columns must all have constants. A small explicit
+  // compatibility-only set lets constants remain available for columns that
+  // read/write code still needs to tolerate in existing vaults.
   const SCENARIOS = [
     {
       name: "PROJECT_PROPS / projectsProperties",
       constantValues: new Set<string>(Object.values(PROJECT_PROPS)),
       schemaKeys: new Set(Object.keys(projectsProperties())),
+      compatibilityOnly: new Set<string>(),
     },
     {
       name: "TOPIC_PROPS / topicsProperties",
       constantValues: new Set<string>(Object.values(TOPIC_PROPS)),
       schemaKeys: new Set(Object.keys(topicsProperties("p-ds"))),
+      compatibilityOnly: new Set<string>(),
     },
     {
       name: "MEMORY_PROPS / memoriesProperties (with self-relations)",
@@ -741,23 +708,30 @@ describe("*_PROPS constants match the schema-builder definitions (issue #482)", 
       // only land when memoriesProperties is called with `memoriesDsId`
       // — pass it so the comparison covers the full vault shape.
       schemaKeys: new Set(Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))),
+      compatibilityOnly: new Set<string>([
+        MEMORY_PROPS.CONFIDENCE,
+        MEMORY_PROPS.CONFIDENCE_SCORE,
+      ]),
     },
     {
       name: "ENTITY_PROPS / entitiesProperties",
       constantValues: new Set<string>(Object.values(ENTITY_PROPS)),
       schemaKeys: new Set(Object.keys(entitiesProperties("p-ds", "m-ds"))),
+      compatibilityOnly: new Set<string>(),
     },
     {
       name: "FACT_PROPS / factsProperties",
       constantValues: new Set<string>(Object.values(FACT_PROPS)),
       schemaKeys: new Set(Object.keys(factsProperties("p-ds", "m-ds", "e-ds"))),
+      compatibilityOnly: new Set<string>(),
     },
   ]
 
   for (const scenario of SCENARIOS) {
     it(`${scenario.name}: every constant value maps to a schema column`, () => {
       const orphanConstants = [...scenario.constantValues].filter(
-        (value) => !scenario.schemaKeys.has(value)
+        (value) =>
+          !scenario.schemaKeys.has(value) && !scenario.compatibilityOnly.has(value)
       )
       expect(orphanConstants).toEqual([])
     })

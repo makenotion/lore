@@ -55,15 +55,14 @@ export const DECAY_RATE = 0.99
 export const DECREMENT_FACTOR = 0.5
 
 /**
- * Floor for the RRF weighting factor exposed by `confidenceFactor`.
- * `score = 0` maps to this value; `score = 1` maps to 1. Preserves the
- * "score is a tiebreaker, not a veto" intuition for fact ranking.
+ * Numeric anchor for consumers that import the policy constant. Retrieval
+ * ranking treats Confidence Score as neutral.
  */
 export const CONFIDENCE_FACTOR_MIN = 0.5
 
 /**
  * Threshold below which fact renderers show an italic trust indicator.
- * Pinned at 0.5 to match `CONFIDENCE_FACTOR_MIN`.
+ * Scores below 0.5 render a trust label; scores at or above 0.5 do not.
  */
 export const CONFIDENCE_DISPLAY_THRESHOLD = 0.5
 

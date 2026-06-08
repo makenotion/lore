@@ -22,7 +22,7 @@ pair and passes `affectedMemoryId` to `lore-memory action='compare'`; that
 argument identifies the contradicted or superseded memory for asymmetric
 verdicts. `judgeConfidence` is mapped onto the categorical confidence of the
 emitted `conflicts_with` / `supersedes_decision` fact, and the fact confidence
-score can affect later ranking/display, but existing fact confidence does not
+score can affect later trust display, but existing fact confidence does not
 choose which side wins a conflict.
 
 ## Scan Caps

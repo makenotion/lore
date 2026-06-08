@@ -192,7 +192,7 @@ export function printFactConfidenceAudit(report: FactConfidenceAuditReport): voi
       `the 60d grace; ${countPct(
         report.decay.wouldLowerStoredScore,
         report.scoredFacts
-      )} would rank lower after effective decay` +
+      )} would show a lower effective trust score after decay` +
       ` (avg drop ${formatMaybeScore(report.decay.averageDrop)}, max drop ${formatMaybeScore(report.decay.maxDrop)})`
   )
   const unknownSeed =

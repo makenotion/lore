@@ -97,15 +97,16 @@ and migration differences.
   wake-up behavior; and [`topology-promotion.md`](topology-promotion.md) for
   promotion targets.
 - Runtime feature flags resolve once in `src/feature-flags.ts` from
-  `.lore.yaml` `features:` plus backward-compatible env vars. The feature
-  taxonomy is: duplicate/advisory gates (`nearDuplicateProbe`,
-  `autosaveLearningDedup`, `taskReuse`, `taskCrossref`), write/read behavior
-  gates (`autoMentions`, `learningExtraction`, fact `confidenceFactor`,
+  `.lore.yaml` `features:` plus backward-compatible env vars for existing
+  env-backed flags. The feature taxonomy is: duplicate/advisory gates
+  (`nearDuplicateProbe`, `autosaveLearningDedup`, `taskReuse`, `taskCrossref`),
+  write/read behavior gates (`autoMentions`, `learningExtraction`, YAML-only
   `queryPlanning`, `forceSemanticSearch`), and the `runTool` family (`enabled`,
   `blockEdit`, `filterSql`, `search`, `aggregate`, `batchCreates`). Env
-  rollback switches such as `LORE_DISABLE_AUTO_MENTIONS=1`,
-  `LORE_DISABLE_QUERY_PLANNING=1`, and `LORE_USE_RUNTOOL=0` still win over
-  config values.
+  rollback switches such as `LORE_DISABLE_AUTO_MENTIONS=1` and
+  `LORE_USE_RUNTOOL=0` still win over their corresponding env-backed config
+  values. Confidence-score ranking weight is disabled in code and is not a
+  runtime feature flag.
 
 ## Code Patterns
 

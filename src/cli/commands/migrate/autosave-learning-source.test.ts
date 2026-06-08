@@ -20,6 +20,30 @@ function makePage(id: string, title: string, session: string) {
   }
 }
 
+function makeServices(args: {
+  query: ReturnType<typeof vi.fn>
+  update?: ReturnType<typeof vi.fn>
+  memoryProperties?: Record<string, unknown>
+}) {
+  const retrieve = vi.fn(async () => ({
+    properties: args.memoryProperties ?? {
+      [MEMORY_PROPS.CONFIDENCE]: { type: "select", select: {} },
+    },
+  }))
+  return {
+    client: {
+      dataSources: {
+        retrieve,
+        query: args.query,
+      },
+      pages: {
+        update: args.update ?? vi.fn(),
+      },
+    },
+    vault: { databases: { memories: { dataSourceId: "memories-ds" } } },
+  }
+}
+
 describe("runBackfillAutosaveLearningSource", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -36,10 +60,7 @@ describe("runBackfillAutosaveLearningSource", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const result = await runBackfillAutosaveLearningSource(
-      {
-        client: { dataSources: { query }, pages: { update } },
-        vault: { databases: { memories: { dataSourceId: "memories-ds" } } },
-      } as never,
+      makeServices({ query, update }) as never,
       { apply: false, dryRun: true }
     )
 
@@ -52,6 +73,34 @@ describe("runBackfillAutosaveLearningSource", () => {
     expect(JSON.stringify(filter)).toContain('"Confidence"')
     expect(JSON.stringify(filter)).toContain('"likely"')
     expect(JSON.stringify(filter)).toContain('"is_not_empty"')
+  })
+
+  it("returns zero candidates without querying when the legacy Confidence column is absent", async () => {
+    const query = vi.fn()
+    const update = vi.fn()
+    const logs: string[] = []
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "))
+    })
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    const result = await runBackfillAutosaveLearningSource(
+      makeServices({
+        query,
+        update,
+        memoryProperties: {
+          [MEMORY_PROPS.SOURCE]: { type: "select", select: {} },
+          [MEMORY_PROPS.KIND]: { type: "select", select: {} },
+          [MEMORY_PROPS.SESSION]: { type: "rich_text", rich_text: {} },
+        },
+      }) as never,
+      { apply: true, dryRun: false }
+    )
+
+    expect(result).toEqual({ scanned: 0, candidates: [], written: 0 })
+    expect(query).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+    expect(logs.join("\n")).toContain("has no legacy Confidence column")
   })
 
   it("writes Source=autosave_learning in apply mode", async () => {
@@ -68,10 +117,7 @@ describe("runBackfillAutosaveLearningSource", () => {
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     const result = await runBackfillAutosaveLearningSource(
-      {
-        client: { dataSources: { query }, pages: { update } },
-        vault: { databases: { memories: { dataSourceId: "memories-ds" } } },
-      } as never,
+      makeServices({ query, update }) as never,
       { apply: true, dryRun: false }
     )
 
@@ -94,13 +140,11 @@ describe("runBackfillAutosaveLearningSource", () => {
     vi.spyOn(console, "log").mockImplementation(() => {})
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
-    await runBackfillAutosaveLearningSource(
-      {
-        client: { dataSources: { query }, pages: { update: vi.fn() } },
-        vault: { databases: { memories: { dataSourceId: "memories-ds" } } },
-      } as never,
-      { apply: false, dryRun: true, projectId: "project-1" }
-    )
+    await runBackfillAutosaveLearningSource(makeServices({ query }) as never, {
+      apply: false,
+      dryRun: true,
+      projectId: "project-1",
+    })
 
     const filter = (query.mock.calls[0]![0] as { filter: unknown }).filter
     expect(JSON.stringify(filter)).toContain('"Project"')

@@ -240,6 +240,19 @@ features:
     })
   })
 
+  it("ignores unsupported runtime feature flags", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+features:
+  queryPlanning: true
+  confidenceFactor: true
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.features).toEqual({ queryPlanning: true })
+  })
+
   it("parses optional cost tracking config", () => {
     const { config, warnings } = parseConfigAllowingInvalidHooks(`
 vault:

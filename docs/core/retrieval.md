@@ -70,6 +70,8 @@ occupy a result slot a live row would otherwise fill.
 `strategy` controls how the semantic lane is executed. Core service callers
 default to `strategy: "direct"`; agent-facing MCP and eval tool shims default
 to `strategy: "planned"` unless the caller opts out with `strategy: "direct"`.
+The `.lore.yaml` setting `features.queryPlanning` defaults to `true`; setting
+it to `false` makes planned requests execute as direct semantic searches.
 
 `strategy: "direct"` issues one semantic query. `strategy: "planned"` builds
 up to three sanitized variants from the composed query (`query` plus optional

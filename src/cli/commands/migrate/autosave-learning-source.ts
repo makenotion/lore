@@ -34,6 +34,15 @@ function legacyAutosaveLearningFilter(
   return { and: filters } as QueryDataSourceParameters["filter"]
 }
 
+async function hasLegacyConfidenceColumn(services: LoreServices): Promise<boolean> {
+  const response = await services.client.dataSources.retrieve({
+    data_source_id: services.vault.databases.memories.dataSourceId,
+  })
+  const properties =
+    (response as { properties?: Record<string, unknown> }).properties ?? {}
+  return Object.hasOwn(properties, MEMORY_PROPS.CONFIDENCE)
+}
+
 function rowFromPage(page: PageObjectResponse): LegacyAutosaveLearningRow {
   const session = extractRichText(page.properties[MEMORY_PROPS.SESSION]).trim()
   return {
@@ -53,6 +62,14 @@ export async function runBackfillAutosaveLearningSource(
 ): Promise<BackfillAutosaveLearningSourceResult> {
   const apply = options.apply && !options.dryRun
   printDiscoveryBreadcrumb("legacy autosave learning memories")
+
+  if (!(await hasLegacyConfidenceColumn(services))) {
+    console.log(
+      "\nNo legacy autosave learning candidates: Memories data source has no " +
+        "legacy Confidence column."
+    )
+    return { scanned: 0, candidates: [], written: 0 }
+  }
 
   let cursor: string | undefined
   let scanned = 0

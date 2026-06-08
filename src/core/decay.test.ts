@@ -124,66 +124,16 @@ describe("decayConfidenceScore", () => {
 })
 
 describe("confidenceFactor", () => {
-  it("returns 1.0 for null (unscored — neutral, pre-migration rows)", () => {
+  it("keeps null scores neutral", () => {
     expect(confidenceFactor(null)).toBe(1.0)
   })
 
-  it("returns 1.0 for a maxed-out score", () => {
-    expect(confidenceFactor(1.0)).toBeCloseTo(1.0, 6)
-  })
-
-  it("returns 0.5 for a maximally-decayed score (the floor)", () => {
-    expect(confidenceFactor(0.0)).toBeCloseTo(0.5, 6)
-  })
-
-  it("returns 0.75 for a middling score (linear interpolation)", () => {
-    expect(confidenceFactor(0.5)).toBeCloseTo(0.75, 6)
-  })
-
-  it("interpolates linearly between the floor and the ceiling", () => {
-    expect(confidenceFactor(0.2)).toBeCloseTo(0.6, 6)
-    expect(confidenceFactor(0.8)).toBeCloseTo(0.9, 6)
-  })
-
-  it("LORE_DISABLE_CONFIDENCE_FACTOR=1 returns 1.0 unconditionally", () => {
-    // Operator escape hatch. The kill switch lives at the top of
-    // `confidenceFactor` so every fact-ranking caller shares one bypass. With
-    // the env var set, every call returns 1.0, even for fully decayed rows that
-    // would otherwise map to `CONFIDENCE_FACTOR_MIN`.
-    const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
-    process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = "1"
-    try {
-      expect(confidenceFactor(0.0)).toBe(1.0)
-      expect(confidenceFactor(0.5)).toBe(1.0)
-      expect(confidenceFactor(1.0)).toBe(1.0)
-      expect(confidenceFactor(null)).toBe(1.0)
-    } finally {
-      if (original === undefined) {
-        delete process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
-      } else {
-        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
-      }
-    }
-  })
-
-  it("LORE_DISABLE_CONFIDENCE_FACTOR set to anything other than '1' does NOT activate the kill switch", () => {
-    // Strict-string match: the kill switch fires only on exact "1", same
-    // posture as every other lore env knob. Empty string, "true", "yes",
-    // "on", and other plausible truthy values must NOT bypass.
-    const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
-    try {
-      for (const value of ["", "0", "true", "yes", "on", "false"]) {
-        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = value
-        // 0.0 input → factor 0.5 (not bypassed to 1.0)
-        expect(confidenceFactor(0.0)).toBeCloseTo(0.5, 6)
-      }
-    } finally {
-      if (original === undefined) {
-        delete process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
-      } else {
-        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
-      }
-    }
+  it("keeps every numeric score neutral for retrieval ranking", () => {
+    expect(confidenceFactor(0.0)).toBe(1.0)
+    expect(confidenceFactor(0.2)).toBe(1.0)
+    expect(confidenceFactor(0.5)).toBe(1.0)
+    expect(confidenceFactor(0.8)).toBe(1.0)
+    expect(confidenceFactor(1.0)).toBe(1.0)
   })
 })
 
@@ -206,10 +156,10 @@ describe("effectiveConfidenceScore", () => {
 describe("effectiveConfidenceFactor", () => {
   const TODAY = "2026-04-29"
 
-  it("uses the decayed effective score for ranking", () => {
+  it("keeps decayed effective scores neutral for ranking", () => {
     const factor = effectiveConfidenceFactor(0.9, "2025-10-31", TODAY)
 
-    expect(factor).toBeCloseTo(0.5 + 0.5 * (0.9 * Math.pow(0.99, 120)), 6)
+    expect(factor).toBe(1.0)
   })
 
   it("keeps null scores neutral", () => {

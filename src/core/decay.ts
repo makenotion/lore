@@ -9,10 +9,10 @@
  *
  * Every mutation of a stored fact Confidence Score realizes the time decay
  * accrued since the last touch before applying its own bump or decrement.
- * Retrieval ranking can compute an effective score in memory through
- * `effectiveConfidenceFactor`; that calculation is ranking-only and does not
- * write the decayed value back to Notion. Authoritative persistence still
- * happens on touch, decrement, and the confidence backfill migration.
+ * Display and audit paths can compute an effective score in memory through
+ * `effectiveConfidenceScore`; that calculation does not write the decayed
+ * value back to Notion. Authoritative persistence still happens on touch,
+ * decrement, and the confidence backfill migration.
  *
  * ## Algebra
  *
@@ -22,14 +22,14 @@
  * | `bumpConfidenceScore(s)` | `s + (1 - s) * BUMP_RATE` (`BUMP_RATE = 0.05`) | After decay realization on every read citation |
  * | `decrementConfidenceScore(s)` | `s * DECREMENT_FACTOR` (`DECREMENT_FACTOR = 0.5`) | After decay realization on contradiction and supersession signals |
  * | `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days - STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In flight on every touch, decrement, and migration |
- * | `confidenceFactor(s)` | `CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * s`, `null -> 1` | Stored-score factor mapper |
- * | `effectiveConfidenceFactor(s, ref, today)` | `confidenceFactor(decayConfidenceScore(s, ref, today))`, `null -> 1` | Ranking-time factor, no writes |
+ * | `confidenceFactor(s)` | `1.0` | Neutral ranking factor |
+ * | `effectiveConfidenceFactor(s, ref, today)` | `1.0` | Ranking-time factor, no writes |
  *
  * The asymmetry is deliberate: slow recovery, slow neglect decay, and
  * aggressive contradiction reflect different signal quality. A single citation
  * is weaker evidence than a stretch of neglect, and contradiction is a
  * high-quality negative signal. The shared constants keep fact migration, I/O
- * wrappers, and fact ranking aligned.
+ * wrappers, and trust display aligned.
  */
 
 import {
@@ -41,10 +41,8 @@ import {
   BUMP_RATE,
   DECAY_RATE,
   DECREMENT_FACTOR,
-  CONFIDENCE_FACTOR_MIN,
   type FactConfidence,
 } from "../types.js"
-import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 
 /**
  * Notion has no native range constraint on `number` columns; the clamp
@@ -147,45 +145,18 @@ export function decayConfidenceScore(
 }
 
 /**
- * Map a Confidence Score to an RRF weighting factor in
- * `[CONFIDENCE_FACTOR_MIN, 1.0]`. `null` (unscored) maps to `1.0` —
- * neutral, unmigrated rows shouldn't be penalized for lack of data.
- * A score of `1.0` maps to `1.0`; a score of `0.0` maps to
- * `CONFIDENCE_FACTOR_MIN` (tunable constant).
- *
- * Pure stored-value mapper. This function does NOT apply decay, does
- * NOT read `lastReferencedAt`, and does NOT touch Notion. It exists so
- * fact ranking can multiply each row's stored Confidence Score
- * into its rank score without I/O or time arithmetic. Decay is
- * realized at write time by `touchOnRead` / `decrementConfidence` /
- * the migration; by the time the score reaches retrieval, it is the
- * truth-as-of-last-touch.
- *
- * The floor preserves the "score is a tiebreaker, not a veto"
- * intuition: a maximally-decayed fact still surfaces at the floor-multiple
- * of a fully trusted one — it doesn't disappear from results.
- *
- * **Kill switch.** `LORE_DISABLE_CONFIDENCE_FACTOR=1` returns `1.0`
- * unconditionally — a sustained-failure rollback to the unweighted
- * ranking, not a default. Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
- * `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an opt-in defensive lever for an
- * operator whose vault sees pathological ordering under the signal.
- * The check lives here so every fact-ranking caller shares one bypass.
+ * Confidence Score remains available for trust labels, audits, and write-time
+ * maintenance, but it is neutral for retrieval ranking. Every valid score maps
+ * to `1.0`, so ranking callers cannot use confidence as a multiplier.
  */
-export function confidenceFactor(
-  score: number | null,
-  features: Pick<LoreFeatureFlags, "confidenceFactor"> = resolveFeatureFlags()
-): number {
-  if (!features.confidenceFactor) return 1.0
-  if (score === null) return 1.0
-  return CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * score
+export function confidenceFactor(_score: number | null): number {
+  return 1.0
 }
 
 /**
- * Ranking-time effective score. Applies the same neglect decay algebra as the
+ * Read-time effective score. Applies the same neglect decay algebra as the
  * write-realized paths, but returns the in-memory value without touching
- * Notion. `null` stays neutral so unmigrated rows keep the same behavior as
- * `confidenceFactor(null)`.
+ * Notion. `null` stays unrated so unmigrated rows do not render a trust label.
  */
 export function effectiveConfidenceScore(
   score: number | null,
@@ -197,19 +168,14 @@ export function effectiveConfidenceScore(
 }
 
 /**
- * Confidence factor used by retrieval ranking. This is intentionally separate
- * from `confidenceFactor` so callers that need to display stored-score
- * behavior can still do so, while search scoring uses the decayed effective
- * value.
+ * Confidence factor used by retrieval ranking. Ranking callers share the same
+ * neutral multiplier while display and audit callers can still render the
+ * decayed effective score directly.
  */
 export function effectiveConfidenceFactor(
   score: number | null,
   lastReferencedAt: string | null,
-  today: string,
-  features: Pick<LoreFeatureFlags, "confidenceFactor"> = resolveFeatureFlags()
+  today: string
 ): number {
-  return confidenceFactor(
-    effectiveConfidenceScore(score, lastReferencedAt, today),
-    features
-  )
+  return confidenceFactor(effectiveConfidenceScore(score, lastReferencedAt, today))
 }

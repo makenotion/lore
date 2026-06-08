@@ -46,10 +46,11 @@ structural storage ceiling for the Synopsis property.
 ## Memory Confidence Columns
 
 Some vaults still have legacy Memories database columns named `Confidence` and
-`Confidence Score`. They are retained for schema compatibility only. Memory
-write tools do not accept confidence inputs, memory reads do not rank or render
-by those columns, and operators should not write them directly. Fact confidence
-is separate and remains active on the Facts database.
+`Confidence Score`. They are read for schema compatibility only; newly generated
+Memories schemas do not create them. Memory write tools do not accept confidence
+inputs, memory reads do not rank or render by those columns, and operators
+should not write them directly. Fact confidence is separate and remains active
+on the Facts database.
 
 ## Conflict Verdicts
 

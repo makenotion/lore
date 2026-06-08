@@ -113,7 +113,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--backfill-autosave-learning-source",
-    "Re-source legacy autosave learning rows from Source=conversation to Source=autosave_learning when they match the retired autosave marker shape (Kind=note, Confidence=likely, non-empty Session). Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope."
+    "Re-source legacy autosave learning rows from Source=conversation to Source=autosave_learning when they match the retired autosave marker shape (Kind=note, Confidence=likely, non-empty Session). No-ops on vaults without the retired Memories Confidence column. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope."
   )
   .option(
     "--synopsis-backend <name>",
@@ -131,7 +131,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--audit-fact-confidence",
-    "Read-only audit of live Facts confidence: categorical distribution, stored/effective numeric score buckets, Last Referenced At freshness, and whether neglect decay would change ranking today. Pair with `--project <name>` to scope, or `--allow-unscoped` for a vault-wide audit."
+    "Read-only audit of live Facts confidence: categorical distribution, stored/effective numeric score buckets, Last Referenced At freshness, and whether neglect decay would lower effective trust scores today. Pair with `--project <name>` to scope, or `--allow-unscoped` for a vault-wide audit."
   )
   .option(
     "--backfill-fact-observed-at",

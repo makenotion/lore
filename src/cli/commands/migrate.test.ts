@@ -7,7 +7,10 @@ import type { Fact, Memory } from "../../types.js"
 import type { TopicAliasMergeResult } from "../../core/topic-merge.js"
 import { isFactConfidenceAuditOnly, migrateCommand } from "./migrate.js"
 import { runAgentNormalization } from "./migrate/agent-normalization.js"
-import { runBuildFactConfidenceScores } from "./migrate/confidence.js"
+import {
+  printFactConfidenceAudit,
+  runBuildFactConfidenceScores,
+} from "./migrate/confidence.js"
 import { runBuildEntitiesMigration } from "./migrate/entities.js"
 import { runFactEncodingFix, runMemoryEncodingFix } from "./migrate/encoding.js"
 import { runBackfillFactObservedAt } from "./migrate/fact-observed-at.js"
@@ -107,6 +110,8 @@ describe("migrateCommand help", () => {
     const help = migrateCommand.helpInformation()
     expect(help).toContain("--audit-fact-confidence")
     expect(help).toContain("stored/effective numeric score buckets")
+    expect(help).toContain("lower effective trust")
+    expect(help).not.toContain("change ranking")
   })
 
   it("classifies standalone fact confidence audits as schema dry-run work", () => {
@@ -123,6 +128,61 @@ describe("migrateCommand help", () => {
         fixFactEncoding: true,
       })
     ).toBe(false)
+  })
+})
+
+describe("printFactConfidenceAudit", () => {
+  it("describes effective decay as a trust-score change, not a ranking change", () => {
+    const logs: string[] = []
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "))
+    })
+    const report = {
+      today: "2026-05-29",
+      totalFactsScanned: 2,
+      categorical: { certain: 1, likely: 1, speculative: 0 },
+      unknownCategorical: [],
+      scoredFacts: 2,
+      unscoredFacts: 0,
+      storedScores: { count: 2, min: 0.4, max: 0.9, average: 0.65 },
+      effectiveScores: { count: 2, min: 0.2, max: 0.9, average: 0.55 },
+      storedBuckets: { veryLow: 0, low: 1, moderate: 0, trusted: 1 },
+      effectiveBuckets: { veryLow: 1, low: 0, moderate: 0, trusted: 1 },
+      lastReferenced: {
+        missing: 0,
+        today: 1,
+        within7Days: 0,
+        within30Days: 0,
+        within60Days: 0,
+        over60Days: 1,
+        invalid: 0,
+      },
+      scoreVsSeed: {
+        atSeed: 1,
+        aboveSeed: 0,
+        belowSeed: 1,
+        unknownConfidence: 0,
+      },
+      decay: {
+        pastGrace: 1,
+        wouldLowerStoredScore: 1,
+        averageDrop: 0.2,
+        maxDrop: 0.2,
+        examples: [],
+      },
+      predicates: [],
+      topSpeculativePredicates: [],
+    } satisfies Parameters<typeof printFactConfidenceAudit>[0]
+
+    try {
+      printFactConfidenceAudit(report)
+    } finally {
+      logSpy.mockRestore()
+    }
+
+    const joined = logs.join("\n")
+    expect(joined).toContain("would show a lower effective trust score")
+    expect(joined).not.toContain("would rank lower")
   })
 })
 

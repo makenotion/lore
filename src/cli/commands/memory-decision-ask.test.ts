@@ -152,7 +152,6 @@ function makeServices(overrides: Partial<LoreServices> = {}): LoreServices {
     context: { project, isCatchAllFallback: false, cwd: process.cwd() },
     config: { projects: [] },
     features: {
-      confidenceFactor: true,
       autoMentions: true,
       taskCrossref: true,
       runTool: {

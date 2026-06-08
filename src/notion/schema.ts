@@ -279,28 +279,12 @@ export function memoriesProperties(
         ],
       },
     },
-    // Retained for schema compatibility with existing vaults. Memory write and
-    // read paths do not use this column.
-    [MEMORY_PROPS.CONFIDENCE]: {
-      select: {
-        options: [
-          { name: "certain", color: "green" },
-          { name: "likely", color: "yellow" },
-          { name: "speculative", color: "orange" },
-        ],
-      },
-    },
-    // Retained for schema compatibility with existing vaults. Memory write and
-    // read paths do not use this column.
-    [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
-    // 0.9.0+ scalar cluster between `Confidence Score` and `Review By`:
-    //   Confidence Score → Topic Key → Revision Count → Compare Notes →
-    //   Promotion Source Key → Review By
-    // `Topic Key` and `Revision Count` are part of the Topic-key
-    // upsert workstream. `Compare Notes` lands after them. Tests pin
-    // `Compare Notes` precedes `Review By` (loose) rather than
-    // "immediately before" (rigid) so a future scalar addition between
-    // the two columns doesn't force a test churn.
+    // Scalar metadata columns stay before the review-date columns:
+    //   Topic Key -> Revision Count -> Compare Notes ->
+    //   Promotion Source Key -> Review By
+    // Tests pin strict ordering only for tightly coupled pairs; broader
+    // block-order assertions keep unrelated scalar additions from making
+    // the order contract brittle.
     //
     // Stable identifier for upsert grouping. Distinct from the `Topic`
     // relation column above (which links to the Topics DB for faceted

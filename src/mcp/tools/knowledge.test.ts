@@ -644,7 +644,7 @@ describe("lore-ask grouped display (P2-06)", () => {
   })
 })
 
-describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
+describe("lore-ask — confidence trust display and recency ordering", () => {
   function services(facts: Fact[]) {
     return {
       projects: { findByName: vi.fn() },
@@ -683,11 +683,9 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
     return (result as { content: Array<{ text: string }> }).content[0].text
   }
 
-  it("preserves byte-identical pre-DEFERRED-02 recency ordering when every score is null", async () => {
-    // Pre-migration vaults: every `confidenceScore` is null. The RRF
-    // pass should behave as a pure recency sort because
-    // `confidenceFactor(null) === 1.0` ties every multiplier and the
-    // RRF score collapses to monotonic-by-rank.
+  it("preserves recency ordering when every score is null", async () => {
+    // Vaults without numeric confidence scores still sort by recency because
+    // null scores are neutral for retrieval ranking.
     const facts: Fact[] = [
       makeFact("older", {
         predicate: "uses",
@@ -705,20 +703,16 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
     const olderIdx = text.indexOf("OlderObj")
     expect(newerIdx).toBeGreaterThan(-1)
     expect(olderIdx).toBeGreaterThan(-1)
-    // Newer fact renders first under recency-only (the pre-DEFERRED-02
-    // contract). Pin the order so a future refactor that silently
-    // changes the sort comparator can't regress null-score vaults.
+    // The later-dated fact renders first under the recency-only contract. Pin
+    // the order so a sort refactor cannot regress null-score vaults.
     expect(newerIdx).toBeLessThan(olderIdx)
   })
 
-  it("ranks high-confidence older facts above low-confidence newer facts", async () => {
-    // The first draft of the comparator only applied confidenceFactor
-    // as a same-day tiebreaker. This pins the BLOCKING fix from review
-    // 2: a high-score older fact must beat a low-score newer fact when
-    // the score gap warrants. With FACT_RRF_K = 4:
-    //   rank 0 (newer), score 0.05 → factor 0.525 → 1/5 * 0.525 = 0.105
-    //   rank 1 (older), score 0.95 → factor 0.975 → 1/6 * 0.975 = 0.1625
-    // Older wins.
+  it("keeps recency order when confidence scores diverge", async () => {
+    // Confidence Score is a trust-display and maintenance signal, not a
+    // retrieval-ranking multiplier. A low-confidence later-dated fact still
+    // renders before a high-confidence earlier-dated fact under the ask
+    // recency contract.
     const facts: Fact[] = [
       makeFact("newer-decayed", {
         predicate: "uses",
@@ -738,10 +732,10 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
     const decayedIdx = text.indexOf("NewerDecayed")
     expect(trustedIdx).toBeGreaterThan(-1)
     expect(decayedIdx).toBeGreaterThan(-1)
-    expect(trustedIdx).toBeLessThan(decayedIdx)
+    expect(decayedIdx).toBeLessThan(trustedIdx)
   })
 
-  it("ranks by effective decay rather than the stored score alone", async () => {
+  it("renders trust labels from effective decay without changing recency order", async () => {
     vi.useFakeTimers({ toFake: ["Date"] })
     vi.setSystemTime(new Date("2026-05-29T12:00:00.000Z"))
     try {
@@ -791,7 +785,7 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
     expect(text).toContain("_very low confidence_")
   })
 
-  it("does not render a trust label when confidenceScore is null (byte-identical pre-DEFERRED-02)", async () => {
+  it("does not render a trust label when confidenceScore is null", async () => {
     // Rows without a numeric confidence score render only the categorical
     // confidence and ID footer.
     const facts: Fact[] = [
@@ -826,17 +820,12 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
   })
 })
 
-describe("lore-ask — decided_by trust line (DEFERRED-02)", () => {
+describe("lore-ask — decided_by trust line", () => {
   // The governance bucket renders `decided_by` facts via
-  // `renderDecidedByLine`, which previously emitted only the
-  // decision's `[status, confidence]` categorical label and never
-  // the FACT's numeric trust signal. A `decided_by` fact whose
-  // confidence has decayed (e.g. the entity-decision link has gone
-  // long-uncited) was rendering as a fully trusted governance
-  // statement. The fact-side trust line must surface here too,
-  // mirroring the structure-bucket / Overdue Facts treatment, so
-  // the highest-value governance path participates in the
-  // dynamic-confidence contract.
+  // `renderDecidedByLine`. The decision's categorical
+  // `[status, confidence]` label and the fact's numeric trust signal
+  // describe different things, so a low-confidence `decided_by` fact
+  // renders its own trust line just like structure-bucket facts.
 
   function decidedByServices(facts: Fact[], decision: Decision) {
     return {
@@ -898,10 +887,9 @@ describe("lore-ask — decided_by trust line (DEFERRED-02)", () => {
     expect(lines[titleIdx + 2]).toMatch(/^ {2}Decision ID:/)
   })
 
-  it("omits the trust line on a null confidenceScore (pre-migration vault)", async () => {
-    // Pre-DEFERRED-02 vault — `renderTrustLine(null, ...)` returns
-    // null and the rendered output is byte-identical to pre-DEFERRED-02
-    // for un-backfilled rows.
+  it("omits the trust line on a null confidenceScore", async () => {
+    // `renderTrustLine(null, ...)` returns null so unscored rows do not gain
+    // extra trust-display text.
     const decision = makeDecision("dec-2", { title: "Adopt OIDC" })
     const fact = makeFact("fact-null", {
       subject: "AuthService",

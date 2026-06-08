@@ -67,6 +67,9 @@ Autosave learning source backfill:
 - `--backfill-autosave-learning-source` targets legacy autosave learning rows
   that still carry `Source=conversation`, `Kind=note`, `Confidence=likely`, and
   a non-empty `Session`.
+- The migration checks for the retired Memories `Confidence` column before
+  querying candidates. Vaults initialized without that column return zero
+  candidates without issuing the legacy-property filter.
 - Plan mode reports candidates. `--yes` applies. `--dry-run` wins over apply
   mode.
 - The write changes only `Source` to `autosave_learning`, leaving the legacy
@@ -105,12 +108,13 @@ Fact confidence audit:
 - `--audit-fact-confidence` is read-only. It scans live Facts rows and reports
   categorical confidence distribution, stored/effective numeric score buckets,
   `Last Referenced At` freshness, seed-vs-score drift, and how many scored rows
-  would rank lower after applying neglect decay at read time.
+  have a lower effective trust score after applying neglect decay at read time.
 - `--project <name>` scopes the audit to one project. Archived projects require
   `--include-archived`. Vault-wide audits require `--allow-unscoped` so broad
   Notion scans stay intentional.
-- The audit's effective score uses the same decay algebra as fact ranking and
-  trust-line rendering. It does not write the decayed value back to Notion.
+- The audit's effective score uses the same decay algebra as trust-line
+  rendering and write-time confidence maintenance. It does not write the
+  decayed value back to Notion.
 - The predicate breakdown helps distinguish genuinely speculative facts from
   default-low producers such as auto-emitted relationship predicates.
 - Unexpected categorical confidence labels are reported as `unknown` rather
@@ -118,8 +122,8 @@ Fact confidence audit:
 - The audit output calls out the conflict workflow boundary: `lore conflicts scan`
   proposes memory pairs, and `lore-memory action='compare'` uses
   `affectedMemoryId` to identify the loser for asymmetric verdicts. Fact
-  confidence labels emitted conflict facts and affects ranking/display; it does
-  not automatically choose a winner.
+  confidence labels emitted conflict facts and can affect trust display; it
+  does not automatically choose a winner.
 
 Entity and fact repair flags:
 

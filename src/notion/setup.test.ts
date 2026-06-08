@@ -1080,13 +1080,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
     ])
   })
 
-  it("reports Confidence Score as a missing property on a pre-0.8.0 Memories DB", async () => {
-    // A vault upgraded from <0.8.0 has no `Confidence Score` column on
-    // Memories. The drift detector must surface the column by name so an
-    // operator running `lore status` / `lore migrate` sees the nudge —
-    // and a future contributor can't silently rename or drop the
-    // property without this fixture failing first. Same posture as the
-    // Synopsis pin from 0.7.0/01.
+  it("does not report dead confidence columns as missing on Memories", async () => {
     const { client } = makeStartupStub({
       childDatabases: [],
       liveProperties: {},
@@ -1094,7 +1088,8 @@ describe("migrateVaultSchema parallel retrieves", () => {
 
     const diffs = await migrateVaultSchema(client, vaultFixture())
     const memoriesDiff = diffs.find((d) => d.database === "memories")
-    expect(memoriesDiff?.missing).toContain("Confidence Score")
+    expect(memoriesDiff?.missing).not.toContain("Confidence")
+    expect(memoriesDiff?.missing).not.toContain("Confidence Score")
   })
 
   it("reports Synopsis as a missing property on a pre-0.7.0 Memories DB", async () => {
@@ -1195,8 +1190,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
     // Memories DB. The drift detector must surface the column by name
     // so an operator running `lore status` / `lore migrate` sees the
     // nudge — and a future contributor can't silently rename or drop
-    // the property without this fixture failing first. Same posture as
-    // the Confidence Score / Last Referenced At pins from 0.8.0.
+    // the property without this fixture failing first.
     const { client } = makeStartupStub({
       childDatabases: [],
       liveProperties: {},
@@ -1306,21 +1300,15 @@ describe("migrateVaultSchema parallel retrieves", () => {
   })
 
   it("surfaces all four 0.9.0 schema additions in one migrate pass against a 0.8.x snapshot", async () => {
-    // End-to-end coverage on top of the per-property pins above. Belt-
-    // and-suspenders against a merge train where one of #01 (Topic Key
-    // + Revision Count) or #02 (Compare Notes + Compared With) lands
-    // independently and the late-merger is rebased without picking up
-    // the other half of the schema delta. If `migrateVaultSchema`
-    // surfaces three of the four expected additions but misses the
-    // fourth, this test fails fast with the column-by-column assertion
-    // below — the per-property tests above each exercise their own
+    // End-to-end coverage on top of the per-property pins above. If
+    // `migrateVaultSchema` surfaces three of the four expected additions
+    // but misses the fourth, this test fails fast with the column-by-column
+    // assertion below. The per-property tests each exercise their own
     // fixture in isolation, so a regression where the four collide on
-    // ordering / iteration would slip past them but not past this one.
+    // ordering or iteration would slip past them but not past this one.
     //
-    // Fixture is a 0.8.x-shaped Memories DS: every column documented
-    // through 0.8.0 is present, the four 0.9.0 columns are not. This
-    // matches what `dataSources.retrieve` returns on a vault that has the
-    // retained confidence columns but has not yet seen 0.9.0.
+    // Fixture shape: baseline Memories columns and read-citation metadata are
+    // present, while the topic-key and comparison columns are absent.
     const memoriesLive_0_8_x: Record<string, Record<string, unknown>> = {
       // Pre-0.7.0
       "Review By": { type: "date", date: {} },
@@ -1328,10 +1316,9 @@ describe("migrateVaultSchema parallel retrieves", () => {
       // 0.7.0/01–04 (Synopsis); 0.7.0/07 (Done At)
       Synopsis: { type: "rich_text", rich_text: {} },
       "Done At": { type: "date", date: {} },
-      // 0.8.0/01 (Confidence Score); 0.8.0/02 (Last Referenced At)
-      "Confidence Score": { type: "number", number: { format: "number" } },
+      // Read-citation metadata
       "Last Referenced At": { type: "date", date: {} },
-      // Self-relations from earlier rollouts; Compared With (0.9.0/02) absent
+      // Existing self-relations; Compared With is intentionally absent.
       Supersedes: {
         type: "relation",
         relation: { single_property: {}, data_source_id: "m-ds" },
@@ -1361,17 +1348,15 @@ describe("migrateVaultSchema parallel retrieves", () => {
     const memoriesDiff = diffs.find((d) => d.database === "memories")
     expect(memoriesDiff).toBeDefined()
 
-    // All four 0.9.0 schema additions must surface in the same pass.
-    // Three scalar columns from #01 (`Topic Key`, `Revision Count`) and
-    // #02 (`Compare Notes`), one self-relation from #02 (`Compared With`).
+    // All missing topic-key and comparison properties must surface in the
+    // same pass: three scalar columns and one self-relation.
     expect(memoriesDiff!.missing).toContain("Topic Key")
     expect(memoriesDiff!.missing).toContain("Revision Count")
     expect(memoriesDiff!.missing).toContain("Compare Notes")
     expect(memoriesDiff!.missing).toContain("Compared With")
 
-    // Sanity-pin: the 0.8.x columns we put in the fixture do NOT show up
-    // as missing — drift is additions-only and the four 0.9.0 columns
-    // are the only delta a 0.8.x → 0.9.0 migrate must apply to Memories.
+    // Sanity-pin: columns present in the fixture do not show up as missing,
+    // and dead confidence columns are not reintroduced by drift detection.
     expect(memoriesDiff!.missing).not.toContain("Confidence Score")
     expect(memoriesDiff!.missing).not.toContain("Last Referenced At")
     expect(memoriesDiff!.missing).not.toContain("Synopsis")

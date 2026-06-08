@@ -1,4 +1,4 @@
-import { effectiveConfidenceFactor, effectiveConfidenceScore } from "./decay.js"
+import { effectiveConfidenceScore } from "./decay.js"
 import { expandEntityQueryVariants } from "./entity.js"
 import { composeProjectContext, renderProjectContextLines } from "./project-context.js"
 import { resolveCanonicalDecisionLinks } from "./decision-graph.js"
@@ -7,7 +7,6 @@ import {
   validateExplicitProjectScopeName,
 } from "./project-scope.js"
 import { taskDaysOverdue } from "./task.js"
-import { resolveFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { computeSubjectKey } from "../notion/normalize.js"
 import type { LoreServices } from "../services.js"
 import {
@@ -21,7 +20,6 @@ import {
 
 const DEFAULT_ASK_BUCKET_CAP = 5
 const SUGGESTED_OVERFLOW_LIMIT = 20
-const FACT_RRF_K = 4
 const PROJECT_LIST_HINT = "run `lore status projects` to list configured projects"
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const GOVERNANCE_PREDICATES: ReadonlySet<FactPredicate> = new Set<FactPredicate>([
@@ -89,7 +87,6 @@ export async function runAsk(
   args: RunAskOptions,
   hooks: RunAskHooks = {}
 ): Promise<AskResult> {
-  const features = services.features ?? resolveFeatureFlags()
   const {
     projectId,
     project: resolvedProject,
@@ -247,7 +244,7 @@ export async function runAsk(
       fact,
     })),
   ]
-  const rankedGovernance = applyConfidenceWeightedRrf(governanceItems, features, today)
+  const rankedGovernance = applyRecencyRanking(governanceItems)
 
   const structureItems: Structured[] = grouped.structure.map((fact) => ({
     fact,
@@ -257,7 +254,7 @@ export async function runAsk(
     }),
     sortKey: fact.validFrom,
   }))
-  const rankedStructure = applyConfidenceWeightedRrf(structureItems, features, today)
+  const rankedStructure = applyRecencyRanking(structureItems)
 
   const sections: string[] = []
   let anyOverflow = false
@@ -453,30 +450,9 @@ function compareSortKeyDesc(
   return aKey < bKey ? 1 : -1
 }
 
-function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: Fact }>(
-  items: T[],
-  features: Pick<LoreFeatureFlags, "confidenceFactor">,
-  today: string
-): T[] {
+function applyRecencyRanking<T extends { sortKey: string | null }>(items: T[]): T[] {
   if (items.length <= 1) return items
-  const recencyRanked = [...items].sort(compareSortKeyDesc)
-  const scored = recencyRanked.map((item, rank) => {
-    const factor = item.fact
-      ? effectiveConfidenceFactor(
-          item.fact.confidenceScore ?? null,
-          item.fact.lastReferencedAt ?? null,
-          today,
-          features
-        )
-      : 1.0
-    const score = (1 / (FACT_RRF_K + rank + 1)) * factor
-    return { item, score }
-  })
-  scored.sort((a, b) => {
-    if (a.score === b.score) return 0
-    return a.score < b.score ? 1 : -1
-  })
-  return scored.map((scoredItem) => scoredItem.item)
+  return [...items].sort(compareSortKeyDesc)
 }
 
 function effectiveFactConfidenceScore(fact: Fact, today: string): number | null {

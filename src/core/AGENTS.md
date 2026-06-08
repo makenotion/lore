@@ -34,7 +34,7 @@ ownership notes in top-of-file `ABOUTME` comments or module JSDoc.
 | Retrieval / memory search      | [`docs/core/retrieval.md`](../../docs/core/retrieval.md)                               | Doc-owned contract for `MemoryService.search()`, `MemorySearch`, contains / semantic / hybrid modes, RRF, intent, explain traces, materialization, and search kill switches |
 | Topic-key upsert and re-keying | [`memory-topic-key.ts`](memory-topic-key.ts) module JSDoc                              | JSDoc-owned contract for `findByTopicKey`, `MemoryService.upsertByTopicKey`, `validateRekey`, `MemoryService.rekeyTopicKey`, promotion advisories, and re-key audit errors  |
 | Pinned context blocks          | [`memory-pinned.ts`](memory-pinned.ts) module JSDoc                                    | JSDoc-owned contract for pinned block filtering, audience matching, read-only preflight, count thresholds, migration fallback, and audit recovery                           |
-| Fact confidence dynamics       | [`decay.ts`](decay.ts) module JSDoc                                                    | JSDoc-owned contract for fact confidence score clamping, seed/bump/decrement/decay algebra, and fact retrieval weighting                                                    |
+| Fact confidence dynamics       | [`decay.ts`](decay.ts) module JSDoc                                                    | JSDoc-owned contract for fact confidence score clamping, seed/bump/decrement/decay algebra, trust display, and neutral ranking behavior                                     |
 | Partial failures               | [`docs/partial-failure-observability.md`](../../docs/partial-failure-observability.md) | Doc-owned contract for stderr line format, RunTool fallback markers, per-surface key divergence, and parser expectations for recoverable partial-result failures            |
 
 ## Service Class Pattern
@@ -309,7 +309,8 @@ High-level routing:
 The authoritative fact confidence contract is split by implementation boundary:
 
 - [`decay.ts`](decay.ts) owns pure score clamping, seed/bump/decrement/decay
-  algebra, and retrieval weighting through `confidenceFactor`.
+  algebra, trust-display score calculation, and neutral retrieval ranking
+  through `confidenceFactor`.
 - [`fact-maintenance.ts`](fact-maintenance.ts) and [`fact.ts`](fact.ts) own
   fact read/write wrappers, backfill/statistics writes, and invalidation
   decrements. Memory-side compatibility columns are retained only at the

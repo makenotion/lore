@@ -14,7 +14,6 @@ export interface LoreFeatureFlags {
   taskReuse: boolean
   taskCrossref: boolean
   learningExtraction: boolean
-  confidenceFactor: boolean
   queryPlanning: boolean
   forceSemanticSearch: boolean
   runTool: {
@@ -35,8 +34,6 @@ export const LORE_FEATURE_FLAG_TAXONOMY = {
     "LORE_DISABLE_TASK_REUSE",
     "LORE_DISABLE_TASK_CROSSREF",
     "LORE_DISABLE_LEARNING_EXTRACTION",
-    "LORE_DISABLE_CONFIDENCE_FACTOR",
-    "LORE_DISABLE_QUERY_PLANNING",
   ],
   forceSwitches: ["LORE_FORCE_SEMANTIC_SEARCH"],
   runTool: [
@@ -56,7 +53,6 @@ const DEFAULT_FLAGS: LoreFeatureFlags = {
   taskReuse: true,
   taskCrossref: true,
   learningExtraction: true,
-  confidenceFactor: true,
   queryPlanning: true,
   forceSemanticSearch: false,
   runTool: {
@@ -162,16 +158,7 @@ export function resolveFeatureFlags(
       env,
       "LORE_DISABLE_LEARNING_EXTRACTION"
     ),
-    confidenceFactor: configThenDisableEnv(
-      featureConfig?.confidenceFactor,
-      env,
-      "LORE_DISABLE_CONFIDENCE_FACTOR"
-    ),
-    queryPlanning: configThenDisableEnv(
-      featureConfig?.queryPlanning,
-      env,
-      "LORE_DISABLE_QUERY_PLANNING"
-    ),
+    queryPlanning: featureConfig?.queryPlanning ?? DEFAULT_FLAGS.queryPlanning,
     forceSemanticSearch:
       featureConfig?.forceSemanticSearch === true ||
       env["LORE_FORCE_SEMANTIC_SEARCH"] === "1",

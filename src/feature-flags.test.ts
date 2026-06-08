@@ -10,7 +10,6 @@ describe("resolveFeatureFlags", () => {
       taskReuse: true,
       taskCrossref: true,
       learningExtraction: true,
-      confidenceFactor: true,
       queryPlanning: true,
       forceSemanticSearch: false,
       runTool: {
@@ -56,13 +55,12 @@ describe("resolveFeatureFlags", () => {
     })
   })
 
-  it("lets rollback kill-switch env vars force config-enabled features off", () => {
+  it("lets rollback kill-switch env vars force config-enabled env-backed features off", () => {
     const flags = resolveFeatureFlags(
       {
         LORE_DISABLE_AUTO_MENTIONS: "1",
         LORE_DISABLE_NEAR_DUPLICATE_PROBE: "1",
         LORE_DISABLE_LEARNING_EXTRACTION: "1",
-        LORE_DISABLE_QUERY_PLANNING: "1",
         LORE_FORCE_SEMANTIC_SEARCH: "1",
       },
       {
@@ -70,7 +68,6 @@ describe("resolveFeatureFlags", () => {
           autoMentions: true,
           nearDuplicateProbe: true,
           learningExtraction: true,
-          queryPlanning: true,
           forceSemanticSearch: false,
         },
       }
@@ -79,8 +76,20 @@ describe("resolveFeatureFlags", () => {
     expect(flags.autoMentions).toBe(false)
     expect(flags.nearDuplicateProbe).toBe(false)
     expect(flags.learningExtraction).toBe(false)
-    expect(flags.queryPlanning).toBe(false)
     expect(flags.forceSemanticSearch).toBe(true)
+  })
+
+  it("keeps query planning controlled by YAML config", () => {
+    expect(resolveFeatureFlags({}, {}).queryPlanning).toBe(true)
+    expect(
+      resolveFeatureFlags({}, { features: { queryPlanning: false } }).queryPlanning
+    ).toBe(false)
+    expect(
+      resolveFeatureFlags(
+        { LORE_DISABLE_QUERY_PLANNING: "1" },
+        { features: { queryPlanning: true } }
+      ).queryPlanning
+    ).toBe(true)
   })
 
   it("preserves RunTool parent inheritance and explicit sub-flag overrides", () => {

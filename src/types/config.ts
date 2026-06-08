@@ -104,14 +104,8 @@ export interface LoreFeatureConfig {
    */
   learningExtraction?: boolean
   /**
-   * Confidence-score weighting in rank fusion. Default: true.
-   * `LORE_DISABLE_CONFIDENCE_FACTOR=1` forces this off.
-   */
-  confidenceFactor?: boolean
-  /**
    * Query planning for callers that opt into planned memory search. Default:
-   * true. `LORE_DISABLE_QUERY_PLANNING=1` forces planned requests through the
-   * direct semantic path.
+   * true. This is a YAML-only config value.
    */
   queryPlanning?: boolean
   /**
@@ -192,9 +186,8 @@ export interface LoreConfig {
    */
   profiles?: ProfilesConfig
   /**
-   * Runtime feature flags. Environment variables remain supported as the
-   * operator override layer; disabling env vars always win for rollback
-   * kill switches.
+   * Runtime feature flags. Environment variables remain supported for
+   * env-backed feature controls.
    */
   features?: LoreFeatureConfig
   /**

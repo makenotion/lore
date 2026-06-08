@@ -766,12 +766,10 @@ describe("lore-wake-up — Part C: UUID → title resolution", () => {
   })
 
   it("renders the trust label as a separate indented italic line on Active Facts when confidenceScore is below threshold (DEFERRED-02)", async () => {
-    // BLOCKING fix from review 2: the new fact-side score must be
-    // visible in wake-up's Active Facts section, not just affect
-    // ranking. A fact at score 0.15 is "very low confidence" per
+    // A fact at score 0.15 is "very low confidence" per
     // `formatTrustLabel`; the trust label renders below the bullet
     // as ` _very low confidence_` via the shared `renderTrustLine`
-    // helper, matching the decision/task surfaces (DEFERRED-07).
+    // helper.
     const mockServer = createMockServer()
     const services = makeWakeServices({
       facts: [
@@ -2914,8 +2912,8 @@ describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
     // duplicates without shrinking the visible cluster count below
     // `limit`. The touch batch must NOT see those over-fetched rows —
     // they were never rendered to the agent, and bumping their
-    // `Confidence Score` would inflate RRF's confidence factor against
-    // a signal that should reflect actual citations.
+    // `Confidence Score` would create a citation signal that should
+    // reflect only rendered rows.
     //
     // Fixture builds 30 input memories (3× the default `limit: 10`)
     // with mutually-disjoint titles (no shared tokens of length ≥ 3
