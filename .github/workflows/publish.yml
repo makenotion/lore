@@ -28,10 +28,8 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Install dependencies
-        run: npm ci
-
       - name: Verify version matches release tag
+        id: version
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -39,9 +37,34 @@ jobs:
             echo "::error::package.json version ($PKG_VERSION) does not match release tag ($TAG_VERSION)"
             exit 1
           fi
+          echo "value=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version is already published
+        id: registry
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if npm dist-tag ls @notionhq/lore | node -e '
+            const fs = require("node:fs");
+            const version = process.env.PACKAGE_VERSION;
+            const published = fs
+              .readFileSync(0, "utf8")
+              .split(/\r?\n/)
+              .some((line) => line.endsWith(": " + version));
+          '; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.registry.outputs.published != 'true'
+        run: npm ci
 
       - name: Build
+        if: steps.registry.outputs.published != 'true'
         run: npm run build
 
       - name: Publish
+        if: steps.registry.outputs.published != 'true'
         run: npm publish

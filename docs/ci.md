@@ -96,7 +96,10 @@ Before an OIDC release, the package owner must configure
 `@notionhq/lore`'s Trusted Publisher for GitHub organization `makenotion`,
 repository `lore`, workflow filename `publish.yml`, and the `npm publish`
 action. npm requires the package to exist before configuring that relationship,
-so the first prerelease bootstrap is published manually with interactive 2FA.
+so a new package needs one manual publication with interactive 2FA. The release
+workflow treats an already-published version as success, allowing that bootstrap
+version to receive a matching GitHub Release without attempting a duplicate
+publish.
 
 ## What the local dev hooks installer does in CI
 
