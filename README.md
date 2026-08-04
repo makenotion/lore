@@ -23,9 +23,9 @@ context loading and session saving into supported hosts.
 #### Install from npm (recommended)
 
 ```bash
-npm install -g @makenotion/lore
+npm install -g @notionhq/lore
 # or
-npm install -D @makenotion/lore
+npm install -D @notionhq/lore
 ```
 
 Public npm requires no registry configuration or package token.

@@ -1030,7 +1030,7 @@ async function findRepoRoot(start: string): Promise<string> {
     try {
       const raw = await readFile(packagePath, "utf-8")
       const parsed = JSON.parse(raw) as { name?: string }
-      if (parsed.name === "@makenotion/lore") return current
+      if (parsed.name === "@notionhq/lore") return current
     } catch {
       // Keep walking upward.
     }

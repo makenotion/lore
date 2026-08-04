@@ -15,7 +15,7 @@ log is the canonical source for those.
 
 ### Changed
 
-- Lore is now available publicly on npm as `@makenotion/lore`.
+- Lore is now available publicly on npm as `@notionhq/lore`.
 
 ## [0.19.1] - 2026-06-19
 

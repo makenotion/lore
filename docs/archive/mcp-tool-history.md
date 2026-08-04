@@ -69,7 +69,7 @@ Historical bumps and what they signalled:
 
 Latest historical note:
 
-- `1.0.0` (2026-08-04) publishes Lore publicly as `@makenotion/lore` on npm.
+- `1.0.0` (2026-08-04) publishes Lore publicly as `@notionhq/lore` on npm.
   The package metadata, lockfile, MCP handshake, CLI, and Notion `User-Agent`
   version values move together under the existing version-sync guard.
 

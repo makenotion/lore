@@ -736,14 +736,14 @@ async function findRepoRoot(start: string): Promise<string> {
       const parsed = JSON.parse(await readFile(packageJsonPath, "utf-8")) as {
         name?: unknown
       }
-      if (parsed.name === "@makenotion/lore") return dir
+      if (parsed.name === "@notionhq/lore") return dir
     } catch {
       // Keep walking. Missing and unrelated package.json files are both non-roots.
     }
     const parent = dirname(dir)
     if (parent === dir || dir === parse(dir).root) {
       throw new Error(
-        `Could not find @makenotion/lore package root from ${start}; pass --out to choose an artifact path.`
+        `Could not find @notionhq/lore package root from ${start}; pass --out to choose an artifact path.`
       )
     }
     dir = parent

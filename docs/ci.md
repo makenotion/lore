@@ -93,7 +93,7 @@ run the job. The job has only `contents: read` plus `id-token: write`; npm
 exchanges the GitHub Actions OIDC identity for a short-lived publish credential.
 
 Before an OIDC release, the package owner must configure
-`@makenotion/lore`'s Trusted Publisher for GitHub organization `makenotion`,
+`@notionhq/lore`'s Trusted Publisher for GitHub organization `makenotion`,
 repository `lore`, workflow filename `publish.yml`, and the `npm publish`
 action. npm requires the package to exist before configuring that relationship,
 so the first prerelease bootstrap is published manually with interactive 2FA.

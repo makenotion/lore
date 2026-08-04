@@ -1,10 +1,10 @@
 # Installing Lore as a Dev Dependency
 
-`@makenotion/lore` is publicly available from npm without registry or token
+`@notionhq/lore` is publicly available from npm without registry or token
 setup.
 
 Teams that want every engineer's checkout to share the same Lore config can
-pin `@makenotion/lore` as a devDependency and commit assistant config alongside
+pin `@notionhq/lore` as a devDependency and commit assistant config alongside
 the rest of the repo. Yarn PnP is the fully path-portable shape: no absolute
 paths land in committed MCP config, so the same files work on every engineer's
 checkout.
@@ -14,7 +14,7 @@ checkout.
 1. **Add the devDependency.**
 
    ```bash
-   yarn add -D @makenotion/lore        # or `npm install -D @makenotion/lore`
+   yarn add -D @notionhq/lore        # or `npm install -D @notionhq/lore`
    ```
 
 2. **Run `lore install` once locally.** From inside the consumer repo:
@@ -62,7 +62,7 @@ checkout.
 
 
    **Yarn PnP consumers**: the committed files work on any teammate's fresh
-   checkout. `yarn install` resolves `@makenotion/lore` from npm without
+   checkout. `yarn install` resolves `@notionhq/lore` from npm without
    credentials, and host assistants resolve `lore` through Yarn's PnPAPI. No
    absolute paths or `${HOME}` placeholders land in the project-local MCP
    config.
@@ -78,7 +78,7 @@ checkout.
    write their own host hook config.
 
 > **Don't have a global `lore` install on the same machine.** A global
-> `npm install -g @makenotion/lore` would shadow the project-local devDep on
+> `npm install -g @notionhq/lore` would shadow the project-local devDep on
 > PATH for shells that don't put `node_modules/.bin` ahead of global bins. Stick
 > to one source of truth per machine.
 

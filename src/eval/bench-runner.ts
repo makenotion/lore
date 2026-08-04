@@ -1795,7 +1795,7 @@ function round2(n: number): number {
 /**
  * Walk upward from the suite path looking for the Lore repo root.
  * Found when the directory contains a `package.json` whose `name` is
- * `@makenotion/lore`. Falls back to `process.cwd()` so a suite YAML
+ * `@notionhq/lore`. Falls back to `process.cwd()` so a suite YAML
  * authored outside the repo (smoke runs, ad-hoc operator runs) still
  * resolves its asset paths against the cwd if the cwd is the repo
  * root.
@@ -1809,7 +1809,7 @@ async function findRepoRoot(suitePath: string): Promise<string> {
     try {
       const text = await readFile(pkgPath, "utf-8")
       const parsed = JSON.parse(text) as { name?: unknown }
-      if (parsed.name === "@makenotion/lore") return dir
+      if (parsed.name === "@notionhq/lore") return dir
     } catch {
       // keep walking
     }

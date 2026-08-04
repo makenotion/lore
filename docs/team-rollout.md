@@ -178,7 +178,7 @@ required:
 
 ```bash
 # 1. Install Lore (if not already pinned as a devDependency in the team repo)
-npm install -g @makenotion/lore
+npm install -g @notionhq/lore
 
 # 2. From the team repo, select the internal ntn path:
 lore install --ntn

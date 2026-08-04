@@ -45,12 +45,12 @@ function versionFiles(version: string): Record<string, string> {
     [PATHS.packageJson]: JSON.stringify({ version }, null, 2),
     [PATHS.packageLock]: JSON.stringify(
       {
-        name: "@makenotion/lore",
+        name: "@notionhq/lore",
         version,
         lockfileVersion: 3,
         packages: {
           "": {
-            name: "@makenotion/lore",
+            name: "@notionhq/lore",
             version,
           },
         },

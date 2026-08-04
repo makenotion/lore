@@ -1,5 +1,5 @@
 {
-  "name": "@makenotion/lore",
+  "name": "@notionhq/lore",
   "version": "1.0.0",
   "description": "AI memory system backed by Notion",
   "type": "module",
