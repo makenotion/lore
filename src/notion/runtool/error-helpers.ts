@@ -209,8 +209,8 @@ export function warnRunToolRestrictedResourceOnce(
     : "runtool-error=1 used-rest=0"
   process.stderr.write(
     `[lore] runtool: 403 RestrictedResource on ${source}; ${outcome}. ` +
-      `RunTool requires a Notion PAT or ntn-issued user token; ` +
-      `integration tokens (secret_...) are unsupported` +
+      `RunTool returned 403 RestrictedResource. ` +
+      `The server-reported error is included below.` +
       detail +
       ` ${markers}\n`
   )

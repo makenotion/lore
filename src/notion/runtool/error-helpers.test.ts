@@ -146,6 +146,20 @@ describe("warnRunToolRestrictedResourceOnce", () => {
     expect(lines[1]).toContain("runtool-fallback=1")
     expect(lines[1]).toContain("used-rest=1")
   })
+
+  it("surfaces the server error instead of blaming integration tokens", () => {
+    const err = new Error("Endpoint unavailable")
+
+    warnRunToolRestrictedResourceOnce("search", err, {
+      usedRest: false,
+    })
+
+    const line = String(stderrSpy.mock.calls[0][0])
+
+    expect(line).toContain("Endpoint unavailable")
+    expect(line).toContain("403 RestrictedResource")
+    expect(line).not.toContain("integration tokens (secret_...) are unsupported")
+  })
 })
 
 describe("SqlPartialResultError", () => {
