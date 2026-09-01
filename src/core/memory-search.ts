@@ -50,6 +50,7 @@ import {
   reviewTerminalStatusExclusionFilters,
 } from "./memory-review-state.js"
 import { mergePlannedSearchResults, planSearchQueries } from "./search-plan.js"
+import { RunToolSearchRestrictedError } from "../notion/runtool/search.js"
 
 type MaterializeMemories = (
   pages: PageObjectResponse[],
@@ -895,15 +896,22 @@ export class MemorySearch {
     if (limit <= 0) return { pages: [], capped: false }
 
     const trimmedComposedQuery = composedQuery.trim()
-    if (this.features.runTool.search && trimmedComposedQuery.length > 0) {
-      return this.fetchSemanticPagesViaRunTool(
-        input,
-        trimmedComposedQuery,
-        signal,
-        runToolPageSize
-      )
-    }
-
+      if (this.features.runTool.search && trimmedComposedQuery.length > 0) {
+        try {
+          return await this.fetchSemanticPagesViaRunTool(
+            input,
+            trimmedComposedQuery,
+            signal,
+            runToolPageSize
+          )
+        } catch (err) {
+          if (!(err instanceof RunToolSearchRestrictedError)) {
+            throw err
+          }
+          // Fall through to the existing REST search path below.
+        }
+      }
+      
     // Empty semantic queries are recall/list-shaped rather than relevance-shaped:
     // RunTool requires a non-empty query and a workspace-wide REST search would
     // be an implicit API switch. Use the DS-scoped contains fetcher without a
