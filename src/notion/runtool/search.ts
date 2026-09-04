@@ -177,21 +177,22 @@ export async function searchViaRunTool(
     max_highlight_length: 0,
   }
 
-  let response: RunToolInternalSearchResponse
-  try {
-    response = await runTool(client, "search", requestParams)
-  } catch (err) {
-    if (isRestrictedResourceError(err)) {
-      warnRunToolRestrictedResourceOnce("search", err, { usedRest: false })
-      throw new RunToolSearchRestrictedError(
-        "RunTool search rejected this token (RestrictedResource). " +
-          "RunTool requires a Notion PAT or ntn-issued user token; " +
-          "integration tokens (secret_...) are unsupported.",
-        err
-      )
-    }
-    throw err
+let response: RunToolInternalSearchResponse
+try {
+  response = await runTool(client, "search", requestParams)
+} catch (err) {
+  if (isRestrictedResourceError(err)) {
+    warnRunToolRestrictedResourceOnce("search", err, { usedRest: false })
+    throw new RunToolSearchRestrictedError(
+      "RunTool search rejected this token (RestrictedResource). " +
+        "RunTool requires a Notion PAT or ntn-issued user token; " +
+        "integration tokens (secret_...) are unsupported.",
+      err
+    )
   }
+
+  throw err
+}
 
   if (!isInternalSearchResponse(response)) {
     throw new Error(
