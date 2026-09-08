@@ -50,6 +50,7 @@ Remaining REST/SDK use is classified here so the exception set is explicit:
 | Auth             | `secret_...` integration tokens                                                     | Rejected during service initialization when any RunTool surface is enabled.                            |
 | Capability gap   | SQL `has_more`, SQL canonicalization/date-column gaps, aggregate `hasAdvancedTools` | Allowed only through documented fallback branches; each branch emits `runtool-fallback=1 used-rest=1`. |
 | Capability limit | Search 25-row window                                                                | Accepted as the semantic AI-search contract; surfaced as `capped: true`, not a REST fallback.          |
+| Capability handoff | RunTool semantic search `403 restricted_resource`                            | Propagate a Notion MCP handoff; public REST relevance is explicit opt-in only. |
 | Capability gap   | `update_page` anchored edit miss/ambiguity/delete warning                           | Falls back to the full-body REST markdown path and emits `runtool-fallback=1 used-rest=1`.             |
 | Security gap     | `create_pages` partial-commit recovery                                              | Kept behind `LORE_USE_RUNTOOL_BATCH_CREATES=1`; fallback preserves per-input idempotency.              |
 | Historical       | Silent REST fallback for RunTool-disabled or unsupported auth                       | Not allowed; callers either opt out explicitly or surface a fallback/unavailable event.                |
@@ -219,19 +220,19 @@ It requires the response type to be `ai_search`; `workspace_search` and `none`
 fail loudly because semantic relevance must not silently downgrade to lexical
 workspace search.
 
-RunTool `search` has no cursor and caps the raw window at 25. The caller falls
-back to another path only in one structural case:
+RunTool `search` has no cursor and caps the raw window at 25. The caller
+accepts the RunTool window as the semantic relevance source and surfaces
+saturation through `capped: true` when the request succeeds.
 
-| Case                 | Reason                                                                    |
-| -------------------- | ------------------------------------------------------------------------- |
-| Empty composed query | RunTool requires `query.length >= 1`; the service uses DS-scoped listing. |
+| Case                 | Reason / behavior                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Empty composed query | RunTool requires `query.length >= 1`; the service uses DS-scoped listing.                                  |
+| 403 `restricted_resource` | Propagate an actionable Notion MCP handoff; do not silently use REST. |
 
 Requested limits above 25 and saturated 25-hit responses do not switch to REST.
-The service accepts the RunTool window as the semantic relevance source and
-surfaces saturation through `capped: true`.
-
-403 `restricted_resource`, 401, 429, 5xx, malformed, validation errors, and
-non-`ai_search` responses propagate. The wrapper still emits the
-once-per-process restricted-resource warning before throwing. Cooperative
-aborts propagate as aborts so `Promise.allSettled` discard behavior matches the
-REST path.
+401, 429, 5xx, malformed, validation, and non-`ai_search` responses also
+propagate. The handoff names `notion-ai-search` for hosts that already have
+the official Notion MCP. Operators without that MCP can explicitly set
+`LORE_USE_RUNTOOL_SEARCH=0` to select public REST relevance.
+Cooperative aborts propagate as aborts so `Promise.allSettled` discard behavior
+matches the REST path.

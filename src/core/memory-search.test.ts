@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { searchViaRunTool } from "../notion/runtool/index.js"
+import {
+  RunToolSearchRestrictedError,
+  searchViaRunTool,
+} from "../notion/runtool/index.js"
 import { defaultFeatureFlags, type LoreFeatureFlags } from "../feature-flags.js"
 import { MEMORY_PROPS } from "../notion/schema.js"
 import type { DatabaseRef, Memory, MemoryKind, MemorySource } from "../types.js"
@@ -547,6 +550,30 @@ describe("MemorySearch mode selection", () => {
     expect(JSON.stringify(runToolSearchSpy.mock.calls[0]![1])).not.toContain("SECRET")
     expect(JSON.stringify(queryPlan)).not.toContain("SECRET")
     expect(memories.map((memory) => memory.id)).toEqual(["intent-hit"])
+  })
+  it("propagates restricted RunTool errors with a Notion MCP handoff", async () => {
+    const { searcher, searchSpy } = makeSubject({
+      featureOverrides: { queryPlanning: false, runTool: { search: true } },
+    })
+    const runToolSearchSpy = vi.mocked(searchViaRunTool)
+    runToolSearchSpy.mockReset()
+    runToolSearchSpy.mockRejectedValue(
+      new RunToolSearchRestrictedError(
+        "Notion AI search is unavailable. Call `notion-ai-search`; " +
+          "set `LORE_USE_RUNTOOL_SEARCH=0` for explicit REST fallback."
+      )
+    )
+
+    await expect(
+      searcher.searchWithExplain({
+        query: "semantic",
+        mode: "semantic",
+        includeContent: false,
+      })
+    ).rejects.toThrow(/notion-ai-search/)
+
+    expect(runToolSearchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
   })
 
   it("planned semantic search caps each RunTool variant window", async () => {
