@@ -183,6 +183,11 @@ row includes a process-local result handle such as
 `rs_0123456789abcdef:m1`; pass selected handles to
 `lore-memory action='expand'` to fetch only the bodies you need. Use
 `includeContent: true` only when every returned body is needed.
+When Notion rejects the internal RunTool endpoint with
+`403 restricted_resource`, Lore returns an actionable handoff to the official
+Notion MCP's `notion-ai-search`; it does not silently substitute public REST
+relevance. Operators without the Notion MCP can explicitly set
+`LORE_USE_RUNTOOL_SEARCH=0` to opt into public REST relevance.
 
 ## `lore-fact` — knowledge graph mutations
 

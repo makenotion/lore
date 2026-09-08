@@ -28,10 +28,7 @@ import {
 import { findNearDuplicates } from "../../core/near-duplicate.js"
 import { MemoryService } from "../../core/memory.js"
 import type { DatabaseRef, Memory, MemoryStatus } from "../../types.js"
-import {
-  __resetRunToolSearchWarningsForTest,
-  RunToolSearchRestrictedError,
-} from "./search.js"
+import { __resetWarnRunToolRestrictedResourceOnceForTest } from "./error-helpers.js"
 
 interface FixtureRow {
   id: string
@@ -665,7 +662,7 @@ function buildSemanticStubClient(): { client: Client; counters: SemanticStubCoun
 
 describe("RunTool search vs REST/SDK semantic A/B harness", () => {
   beforeEach(() => {
-    __resetRunToolSearchWarningsForTest()
+    __resetWarnRunToolRestrictedResourceOnceForTest()
     // Default state is ON post-#543. Tests that need the flag-off
     // branch must explicitly set `=0` below; tests that need flag-on
     // can set `=1` for clarity (or rely on the inherited default).
@@ -1150,7 +1147,7 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
     expect(result.map((m) => m.id)).toEqual([liveId])
   })
 
-  it("flag-on propagates search-dispatch RestrictedResource instead of falling back to REST", async () => {
+  it("flag-on propagates RestrictedResource with a Notion MCP handoff", async () => {
     process.env["LORE_USE_RUNTOOL_SEARCH"] = "1"
     const counters = { searchCalls: 0, requestCalls: 0 }
     const stub = {
@@ -1177,20 +1174,14 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
         retrieveMarkdown: async () => ({ markdown: "" }),
       },
     } as unknown as Client
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
-    try {
-      const service = new MemoryService(stub, SEMANTIC_DB)
+    const service = new MemoryService(stub, SEMANTIC_DB)
+    await expect(
+      service.search({ query: "Memory", mode: "semantic", limit: 5 })
+    ).rejects.toThrow(/notion-ai-search/)
 
-      await expect(
-        service.search({ query: "Memory", mode: "semantic", limit: 5 })
-      ).rejects.toBeInstanceOf(RunToolSearchRestrictedError)
-
-      expect(counters.requestCalls).toBe(1)
-      expect(counters.searchCalls).toBe(0)
-    } finally {
-      stderrSpy.mockRestore()
-    }
+    expect(counters.requestCalls).toBe(1)
+    expect(counters.searchCalls).toBe(0)
   })
 
   it("flag-on de-duplicates repeated normalized page ids before hydration", async () => {

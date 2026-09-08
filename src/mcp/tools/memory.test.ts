@@ -16,6 +16,7 @@ import { extractEntityCandidates } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
 import { MemoryResultHandleStore } from "../../memory-result-handles.js"
 import type { Memory, Topic } from "../../types.js"
+import { RunToolSearchRestrictedError } from "../../notion/runtool/search.js"
 
 /**
  * Build a FactService stub for tests. Issue #533 added
@@ -5766,6 +5767,38 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     expect(text).toContain("1. original: auth middleware")
     expect(text).toContain("2. facets: auth middleware redis")
     expect(text).toContain("### Search hit")
+  })
+  it("returns an actionable Notion MCP handoff on restricted semantic search", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearchWithMeta = vi
+      .fn()
+      .mockRejectedValue(
+        new RunToolSearchRestrictedError(
+          "Notion AI search is unavailable. Call `notion-ai-search`; " +
+            "set `LORE_USE_RUNTOOL_SEARCH=0` for explicit REST fallback."
+        )
+      )
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn(),
+        searchWithMeta: memoriesSearchWithMeta,
+        list: vi.fn(),
+      },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "auth middleware" } as never)
+    const text = JSON.stringify(result)
+
+    expect(text).toContain("notion-ai-search")
+    expect(text).toContain("LORE_USE_RUNTOOL_SEARCH=0")
+    expect(text).not.toContain("public REST relevance as a fallback")
   })
 
   it("redacts bearer-shaped query text from rendered search output", async () => {

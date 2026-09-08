@@ -8,8 +8,8 @@
  *     `collection://<id>` form.
  *   - `page_size` clamps to `RUNTOOL_SEARCH_MAX_PAGE_SIZE`.
  *   - `max_highlight_length: 0` is the wrapper's default.
- *   - 403 RestrictedResource throws `RunToolSearchRestrictedError`
- *     and emits the once-per-process stderr warning exactly once.
+ *   - 403 RestrictedResource throws `RunToolSearchRestrictedError` with an
+ *     explicit Notion MCP handoff; REST is caller-opt-in.
  *   - 401 / 429 / 5xx / 400 / malformed propagate verbatim.
  *   - Non-`ai_search` responses fail loud instead of silently
  *     downgrading semantic relevance.
@@ -21,7 +21,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { APIErrorCode, APIResponseError, type Client } from "@notionhq/client"
 import {
-  __resetRunToolSearchWarningsForTest,
   RUNTOOL_SEARCH_MAX_PAGE_SIZE,
   RunToolSearchRestrictedError,
   searchViaRunTool,
@@ -275,8 +274,7 @@ describe("searchViaRunTool — pre-call validation", () => {
 })
 
 describe("searchViaRunTool — error classification", () => {
-  it("converts 403 RestrictedResource to RunToolSearchRestrictedError and warns once", async () => {
-    __resetRunToolSearchWarningsForTest()
+  it("converts 403 RestrictedResource to RunToolSearchRestrictedError", async () => {
     const sdkError = buildApiError(
       APIErrorCode.RestrictedResource,
       403,
@@ -285,37 +283,22 @@ describe("searchViaRunTool — error classification", () => {
     const { client } = makeStubClient(() => {
       throw sdkError
     })
-    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
-    try {
-      await expect(
-        searchViaRunTool(client, {
-          query: "x",
-          dataSourceId: "ds-mem",
-          pageSize: 5,
-        })
-      ).rejects.toBeInstanceOf(RunToolSearchRestrictedError)
+    await expect(
+      searchViaRunTool(client, {
+        query: "x",
+        dataSourceId: "ds-mem",
+        pageSize: 5,
+      })
+    ).rejects.toThrow(/notion-ai-search/)
 
-      // Second call should also reject but NOT emit a second warning.
-      await expect(
-        searchViaRunTool(client, {
-          query: "y",
-          dataSourceId: "ds-mem",
-          pageSize: 5,
-        })
-      ).rejects.toBeInstanceOf(RunToolSearchRestrictedError)
-
-      const restrictedLines = stderrSpy.mock.calls.filter((call) =>
-        String(call[0]).includes("RestrictedResource")
-      )
-      expect(restrictedLines).toHaveLength(1)
-      const line = String(restrictedLines[0]![0])
-      expect(line).toContain("operation failed without REST/SDK fallback")
-      expect(line).toContain("runtool-error=1")
-      expect(line).toContain("used-rest=0")
-    } finally {
-      stderrSpy.mockRestore()
-    }
+    await expect(
+      searchViaRunTool(client, {
+        query: "y",
+        dataSourceId: "ds-mem",
+        pageSize: 5,
+      })
+    ).rejects.toBeInstanceOf(RunToolSearchRestrictedError)
   })
 
   it.each([

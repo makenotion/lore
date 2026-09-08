@@ -10,6 +10,14 @@ refactors that leave behavior unchanged are intentionally omitted; the git
 log is the canonical source for those.
 
 ## [Unreleased]
+### Fixed
+
+- `lore-query action='search'` now returns an actionable handoff to the
+  official Notion MCP's `notion-ai-search` when the internal RunTool search
+  endpoint rejects the connection with `403 restricted_resource`. Lore does
+  not silently substitute public REST relevance; operators without Notion MCP
+  can explicitly set `LORE_USE_RUNTOOL_SEARCH=0` to opt in to that fallback.
+
 
 ## [1.0.0] - 2026-08-04
 

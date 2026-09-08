@@ -1099,11 +1099,13 @@ export class MemorySearch {
    * wrapper uses `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25). Planned search variants
    * pass a smaller per-variant window to keep fan-out bounded. A saturated
    * response is accepted as the semantic answer and surfaced through
-   * `capped: true`; the caller does not switch to REST.
+   * `capped: true`; the caller does not switch to REST for saturation.
    *
-   * **Error classification.** 403 / 401 / 429 / 5xx / 400 / malformed
-   * propagate verbatim. The service-layer auth preflight rejects
-   * integration-token shapes before RunTool is called.
+   * **Error classification.** 403 `RestrictedResource` propagates as an
+   * actionable Notion MCP handoff. Public REST relevance is used only when
+   * `LORE_USE_RUNTOOL_SEARCH=0` explicitly disables the RunTool semantic lane.
+   * 401 / 429 / 5xx / 400 / malformed responses propagate verbatim so the
+   * rate-limit and auth-refresh proxies stay authoritative on those classes.
    */
   async fetchSemanticPagesViaRunTool(
     input: SearchMemoriesInput,

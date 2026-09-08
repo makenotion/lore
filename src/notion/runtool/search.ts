@@ -18,10 +18,11 @@
  *    `data_source_url` does it server-side.
  *
  * 3. **Error mapping.** 403 `RestrictedResource` becomes
- *    {@link RunToolSearchRestrictedError}; the wrapper emits a
- *    once-per-process stderr warning before throwing. Validation 400s, 401,
- *    429, and 5xx propagate verbatim so the rate-limit and auth-refresh
- *    proxies stay authoritative on those classes.
+ *    {@link RunToolSearchRestrictedError}; the MemorySearch consumer decides
+ *    whether to use its public REST fallback and emits the final
+ *    once-per-process outcome warning. Validation 400s, 401, 429, and 5xx
+ *    propagate verbatim so the rate-limit and auth-refresh proxies stay
+ *    authoritative on those classes.
  *
  * Response materialization is the consumer's job. RunTool's `search`
  * returns `{ id, title, url, type, ... }` per hit. Notion-hosted hits
@@ -37,10 +38,8 @@ import type { Client } from "@notionhq/client"
 import { APIErrorCode, isNotionClientError } from "@notionhq/client"
 import { runTool } from "./client.js"
 import {
-  __resetWarnRunToolRestrictedResourceOnceForTest,
   NOTION_PAGE_ID_IN_TEXT_RE,
   normalizeLikelyNotionPageId,
-  warnRunToolRestrictedResourceOnce,
 } from "./error-helpers.js"
 import {
   dataSourceUrl,
@@ -182,11 +181,11 @@ export async function searchViaRunTool(
     response = await runTool(client, "search", requestParams)
   } catch (err) {
     if (isRestrictedResourceError(err)) {
-      warnRunToolRestrictedResourceOnce("search", err, { usedRest: false })
       throw new RunToolSearchRestrictedError(
-        "RunTool search rejected this token (RestrictedResource). " +
-          "RunTool requires a Notion PAT or ntn-issued user token; " +
-          "integration tokens (secret_...) are unsupported.",
+        "Notion AI search is unavailable through Lore's RunTool connection " +
+          "(403 RestrictedResource). If this host has the official Notion MCP, " +
+          "call `notion-ai-search` with the same query. If it does not, set " +
+          "`LORE_USE_RUNTOOL_SEARCH=0` to opt into public REST relevance.",
         err
       )
     }
@@ -276,13 +275,4 @@ function isNotionHostedSearchUrl(hostname: string): boolean {
 
 function isRestrictedResourceError(err: unknown): boolean {
   return isNotionClientError(err) && err.code === APIErrorCode.RestrictedResource
-}
-
-/** Test seam — reset the once-per-process warning latch so individual
- *  test cases can independently exercise the warning path. The latch
- *  itself lives so all RunTool consumers share
- *  one warning per process; the seam is re-exported under the
- *  per-consumer name for legacy test-fixture compatibility. */
-export function __resetRunToolSearchWarningsForTest(): void {
-  __resetWarnRunToolRestrictedResourceOnceForTest()
 }
