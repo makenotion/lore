@@ -44,7 +44,8 @@ import { initServicesFromConfig } from "../services.js"
 import type { LoreConfig } from "../types.js"
 import { resolveProjectPathFromCwd } from "../core/context.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
-import { buildBackgroundSavePrompt } from "./prompts.js"
+import { buildBackgroundSavePrompt, buildRawObservationsBlock } from "./prompts.js"
+import { rawObservationPath, readRecentObservations } from "./raw-observation-store.js"
 import {
   resolveProfileFromConfig,
   resolveProfileFromConfigAtRoot,
@@ -633,6 +634,24 @@ export async function handleStop(
         const proposeLearnings =
           learningExtractionEnabled && config.proposeAutosaveLearnings ? true : undefined
         const profilePrompts = resolveProfilePromptsForStop(failureContext)
+
+        let rawObservationsBlock: string | undefined
+        if (config.rawObservationCapture && failureContext?.configRoot) {
+          try {
+            const storePath = rawObservationPath(failureContext.configRoot, process.env)
+            const SESSION_WINDOW_MS = 12 * 60 * 60 * 1_000 // 12 hours
+            const records = await readRecentObservations(storePath, {
+              sessionId: event.session_id,
+              windowMs: SESSION_WINDOW_MS,
+            })
+            rawObservationsBlock = buildRawObservationsBlock(records)
+          } catch {
+            process.stderr.write(
+              "[lore] Stop hook: could not read raw observations, proceeding without them.\n"
+            )
+          }
+        }
+
         const prompt = buildBackgroundSavePrompt(
           config.subProjects,
           config.catchAllName,
@@ -645,6 +664,7 @@ export async function handleStop(
             authorName: deriveAuthorName(event),
             profilePrompts,
             memoryCaptureMode: resolveMemoryCaptureModeForStop(config, failureContext),
+            rawObservationsBlock,
           }
         )
         // Only advance the save counter when a background process actually

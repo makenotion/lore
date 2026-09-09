@@ -168,6 +168,7 @@ export async function runClaudeInstall(
   const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
   const binAutosaveCommand = buildClaudeHookCommand("autosave", binShape)
   const binWakeupCommand = buildClaudeHookCommand("wakeup", binShape)
+  const binObservationCommand = buildClaudeHookCommand("observation", binShape)
   const configRoot = context.configRoot
 
   const hooks = (settings.hooks ?? {}) as Record<string, ClaudeHookEntry[]>
@@ -182,6 +183,13 @@ export async function runClaudeInstall(
     "wakeup.sh",
     context.wakeupPath,
     binWakeupCommand
+  )
+  const observationEnabled = context.rawObservationCapture === true
+  const observationStatus = detectClaudeHook(
+    hooks["PostToolUse"],
+    "observation.sh",
+    "",
+    observationEnabled ? binObservationCommand : undefined
   )
 
   // Active SessionEnd registration was removed in 0.6.0. The cleanup planner
@@ -240,6 +248,20 @@ export async function runClaudeInstall(
   console.log(
     `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`
   )
+  if (observationEnabled) {
+    console.log(
+      `  Observation hook:  ${statusLabel(observationStatus, context.legacyPaths)} (PostToolUse)`
+    )
+  } else {
+    const observationInstalled = observationStatus !== "missing"
+    if (observationInstalled) {
+      console.log("  Observation hook:  will remove (rawObservationCapture is off)")
+    } else {
+      console.log(
+        "  Observation hook:  disabled — set hooks.rawObservationCapture: true in .lore.yaml and rerun lore install to enable"
+      )
+    }
+  }
   if (hasSessionEndShim) console.log("  Session-end hook:  will remove")
   if (hasLegacyAutosave)
     console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
@@ -261,9 +283,14 @@ export async function runClaudeInstall(
   // firing the moment this install completes.
   printHookDisclosure()
 
+  const observationNeedsRemoval = !observationEnabled && observationStatus !== "missing"
+  const observationNeedsInstall =
+    observationEnabled && !isEffectivelyCurrent(observationStatus, context.legacyPaths)
   const allCurrent =
     isEffectivelyCurrent(autosaveStatus, context.legacyPaths) &&
     isEffectivelyCurrent(wakeupStatus, context.legacyPaths) &&
+    !observationNeedsInstall &&
+    !observationNeedsRemoval &&
     !hasSessionEndShim &&
     isEffectivelyCurrent(mcpStatus, context.legacyPaths) &&
     !hasLegacyAutosave &&
@@ -324,7 +351,29 @@ export async function runClaudeInstall(
     )
   }
 
-  if (hasLegacyAutosave) {
+  if (observationNeedsInstall) {
+    mergedHooks["PostToolUse"] = upsertClaudeHookCommand(
+      hooks["PostToolUse"],
+      "observation.sh",
+      context.legacyPaths ? context.autosavePath : binObservationCommand,
+      { matcher: "", timeout: 10000 }
+    )
+  } else if (observationNeedsRemoval) {
+    const stripped = removeClaudeScriptEntries(hooks["PostToolUse"], "observation.sh")
+    // Also strip any bin-dispatch observation entry by command text
+    const withoutBin = stripped?.filter(
+      (entry) =>
+        !entry.hooks.some(
+          (h) =>
+            typeof h.command === "string" && h.command.includes("lore hooks observation")
+        )
+    )
+    if (withoutBin && withoutBin.length > 0) {
+      mergedHooks["PostToolUse"] = withoutBin
+    } else {
+      delete mergedHooks["PostToolUse"]
+    }
+  } else if (hasLegacyAutosave) {
     mergedHooks["PostToolUse"] = removeClaudeScriptEntries(
       hooks["PostToolUse"],
       "autosave.sh"

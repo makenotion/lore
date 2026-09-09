@@ -225,6 +225,13 @@ export interface HookConfig {
    */
   features: Pick<LoreFeatureFlags, "learningExtraction">
   /**
+   * Whether to capture raw PostToolUse observations to the local JSONL store.
+   * Off by default — PostToolUse fires on every tool call. Enable with
+   * `hooks.rawObservationCapture: true` in .lore.yaml or
+   * `LORE_RAW_OBSERVATIONS=1` env var.
+   */
+  rawObservationCapture?: boolean
+  /**
    * Name of the catch-all project (path `"."` or `""`) in this workspace, if
    * configured. The save prompts name it explicitly and tell the AI to avoid
    * defaulting to it for sub-project-specific work.
@@ -272,6 +279,9 @@ export function mergeHookDefaults(
         features: featuresConfig,
       }).learningExtraction,
     },
+    rawObservationCapture:
+      envSource["LORE_RAW_OBSERVATIONS"] === "1" ||
+      (hooks?.rawObservationCapture ?? false),
     catchAllName,
     subProjects,
   }

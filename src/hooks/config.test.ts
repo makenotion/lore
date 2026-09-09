@@ -393,4 +393,40 @@ describe("mergeHookDefaults", () => {
       })
     })
   })
+
+  describe("rawObservationCapture", () => {
+    it("defaults to false when no hooks section is provided", () => {
+      const config = mergeHookDefaults(undefined)
+      expect(config.rawObservationCapture).toBe(false)
+    })
+
+    it("defaults to false when hooks section exists but rawObservationCapture is unset", () => {
+      const config = mergeHookDefaults({ autoSave: true })
+      expect(config.rawObservationCapture).toBe(false)
+    })
+
+    it("respects hooks.rawObservationCapture: true from config", () => {
+      const config = mergeHookDefaults({ rawObservationCapture: true })
+      expect(config.rawObservationCapture).toBe(true)
+    })
+
+    it("respects hooks.rawObservationCapture: false from config", () => {
+      const config = mergeHookDefaults({ rawObservationCapture: false })
+      expect(config.rawObservationCapture).toBe(false)
+    })
+
+    it("LORE_RAW_OBSERVATIONS=1 forces rawObservationCapture on even when config is false", () => {
+      const config = mergeHookDefaults({ rawObservationCapture: false }, null, [], {
+        LORE_RAW_OBSERVATIONS: "1",
+      })
+      expect(config.rawObservationCapture).toBe(true)
+    })
+
+    it("LORE_RAW_OBSERVATIONS absent or not '1' leaves config value intact", () => {
+      const config = mergeHookDefaults({ rawObservationCapture: false }, null, [], {
+        LORE_RAW_OBSERVATIONS: "0",
+      })
+      expect(config.rawObservationCapture).toBe(false)
+    })
+  })
 })

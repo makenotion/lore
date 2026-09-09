@@ -62,6 +62,15 @@ hooksCommand
   })
 
 hooksCommand
+  .command("observation")
+  .description("Raw observation hook — fires on PostToolUse")
+  .action(async () => {
+    const stdin = await readStdinToString()
+    const { handleObservation } = await import("../../hooks/observation.js")
+    await handleObservation({ event: stdin })
+  })
+
+hooksCommand
   .command("session-end")
   .description("Session-end shim (compatibility for pre-0.6.0 settings)")
   .action(() => {

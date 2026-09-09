@@ -33,6 +33,20 @@ import { detectYarnPnp, resolvePkgRoot } from "./env.js"
 import { displayHomePath, fileExists, readJsonSafe, readTextSafe } from "./utils.js"
 import { assertTomlSupportsLoreRewrite } from "./toml.js"
 
+async function readRawObservationConfig(projectDir: string): Promise<boolean | null> {
+  const found = await findConfigFile(projectDir)
+  if (!found) return null
+  try {
+    const config = await loadConfig(found.path)
+    const fromConfig = config.hooks?.rawObservationCapture ?? null
+    const fromEnv = process.env["LORE_RAW_OBSERVATIONS"] === "1"
+    if (fromEnv) return true
+    return fromConfig
+  } catch {
+    return null
+  }
+}
+
 async function readWakeUpConfig(projectDir: string): Promise<boolean | null> {
   const found = await findConfigFile(projectDir)
   if (!found) return null
@@ -112,6 +126,7 @@ export async function prepareInstallContext(opts: {
   }
 
   const wakeUpConfig = await readWakeUpConfig(projectDir)
+  const rawObservationCapture = await readRawObservationConfig(projectDir)
   const found = await findConfigFile(projectDir)
   const configRoot = found?.root ?? projectDir
 
@@ -124,6 +139,7 @@ export async function prepareInstallContext(opts: {
     mcpJsPath,
     skipPrompts,
     wakeUpConfig,
+    rawObservationCapture,
     legacyPaths,
     yarnPnp,
   }

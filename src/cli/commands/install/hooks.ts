@@ -98,7 +98,7 @@ export function buildLegacyCodexHookCommand(scriptPath: string): string {
  * the entire deploy surface today: `wakeup` (UserPromptSubmit), `autosave`
  * (Stop), and `session-end` (compatibility shim).
  */
-export type HookEventName = "wakeup" | "autosave" | "session-end"
+export type HookEventName = "wakeup" | "autosave" | "session-end" | "observation"
 
 export interface ClaudeHookEntry {
   matcher: string
@@ -205,7 +205,7 @@ export function upsertClaudeHookCommand(
   // lore` and current `yarn run -T lore`). Matching all combinations
   // means any prior install can be cleanly upgraded.
   const binDispatchPattern =
-    /^(?:cd "\$CLAUDE_PROJECT_DIR" && )?(?:yarn (?:run -T )?)?lore hooks (?:wakeup|autosave|session-end)$/
+    /^(?:cd "\$CLAUDE_PROJECT_DIR" && )?(?:yarn (?:run -T )?)?lore hooks (?:wakeup|autosave|session-end|observation)$/
   const filtered = (existing ?? []).filter(
     (entry) =>
       !entry.hooks?.some((hook) => {

@@ -159,6 +159,12 @@ export interface InstallContext {
    */
   wakeUpConfig: boolean | null
   /**
+   * `true` when .lore.yaml sets `hooks.rawObservationCapture: true` or
+   * `LORE_RAW_OBSERVATIONS=1` is set. `false`/`null` otherwise. The
+   * PostToolUse observation hook is only registered when this is true.
+   */
+  rawObservationCapture?: boolean | null
+  /**
    * legacy absolute-path mode opt-in. When `true`, the install path emits the
    * legacy absolute-path shape (an explicit `node` invocation against
    * the built MCP entry under `${HOME}/.lore/`, plus the matching shell

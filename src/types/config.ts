@@ -361,6 +361,13 @@ export interface LoreConfig {
        */
       args?: string[]
     }
+    /**
+     * Capture raw PostToolUse observations to the local JSONL store before
+     * curation. Off by default — PostToolUse fires on every tool call. Enable
+     * with `hooks.rawObservationCapture: true` in .lore.yaml. Also forced on
+     * by the `LORE_RAW_OBSERVATIONS=1` env var for local testing.
+     */
+    rawObservationCapture?: boolean
   }
 }
 

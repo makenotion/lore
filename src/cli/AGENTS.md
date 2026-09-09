@@ -59,7 +59,8 @@ in [`../../docs/cli.md`](../../docs/cli.md) must stay in sync.
 | [`commands/eval.ts`](commands/eval.ts)             | `lore eval run/baseline/vaults/bench`                         |
 | [`commands/promote.ts`](commands/promote.ts)       | `lore promote <memoryId> --to <name>`                         |
 | [`commands/mcp.ts`](commands/mcp.ts)               | `lore mcp`                                                    |
-| [`commands/hooks.ts`](commands/hooks.ts)           | `lore hooks wakeup/autosave/session-end`                      |
+| [`commands/hooks.ts`](commands/hooks.ts)           | `lore hooks wakeup/autosave/session-end/observation`          |
+| [`commands/observations.ts`](commands/observations.ts) | `lore observations tail`                                  |
 | [`commands/profile.ts`](commands/profile.ts)       | `lore profile list/show/validate/preview/install/set/migrate` |
 
 ## Layer Rules
