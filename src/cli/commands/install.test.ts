@@ -59,11 +59,13 @@ import {
   removeClaudeScriptEntries,
   resolveBackgroundAgentForInstall,
   resolveCursorMcpPath,
+  runClaudeInstall,
   runCodexInstall,
   runCursorInstall,
   stripLoreOwnedSessionEndEntries,
   stripShellEnvPrefix,
   toPortablePath,
+  upsertClaudeHookCommand,
   type ClaudeHookEntry,
   type InstallContext,
   type InstallRunners,
@@ -4401,5 +4403,68 @@ describe("ntnLoginRecovery — paste-ready recovery command", () => {
       { NOTION_ENV: "stg" }
     )
     expect(result.command).toBe("NOTION_KEYRING=0 NOTION_ENV=stg ntn login")
+  })
+})
+
+describe("runClaudeInstall — observation hook opt-in", () => {
+  it("buildClaudeHookCommand emits the observation hook command for PostToolUse registration", () => {
+    expect(buildClaudeHookCommand("observation")).toBe(
+      `cd "$CLAUDE_PROJECT_DIR" && lore hooks observation`
+    )
+    expect(buildClaudeHookCommand("observation", "yarn")).toBe(
+      `cd "$CLAUDE_PROJECT_DIR" && yarn run -T lore hooks observation`
+    )
+  })
+
+  it("detectClaudeHook returns 'current' when a bin-dispatch observation entry exists in PostToolUse", () => {
+    const command = buildClaudeHookCommand("observation")
+    const entries: ClaudeHookEntry[] = [
+      { matcher: "", hooks: [{ type: "command" as const, command }] },
+    ]
+    expect(detectClaudeHook(entries, "observation.sh", "", command)).toBe("current")
+  })
+
+  it("detectClaudeHook returns 'missing' when PostToolUse has no entries at all", () => {
+    const observationCommand = buildClaudeHookCommand("observation")
+    expect(detectClaudeHook([], "observation.sh", "", observationCommand)).toBe("missing")
+    // When rawObservationCapture is off, the 4th arg is undefined — still missing
+    expect(detectClaudeHook([], "observation.sh", "", undefined)).toBe("missing")
+  })
+
+  it("upsertClaudeHookCommand adds an observation entry to an empty PostToolUse list", () => {
+    const command = buildClaudeHookCommand("observation")
+    const result = upsertClaudeHookCommand([], "observation.sh", command, { matcher: "" })
+    const commands = result.flatMap((e) => e.hooks).map((h) => h.command)
+    expect(commands).toContain(command)
+    expect(result).toHaveLength(1)
+  })
+
+  it("upsertClaudeHookCommand does not accumulate duplicate observation entries on reinstall", () => {
+    // Regression guard: calling upsertClaudeHookCommand twice with the
+    // same observation command must not leave two entries in PostToolUse.
+    const command = buildClaudeHookCommand("observation")
+    const config = { matcher: "" }
+    const first = upsertClaudeHookCommand([], "observation.sh", command, config)
+    const second = upsertClaudeHookCommand(first, "observation.sh", command, config)
+    const allCommands = second.flatMap((e) => e.hooks).map((h) => h.command)
+    expect(allCommands.filter((c) => c === command)).toHaveLength(1)
+  })
+
+  it("removeClaudeScriptEntries and command-text filter together strip the observation hook on disable", () => {
+    const command = buildClaudeHookCommand("observation")
+    const entries: ClaudeHookEntry[] = [
+      { matcher: "", hooks: [{ type: "command" as const, command }] },
+    ]
+    // Mirror the removal logic in runClaudeInstall: strip by script suffix
+    // then strip any remaining bin-dispatch observation entries by command text.
+    const afterScript = removeClaudeScriptEntries(entries, "observation.sh")
+    const afterBin = (afterScript ?? entries).filter(
+      (e) =>
+        !e.hooks.some(
+          (h) =>
+            typeof h.command === "string" && h.command.includes("lore hooks observation")
+        )
+    )
+    expect(afterBin).toHaveLength(0)
   })
 })
