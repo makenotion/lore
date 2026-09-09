@@ -20,6 +20,7 @@ routes to one of the supported handlers:
 | `wakeup`      | User-prompt context injection, ranked retrieval, debug counters | [`docs/hooks-wakeup.md`](../../docs/hooks-wakeup.md)         |
 | `auto-digest` | Detached digest helper spawned from accepted Stop hooks         | [`docs/hooks-background.md`](../../docs/hooks-background.md) |
 | `session-end` | Exit-0 compatibility shim for stale installed settings          | [`docs/hooks-background.md`](../../docs/hooks-background.md) |
+| `observation` | PostToolUse capture: redact, dedup, append to local JSONL store | (inline — see `observation.ts`, `raw-observation-*.ts`)      |
 
 Historical rollout and issue provenance lives in
 [`docs/archive/hooks-history.md`](../../docs/archive/hooks-history.md). Keep
@@ -41,7 +42,7 @@ unless it is required to operate the current runtime.
 
 | File                           | Responsibility                                                                                           |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `helpers.ts`                   | Entry point: routes to `autosave`, `wakeup`, `auto-digest`, and `session-end` handlers                   |
+| `helpers.ts`                   | Entry point: routes to `autosave`, `wakeup`, `auto-digest`, `session-end`, and `observation` handlers    |
 | `prompts.ts`                   | Pure prompt builders for background-save sub-agents                                                      |
 | `conversation-mining.ts`       | Awaitable counterpart to the detached background save spawn for deterministic replays and eval harnesses |
 | `transcript.ts`                | Parse Claude Code and Codex transcript formats into messages                                             |
@@ -52,6 +53,10 @@ unless it is required to operate the current runtime.
 | `drift-marker.ts`              | Per-config-root debounce marker for schema drift checks                                                  |
 | `background-failure-marker.ts` | Bounded per-config-root health markers rendered by `lore status`                                         |
 | `marker-key.ts`                | Shared `configKey()` and `safeFilenameSegment()` helpers for marker, lock, log, and count files          |
+| `observation.ts`               | PostToolUse handler: parse event, redact, dedup-check, append record; fail-open, no Notion init          |
+| `raw-observation-store.ts`     | JSONL append + tail-read for raw observation records; XDG-aware path resolution                          |
+| `raw-observation-redact.ts`    | Token/private-marker redaction with depth cap and 64 KiB per-field byte cap                              |
+| `raw-observation-dedup.ts`     | SHA-256 content hash + bounded tail scan for 5-minute dedup window                                       |
 
 New marker modules under `src/hooks/` derive their config key and sanitize
 free-form name segments via `marker-key.ts`. Do not reimplement the hash or the
@@ -81,6 +86,10 @@ actions are:
 - `auto-digest`: child-side helper that loads services and delegates to the
   digest scheduler.
 - `session-end`: compatibility action that exits successfully with no work.
+- `observation`: PostToolUse capture — redacts the payload, deduplicates within a
+  5-minute window, and appends one JSONL record to the local raw-observation store.
+  Only runs when `hooks.rawObservationCapture: true` (or `LORE_RAW_OBSERVATIONS=1`).
+  Must never initialize Notion services — local capture only.
 
 Every handler must fail open. Exceptions caught by the top-level
 `main().catch` should let the host assistant continue. Autosave must write

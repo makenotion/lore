@@ -25,6 +25,7 @@ const hookConfigSchema = z
         args: z.array(z.string()).optional(),
       })
       .optional(),
+    rawObservationCapture: z.boolean().optional(),
   })
   .optional()
 

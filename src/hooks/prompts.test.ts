@@ -3,6 +3,7 @@ import {
   buildDigestPrompt,
   buildProjectSelectionGuidance,
   buildBackgroundSavePrompt,
+  buildRawObservationsBlock,
   PER_SPAWN_LEARNING_LIMIT,
 } from "./prompts.js"
 import { resolveProfileFromConfig } from "../profile/index.js"
@@ -829,5 +830,87 @@ describe("buildDigestPrompt", () => {
     })
 
     expect(profiled).toBe(core)
+  })
+})
+
+describe("buildRawObservationsBlock", () => {
+  it("returns an empty string for an empty records array", () => {
+    expect(buildRawObservationsBlock([])).toBe("")
+  })
+
+  it("includes the untrusted preamble when records are present", () => {
+    const records = [
+      {
+        toolName: "Bash",
+        observedAt: "2026-01-01T00:00:00.000Z",
+        input: { cmd: "ls" },
+        output: "file.txt",
+      },
+    ]
+    const block = buildRawObservationsBlock(records)
+    expect(block).toContain("untrusted")
+    expect(block).toContain("supporting evidence")
+  })
+
+  it("includes the tool name and timestamp for each record", () => {
+    const records = [
+      {
+        toolName: "Read",
+        observedAt: "2026-01-01T12:00:00.000Z",
+        input: { path: "/foo" },
+        output: "content",
+      },
+    ]
+    const block = buildRawObservationsBlock(records)
+    expect(block).toContain("Read")
+    expect(block).toContain("2026-01-01T12:00:00.000Z")
+  })
+
+  it("serializes input and output as JSON in the block", () => {
+    const records = [
+      {
+        toolName: "Write",
+        observedAt: "2026-01-01T00:00:00.000Z",
+        input: { path: "/a" },
+        output: null,
+      },
+    ]
+    const block = buildRawObservationsBlock(records)
+    expect(block).toContain(JSON.stringify({ path: "/a" }))
+  })
+
+  it("is included in buildBackgroundSavePrompt when rawObservationsBlock is provided", () => {
+    const records = [
+      {
+        toolName: "Bash",
+        observedAt: "2026-01-01T00:00:00.000Z",
+        input: {},
+        output: "ok",
+      },
+    ]
+    const obsBlock = buildRawObservationsBlock(records)
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "sess-1",
+      "agent",
+      "transcript text",
+      {
+        rawObservationsBlock: obsBlock,
+      }
+    )
+    expect(prompt).toContain("Bash")
+    expect(prompt).toContain("supporting evidence")
+  })
+
+  it("does not include raw observation content when rawObservationsBlock is omitted", () => {
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "sess-1",
+      "agent",
+      "transcript text"
+    )
+    expect(prompt).not.toContain("supporting evidence")
   })
 })

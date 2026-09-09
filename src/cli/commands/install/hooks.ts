@@ -98,7 +98,7 @@ export function buildLegacyCodexHookCommand(scriptPath: string): string {
  * the entire deploy surface today: `wakeup` (UserPromptSubmit), `autosave`
  * (Stop), and `session-end` (compatibility shim).
  */
-export type HookEventName = "wakeup" | "autosave" | "session-end"
+export type HookEventName = "wakeup" | "autosave" | "session-end" | "observation"
 
 export interface ClaudeHookEntry {
   matcher: string
