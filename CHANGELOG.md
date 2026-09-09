@@ -11,6 +11,19 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Added
+
+- `lore hooks observation` — new PostToolUse hook action that captures raw tool
+  observations to a local JSONL store before curation. Opt-in via
+  `hooks.rawObservationCapture: true` in `.lore.yaml` (or `LORE_RAW_OBSERVATIONS=1`
+  for local testing). Records are redacted (bearer tokens, `<private>` markers),
+  SHA-256 deduplicated within a 5-minute window, and stored at
+  `$XDG_STATE_HOME/lore/raw-observations/<key>.jsonl`. The Stop autosave path
+  includes same-session observations in the mining prompt as an untrusted block
+  when the flag is enabled.
+- `lore observations tail` — diagnostics command to inspect the local observation
+  store. Supports `--limit <n>`, `--session <id>`, and `--json`.
+
 ## [1.0.0] - 2026-08-04
 
 ### Changed
