@@ -776,6 +776,8 @@ describe("renderDebtMarkdown", () => {
 
   function makeStats(overrides: Partial<DebtStats> = {}): DebtStats {
     return {
+      lowSignalStaleCandidates: 0,
+      lowSignalStaleScanCapped: false,
       orphanFacts: 0,
       orphanFactsCapped: false,
       overdueDecisions: 0,
@@ -809,6 +811,7 @@ describe("renderDebtMarkdown", () => {
         p2: 0,
         p3: 0,
         byCategory: {
+          low_signal_stale: 0,
           orphan_fact: 0,
           ownerless: 0,
           duplicate_cluster: 0,
@@ -842,6 +845,16 @@ describe("renderDebtMarkdown", () => {
     expect(markdown).not.toContain("The vault is clean.")
     expect(markdown).toContain("No debt detected in the inspected window")
     expect(markdown).toContain("ownerless")
+    expect(markdown).toContain("--per-category-limit")
+  })
+
+  it("surfaces a capped low-signal warning on an empty report", () => {
+    const report = makeReport({
+      stats: makeStats({ lowSignalStaleScanCapped: true }),
+    })
+    const markdown = renderDebtMarkdown(report)
+    expect(markdown).not.toContain("The vault is clean.")
+    expect(markdown).toContain("low_signal_stale")
     expect(markdown).toContain("--per-category-limit")
   })
 

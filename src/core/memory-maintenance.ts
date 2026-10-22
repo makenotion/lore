@@ -25,7 +25,7 @@ export class MemoryMaintenance {
   ) {}
 
   async touchOnRead(
-    memories: ReadonlyArray<Pick<Memory, "id" | "lastReferencedAt">>,
+    memories: ReadonlyArray<Pick<Memory, "id" | "lastReferencedAt" | "accessCount">>,
     opts?: {
       today?: string
       onError?: (memoryId: string, error: unknown) => void
@@ -35,14 +35,19 @@ export class MemoryMaintenance {
     await Promise.all(
       memories.map(async (memory) => {
         if (memory.lastReferencedAt === today) return
+
+        const nextAccessCount = (memory.accessCount ?? 0) + 1
+
         try {
           await this.client.pages.update({
             page_id: memory.id,
             properties: {
               [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
+              [MEMORY_PROPS.ACCESS_COUNT]: { number: nextAccessCount },
             },
           })
           memory.lastReferencedAt = today
+          memory.accessCount = nextAccessCount
         } catch (error) {
           opts?.onError?.(memory.id, error)
         }

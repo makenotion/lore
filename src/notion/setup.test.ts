@@ -1108,6 +1108,17 @@ describe("migrateVaultSchema parallel retrieves", () => {
     expect(memoriesDiff?.missing).toContain("Synopsis")
   })
 
+  it("reports Access Count as missing schema drift on older Memories DBs", async () => {
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture(), { dryRun: true })
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff?.missing).toContain(MEMORY_PROPS.ACCESS_COUNT)
+  })
+
   it("surfaces Facts entity-relation columns as missing drift", async () => {
     const { client, maxInFlight, dataSourcesRetrieveCalls } = makeStartupStub({
       childDatabases: [],

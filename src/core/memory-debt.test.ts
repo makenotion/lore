@@ -61,6 +61,7 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     doneAt: null,
     decidedAt: null,
     lastReferencedAt: null,
+    accessCount: 0,
     supersedesIds: [],
     affectsIds: [],
     alternatives: "",
@@ -106,6 +107,8 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
 }
 
 interface StubOpts {
+  lowSignalMemories?: Memory[]
+  lowSignalMemoriesByPage?: Memory[][]
   orphanFacts?: Fact[]
   /**
    * Total orphan count (or sentinel-bumped count) the stubbed
@@ -179,12 +182,33 @@ function makeStubServices(opts: StubOpts = {}): LoreServices {
     listForScan: vi.fn(async () => opts.scanMemoriesByProject ?? projects.map(() => [])),
     list: vi.fn(
       async (listOpts?: {
+        projectId?: string
+        recallPolicy?: string
+        sortBy?: string
+        direction?: string
         startCursor?: string
         kind?: string
         source?: string
         includeOutOfScope?: boolean
         includeContent?: boolean
       }) => {
+        if (listOpts?.sortBy === "created_time") {
+          if (opts.lowSignalMemoriesByPage && opts.lowSignalMemoriesByPage.length > 0) {
+            const cursorIndex = listOpts.startCursor ? Number(listOpts.startCursor) : 0
+            const page = opts.lowSignalMemoriesByPage[cursorIndex] ?? []
+            const hasNext = cursorIndex + 1 < opts.lowSignalMemoriesByPage.length
+            return {
+              items: page,
+              capped: false as const,
+              ...(hasNext ? { nextCursor: String(cursorIndex + 1) } : {}),
+            }
+          }
+
+          return {
+            items: opts.lowSignalMemories ?? [],
+            capped: false as const,
+          }
+        }
         if (listOpts?.kind === "operational") {
           if (
             opts.operationalMemoriesByPage &&
@@ -406,6 +430,93 @@ describe("scanDebt — empty vault", () => {
 })
 
 describe("scanDebt — category detection", () => {
+  it("detects old memories with no more than one successful citation touch", async () => {
+    const services = makeStubServices({
+      lowSignalMemories: [
+        makeMemory({
+          id: "m-low",
+          title: "Rarely useful memory",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          accessCount: 1,
+        }),
+      ],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      categories: ["low_signal_stale"],
+    })
+
+    expect(report.items).toEqual([
+      expect.objectContaining({
+        id: "low_signal_stale::m-low",
+        category: "low_signal_stale",
+        entityType: "memory",
+        suggestedActions: ["review_or_archive"],
+      }),
+    ])
+    expect(report.stats.lowSignalStaleCandidates).toBe(1)
+  })
+
+  it("uses Last Referenced At as the age anchor and enforces both thresholds", async () => {
+    const services = makeStubServices({
+      lowSignalMemories: [
+        makeMemory({
+          id: "m-young",
+          title: "Young",
+          createdAt: "2026-04-01T00:00:00.000Z",
+          accessCount: 0,
+        }),
+        makeMemory({
+          id: "m-used",
+          title: "Used repeatedly",
+          createdAt: "2025-01-01T00:00:00.000Z",
+          accessCount: 2,
+        }),
+        makeMemory({
+          id: "m-recently-used",
+          title: "Recently useful",
+          createdAt: "2025-01-01T00:00:00.000Z",
+          lastReferencedAt: "2026-05-01",
+          accessCount: 1,
+        }),
+      ],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      categories: ["low_signal_stale"],
+    })
+
+    expect(report.items).toEqual([])
+  })
+
+  it("includes the 90-day boundary and excludes 89-day memories", async () => {
+    const services = makeStubServices({
+      lowSignalMemories: [
+        makeMemory({
+          id: "m-90",
+          title: "Exactly stale",
+          lastReferencedAt: "2026-02-11",
+          accessCount: 1,
+        }),
+        makeMemory({
+          id: "m-89",
+          title: "Not stale yet",
+          lastReferencedAt: "2026-02-12",
+          accessCount: 1,
+        }),
+      ],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      categories: ["low_signal_stale"],
+    })
+
+    expect(report.items.map((item) => item.entityId)).toEqual(["m-90"])
+  })
+
   it("detects orphan facts and marks them P1", async () => {
     const orphan = makeFact({ id: "f1" })
     const services = makeStubServices({ orphanFacts: [orphan] })
@@ -946,6 +1057,14 @@ describe("scanDebt — project scoping", () => {
     expect(services.tasks.queryOverdue).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "proj-a" })
     )
+    expect(services.memories.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        recallPolicy: "all",
+        sortBy: "created_time",
+        direction: "ascending",
+      })
+    )
   })
 
   it("stamps the project label on the report when scoped", async () => {
@@ -1024,6 +1143,31 @@ describe("scanDebt — category filter", () => {
 })
 
 describe("scanDebt — bounded probes (issue #585 review)", () => {
+  it("sets lowSignalStaleScanCapped when memories remain past the inspection budget", async () => {
+    const oldMemory = (id: string) =>
+      makeMemory({
+        id,
+        title: id,
+        createdAt: "2025-01-01T00:00:00.000Z",
+        accessCount: 0,
+      })
+    const services = makeStubServices({
+      lowSignalMemoriesByPage: [
+        [oldMemory("m0"), oldMemory("m1"), oldMemory("m2")],
+        [oldMemory("m3")],
+      ],
+    })
+
+    const report = await scanDebt(services, {
+      today: TODAY,
+      categories: ["low_signal_stale"],
+      perCategoryLimit: 3,
+    })
+
+    expect(report.stats.lowSignalStaleCandidates).toBe(3)
+    expect(report.stats.lowSignalStaleScanCapped).toBe(true)
+  })
+
   // The reviewer flagged three saturation bugs on the original PR:
   //   1. orphan_fact paginated to exhaustion and only then sliced
   //      `perCategoryLimit` — paying for every orphan in a large vault.
@@ -1196,7 +1340,11 @@ describe("scanDebt — bounded probes (issue #585 review)", () => {
     const ownerlessCalls = vi
       .mocked(services.memories.list)
       .mock.calls.filter(
-        ([args]) => !args?.kind && !args?.source && args?.includeOutOfScope !== true
+        ([args]) =>
+          !args?.kind &&
+          !args?.source &&
+          args?.includeOutOfScope !== true &&
+          args?.sortBy !== "created_time"
       )
     expect(ownerlessCalls.length).toBe(3)
     expect(report.stats.ownerlessMemories).toBe(3)
@@ -1265,6 +1413,8 @@ describe("scanDebt — JSON contract", () => {
     expect(Object.keys(json.stats).sort()).toEqual([
       "duplicateClusterPairs",
       "logShapedSummaries",
+      "lowSignalStaleCandidates",
+      "lowSignalStaleScanCapped",
       "operationalExpiryIssues",
       "operationalMemoriesInspected",
       "orphanFacts",

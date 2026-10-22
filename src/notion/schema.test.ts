@@ -121,6 +121,24 @@ describe("memoriesProperties — Last Referenced At column (0.8.0/02)", () => {
   })
 })
 
+describe("memoriesProperties — Access Count column", () => {
+  it("declares Access Count as a number on fresh and legacy vault shapes", () => {
+    expect(memoriesProperties("p-ds", "t-ds", "m-ds")[MEMORY_PROPS.ACCESS_COUNT]).toEqual(
+      { number: { format: "number" } }
+    )
+    expect(memoriesProperties("p-ds", "t-ds")[MEMORY_PROPS.ACCESS_COUNT]).toEqual({
+      number: { format: "number" },
+    })
+  })
+
+  it("places Access Count immediately after Last Referenced At", () => {
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    expect(keys.indexOf(MEMORY_PROPS.ACCESS_COUNT)).toBe(
+      keys.indexOf(MEMORY_PROPS.LAST_REFERENCED_AT) + 1
+    )
+  })
+})
+
 describe("buildMemoryProps — lastReferencedAt emission", () => {
   it("omits Last Referenced At when the input is undefined (leaves the column untouched on update)", () => {
     const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>

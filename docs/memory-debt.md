@@ -25,12 +25,13 @@ single question:
 
 ## Debt categories
 
-The scanner currently classifies findings into eight categories. Each
+The scanner currently classifies findings into nine categories. Each
 category reuses an existing service surface — the scanner is an
 orchestrator, not a re-implementation of vault walking.
 
 | Category             | Source                                                                                                   | What it surfaces                                                                                                                                                                               |
 | -------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `low_signal_stale`   | `MemoryService.list` (oldest-created first, bounded by `--per-category-limit`)                            | Live, non-review-terminal memories at least 90 days old by `Last Referenced At` (or creation date when never referenced) with `Access Count <= 1`.                                           |
 | `orphan_fact`        | `FactService.queryOrphans` (bounded by `--per-category-limit + 1`)                                       | Active facts whose `Source` relation is empty (no supporting memory).                                                                                                                          |
 | `overdue_governance` | `FactService.queryOverdue`, `DecisionService.queryOverdue`, `TaskService.queryOverdue` + `taskDaysStale` | Facts / decisions / tasks past their `Review By` date, plus active tasks untouched ≥ `STALE_TASK_DAYS`.                                                                                        |
 | `duplicate_cluster`  | `MemoryService.listForScan` + `findConflictCandidates`                                                   | Non-digest memory pairs whose `title + keywords` trigram overlap or tag overlap crosses threshold and that share at least one project, filtering out pairs already judged via `Compared With`. |
@@ -42,6 +43,11 @@ orchestrator, not a re-implementation of vault walking.
 
 ### Prerequisites and category semantics
 
+- **`low_signal_stale` is recommendation-only.** Its stable id is
+  `low_signal_stale::<memory-id>`, and its suggested action is
+  `review_or_archive`. `Access Count` records successful once-per-day
+  read-citation touch writes; missing or empty values are displayed and scored
+  as `0`. The category does not archive rows or penalize retrieval ranking.
 - **`scope_anomaly` requires the issue #283 schema columns** (`Scope Kind`,
   `Expires At`, …). On a pre-#283 vault the probe degrades to
   `stats.scopeAnomalies: null` and the rest of the scanner runs regardless.
@@ -94,8 +100,8 @@ score = severityWeight + retrievalRisk + stalenessWeight
   governance start higher than topic sprawl.
 - **`retrievalRisk`** rises when the row is likely to surface often
   (recent edits, broad project scope, decision / policy / runbook kinds).
-- **`stalenessWeight`** scales with `Review By` overdue days and active-task
-  age past the stale-task cutoff.
+- **`stalenessWeight`** scales with `Review By` overdue days, active-task age
+  past the stale-task cutoff, and low-signal memory age past 90 days.
 - **`governanceRisk`** weights decisions / policies / runbooks / facts
   higher than ordinary notes.
 
@@ -168,6 +174,9 @@ The `stats` block reports per-category counters and these diagnostic fields:
   more orphan facts exist past the inspected window.
 - `staleTasksScanCapped` — the stale-task probe stopped after
   inspecting `perCategoryLimit` active tasks without exhausting Notion.
+- `lowSignalStaleCandidates` counts qualifying low-signal memories in the
+  inspected window; `lowSignalStaleScanCapped` indicates that more memories
+  remain beyond that window.
 - `ownerlessScanCapped` — same shape for the ownerless-memory probe.
 - `operationalMemoriesInspected` and `operationalExpiryIssues` count the
   operational-expiry audit surface.
@@ -182,7 +191,7 @@ The `stats` block reports per-category counters and these diagnostic fields:
   the scope-anomaly probe; consumers check it before interpreting
   `scopeAnomalies`.
 
-When any of the three `*Capped` flags fires, the markdown report
+When any of the four `*Capped` flags fires, the markdown report
 appends a `_Per-category scan window hit …_` footer naming the
 affected categories and prompting the operator to raise
 `--per-category-limit`.
@@ -221,6 +230,9 @@ lore debt create-tasks --project Mail --priority-floor P1   # P1 only
 #                                      invalidate individually.
 #    - `review_and_extend`          → bump `reviewBy` on the decision or fact
 #                                      via the normal update tools.
+#    - `review_or_archive`          → inspect whether the memory still carries
+#                                      durable value; retain it when useful or
+#                                      archive via `lore-memory action='archive'`.
 
 # 5. Re-scan until the report is clean.
 lore debt scan --project Mail
@@ -284,7 +296,7 @@ state (the `items` list and `stats` block). On a 10-project /
 - `duplicate_cluster`: one `listForScan` per active project (full
   paginated walk of the project's non-archived memories), a `source != digest`
   filter, plus an O(N²) per-project `findConflictCandidates` pass.
-- `orphan_fact`, `overdue_governance`, `ownerless`,
+- `low_signal_stale`, `orphan_fact`, `overdue_governance`, `ownerless`,
   `operational_expiry`, `summary_quality`:
   each issues one or more paginated `dataSources.query` calls,
   bounded by `--per-category-limit` (default 200).

@@ -174,6 +174,7 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.doneAt).toBe("2026-04-25")
     expect(memory.decidedAt).toBe("2026-04-20")
     expect(memory.lastReferencedAt).toBe("2026-04-29")
+    expect(memory.accessCount).toBe(0)
     expect(memory.supersedesIds).toEqual(["old-decision"])
     expect(memory.affectsIds).toEqual(["affected-1", "affected-2"])
     expect(memory.alternatives).toBe("Alt A; Alt B")
@@ -205,6 +206,30 @@ describe("pageToMemory — fully populated decision page", () => {
 
     const memory = pageToMemory(page)
     expect(memory.lastReferencedAt).toBeNull()
+  })
+
+  it("extracts Access Count and defaults missing or empty values to zero", () => {
+    const populated = pageToMemory(
+      buildPage({
+        Title: { type: "title", title: [{ plain_text: "Used memory" }] },
+        "Access Count": { type: "number", number: 7 },
+      })
+    )
+    const empty = pageToMemory(
+      buildPage({
+        Title: { type: "title", title: [{ plain_text: "Empty count" }] },
+        "Access Count": { type: "number", number: null },
+      })
+    )
+    const missing = pageToMemory(
+      buildPage({
+        Title: { type: "title", title: [{ plain_text: "Legacy row" }] },
+      })
+    )
+
+    expect(populated.accessCount).toBe(7)
+    expect(empty.accessCount).toBe(0)
+    expect(missing.accessCount).toBe(0)
   })
 })
 
@@ -11111,11 +11136,13 @@ describe("MemoryService.touchOnRead", () => {
     overrides: {
       id?: string
       lastReferencedAt?: string | null
+      accessCount?: number
     } = {}
-  ): Pick<Memory, "id" | "lastReferencedAt"> {
+  ): Pick<Memory, "id" | "lastReferencedAt" | "accessCount"> {
     return {
       id: overrides.id ?? "m1",
       lastReferencedAt: overrides.lastReferencedAt ?? null,
+      accessCount: overrides.accessCount ?? 0,
     }
   }
 
@@ -11146,12 +11173,34 @@ describe("MemoryService.touchOnRead", () => {
     expect(update).toHaveBeenCalledTimes(1)
     expect(update.mock.calls[0]![0]).toMatchObject({
       page_id: "m1",
-      properties: { "Last Referenced At": { date: { start: TODAY } } },
+      properties: {
+        "Last Referenced At": { date: { start: TODAY } },
+        "Access Count": { number: 1 },
+      },
     })
     expect(row.lastReferencedAt).toBe(TODAY)
+    expect(row.accessCount).toBe(1)
 
     await service.touchOnRead([row], { today: TODAY })
     expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it("increments an existing Access Count", async () => {
+    const update = vi.fn(async () => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+    const row = makeMemoryShape({ accessCount: 7 })
+
+    await service.touchOnRead([row], { today: TODAY })
+
+    expect(update).toHaveBeenCalledWith({
+      page_id: "m1",
+      properties: {
+        "Last Referenced At": { date: { start: TODAY } },
+        "Access Count": { number: 8 },
+      },
+    })
+    expect(row.accessCount).toBe(8)
   })
 
   it("isolates per-row failures and leaves failed rows unchanged", async () => {
@@ -11162,7 +11211,7 @@ describe("MemoryService.touchOnRead", () => {
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
     const errors: Array<{ id: string; message: string }> = []
-    const bad = makeMemoryShape({ id: "m-bad" })
+    const bad = makeMemoryShape({ id: "m-bad", accessCount: 4 })
 
     await service.touchOnRead([makeMemoryShape({ id: "m-good" }), bad], {
       today: TODAY,
@@ -11177,6 +11226,7 @@ describe("MemoryService.touchOnRead", () => {
     expect(update).toHaveBeenCalledTimes(2)
     expect(errors).toEqual([{ id: "m-bad", message: "notion 503" }])
     expect(bad.lastReferencedAt).toBeNull()
+    expect(bad.accessCount).toBe(4)
   })
 
   it("is a no-op for an empty memory list", async () => {
