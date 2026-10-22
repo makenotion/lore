@@ -204,6 +204,9 @@ export function renderDebtMarkdown(report: DebtReport): string {
   // is clean" — the false-clean signal would mask real debt the
   // operator hasn't paid for yet.
   const cappedCategories: string[] = []
+  if (report.stats.lowSignalStaleScanCapped) {
+    cappedCategories.push("low_signal_stale")
+  }
   if (report.stats.orphanFactsCapped) cappedCategories.push("orphan_fact")
   if (report.stats.staleTasksScanCapped)
     cappedCategories.push("overdue_governance (stale-task probe)")
@@ -317,7 +320,7 @@ export function renderDebtJson(report: DebtReport): string {
 
 const scanSubcommand = new Command("scan")
   .description(
-    "Inventory memory debt across the vault: low-trust memories, orphan facts, overdue governance, duplicate clusters, topic sprawl, scope anomalies, operational expiry, summary quality, and ownerless rows."
+    "Inventory memory debt across the vault: low-signal stale memories, orphan facts, overdue governance, duplicate clusters, topic sprawl, scope anomalies, operational expiry, summary quality, and ownerless rows."
   )
   .option("-p, --project <name>", "Restrict scan to one project (default: all projects)")
   .option(

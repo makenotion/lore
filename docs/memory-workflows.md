@@ -24,12 +24,12 @@ When a fact becomes stale, invalidate it with `lore-fact action='invalidate'`.
 That action closes the fact's validity window and updates the fact-side
 confidence fields; it does not mutate the supporting memory.
 
-For recurring corpus hygiene — orphan facts, overdue governance, duplicate
-clusters, topic sprawl, ownerless rows, scope anomalies, operational expiry
-gaps, and log-shaped summaries — run [`lore debt scan`](./memory-debt.md)
-periodically. The scanner is read-only by default; `docs/memory-debt.md`
-describes the categories, scoring, recommended monthly cadence, and the opt-in
-`lore debt create-tasks` surface.
+For recurring corpus hygiene — low-signal stale memories, orphan facts,
+overdue governance, duplicate clusters, topic sprawl, ownerless rows, scope
+anomalies, operational expiry gaps, and log-shaped summaries — run
+[`lore debt scan`](./memory-debt.md) periodically. The scanner is read-only by
+default; `docs/memory-debt.md` describes the categories, scoring, recommended
+monthly cadence, and the opt-in `lore debt create-tasks` surface.
 
 Memory `synopsis` values are scan hooks, not mini-bodies. `lore-memory`
 save/update rejects synopses over `memory.synopsisMaxChars`; the default is

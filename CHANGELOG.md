@@ -11,6 +11,12 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Added
+
+- Added a Memories `Access Count` field that increments on successful daily
+  read-citation touches, plus a `low_signal_stale` debt category for reviewing
+  old memories with little evidence of repeated use.
+
 ## [1.0.0] - 2026-08-04
 
 ### Changed

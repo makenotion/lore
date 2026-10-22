@@ -326,6 +326,13 @@ export interface Memory {
    * built-in, creation timestamp).
    */
   lastReferencedAt: string | null
+  /**
+   * Number of successful read-citation touch writes. The read path increments
+   * this at most once per day under the `lastReferencedAt` guard. Optional for
+   * source compatibility with external Memory-shaped fixtures; mapped Notion
+   * rows always provide a concrete value and treat missing cells as zero.
+   */
+  accessCount?: number
   supersedesIds: string[]
   affectsIds: string[]
   alternatives: string

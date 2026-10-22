@@ -50,6 +50,7 @@ import {
  * a stable contract for future UI/automation.
  */
 export type DebtCategory =
+  | "low_signal_stale"
   | "orphan_fact"
   | "ownerless"
   | "duplicate_cluster"
@@ -86,6 +87,7 @@ export function debtTaskMarker(debtId: string): string {
 }
 
 export const DEBT_CATEGORIES: DebtCategory[] = [
+  "low_signal_stale",
   "orphan_fact",
   "ownerless",
   "duplicate_cluster",
@@ -95,6 +97,9 @@ export const DEBT_CATEGORIES: DebtCategory[] = [
   "operational_expiry",
   "summary_quality",
 ]
+
+export const LOW_SIGNAL_STALE_DAYS = 90
+export const LOW_SIGNAL_ACCESS_COUNT_MAX = 1
 
 /**
  * Map a numeric debt score to its priority bucket. Single source of
@@ -178,6 +183,12 @@ export interface DebtReport {
 }
 
 export interface DebtStats {
+  lowSignalStaleCandidates: number
+  /**
+   * True when the low-signal probe exhausted its inspection budget
+   * while additional memory rows remained.
+   */
+  lowSignalStaleScanCapped: boolean
   orphanFacts: number
   /**
    * `true` when the orphan-fact fetch hit `perCategoryLimit` before
@@ -286,6 +297,7 @@ const DEFAULT_PER_CATEGORY_LIMIT = 200
  * branches.
  */
 const SEVERITY_WEIGHT: Record<DebtCategory, number> = {
+  low_signal_stale: 20,
   orphan_fact: 55,
   overdue_governance: 35,
   summary_quality: 30,
@@ -317,6 +329,8 @@ export async function scanDebt(
 
   const items: DebtItem[] = []
   const stats: DebtStats = {
+    lowSignalStaleCandidates: 0,
+    lowSignalStaleScanCapped: false,
     orphanFacts: 0,
     orphanFactsCapped: false,
     overdueDecisions: 0,
@@ -343,7 +357,72 @@ export async function scanDebt(
   }
 
   // ---------------------------------------------------------------
-  // 1. Orphan / weak-provenance facts
+  // 1. Old memories with little evidence of repeated usefulness.
+  //    The list path supplies live, visible, non-review-terminal rows
+  //    and preserves project-or-unscoped behavior.
+  // ---------------------------------------------------------------
+  if (wantCategory("low_signal_stale")) {
+    let lowSignalCursor: string | undefined
+    let lowSignalInspected = 0
+    let lowSignalCapped = false
+    let firstLowSignalPage = true
+
+    while (firstLowSignalPage || lowSignalCursor !== undefined) {
+      firstLowSignalPage = false
+
+      if (lowSignalInspected >= perCategoryLimit) {
+        lowSignalCapped = lowSignalCursor !== undefined
+        break
+      }
+
+      const remaining = perCategoryLimit - lowSignalInspected
+      const page: {
+        items: MemoryWithoutContent[]
+        nextCursor?: string
+        capped: boolean
+      } = await services.memories.list({
+        ...(opts.projectId ? { projectId: opts.projectId } : {}),
+        recallPolicy: "all",
+        includeContent: false,
+        sortBy: "created_time",
+        direction: "ascending",
+        limit: Math.min(100, remaining),
+        ...(lowSignalCursor !== undefined ? { startCursor: lowSignalCursor } : {}),
+      })
+
+      for (const memory of page.items) {
+        if (lowSignalInspected >= perCategoryLimit) {
+          lowSignalCapped = true
+          break
+        }
+
+        lowSignalInspected++
+
+        const ageAnchor = memory.lastReferencedAt ?? memory.createdAt.slice(0, 10)
+        const ageDays = daysBetween(ageAnchor, today)
+        if (ageDays === null || ageDays < LOW_SIGNAL_STALE_DAYS) continue
+
+        const accessCount = memory.accessCount ?? 0
+        if (accessCount > LOW_SIGNAL_ACCESS_COUNT_MAX) continue
+
+        stats.lowSignalStaleCandidates++
+        items.push(buildLowSignalStaleItem(memory, ageDays, today))
+      }
+
+      if (lowSignalCapped) break
+
+      lowSignalCursor = page.nextCursor
+      if (lowSignalCursor !== undefined && lowSignalInspected >= perCategoryLimit) {
+        lowSignalCapped = true
+        break
+      }
+    }
+
+    stats.lowSignalStaleScanCapped = lowSignalCapped
+  }
+
+  // ---------------------------------------------------------------
+  // 2. Orphan / weak-provenance facts
   //    queryOrphans returns facts with empty Source AND empty Valid
   //    Until (still active). Excludes auto-sourced decision-graph
   //    predicates by construction.
@@ -794,6 +873,7 @@ export async function scanDebt(
 
 function emptyByCategory(): Record<DebtCategory, number> {
   return {
+    low_signal_stale: 0,
     orphan_fact: 0,
     ownerless: 0,
     duplicate_cluster: 0,
@@ -818,6 +898,42 @@ function compareDebtItems(a: DebtItem, b: DebtItem): number {
 // ---------------------------------------------------------------------------
 // Per-category builders
 // ---------------------------------------------------------------------------
+
+function buildLowSignalStaleItem(
+  memory: Memory,
+  ageDays: number,
+  today: string
+): DebtItem {
+  const accessCount = memory.accessCount ?? 0
+  const ageReason =
+    memory.lastReferencedAt === null
+      ? `Never referenced; created ${ageDays}d ago`
+      : `Last referenced ${ageDays}d ago`
+
+  const stalenessWeight = Math.min(15, Math.floor((ageDays - LOW_SIGNAL_STALE_DAYS) / 4))
+  const blended =
+    SEVERITY_WEIGHT.low_signal_stale +
+    retrievalRiskFromMemory(memory, today) +
+    stalenessWeight +
+    governanceRiskFromKind(memory.kind)
+
+  return {
+    id: `low_signal_stale::${memory.id}`,
+    priority: priorityForScore(blended),
+    category: "low_signal_stale",
+    entityType: "memory",
+    entityId: memory.id,
+    title: memory.title,
+    score: Math.round(blended),
+    reasons: [
+      `${ageReason} (≥ ${LOW_SIGNAL_STALE_DAYS}d stale cutoff)`,
+      `Access Count ${accessCount} (≤ ${LOW_SIGNAL_ACCESS_COUNT_MAX} low-signal cutoff)`,
+    ],
+    suggestedActions: ["review_or_archive"],
+    safeToAutoFix: false,
+    projects: memory.projectIds.length > 0 ? memory.projectIds : undefined,
+  }
+}
 
 function buildOrphanFactItem(fact: Fact): DebtItem {
   const reasons: string[] = [

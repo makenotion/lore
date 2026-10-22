@@ -750,10 +750,10 @@ export class MemoryService {
   }
 
   /**
-   * Update `Last Referenced At` to today for the given memories. Updates
-   * dispatch in parallel via `Promise.all`. Each update is its own
-   * `pages.update` (Notion has no batch-update primitive); the rate-limit
-   * middleware handles backpressure.
+   * Update `Last Referenced At` to today and increment `Access Count` for the
+   * given memories. Updates dispatch in parallel via `Promise.all`. Each update
+   * is its own `pages.update` (Notion has no batch-update primitive); the
+   * rate-limit middleware handles backpressure.
    *
    * Failure handling: any per-row failure routes through `onError` and
    * degrades to a no-op for that row. The caller's read result is
@@ -762,7 +762,7 @@ export class MemoryService {
    * Once per day: a memory cited 50 times in one session writes at most once.
    */
   async touchOnRead(
-    memories: ReadonlyArray<Pick<Memory, "id" | "lastReferencedAt">>,
+    memories: ReadonlyArray<Pick<Memory, "id" | "lastReferencedAt" | "accessCount">>,
     opts?: {
       today?: string
       onError?: (memoryId: string, error: unknown) => void

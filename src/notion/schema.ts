@@ -158,6 +158,7 @@ export const MEMORY_PROPS = {
   DONE_AT: "Done At",
   DECIDED_AT: "Decided At",
   LAST_REFERENCED_AT: "Last Referenced At",
+  ACCESS_COUNT: "Access Count",
   ALTERNATIVES: "Alternatives",
   CONSEQUENCES: "Consequences",
   AUTHOR: "Author",
@@ -328,6 +329,9 @@ export function memoriesProperties(
     // `last_edited_time` which tracks writes. Written by
     // `MemoryService.touchOnRead` for citation-recency surfaces.
     [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: {} },
+    // Number of successful read-citation touch writes. The once-per-day
+    // timestamp guard bounds repeated reads of the same materialized row.
+    [MEMORY_PROPS.ACCESS_COUNT]: { number: { format: "number" } },
     [MEMORY_PROPS.ALTERNATIVES]: { rich_text: {} },
     [MEMORY_PROPS.CONSEQUENCES]: { rich_text: {} },
     [MEMORY_PROPS.AUTHOR]: { rich_text: {} },

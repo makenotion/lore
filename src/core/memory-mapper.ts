@@ -114,6 +114,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     doneAt: extractDate(props[MEMORY_PROPS.DONE_AT]),
     decidedAt: extractDate(props[MEMORY_PROPS.DECIDED_AT]),
     lastReferencedAt: extractDate(props[MEMORY_PROPS.LAST_REFERENCED_AT]),
+    accessCount: extractNumber(props[MEMORY_PROPS.ACCESS_COUNT]) ?? 0,
     supersedesIds: extractRelationIds(props[MEMORY_PROPS.SUPERSEDES]),
     affectsIds: extractRelationIds(props[MEMORY_PROPS.AFFECTS]),
     alternatives: extractRichText(props[MEMORY_PROPS.ALTERNATIVES]),
